@@ -1,0 +1,99 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  background: #06070a;
+  color: #f8fafc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 18% 18%, rgba(45, 212, 191, 0.12), transparent 30%),
+    radial-gradient(circle at 78% 8%, rgba(250, 204, 21, 0.08), transparent 26%),
+    #06070a;
+  font-family:
+    Arial,
+    Helvetica,
+    sans-serif;
+}
+
+button {
+  font: inherit;
+}
+
+.field-input {
+  width: 100%;
+  height: 44px;
+  border-radius: 12px;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  background: rgb(255 255 255 / 0.1);
+  padding: 0 14px;
+  color: #fff;
+  font-size: 0.875rem;
+  font-weight: 700;
+  outline: none;
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease,
+    opacity 160ms ease;
+}
+
+.field-input:focus {
+  border-color: rgb(253 230 138 / 0.62);
+}
+
+.field-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.field-input option {
+  background: #0f172a;
+  color: #fff;
+}
+
+.mapboxgl-ctrl-logo,
+.mapboxgl-ctrl-attrib {
+  opacity: 0.72;
+}
+
+.mapboxgl-canvas,
+.mapboxgl-canvas-container {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.mapboxgl-ctrl-bottom-left {
+  bottom: 122px !important;
+  left: 12px !important;
+}
+
+.mapboxgl-ctrl-compass {
+  display: none !important;
+}
+
+@media (max-width: 767px) {
+  .mapboxgl-ctrl-bottom-left,
+  .mapboxgl-ctrl-bottom-left * {
+    display: none !important;
+  }
+}
+
+.tc-map-vignette {
+  background:
+    linear-gradient(90deg, rgba(15, 23, 42, 0.3) 0%, rgba(15, 23, 42, 0.08) 28%, rgba(15, 23, 42, 0) 52%),
+    linear-gradient(270deg, rgba(15, 23, 42, 0.14) 0%, rgba(15, 23, 42, 0.03) 24%, rgba(15, 23, 42, 0) 44%),
+    linear-gradient(0deg, rgba(15, 23, 42, 0.28) 0%, rgba(15, 23, 42, 0.07) 30%, rgba(15, 23, 42, 0) 54%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08) 0%, rgba(226, 232, 240, 0.03) 18%, rgba(15, 23, 42, 0) 42%);
+}

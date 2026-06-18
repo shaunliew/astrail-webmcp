@@ -1,0 +1,1 @@
+// CanonicalPlace table + vector search

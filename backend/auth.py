@@ -1,0 +1,1 @@
+# Clerk JWT validation

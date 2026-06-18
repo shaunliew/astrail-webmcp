@@ -1,0 +1,102 @@
+import type { TripExperience } from "@/lib/trip/types";
+
+export const tokyoTripDemo: TripExperience = {
+  id: "tokyo-demo",
+  title: "Tokyo Reel Trip",
+  datesLabel: "4 days in June",
+  destination: {
+    city: "Tokyo",
+    country: "Japan",
+    center: [139.7671, 35.6812],
+    zoom: 11.15,
+  },
+  days: [
+    {
+      day: 1,
+      title: "Markets and Skyline",
+      summary: "Start with an early food crawl, then close the evening with Tokyo's warmest city lights.",
+      placeIds: ["tsukiji-outer-market", "tokyo-tower"],
+      route: {
+        coordinates: [
+          [139.770667, 35.665486],
+          [139.765914, 35.662988],
+          [139.759242, 35.660632],
+          [139.752713, 35.65892],
+          [139.745433, 35.658581],
+        ],
+        durationMinutes: 22,
+        distanceKm: 3.2,
+      },
+    },
+    {
+      day: 2,
+      title: "Forest to Crossing",
+      summary: "Move from Meiji Shrine's calm paths into Shibuya's electric pedestrian theater.",
+      placeIds: ["meiji-shrine", "shibuya-crossing"],
+      route: {
+        coordinates: [
+          [139.699325, 35.676398],
+          [139.702765, 35.671336],
+          [139.704188, 35.666538],
+          [139.702013, 35.662263],
+          [139.7005, 35.6595],
+        ],
+        durationMinutes: 18,
+        distanceKm: 2.1,
+      },
+    },
+    {
+      day: 3,
+      title: "Old Tokyo Texture",
+      summary: "Give Asakusa room to breathe with temple streets, lanterns, and snack stalls.",
+      placeIds: ["senso-ji"],
+    },
+  ],
+  places: [
+    {
+      id: "tokyo-tower",
+      name: "Tokyo Tower",
+      category: "landmark",
+      day: 1,
+      lat: 35.658581,
+      lng: 139.745433,
+      summary: "A warm-lit city icon with observatories that frame central Tokyo at golden hour.",
+    },
+    {
+      id: "shibuya-crossing",
+      name: "Shibuya Crossing",
+      category: "crossing",
+      day: 2,
+      lat: 35.6595,
+      lng: 139.7005,
+      summary: "Tokyo's kinetic street-theater moment, best seen from above just after dusk.",
+    },
+    {
+      id: "senso-ji",
+      name: "Senso-ji",
+      category: "temple",
+      day: 3,
+      lat: 35.714765,
+      lng: 139.796655,
+      summary: "Asakusa's historic temple approach pairs lantern glow with snack stalls and old Tokyo texture.",
+    },
+    {
+      id: "meiji-shrine",
+      name: "Meiji Shrine",
+      category: "shrine",
+      day: 2,
+      lat: 35.676398,
+      lng: 139.699325,
+      summary: "A quiet forested reset near Harajuku, with broad gravel paths and ceremonial calm.",
+    },
+    {
+      id: "tsukiji-outer-market",
+      name: "Tsukiji Outer Market",
+      category: "market",
+      day: 1,
+      lat: 35.665486,
+      lng: 139.770667,
+      summary: "A morning food crawl for grilled seafood, tamagoyaki, knife shops, and quick counter bites.",
+    },
+  ],
+};

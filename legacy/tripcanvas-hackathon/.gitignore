@@ -1,0 +1,33 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+.claude
+
+data/*
+
+#markdown files
+content.md
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Local agent/browser artifacts
+.gstack/
+
+# Frontend dependencies and build output
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/dist/
+frontend/.env.local
+frontend/*.tsbuildinfo
+frontend/*.log

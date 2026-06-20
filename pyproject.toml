@@ -11,6 +11,12 @@ dependencies = [
     "pydantic>=2.0.0",
     "python-jose[cryptography]>=3.3.0",
     "python-dotenv>=1.0.0",
+    "supabase>=2.0.0",
+    "mem0ai>=0.1.0",
+    "langfuse>=2.0.0",
+    "sentry-sdk[fastapi]>=2.0.0",
+    "slowapi>=0.1.9",
+    "posthog>=3.0.0",
 ]
 
 [build-system]

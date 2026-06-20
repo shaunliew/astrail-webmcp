@@ -1,0 +1,12 @@
+# Supabase project config. See https://supabase.com/docs/guides/cli/config
+project_id = "astrail"
+
+[db]
+major_version = 15
+
+[auth]
+enabled = true
+# Google OAuth only in v1 (see CLAUDE.md).
+
+[storage]
+enabled = true

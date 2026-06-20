@@ -18,8 +18,9 @@ node_modules/
 .next/
 out/
 
-# Convex
-.convex/
+# Supabase
+supabase/.branches/
+supabase/.temp/
 
 # OS
 .DS_Store

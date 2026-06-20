@@ -1,0 +1,32 @@
+# Render service config (replaces fly.toml). Singapore region, always-on Starter.
+services:
+  - type: web
+    name: astrail-backend
+    runtime: docker
+    repo: https://github.com/MalaysiaKaki/astrail
+    region: singapore
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: APIFY_TOKEN
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+      - key: MAPBOX_SECRET_TOKEN
+        sync: false
+      - key: MEM0_API_KEY
+        sync: false
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: SENTRY_DSN
+        sync: false

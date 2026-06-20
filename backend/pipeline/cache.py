@@ -1,1 +1,1 @@
-# Reel + place cache via Convex
+# Reel + place cache via Supabase Postgres (write-through)

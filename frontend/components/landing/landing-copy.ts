@@ -42,6 +42,6 @@ export const faqs = [
 ] as const;
 
 export const tallyEmbedUrl =
-  "https://tally.so/embed/QKjrvk?hideTitle=1&transparentBackground=1&dynamicHeight=1";
+  "https://tally.so/embed/QKjrvk?alignLeft=1&hideTitle=1&transparentBackground=1&dynamicHeight=1";
 
 export const tallyFallbackUrl = "https://tally.so/r/QKjrvk";

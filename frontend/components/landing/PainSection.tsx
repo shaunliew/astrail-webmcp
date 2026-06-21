@@ -14,7 +14,7 @@ export default function PainSection() {
           </h2>
         </div>
         <div className="hero-copy-shadow lg:pt-2">
-          <p className="max-w-2xl text-lg leading-8 text-[color:var(--muted)]">
+          <p className="max-w-2xl text-lg leading-8 text-[rgba(242,236,224,0.72)]">
             You save the noodle shop, the viewpoint, the tiny cafe, the one
             temple everyone says is worth it. Then the folder grows, the trip
             gets closer, and nothing connects.
@@ -25,10 +25,10 @@ export default function PainSection() {
                 className="saved-fragment flex min-h-14 items-center justify-between px-5 py-4"
                 key={label}
               >
-                <p className="type-label text-xs uppercase tracking-[0.14em] text-[color:var(--faint)]">
+                <p className="type-label text-xs uppercase tracking-[0.14em] text-[rgba(242,236,224,0.58)]">
                   {label}
                 </p>
-                <span className="h-px w-16 bg-[color:var(--line)]" />
+                <span className="h-px w-16 bg-[rgba(242,236,224,0.2)]" />
               </div>
             ))}
           </div>

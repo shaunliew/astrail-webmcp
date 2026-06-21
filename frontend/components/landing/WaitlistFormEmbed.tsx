@@ -18,12 +18,12 @@ export default function WaitlistFormEmbed() {
       </div>
       <div className="relative overflow-hidden border border-[color:var(--line)] bg-[rgba(5,5,6,0.5)]">
         <iframe
-          className="h-[350px] w-full border-0 md:h-[320px]"
+          className="h-[240px] w-full border-0 md:h-[214px]"
           loading="lazy"
           sandbox="allow-forms allow-popups allow-popups-to-escape-sandbox allow-same-origin allow-scripts"
           scrolling="no"
           src={tallyEmbedUrl}
-          title="Astrail beta waitlist form"
+          title="Astrail Beta Waitlist"
         />
       </div>
       <p className="px-1 pt-3 text-sm leading-6 text-[color:var(--muted)]">

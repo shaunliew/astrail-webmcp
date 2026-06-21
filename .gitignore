@@ -17,6 +17,10 @@ dist/
 node_modules/
 .next/
 out/
+*.tsbuildinfo
+checkpoint*.png
+design-*.png
+.next-dev-*.log
 
 # Supabase
 supabase/.branches/
@@ -29,3 +33,6 @@ Thumbs.db
 # IDE
 .idea/
 .vscode/
+
+# Local agent brainstorming artifacts
+.superpowers/

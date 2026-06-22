@@ -3,6 +3,7 @@ import type { NextConfig } from "next";
 const scriptSrc = [
   "'self'",
   "'unsafe-inline'",
+  "https://tally.so",
   process.env.NODE_ENV === "development" ? "'unsafe-eval'" : "",
 ]
   .filter(Boolean)

@@ -1,3 +1,5 @@
+import Image from "next/image";
+
 import { navItems } from "./landing-copy";
 
 export default function LandingNav() {
@@ -6,9 +8,17 @@ export default function LandingNav() {
       <nav className="mx-auto flex max-w-7xl items-center justify-between gap-6">
         <a
           href="#top"
-          className="type-display text-2xl font-normal text-[color:var(--starlight)]"
+          className="flex items-center"
+          aria-label="Astrail home"
         >
-          Astrail
+          <Image
+            src="/astrail_logo.png"
+            alt="Astrail"
+            width={40}
+            height={40}
+            priority
+            className="h-10 w-10 object-contain"
+          />
         </a>
         <div className="type-label flex items-center gap-5 text-xs uppercase tracking-[0.16em] text-[color:var(--muted)]">
           {navItems.map((item) => (

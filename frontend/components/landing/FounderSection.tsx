@@ -8,30 +8,27 @@ export default function FounderSection() {
           </p>
           <div className="type-display max-w-4xl space-y-6 text-3xl leading-tight text-[color:var(--starlight)] md:text-5xl">
             <p>
-              We built Astrail because we kept saving places we wanted to visit,
-              then watching those saves become nothing.
+              We built Astrail because we both had the same problem: hundreds of
+              saved Reels, zero actual trips planned from them. The intent was
+              there. The tool to turn it into a route wasn&apos;t.
             </p>
             <p className="text-[color:var(--muted)]">
-              The inspiration was there. The execution layer was missing.
+              So we built one. First as a hackathon prototype, now as something
+              we&apos;d actually trust on our own trips.
             </p>
             <p className="text-[color:var(--muted)]">
-              Astrail is our attempt to turn that gap into a product: from
-              scattered Reels, to verified places, to a route you can actually
-              follow.
+              Zhi Hao and Shaun · Singapore · 2026
             </p>
           </div>
-          <p className="type-label mt-8 text-xs uppercase tracking-[0.16em] text-[color:var(--faint)]">
-            Zhi Hao and Shaun / Singapore / 2026
-          </p>
         </div>
         <div className="surface self-end p-5">
           <p className="type-label text-xs uppercase tracking-[0.16em] text-[color:var(--brass)]">
             What we are building toward
           </p>
           <ul className="mt-6 space-y-5 text-sm leading-6 text-[color:var(--muted)]">
-            <li>Verified places from messy travel saves.</li>
-            <li>Route logic you can inspect before trusting.</li>
-            <li>A planner that learns your pace, budget, and preferences.</li>
+            <li>Verified places, not guesses.</li>
+            <li>Route logic you can inspect before you trust it.</li>
+            <li>A planner that learns your pace, budget, and habits over time.</li>
           </ul>
         </div>
       </div>

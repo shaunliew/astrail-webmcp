@@ -11,19 +11,19 @@ export default function ProofSection() {
           </p>
           <div className="mb-8 max-w-3xl">
             <h2 className="type-display text-5xl font-normal leading-[0.96] md:text-7xl">
-              First proven under pressure. Now rebuilt for real trips.
+              We built it in 48 hours. Now we&apos;re rebuilding it properly.
             </h2>
             <p className="mt-6 max-w-2xl text-lg leading-8 text-[color:var(--muted)]">
-              The hackathon demo showed the core loop: scattered travel intent
-              can become a researched route. The beta is the slower, more
-              reliable version of that idea.
+              The hackathon version proved the core idea worked: messy saved
+              Reels can become a real itinerary. The beta is the same idea,
+              minus the duct tape.
             </p>
           </div>
           <div className="surface relative aspect-video overflow-hidden">
             <DemoVideoEmbed />
           </div>
           <p className="type-label mt-4 text-xs uppercase tracking-[0.14em] text-[color:var(--faint)]">
-            Raw hackathon demo. The beta is being rebuilt for reliability.{" "}
+            This is the raw hackathon build. The beta is a proper rebuild.{" "}
             <a
               className="text-[color:var(--brass)]"
               href="https://www.youtube.com/watch?v=EoAxPk6OCdo"
@@ -39,7 +39,7 @@ export default function ProofSection() {
           <div className="surface overflow-hidden">
             <div className="relative aspect-[4/5]">
               <Image
-                alt="Zhi Hao and Shaun at the SEA x OpenAI Regional Codex Hackathon, Singapore, June 2026."
+                alt="Zhi Hao and Shaun at the SEA x OpenAI Codex Hackathon, Singapore, June 2026."
                 className="object-cover"
                 fill
                 priority={false}
@@ -50,11 +50,11 @@ export default function ProofSection() {
             </div>
             <div className="border-t border-[color:var(--line)] p-5">
               <p className="type-label text-xs uppercase tracking-[0.16em] text-[color:var(--brass)]">
-                Second place / USD 15,000 OpenAI API credits
+                2nd place out of 1,000+ teams · USD 15,000 OpenAI credits
               </p>
               <p className="mt-4 leading-7 text-[color:var(--muted)]">
-                Zhi Hao and Shaun at the SEA x OpenAI Regional Codex Hackathon,
-                Singapore, June 2026.
+                Zhi Hao and Shaun · SEA &times; OpenAI Codex Hackathon ·
+                Singapore, June 2026
               </p>
             </div>
           </div>

@@ -22,9 +22,9 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Astrail - Your travel Reels, finally a route",
+  title: "Astrail · Plan trips from your saved travel Reels",
   description:
-    "Astrail turns saved travel inspiration into a route you can trust. Every place researched. Every choice explained.",
+    "Paste your saved travel Reels. Astrail extracts the places, verifies them, and builds a day-by-day itinerary with the reasoning attached. Beta opening soon.",
 };
 
 export default function RootLayout({

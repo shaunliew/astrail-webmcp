@@ -6,38 +6,38 @@ export const navItems = [
 export const howItWorksSteps = [
   {
     title: "Paste the Reels you saved",
-    body: "Bring the scattered links, places, dates, budget, and loose preferences you already have.",
+    body: "Drop in the links, your dates, your budget, and any preferences you already have. Messy is fine.",
   },
   {
     title: "Astrail verifies the places",
-    body: "The planner extracts real stops, researches them, and keeps evidence attached to every recommendation.",
+    body: "We pull the real stops out of each Reel, research them, and keep the evidence attached to every recommendation.",
   },
   {
-    title: "Get a route you can trust",
-    body: "The result is a day-by-day trail with route logic, explained choices, and a saved plan you can revisit.",
+    title: "Get a route you can follow",
+    body: "You get a day-by-day plan with route logic, the reasoning behind each stop, and a saved trip you can come back to.",
   },
 ] as const;
 
 export const faqs = [
   {
-    question: "What does the beta do?",
+    question: "What does the beta actually do?",
     answer:
-      "Astrail turns saved travel inspiration into a route you can inspect: Reel links, places, dates, budget, and preferences become verified stops, a day-by-day itinerary, route logic, and evidence for why each place belongs.",
+      "You give Astrail your saved Reels, dates, budget, and preferences. It returns verified stops, a day-by-day itinerary, route logic, and the reasoning for why each place made the cut.",
   },
   {
-    question: "Does Astrail book hotels or flights?",
+    question: "Does it book hotels or flights?",
     answer:
-      "Not in the beta. V1 focuses on planning reliability first: verified places, trustworthy routing, saved trips, and explained decisions. Booking comes later only after the planning layer is good enough to trust.",
+      "Not in the beta. We're focused on getting the planning layer right first: verified places, trustworthy routing, saved trips, and explained decisions. Booking comes later, and only once the planning is good enough to trust.",
   },
   {
-    question: "What personalization are you building?",
+    question: "How does the personalization work?",
     answer:
-      "Astrail is being built to remember your travel style over time: pace, budget, food preferences, walking tolerance, neighborhoods you like, and things you avoid. The goal is a planner that gets better each time without hiding the assumptions it uses.",
+      "Astrail learns your travel style as you use it: pace, budget, food, walking tolerance, neighborhoods you like, things you avoid. The goal is a planner that gets sharper over time without hiding the assumptions it's using.",
   },
   {
     question: "Why start from Reels?",
     answer:
-      "Because that is where a lot of travel intent now begins. People save places long before they are ready to plan. Astrail starts from that messy inspiration layer and turns it into something executable.",
+      "Because that's where most travel intent now starts. People save places months before they're ready to plan. Astrail starts from that messy inspiration layer and turns it into a real trip.",
   },
 ] as const;
 

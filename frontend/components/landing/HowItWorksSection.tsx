@@ -14,7 +14,7 @@ export default function HowItWorksSection() {
             How it works
           </p>
           <h2 className="type-display max-w-4xl text-5xl font-normal leading-[0.96] md:text-7xl">
-            Stars become signals. Signals become stops. Stops become a trail.
+            From a folder of saved Reels to a planned trip.
           </h2>
           <div className="relative mt-14 grid gap-8 lg:grid-cols-3">
             <div className="absolute left-0 right-0 top-0 hidden h-px bg-[color:var(--line)] lg:block" />
@@ -25,7 +25,7 @@ export default function HowItWorksSection() {
               >
                 <span className="absolute -top-[3px] left-0 hidden h-[5px] w-[5px] bg-[color:var(--brass)] lg:block" />
                 <p className="type-label text-xs uppercase tracking-[0.16em] text-[color:var(--brass)]">
-                  N {String(index + 1).padStart(2, "0")}
+                  Step {index + 1}
                 </p>
                 <h3 className="type-display mt-5 text-3xl font-normal leading-tight text-[color:var(--starlight)]">
                   {step.title}

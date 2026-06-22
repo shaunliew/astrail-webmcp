@@ -10,14 +10,14 @@ export default function PainSection() {
             The problem
           </p>
           <h2 className="type-display max-w-2xl text-5xl font-normal leading-[0.96] md:text-7xl">
-            Inspiration is easy. Execution is broken.
+            Saving places is easy. Planning around them isn&apos;t.
           </h2>
         </div>
         <div className="hero-copy-shadow lg:pt-2">
           <p className="max-w-2xl text-lg leading-8 text-[rgba(242,236,224,0.72)]">
-            You save the noodle shop, the viewpoint, the tiny cafe, the one
-            temple everyone says is worth it. Then the folder grows, the trip
-            gets closer, and nothing connects.
+            You saved the ramen spot, a viewpoint, that one cafe, the temple
+            your friend keep talking about. Two weeks before the trip you
+            open the folder and realize none of it adds up to a route.
           </p>
           <div className="mt-10 grid gap-3">
             {["Saved", "Unsorted", "Unplanned"].map((label) => (

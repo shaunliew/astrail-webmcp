@@ -10,15 +10,15 @@ export default function HeroSection() {
       <div className="relative z-10 mx-auto w-full max-w-7xl">
         <div className="hero-copy-shadow max-w-[760px]">
           <p className="type-label mb-6 text-xs uppercase tracking-[0.18em] text-[color:var(--brass)]">
-            N 01 / A cartographer for your saved Reels
+            Beta · Singapore
           </p>
           <h1 className="type-display max-w-3xl text-5xl font-normal leading-[0.94] text-[color:var(--starlight)] md:text-8xl md:leading-[0.92]">
-            Your saved travel Reels are scattered stars. Astrail draws the{" "}
-            <em className="text-[color:var(--brass)]">trail.</em>
+            You saved 60 travel Reels. Now what?
           </h1>
           <p className="type-body mt-7 max-w-xl text-lg font-light leading-8 text-[color:var(--muted)]">
-            Astrail turns saved inspiration into a route you can trust. Every
-            place researched. Every choice explained.
+            Paste the links. Astrail pulls out the actual places, checks they
+            exist, and builds a day-by-day plan that explains why each stop is
+            on it.
           </p>
           <div className="mt-9 flex flex-wrap gap-4">
             <a

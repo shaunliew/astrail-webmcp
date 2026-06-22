@@ -14,10 +14,10 @@ export default function LandingNav() {
           <Image
             src="/astrail_logo.png"
             alt="Astrail"
-            width={40}
-            height={40}
+            width={100}
+            height={100}
             priority
-            className="h-10 w-10 object-contain"
+            className="h-15 w-15 object-contain"
           />
         </a>
         <div className="type-label flex items-center gap-5 text-xs uppercase tracking-[0.16em] text-[color:var(--muted)]">

@@ -9,7 +9,7 @@ export default function FAQSection() {
             Questions
           </p>
           <h2 className="type-display text-5xl font-normal leading-[0.96] md:text-6xl">
-            What to know before joining.
+            Before you sign up.
           </h2>
         </div>
         <div className="divide-y divide-[color:var(--line)]">
@@ -19,9 +19,6 @@ export default function FAQSection() {
               key={faq.question}
             >
               <div>
-                <p className="type-label mb-4 text-xs uppercase tracking-[0.16em] text-[color:var(--brass)]">
-                  Q {String(index + 1).padStart(2, "0")}
-                </p>
                 <h3 className="type-display text-3xl font-normal leading-tight">
                   {faq.question}
                 </h3>

@@ -39,14 +39,14 @@ export default function WaitlistFormEmbed() {
         </Script>
       </div>
       <p className="px-1 pt-3 text-sm leading-6 text-[color:var(--muted)]">
-        If the embedded form is slow or blocked,{" "}
+        Form not loading?{" "}
         <a
           className="text-[color:var(--brass)]"
           href={tallyFallbackUrl}
           rel="noreferrer"
           target="_blank"
         >
-          open the waitlist form
+          Open it directly
         </a>
         .
       </p>

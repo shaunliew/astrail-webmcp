@@ -63,7 +63,7 @@ export default function DemoVideoEmbed() {
           Hackathon demo
         </p>
         <p className="mt-2 max-w-md text-xl leading-7 text-[color:var(--starlight)] md:mx-auto">
-          See the prototype turn scattered travel intent into a mapped route.
+          The hackathon demo. Rough, but the core loop works.
         </p>
       </div>
       <span className="absolute bottom-5 right-5 grid h-16 w-16 place-items-center rounded-full border border-[color:var(--brass)] bg-[rgba(5,5,6,0.58)] text-[color:var(--starlight)] shadow-[0_0_48px_rgba(201,151,78,0.2)] backdrop-blur transition group-hover:bg-[rgba(201,151,78,0.18)] md:left-1/2 md:top-[68%] md:h-20 md:w-20 md:-translate-x-1/2 md:-translate-y-1/2">

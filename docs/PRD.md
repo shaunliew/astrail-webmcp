@@ -8,9 +8,9 @@
 
 **V1 Goal:** Let beta users generate, save, and revisit a useful Japan-first trip itinerary from Instagram Reels, user-requested places, dates, budget, origin, preferences, and remembered travel taste.
 
-Astrail v1 is a **map-first AI trip planning web app**. The user signs in with Google, collects inspiration in an Inspiration Tray, confirms a Trip Brief, and receives a progressively generated trip with mapped stops, evidence, day-by-day itinerary, weather, route-aware restaurants, Mapbox route legs, and an orchestrator summary.
+Astrail v1 is a **map-first AI trip planning web app**. The user signs in with Google, collects inspiration in an Inspiration Tray, confirms a Trip Brief, and receives a progressively generated trip with mapped stops, evidence, day-by-day itinerary, weather, route-aware restaurants, hotel search suggestions via Travala Travel MCP, Mapbox route legs, and an orchestrator summary.
 
-The MVP is **not** a booking product, social sharing product, transit planner, Instagram account integration, or itinerary editor. It is a trust-first beta that proves users can turn messy travel inspiration into a saved route they would realistically use.
+The MVP is **not** a booking/payment product, social sharing product, transit planner, Instagram account integration, or itinerary editor. It may include **hotel search and candidate hotel suggestions** through Travala Travel MCP, but users do not complete bookings or payments inside Astrail v1. It is a trust-first beta that proves users can turn messy travel inspiration into a saved route they would realistically use.
 
 ## 2. Target Beta
 
@@ -50,6 +50,7 @@ Avoid cartoon space theming, excessive decorative galaxies, fake planets, and vi
 Astrail v1 is successful if:
 
 - A beta user can generate a useful saved trip from Reels, requested places, or both.
+- When dates/destination are available, the trip can include 2-4 relevant hotel/base suggestions from Travala Travel MCP search results.
 - Users can add inspiration through manual paste, clipboard paste, and PWA share target where supported.
 - Users can generate even if they provide no free-text preferences.
 - Returning users can generate with remembered preference context when current preferences are blank or incomplete.
@@ -66,10 +67,9 @@ Astrail v1 is successful if:
 
 V1 does not include:
 
-- Hotels.
-- Payments.
+- Hotel booking or payment.
 - Flights.
-- Booking.
+- In-app booking checkout.
 - Public sharing.
 - Collaborative planning.
 - Itinerary editing/refinement chat.
@@ -561,6 +561,7 @@ Each day should show:
 - Ordered stops.
 - Weather note.
 - Restaurant anchors.
+- Hotel/base suggestion where search is available.
 - Transport legs.
 - Total movement estimate.
 - Practical planning note.
@@ -597,6 +598,28 @@ Show:
 - Source URL.
 - Evidence/source chip.
 
+### Hotel / Base Suggestions
+
+For V1, hotel support means **search and recommendation only**, not booking or payment. Use Travala Travel MCP as the hotel search rail when destination, dates, and occupancy are known enough.
+
+Use Travala Travel MCP tools:
+
+- `travala_search_hotel` for hotel candidates by destination/dates/rooms, optionally with lat/lng and price filters.
+- `travala_search_package` only when package/rate-plan detail is needed for a selected hotel card.
+
+Do **not** call `travala_book`, `travala_book_status`, cancellation, payment, or booking-management tools in V1 production flow. Those remain V2 / human-approved booking territory.
+
+Show 2-4 hotel/base suggestions with:
+
+- hotel name.
+- area/neighborhood.
+- approximate nightly price or package price when returned.
+- star rating/amenities when returned.
+- why this base fits the itinerary route and user preferences.
+- tradeoffs, e.g. closer to nightlife vs quieter, cheaper vs further from route.
+- Travala source chip.
+- booking handoff note, not in-app checkout.
+
 ### Transport Strip
 
 Transport shows Mapbox route legs.
@@ -628,6 +651,8 @@ Using saved preference memory: walkable days, ramen, balanced pace.
 No preferences provided; inferred balanced trip style from Reels.
 Computed 9 of 10 route legs.
 Could not route Shibuya Sky -> Tokyo Disneyland.
+Searched Travala for hotel bases near the route.
+Dropped hotel suggestions because dates were missing.
 Weather unavailable beyond forecast window.
 Saved trip with missing restaurant suggestions.
 ```
@@ -643,6 +668,7 @@ Every major recommendation should carry visible evidence chips:
 - `Research`
 - `Mapbox route`
 - `Open-Meteo`
+- `Travala hotel search`
 - `Memory preference`
 - `Inferred default`
 - `Suggested by Astrail`
@@ -669,11 +695,12 @@ Generation phases:
 3. Extract Reel places and resolve user-requested places.
 4. Apply explicit preferences, memory, or inferred defaults.
 5. Deduplicate and map verified places.
-6. Enrich places, weather, restaurants, and transport in parallel.
+6. Enrich places, weather, restaurants, hotel/base suggestions, and transport in parallel.
 7. Compute Mapbox route legs.
-8. Narrate itinerary.
-9. Summarize with read-only orchestrator.
-10. Save final or partial trip.
+8. Search Travala hotel candidates when destination/dates/occupancy are available.
+9. Narrate itinerary.
+10. Summarize with read-only orchestrator.
+11. Save final or partial trip.
 
 Partial output must be persisted as soon as it is ready.
 
@@ -693,6 +720,7 @@ Non-critical failures:
 
 - Weather unavailable.
 - Restaurant suggestions timeout.
+- Hotel search timeout or unavailable Travala result.
 - Transport leg timeout.
 - Individual Mapbox route leg failure.
 - Orchestrator summary timeout.
@@ -729,6 +757,7 @@ Backend stack:
 - Langfuse, Sentry, PostHog.
 - mem0 for preference memory.
 - Mapbox Search Box, Directions, and optional Optimization.
+- Travala Travel MCP (`https://github.com/travala/travel-mcp`) for hotel search and package lookup only.
 
 Required endpoints:
 
@@ -797,9 +826,18 @@ Run in parallel:
 - Place enrichment.
 - Weather via Open-Meteo.
 - Route-aware restaurant suggestions.
+- Hotel/base suggestions via Travala Travel MCP when destination/dates/occupancy are available.
 - Mapbox route-leg computation.
 
-Weather, restaurant, transport, and memory failures must not kill the trip.
+Hotel search rules:
+
+- Use `travala_search_hotel` for candidate hotels.
+- Use `travala_search_package` only for richer package/rate-plan details.
+- Never call `travala_book`, `travala_book_status`, booking management, cancellation, payment, or x402 tools in V1.
+- Treat Travala availability/prices as time-sensitive metadata; store the search result snapshot with timestamp/source, not as permanent inventory.
+- If destination, dates, or occupancy are missing, skip hotel search and record the reason in the timeline.
+
+Weather, restaurant, hotel search, transport, and memory failures must not kill the trip.
 
 ### Phase 5: Narrate And Summarize
 
@@ -842,6 +880,7 @@ Minimum tables:
 - `trip_days`
 - `transport_legs`
 - `restaurant_suggestions`
+- `hotel_suggestions`
 - `feedback`
 - `user_preferences`
 - `memory_events`
@@ -862,6 +901,7 @@ Caching requirements:
 - Route cache by `fromPlaceId + toPlaceId + profile`.
 - Weather cache.
 - Restaurant cache by area and preference hash.
+- Hotel search cache by destination/date/occupancy/budget hash with short TTL because availability and pricing change.
 
 Mapbox storage caveat:
 
@@ -935,7 +975,7 @@ Required external tooling:
 In-app feedback:
 
 - Overall trip feedback.
-- Artifact feedback for places/routes/restaurants.
+- Artifact feedback for places/routes/restaurants/hotel suggestions.
 - Optional free-text note.
 - Store feedback with `tripId`, artifact ID, source type, generation stage, preference source, and timestamp.
 
@@ -957,6 +997,7 @@ Each eval set should include:
   - memory.
   - inferred default.
 - Expected route sanity notes.
+- Expected hotel/base sanity notes when dates/destination are supplied.
 - Human quality notes.
 
 Eval gates:
@@ -968,6 +1009,7 @@ Eval gates:
 - Explicit input overrides memory.
 - Itinerary days match date range.
 - Route legs appear for connected stops where Mapbox routing succeeds.
+- Hotel suggestions, when shown, are plausible bases for the itinerary and clearly sourced from Travala search.
 - Long or failed route legs are honestly labeled.
 - Output includes source/evidence chips.
 - Partial failure states render honestly.
@@ -985,6 +1027,7 @@ Shaun owns:
 - Auth enforcement.
 - mem0 integration.
 - Mapbox backend Search/Directions/Optimization calls.
+- Travala Travel MCP hotel-search integration.
 - Observability.
 - Agent evals.
 - Deployment backend.
@@ -1074,6 +1117,7 @@ Deliver:
 
 - Route-aware restaurants.
 - Mapbox Directions route legs.
+- Travala Travel MCP hotel/base search suggestions.
 - Optional Optimization helper for flexible stop ordering.
 - Weather integration.
 - Orchestrator summary.
@@ -1126,6 +1170,7 @@ Deliver:
 - Mapbox Standard can provide the desired premium city-canvas feel.
 - Mapbox Directions is sufficient for MVP connected route visualization.
 - Full public-transit planning is deferred.
+- Hotel search is included in V1 as suggestions via Travala Travel MCP; hotel booking/payment is deferred.
 - Instagram account integration and saved collection import are deferred.
 - Manual paste remains the reliable required input path.
 - PWA share target is useful but not guaranteed on every platform.

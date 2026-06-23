@@ -4,13 +4,13 @@
 
 ## What Astrail is
 
-AI-native travel planner. User pastes 1-5 Instagram Reel URLs + dates + budget + origin + free-text preferences. A parallel agent pipeline extracts places, enriches them with research, fetches weather, suggests restaurants, computes transport between places, narrates a day-by-day itinerary, and produces an orchestrator summary. Every recommendation surfaces evidence (source Reel, caption quote, research URL). Rendered as a Mapbox 3D map with agent reasoning panels.
+AI-native travel planner. User pastes 1-5 Instagram Reel URLs + dates + budget + origin + free-text preferences. A parallel agent pipeline extracts places, enriches them with research, fetches weather, suggests restaurants, searches hotel/base candidates via Travala Travel MCP, computes transport between places, narrates a day-by-day itinerary, and produces an orchestrator summary. Every recommendation surfaces evidence (source Reel, caption quote, research URL, Travala hotel search result where applicable). Rendered as a Mapbox 3D map with agent reasoning panels.
 
 **Pitch:** "Astrail turns scattered travel inspiration into the route you actually take."
 
 **What changed from TripCanvas hackathon:**
-- No hotels in v1 — all hotel logic removed. Returns in Phase 1.4 with Travala MCP.
-- No payments in v1 — all AP2/x402 code removed. Payment seam in `legacy/` for future revival.
+- Hotel search is in v1 via Travala Travel MCP — **search/suggestions only**, no booking or payment.
+- No payments in v1 — all AP2/x402 code removed. Payment seam in `legacy/` for future revival. Do not call Travala booking/payment tools in production v1.
 - Auth + persistence added — **Supabase Auth (Google OAuth) + Supabase Postgres** for DB, RLS, realtime, and storage. **Clerk and Convex both dropped** in the 2026-06-20 stack freeze.
 - Backend hosts on **Render (Singapore)**, not Fly.io — container-first so a Fly.io/Cloud Run move stays trivial later.
 - Reel scraping is direct HTTP — no Agents SDK, no MCP in the scrape loop.
@@ -42,6 +42,7 @@ AI-native travel planner. User pastes 1-5 Instagram Reel URLs + dates + budget +
 | Reel scraping | Apify `instagram-reel-scraper` — **direct HTTP, no MCP, no Agents SDK**; kept logged-out (legal posture). Transcript via opt-in `includeTranscript` as a fallback when caption + `locationName` are thin |
 | Weather | Open-Meteo HTTP (free, no auth) — forecast ≤16 days; climate/historical normals for trips further out. Free tier is non-commercial → paid/self-host is a v2 trigger at monetization. No web search for weather (must stay structured) |
 | Transport routing | Mapbox Directions API |
+| Hotel search | Travala Travel MCP (`travala/travel-mcp`) for `travala_search_hotel` and optional `travala_search_package` only — **no booking/payment tools in v1** |
 | Images | Supabase Storage (S3-compatible) — only the URL string lives in Postgres |
 | Rate limiting / abuse | Per-user daily trip quota in Postgres (the hard cap) + slowapi (in-memory request limiting) + result cache keyed by reel+prefs hash + OpenAI budget alerts (auto-recharge **off**) |
 | Observability | Langfuse Cloud Hobby (traces + golden eval dataset + LLM-as-judge) + Sentry (errors) + UptimeRobot (`/health`) |
@@ -61,8 +62,8 @@ AI-native travel planner. User pastes 1-5 Instagram Reel URLs + dates + budget +
 - A pivot to GCP / Cloud Run "for consolidation" (vendor-consolidation fallacy; no scaling need at v1)
 - yt-dlp, ffmpeg, self-hosted Whisper / audio transcription **in our codebase** — the reel transcript comes from Apify's `transcript` field instead (see Reel scraping). No home-grown audio pipeline
 - `requirements.txt` (use pyproject.toml + uv)
-- Any hotel-related code (Phase 1.4 territory)
-- Any payment-related code (Phase 1.4 territory)
+- Hotel booking/payment code. Hotel **search/suggestions** via Travala Travel MCP is allowed in v1.
+- Any payment-related code or x402 execution in the production v1 flow
 - MCP + Agents SDK for the Apify scrape loop (costs 10-15s/reel for no functional gain)
 
 **Deferred to v2 (gated by a concrete trigger, not banned):**
@@ -79,6 +80,7 @@ AI-native travel planner. User pastes 1-5 Instagram Reel URLs + dates + budget +
 **Open validations (before PRD freeze):**
 1. Run the real Japan-demo Reel places through Mapbox Search Box to confirm resolution / coordinate quality.
 2. Confirm place cards don't need live ratings/reviews that only Google had — if the research agent covers current hours / "is it open," the Google drop is clean.
+3. Validate Travala Travel MCP latency/result quality on the Japan demo set; if dates/occupancy are missing, skip hotel search rather than blocking trip generation.
 
 ## Project Structure
 
@@ -110,6 +112,7 @@ astrail/
 │   │   ├── place_enricher.py       # research + summary + evidence
 │   │   ├── weather.py              # Open-Meteo agent
 │   │   ├── restaurant.py           # NEW — restaurant suggestions
+│   │   ├── hotel.py                # NEW — Travala Travel MCP hotel/base suggestions (search only)
 │   │   ├── transport.py            # NEW — Mapbox Directions legs
 │   │   ├── narrator.py             # day-by-day itinerary assembly
 │   │   └── orchestrator.py         # NEW — read-only summary agent
@@ -322,23 +325,24 @@ On match: append new evidence quote, increment `timesReferenced`. On miss: creat
 5. Port TripMap from legacy, strip demo hacks
 6. Port place extractor agent from `legacy/backend/spike_e2e.py`
 7. Replace MCP scrape with direct Apify HTTP in `backend/scrape/apify_direct.py` (opt-in transcript fallback)
-8. Port enricher, weather, narrator from legacy — strip hotel/flight references
+8. Port enricher, weather, narrator from legacy — strip flight/payment references
 9. Build restaurant agent
-10. Build transport agent (Mapbox Directions API)
-11. Build orchestrator summary agent
-12. Build Reel cache (Supabase)
-13. Build semantic dedup (Supabase pgvector)
-14. Wire 4-phase pipeline with asyncio.gather, wrapped in the durable jobs layer
-15. SSE streaming endpoint with stage events
-16. Frontend: port ReelInputPanel, GenerationTimeline, AgentDecisionRail
-17. Frontend: new RestaurantStrip, TransportStrip, OrchestratorSummary
-18. Trip persistence + trip list
-19. Landing page, settings
-20. Wire memory (mem0), guardrails, rate limiting (slowapi + per-user quota), and result caching
-21. Observability: Langfuse + Sentry + UptimeRobot; product analytics: PostHog
-22. CI/CD: GitHub Actions → Vercel + Render; Supabase migrations applied on merge to `main`
-23. Deploy: Vercel + Render + Supabase
-24. Open beta
+10. Build hotel search agent via Travala Travel MCP (`travala_search_hotel`; optional `travala_search_package`; no booking/payment)
+11. Build transport agent (Mapbox Directions API)
+12. Build orchestrator summary agent
+13. Build Reel cache (Supabase)
+14. Build semantic dedup (Supabase pgvector)
+15. Wire 4-phase pipeline with asyncio.gather, wrapped in the durable jobs layer
+16. SSE streaming endpoint with stage events
+17. Frontend: port ReelInputPanel, GenerationTimeline, AgentDecisionRail
+18. Frontend: new RestaurantStrip, TransportStrip, HotelSuggestionStrip, OrchestratorSummary
+19. Trip persistence + trip list
+20. Landing page, settings
+21. Wire memory (mem0), guardrails, rate limiting (slowapi + per-user quota), and result caching
+22. Observability: Langfuse + Sentry + UptimeRobot; product analytics: PostHog
+23. CI/CD: GitHub Actions → Vercel + Render; Supabase migrations applied on merge to `main`
+24. Deploy: Vercel + Render + Supabase
+25. Open beta
 
 ## Where the Strategic Context Lives
 

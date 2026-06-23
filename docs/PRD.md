@@ -18,7 +18,13 @@ The MVP is **not** a booking/payment product, social sharing product, transit pl
 
 **Initial beta size:** 50-100 users.
 
-**Access model:** Open Google OAuth through Supabase Auth, protected by strict quota and cost controls.
+**Primary V1 goal:** user adoption — get real users to complete saved, map-based trip plans and give feedback.
+
+**Beta target date:** 8 August 2026.
+
+**Team commitment:** weekend execution by Shaun and Zhi Hao, with weekday work limited to small fixes, async discussion, and deployment follow-up.
+
+**Access model:** Authenticated beta through Google OAuth using the current frozen auth stack, Supabase Auth. If the team wants to switch to Clerk, that must be a separate stack decision because the current PRD/CLAUDE.md/RLS design assumes Supabase Auth.
 
 **Primary device support:** Responsive mobile and desktop. Desktop can be richer; mobile must be usable for real trip planning.
 
@@ -29,6 +35,8 @@ The MVP is **not** a booking/payment product, social sharing product, transit pl
 Astrail = Astra + Trail: a star path, guided route.
 
 The product should make users feel that scattered inspiration is becoming a navigable path. The visual language may use stars, trails, constellations, luminous route lines, and dark-sky map atmosphere, but it must remain a trustworthy travel planning product.
+
+The user persona/metaphor is the **astronaut traveler**: they begin in a galaxy-level view, reveal their traveler identity/preferences, zoom down toward Earth as they add Reels, then “launch” toward the destination while Astrail generates the trip.
 
 The key UX metaphor:
 
@@ -44,6 +52,19 @@ Use this metaphor in interaction, not just decoration:
 - The final itinerary is the guided route the user can follow.
 
 Avoid cartoon space theming, excessive decorative galaxies, fake planets, and visual effects that reduce map readability.
+
+### First-discussion UX spine
+
+Use this as the V1 happy-path narrative:
+
+1. **Sign in / enter the cockpit** — user authenticates. Current implementation remains Supabase Auth, even if early discussion used the phrase “Clerk Auth”; changing auth provider requires reopening the stack decision.
+2. **Traveler profile onboarding (“KYC”)** — not legal KYC. Ask for a short bio and travel preferences so Astrail understands the astronaut traveler before planning.
+3. **Galaxy intro** — frontend can show a galaxy/constellation scene while the user profile is captured.
+4. **Reel intake / zoom to Earth** — once the user starts adding Reels, the experience zooms from galaxy view toward Earth/map context.
+5. **Trip generation / rocket launch** — when generation starts, the astronaut metaphor becomes a rocket traveling toward the chosen country/destination.
+6. **Map-based itinerary** — the result lands on the Mapbox trip canvas: verified places, route, hotel/base suggestions, restaurants, evidence, and timeline.
+
+Keep the metaphor as polish around the real planning workflow. If the animation slows input, hides the map, or delays generation, simplify it.
 
 ## 4. Success Criteria
 
@@ -62,6 +83,7 @@ Astrail v1 is successful if:
 - 80% of curated Japan eval sets produce a usable saved trip.
 - Users can revisit generated trips from their trip list.
 - Users can give feedback tied to the generated trip and specific artifacts.
+- Beta success is measured primarily by user adoption: real users complete generated trips, revisit saved plans, and provide feedback.
 
 ## 5. Non-Goals
 
@@ -84,9 +106,16 @@ V1 does not include:
 
 ## 6. Core User Flow
 
-1. User visits app and signs in with Google.
-2. User opens `/app`.
-3. User adds travel inspiration into the Inspiration Tray:
+1. User visits app and signs in with Google using Supabase Auth.
+2. User completes lightweight traveler profile onboarding:
+   - short bio.
+   - preferred travel style.
+   - food/activity preferences.
+   - budget/pace defaults.
+   - optional avoidances.
+3. User opens `/app` and sees the galaxy/cockpit entry state.
+4. User starts adding travel inspiration; the UI can zoom from galaxy view toward Earth/map context.
+5. User adds inspiration into the Inspiration Tray:
    - 1-5 Instagram Reel URLs.
    - user-requested places.
    - optional destination hint.
@@ -94,16 +123,18 @@ V1 does not include:
    - optional budget level.
    - optional origin city.
    - optional free-text preferences.
-4. User confirms the Trip Brief before generation.
-5. If preferences are blank, Astrail shows whether it will use memory or inferred defaults.
-6. Backend creates a trip row and durable job immediately.
-7. UI streams generation progress.
-8. Places appear on the map as soon as they are verified.
-9. Route legs draw between connected stops as Mapbox routing completes.
-10. Full itinerary fills in progressively.
-11. Trip is saved automatically.
-12. User can revisit it from `/app/trips`.
-13. User can leave feedback on the trip or specific outputs.
+6. User confirms the Trip Brief before generation.
+7. If preferences are blank, Astrail shows whether it will use profile preferences, memory, or inferred defaults.
+8. User clicks generate; the astronaut/rocket metaphor may show the trip “launching” toward the destination country.
+9. Backend creates a trip row and durable job immediately.
+10. UI streams generation progress.
+11. Places appear on the map as soon as they are verified.
+12. Hotel/base suggestions appear when Travala search can run with enough date/destination/occupancy context.
+13. Route legs draw between connected stops as Mapbox routing completes.
+14. Full itinerary fills in progressively.
+15. Trip is saved automatically.
+16. User can revisit it from `/app/trips`.
+17. User can leave feedback on the trip or specific outputs.
 
 ## 7. Inspiration Input
 
@@ -126,6 +157,7 @@ Users can add Reel URLs through:
 1. **Manual paste**
    - Required fallback.
    - Supports pasting one URL, multiple URLs, or messy text containing URLs.
+   - This is the safest beta path and must work before any fancier input method.
 
 2. **Paste from clipboard**
    - User taps a paste button.
@@ -137,6 +169,11 @@ Users can add Reel URLs through:
    - If Astrail is installed as a PWA and browser/platform supports Web Share Target, users can share a Reel link into Astrail.
    - This must not be required for successful trip creation.
 
+4. **Reference pattern from Yaay Travel**
+   - Yaay's public positioning is “See it. Save it. Do it.”: users save places from Instagram/TikTok, AI identifies the exact spot, and pins it on a personal map.
+   - Astrail should learn from that intake pattern: make saving a Reel feel like one quick action, then show that Astrail found real places on the map.
+   - V1 web implementation should still prioritize manual paste + clipboard + PWA share target; native share extensions can wait.
+
 The tray must:
 
 - Parse valid Instagram Reel URLs from messy text.
@@ -146,6 +183,8 @@ The tray must:
 - Let users remove/edit items before generation.
 - Show invalid links clearly.
 - Keep requested places separate from Reel links.
+- Immediately show each Reel as a saved inspiration card with processing status: `queued`, `cached`, `processing`, `places_found`, `needs_review`, or `failed`.
+- Reuse cached Reel/place results when available instead of re-scraping the same URL.
 
 Input item model:
 
@@ -156,7 +195,16 @@ type InspirationItem =
       url: string;
       normalizedUrl: string;
       source: "manual_paste" | "clipboard" | "web_share_target";
-      status: "valid" | "invalid" | "duplicate";
+      status:
+        | "valid"
+        | "invalid"
+        | "duplicate"
+        | "queued"
+        | "cached"
+        | "processing"
+        | "places_found"
+        | "needs_review"
+        | "failed";
     }
   | {
       type: "requested_place";
@@ -871,11 +919,14 @@ Reference docs:
 Minimum tables:
 
 - `users`
+- `traveler_profiles`
 - `trips`
 - `jobs`
 - `generation_events`
 - `reel_cache`
 - `places`
+- `location_graph_nodes`
+- `location_graph_edges`
 - `trip_places`
 - `trip_days`
 - `transport_legs`
@@ -889,14 +940,18 @@ RLS requirements:
 
 - Users can only read/write their own trips.
 - Users can only read/write feedback attached to their own trips.
-- Users can only read/write their own preference summary.
-- Service role writes global caches.
+- Users can only read/write their own traveler profile and preference summary.
+- Service role writes global caches and shared location graph entries.
 - Client never receives service-role key.
 
 Caching requirements:
 
-- Reel cache.
+- Reel cache by normalized Reel URL; never call Apify again for the exact same normalized URL unless TTL/manual refresh requires it.
 - Place cache.
+- Location knowledge graph for searched places and extracted Reel evidence:
+  - nodes: Reel, Place, Area, City, Country, HotelSearchSnapshot, RestaurantSuggestion.
+  - edges: `MENTIONS_PLACE`, `NEAR`, `IN_AREA`, `USED_IN_TRIP`, `HAS_HOTEL_SEARCH`, `SUGGESTED_WITH`.
+  - purpose: reuse known places, evidence, aliases, geocodes, and area relationships instead of repeatedly re-scraping/re-researching the same location.
 - Research/enrichment cache where practical.
 - Route cache by `fromPlaceId + toPlaceId + profile`.
 - Weather cache.
@@ -1064,7 +1119,8 @@ Deliver:
 - Inspiration item model.
 - Transport leg model.
 - Memory model.
-- Google OAuth.
+- Google OAuth via Supabase Auth.
+- Lightweight traveler profile onboarding.
 - Dev/prod Supabase projects.
 - Quota model.
 - Basic CI/deploy skeleton.
@@ -1091,6 +1147,7 @@ Deliver:
 - SSE streaming.
 - Progressive persistence.
 - Reel/place cache.
+- Location knowledge graph cache for previously searched places/Reels.
 - pgvector + geo dedup.
 - Partial-trip save behavior.
 - Explicit/memory/default preference context persistence.
@@ -1100,6 +1157,7 @@ Deliver:
 Deliver:
 
 - Authenticated app shell.
+- Traveler profile onboarding / astronaut cockpit entry.
 - Inspiration Tray.
 - Clipboard paste.
 - Trip Brief.
@@ -1150,8 +1208,9 @@ Deliver:
 - Failure-state QA.
 - Latency tuning.
 - Cache warmup for demo sets.
+- Knowledge graph reuse test: repeated Reel/location inputs should hit cache instead of calling Apify/research again.
 
-### Week 12: Beta Launch
+### Week 12: Beta Launch By 8 August 2026
 
 Deliver:
 

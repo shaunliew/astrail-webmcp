@@ -2,6 +2,8 @@
 
 > Engineering handoff doc for the Astrail repo. Single canonical reference for Claude Code and Codex sessions. Read this before touching any code. Companion to PRD.md (what to build) and DESIGN.md (how it looks).
 
+After reading this file, confirm with: "Ready. Sprint [N], working on [your issues], EMDEE loaded."
+
 ## What Astrail is
 
 AI-native travel planner. User pastes 1-5 Instagram Reel URLs + dates + budget + origin + free-text preferences. A parallel agent pipeline extracts places, enriches them with research, fetches weather, suggests restaurants, searches hotel/base candidates via Travala Travel MCP, computes transport between places, narrates a day-by-day itinerary, and produces an orchestrator summary. Every recommendation surfaces evidence (source Reel, caption quote, research URL, Travala hotel search result where applicable). Rendered as a Mapbox 3D map with agent reasoning panels.
@@ -354,3 +356,38 @@ On match: append new evidence quote, increment `timesReferenced`. On miss: creat
 - EMDEE_DOCS `astrail/DECISIONS LOG.md` — append-only decisions log; **the 2026-06-20 entry is the authoritative source for this stack**
 
 When in doubt about **what** to build: PRD.md. About **why**: CONTEXT.md. About **how**: you're here.
+
+## Session start (read this first)
+
+Read EMDEE in this order before touching any code:
+
+1. `astrail/SPRINTS.md` — current sprint goal, your issues, what's active this week
+2. `astrail/team/zhihao/SPRINT-1.md` or `astrail/team/shaun/SPRINT-1.md` — your personal log
+3. `astrail/CONSTRAINTS.md` — bandwidth and the **19 July Claude Code credit cliff**
+
+Then come back here for engineering detail.
+
+### Skills (in `.claude/skills/`)
+
+- `shiplog` — after every meaningful commit, run this to log to EMDEE and draft content
+- `haotobuild` — writes X posts and Reel scripts for @haotobuildzip (Zhi Hao's channel)
+
+After every meaningful commit:
+```
+shiplog "what you did" --type ship|fix|learn|struggle --sprint 1 --author zhihao|shaun
+```
+
+### Owners
+
+- **Zhi Hao** — frontend (Next.js, Vercel, Mapbox) → issues #6, #12
+- **Shaun** — backend (FastAPI, Supabase, agents) → issues #4, #5, #7, #8, #9, #10, #11
+
+### Git hook
+
+The `.githooks/post-commit` hook fires after every commit and prompts you to log it.
+Run once to activate:
+```bash
+git config core.hooksPath .githooks
+```
+
+---

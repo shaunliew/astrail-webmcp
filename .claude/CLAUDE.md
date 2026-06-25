@@ -371,6 +371,7 @@ Then come back here for engineering detail.
 
 - `shiplog` — after every meaningful commit, run this to log to EMDEE and draft content
 - `haotobuild` — writes X posts and Reel scripts for @haotobuildzip (Zhi Hao's channel)
+- `sprintplan` — after a planning discussion, locks sprint goal + issues into EMDEE and updates the GitHub Projects board; each person runs it for themselves
 
 After every meaningful commit:
 ```

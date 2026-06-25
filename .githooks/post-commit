@@ -1,0 +1,78 @@
+#!/bin/bash
+# Astrail Ship Logger — post-commit hook
+# Fires after every non-trivial commit. Prompts to log to EMDEE + generate content.
+# Install: git config core.hooksPath .githooks  (run once per machine)
+
+SKIP_KEYWORDS=("wip" "WIP" "checkpoint" "save" "temp" "tmp" "minor" "typo" "fmt" "format" "lint" "merge")
+
+GIT_USER=$(git config user.name 2>/dev/null || echo "unknown")
+case "$GIT_USER" in
+  *"Shaun"*|*"shaun"*) AUTHOR="shaun" ;;
+  *) AUTHOR="zhihao" ;;
+esac
+
+COMMIT_MSG=$(git log -1 --pretty=%B 2>/dev/null | head -1)
+CHANGED_FILES=$(git diff-tree --no-commit-id -r --name-only HEAD 2>/dev/null | wc -l | tr -d ' ')
+
+# Skip trivial commits
+for keyword in "${SKIP_KEYWORDS[@]}"; do
+  if echo "$COMMIT_MSG" | grep -qi "^$keyword"; then
+    exit 0
+  fi
+done
+
+if [ "$CHANGED_FILES" -lt 1 ]; then exit 0; fi
+
+# Infer type
+EVENT_TYPE="ship"
+if echo "$COMMIT_MSG" | grep -qiE "^fix|^bug|^patch|closes|resolves"; then
+  EVENT_TYPE="fix"
+elif echo "$COMMIT_MSG" | grep -qiE "^refactor|^chore|^update"; then
+  EVENT_TYPE="learn"
+fi
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  🚢 SHIPLOG — commit detected"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  Commit : $COMMIT_MSG"
+echo "  Files  : $CHANGED_FILES changed  |  Author: $AUTHOR"
+echo ""
+echo "  [1] Log to EMDEE + generate content"
+echo "  [2] Log to EMDEE only"
+echo "  [3] Skip"
+echo ""
+printf "  → Choice (1/2/3, auto-skips in 15s): "
+read -t 15 -r CHOICE
+echo ""
+CHOICE=${CHOICE:-3}
+
+if [ "$CHOICE" = "1" ] || [ "$CHOICE" = "2" ]; then
+  echo "  One sentence — what did this actually do?"
+  printf "  → "
+  read -r EVENT_DESC
+  [ -z "$EVENT_DESC" ] && EVENT_DESC="$COMMIT_MSG"
+
+  CONTENT_FLAG="both"
+  [ "$CHOICE" = "2" ] && CONTENT_FLAG="none"
+  [ "$AUTHOR" = "shaun" ] && CONTENT_FLAG="none"
+
+  TIMESTAMP=$(date '+%Y-%m-%d %H:%M')
+  cat >> ".shiplog_queue.md" << ENTRY
+
+## [$TIMESTAMP] pending
+- author: $AUTHOR
+- type: $EVENT_TYPE
+- event: $EVENT_DESC
+- commit: $COMMIT_MSG
+- content: $CONTENT_FLAG
+ENTRY
+
+  echo ""
+  echo "  ✓ Queued in .shiplog_queue.md"
+  echo "  Run 'shiplog process' in Claude Code to generate log + content."
+fi
+
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+exit 0

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "emdee": {
+      "type": "url",
+      "url": "https://emdee.tech/api/mcp"
+    }
+  }
+}

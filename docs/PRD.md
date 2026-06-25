@@ -8,9 +8,9 @@
 
 **V1 Goal:** Let beta users generate, save, and revisit a useful Japan-first trip itinerary from Instagram Reels, user-requested places, dates, budget, origin, preferences, and remembered travel taste.
 
-Astrail v1 is a **map-first AI trip planning web app**. The user signs in with Google, collects inspiration in an Inspiration Tray, confirms a Trip Brief, and receives a progressively generated trip with mapped stops, evidence, day-by-day itinerary, weather, route-aware restaurants, Mapbox route legs, and an orchestrator summary.
+Astrail v1 is a **map-first AI trip planning web app**. The user signs in with Google, collects inspiration in an Inspiration Tray, confirms a Trip Brief, and receives a progressively generated trip with mapped stops, evidence, day-by-day itinerary, weather, route-aware restaurants, hotel search suggestions via Travala Travel MCP, Mapbox route legs, and an orchestrator summary.
 
-The MVP is **not** a booking product, social sharing product, transit planner, Instagram account integration, or itinerary editor. It is a trust-first beta that proves users can turn messy travel inspiration into a saved route they would realistically use.
+The MVP is **not** a booking/payment product, social sharing product, transit planner, Instagram account integration, or itinerary editor. It may include **hotel search and candidate hotel suggestions** through Travala Travel MCP, but users do not complete bookings or payments inside Astrail v1. It is a trust-first beta that proves users can turn messy travel inspiration into a saved route they would realistically use.
 
 ## 2. Target Beta
 
@@ -18,7 +18,13 @@ The MVP is **not** a booking product, social sharing product, transit planner, I
 
 **Initial beta size:** 50-100 users.
 
-**Access model:** Open Google OAuth through Supabase Auth, protected by strict quota and cost controls.
+**Primary V1 goal:** user adoption — get real users to complete saved, map-based trip plans and give feedback.
+
+**Beta target date:** 8 August 2026.
+
+**Team commitment:** weekend execution by Shaun and Zhi Hao, with weekday work limited to small fixes, async discussion, and deployment follow-up.
+
+**Access model:** Authenticated beta through Google OAuth using the current frozen auth stack, Supabase Auth. If the team wants to switch to Clerk, that must be a separate stack decision because the current PRD/CLAUDE.md/RLS design assumes Supabase Auth.
 
 **Primary device support:** Responsive mobile and desktop. Desktop can be richer; mobile must be usable for real trip planning.
 
@@ -29,6 +35,8 @@ The MVP is **not** a booking product, social sharing product, transit planner, I
 Astrail = Astra + Trail: a star path, guided route.
 
 The product should make users feel that scattered inspiration is becoming a navigable path. The visual language may use stars, trails, constellations, luminous route lines, and dark-sky map atmosphere, but it must remain a trustworthy travel planning product.
+
+The user persona/metaphor is the **astronaut traveler**: they begin in a galaxy-level view, reveal their traveler identity/preferences, zoom down toward Earth as they add Reels, then “launch” toward the destination while Astrail generates the trip.
 
 The key UX metaphor:
 
@@ -45,11 +53,25 @@ Use this metaphor in interaction, not just decoration:
 
 Avoid cartoon space theming, excessive decorative galaxies, fake planets, and visual effects that reduce map readability.
 
+### First-discussion UX spine
+
+Use this as the V1 happy-path narrative:
+
+1. **Sign in / enter the cockpit** — user authenticates. Current implementation remains Supabase Auth, even if early discussion used the phrase “Clerk Auth”; changing auth provider requires reopening the stack decision.
+2. **Traveler profile onboarding (“KYC”)** — not legal KYC. Ask for a short bio and travel preferences so Astrail understands the astronaut traveler before planning.
+3. **Galaxy intro** — frontend can show a galaxy/constellation scene while the user profile is captured.
+4. **Reel intake / zoom to Earth** — once the user starts adding Reels, the experience zooms from galaxy view toward Earth/map context.
+5. **Trip generation / rocket launch** — when generation starts, the astronaut metaphor becomes a rocket traveling toward the chosen country/destination.
+6. **Map-based itinerary** — the result lands on the Mapbox trip canvas: verified places, route, hotel/base suggestions, restaurants, evidence, and timeline.
+
+Keep the metaphor as polish around the real planning workflow. If the animation slows input, hides the map, or delays generation, simplify it.
+
 ## 4. Success Criteria
 
 Astrail v1 is successful if:
 
 - A beta user can generate a useful saved trip from Reels, requested places, or both.
+- When dates/destination are available, the trip can include 2-4 relevant hotel/base suggestions from Travala Travel MCP search results.
 - Users can add inspiration through manual paste, clipboard paste, and PWA share target where supported.
 - Users can generate even if they provide no free-text preferences.
 - Returning users can generate with remembered preference context when current preferences are blank or incomplete.
@@ -61,15 +83,15 @@ Astrail v1 is successful if:
 - 80% of curated Japan eval sets produce a usable saved trip.
 - Users can revisit generated trips from their trip list.
 - Users can give feedback tied to the generated trip and specific artifacts.
+- Beta success is measured primarily by user adoption: real users complete generated trips, revisit saved plans, and provide feedback.
 
 ## 5. Non-Goals
 
 V1 does not include:
 
-- Hotels.
-- Payments.
+- Hotel booking or payment.
 - Flights.
-- Booking.
+- In-app booking checkout.
 - Public sharing.
 - Collaborative planning.
 - Itinerary editing/refinement chat.
@@ -84,9 +106,16 @@ V1 does not include:
 
 ## 6. Core User Flow
 
-1. User visits app and signs in with Google.
-2. User opens `/app`.
-3. User adds travel inspiration into the Inspiration Tray:
+1. User visits app and signs in with Google using Supabase Auth.
+2. User completes lightweight traveler profile onboarding:
+   - short bio.
+   - preferred travel style.
+   - food/activity preferences.
+   - budget/pace defaults.
+   - optional avoidances.
+3. User opens `/app` and sees the galaxy/cockpit entry state.
+4. User starts adding travel inspiration; the UI can zoom from galaxy view toward Earth/map context.
+5. User adds inspiration into the Inspiration Tray:
    - 1-5 Instagram Reel URLs.
    - user-requested places.
    - optional destination hint.
@@ -94,16 +123,18 @@ V1 does not include:
    - optional budget level.
    - optional origin city.
    - optional free-text preferences.
-4. User confirms the Trip Brief before generation.
-5. If preferences are blank, Astrail shows whether it will use memory or inferred defaults.
-6. Backend creates a trip row and durable job immediately.
-7. UI streams generation progress.
-8. Places appear on the map as soon as they are verified.
-9. Route legs draw between connected stops as Mapbox routing completes.
-10. Full itinerary fills in progressively.
-11. Trip is saved automatically.
-12. User can revisit it from `/app/trips`.
-13. User can leave feedback on the trip or specific outputs.
+6. User confirms the Trip Brief before generation.
+7. If preferences are blank, Astrail shows whether it will use profile preferences, memory, or inferred defaults.
+8. User clicks generate; the astronaut/rocket metaphor may show the trip “launching” toward the destination country.
+9. Backend creates a trip row and durable job immediately.
+10. UI streams generation progress.
+11. Places appear on the map as soon as they are verified.
+12. Hotel/base suggestions appear when Travala search can run with enough date/destination/occupancy context.
+13. Route legs draw between connected stops as Mapbox routing completes.
+14. Full itinerary fills in progressively.
+15. Trip is saved automatically.
+16. User can revisit it from `/app/trips`.
+17. User can leave feedback on the trip or specific outputs.
 
 ## 7. Inspiration Input
 
@@ -126,6 +157,7 @@ Users can add Reel URLs through:
 1. **Manual paste**
    - Required fallback.
    - Supports pasting one URL, multiple URLs, or messy text containing URLs.
+   - This is the safest beta path and must work before any fancier input method.
 
 2. **Paste from clipboard**
    - User taps a paste button.
@@ -137,6 +169,11 @@ Users can add Reel URLs through:
    - If Astrail is installed as a PWA and browser/platform supports Web Share Target, users can share a Reel link into Astrail.
    - This must not be required for successful trip creation.
 
+4. **Reference pattern from Yaay Travel**
+   - Yaay's public positioning is “See it. Save it. Do it.”: users save places from Instagram/TikTok, AI identifies the exact spot, and pins it on a personal map.
+   - Astrail should learn from that intake pattern: make saving a Reel feel like one quick action, then show that Astrail found real places on the map.
+   - V1 web implementation should still prioritize manual paste + clipboard + PWA share target; native share extensions can wait.
+
 The tray must:
 
 - Parse valid Instagram Reel URLs from messy text.
@@ -146,6 +183,8 @@ The tray must:
 - Let users remove/edit items before generation.
 - Show invalid links clearly.
 - Keep requested places separate from Reel links.
+- Immediately show each Reel as a saved inspiration card with processing status: `queued`, `cached`, `processing`, `places_found`, `needs_review`, or `failed`.
+- Reuse cached Reel/place results when available instead of re-scraping the same URL.
 
 Input item model:
 
@@ -156,7 +195,16 @@ type InspirationItem =
       url: string;
       normalizedUrl: string;
       source: "manual_paste" | "clipboard" | "web_share_target";
-      status: "valid" | "invalid" | "duplicate";
+      status:
+        | "valid"
+        | "invalid"
+        | "duplicate"
+        | "queued"
+        | "cached"
+        | "processing"
+        | "places_found"
+        | "needs_review"
+        | "failed";
     }
   | {
       type: "requested_place";
@@ -561,6 +609,7 @@ Each day should show:
 - Ordered stops.
 - Weather note.
 - Restaurant anchors.
+- Hotel/base suggestion where search is available.
 - Transport legs.
 - Total movement estimate.
 - Practical planning note.
@@ -597,6 +646,28 @@ Show:
 - Source URL.
 - Evidence/source chip.
 
+### Hotel / Base Suggestions
+
+For V1, hotel support means **search and recommendation only**, not booking or payment. Use Travala Travel MCP as the hotel search rail when destination, dates, and occupancy are known enough.
+
+Use Travala Travel MCP tools:
+
+- `travala_search_hotel` for hotel candidates by destination/dates/rooms, optionally with lat/lng and price filters.
+- `travala_search_package` only when package/rate-plan detail is needed for a selected hotel card.
+
+Do **not** call `travala_book`, `travala_book_status`, cancellation, payment, or booking-management tools in V1 production flow. Those remain V2 / human-approved booking territory.
+
+Show 2-4 hotel/base suggestions with:
+
+- hotel name.
+- area/neighborhood.
+- approximate nightly price or package price when returned.
+- star rating/amenities when returned.
+- why this base fits the itinerary route and user preferences.
+- tradeoffs, e.g. closer to nightlife vs quieter, cheaper vs further from route.
+- Travala source chip.
+- booking handoff note, not in-app checkout.
+
 ### Transport Strip
 
 Transport shows Mapbox route legs.
@@ -628,6 +699,8 @@ Using saved preference memory: walkable days, ramen, balanced pace.
 No preferences provided; inferred balanced trip style from Reels.
 Computed 9 of 10 route legs.
 Could not route Shibuya Sky -> Tokyo Disneyland.
+Searched Travala for hotel bases near the route.
+Dropped hotel suggestions because dates were missing.
 Weather unavailable beyond forecast window.
 Saved trip with missing restaurant suggestions.
 ```
@@ -643,6 +716,7 @@ Every major recommendation should carry visible evidence chips:
 - `Research`
 - `Mapbox route`
 - `Open-Meteo`
+- `Travala hotel search`
 - `Memory preference`
 - `Inferred default`
 - `Suggested by Astrail`
@@ -669,11 +743,12 @@ Generation phases:
 3. Extract Reel places and resolve user-requested places.
 4. Apply explicit preferences, memory, or inferred defaults.
 5. Deduplicate and map verified places.
-6. Enrich places, weather, restaurants, and transport in parallel.
+6. Enrich places, weather, restaurants, hotel/base suggestions, and transport in parallel.
 7. Compute Mapbox route legs.
-8. Narrate itinerary.
-9. Summarize with read-only orchestrator.
-10. Save final or partial trip.
+8. Search Travala hotel candidates when destination/dates/occupancy are available.
+9. Narrate itinerary.
+10. Summarize with read-only orchestrator.
+11. Save final or partial trip.
 
 Partial output must be persisted as soon as it is ready.
 
@@ -693,6 +768,7 @@ Non-critical failures:
 
 - Weather unavailable.
 - Restaurant suggestions timeout.
+- Hotel search timeout or unavailable Travala result.
 - Transport leg timeout.
 - Individual Mapbox route leg failure.
 - Orchestrator summary timeout.
@@ -729,6 +805,7 @@ Backend stack:
 - Langfuse, Sentry, PostHog.
 - mem0 for preference memory.
 - Mapbox Search Box, Directions, and optional Optimization.
+- Travala Travel MCP (`https://github.com/travala/travel-mcp`) for hotel search and package lookup only.
 
 Required endpoints:
 
@@ -797,9 +874,18 @@ Run in parallel:
 - Place enrichment.
 - Weather via Open-Meteo.
 - Route-aware restaurant suggestions.
+- Hotel/base suggestions via Travala Travel MCP when destination/dates/occupancy are available.
 - Mapbox route-leg computation.
 
-Weather, restaurant, transport, and memory failures must not kill the trip.
+Hotel search rules:
+
+- Use `travala_search_hotel` for candidate hotels.
+- Use `travala_search_package` only for richer package/rate-plan details.
+- Never call `travala_book`, `travala_book_status`, booking management, cancellation, payment, or x402 tools in V1.
+- Treat Travala availability/prices as time-sensitive metadata; store the search result snapshot with timestamp/source, not as permanent inventory.
+- If destination, dates, or occupancy are missing, skip hotel search and record the reason in the timeline.
+
+Weather, restaurant, hotel search, transport, and memory failures must not kill the trip.
 
 ### Phase 5: Narrate And Summarize
 
@@ -833,15 +919,19 @@ Reference docs:
 Minimum tables:
 
 - `users`
+- `traveler_profiles`
 - `trips`
 - `jobs`
 - `generation_events`
 - `reel_cache`
 - `places`
+- `location_graph_nodes`
+- `location_graph_edges`
 - `trip_places`
 - `trip_days`
 - `transport_legs`
 - `restaurant_suggestions`
+- `hotel_suggestions`
 - `feedback`
 - `user_preferences`
 - `memory_events`
@@ -850,18 +940,23 @@ RLS requirements:
 
 - Users can only read/write their own trips.
 - Users can only read/write feedback attached to their own trips.
-- Users can only read/write their own preference summary.
-- Service role writes global caches.
+- Users can only read/write their own traveler profile and preference summary.
+- Service role writes global caches and shared location graph entries.
 - Client never receives service-role key.
 
 Caching requirements:
 
-- Reel cache.
+- Reel cache by normalized Reel URL; never call Apify again for the exact same normalized URL unless TTL/manual refresh requires it.
 - Place cache.
+- Location knowledge graph for searched places and extracted Reel evidence:
+  - nodes: Reel, Place, Area, City, Country, HotelSearchSnapshot, RestaurantSuggestion.
+  - edges: `MENTIONS_PLACE`, `NEAR`, `IN_AREA`, `USED_IN_TRIP`, `HAS_HOTEL_SEARCH`, `SUGGESTED_WITH`.
+  - purpose: reuse known places, evidence, aliases, geocodes, and area relationships instead of repeatedly re-scraping/re-researching the same location.
 - Research/enrichment cache where practical.
 - Route cache by `fromPlaceId + toPlaceId + profile`.
 - Weather cache.
 - Restaurant cache by area and preference hash.
+- Hotel search cache by destination/date/occupancy/budget hash with short TTL because availability and pricing change.
 
 Mapbox storage caveat:
 
@@ -935,7 +1030,7 @@ Required external tooling:
 In-app feedback:
 
 - Overall trip feedback.
-- Artifact feedback for places/routes/restaurants.
+- Artifact feedback for places/routes/restaurants/hotel suggestions.
 - Optional free-text note.
 - Store feedback with `tripId`, artifact ID, source type, generation stage, preference source, and timestamp.
 
@@ -957,6 +1052,7 @@ Each eval set should include:
   - memory.
   - inferred default.
 - Expected route sanity notes.
+- Expected hotel/base sanity notes when dates/destination are supplied.
 - Human quality notes.
 
 Eval gates:
@@ -968,6 +1064,7 @@ Eval gates:
 - Explicit input overrides memory.
 - Itinerary days match date range.
 - Route legs appear for connected stops where Mapbox routing succeeds.
+- Hotel suggestions, when shown, are plausible bases for the itinerary and clearly sourced from Travala search.
 - Long or failed route legs are honestly labeled.
 - Output includes source/evidence chips.
 - Partial failure states render honestly.
@@ -985,6 +1082,7 @@ Shaun owns:
 - Auth enforcement.
 - mem0 integration.
 - Mapbox backend Search/Directions/Optimization calls.
+- Travala Travel MCP hotel-search integration.
 - Observability.
 - Agent evals.
 - Deployment backend.
@@ -1021,7 +1119,8 @@ Deliver:
 - Inspiration item model.
 - Transport leg model.
 - Memory model.
-- Google OAuth.
+- Google OAuth via Supabase Auth.
+- Lightweight traveler profile onboarding.
 - Dev/prod Supabase projects.
 - Quota model.
 - Basic CI/deploy skeleton.
@@ -1048,6 +1147,7 @@ Deliver:
 - SSE streaming.
 - Progressive persistence.
 - Reel/place cache.
+- Location knowledge graph cache for previously searched places/Reels.
 - pgvector + geo dedup.
 - Partial-trip save behavior.
 - Explicit/memory/default preference context persistence.
@@ -1057,6 +1157,7 @@ Deliver:
 Deliver:
 
 - Authenticated app shell.
+- Traveler profile onboarding / astronaut cockpit entry.
 - Inspiration Tray.
 - Clipboard paste.
 - Trip Brief.
@@ -1074,6 +1175,7 @@ Deliver:
 
 - Route-aware restaurants.
 - Mapbox Directions route legs.
+- Travala Travel MCP hotel/base search suggestions.
 - Optional Optimization helper for flexible stop ordering.
 - Weather integration.
 - Orchestrator summary.
@@ -1106,8 +1208,9 @@ Deliver:
 - Failure-state QA.
 - Latency tuning.
 - Cache warmup for demo sets.
+- Knowledge graph reuse test: repeated Reel/location inputs should hit cache instead of calling Apify/research again.
 
-### Week 12: Beta Launch
+### Week 12: Beta Launch By 8 August 2026
 
 Deliver:
 
@@ -1126,6 +1229,7 @@ Deliver:
 - Mapbox Standard can provide the desired premium city-canvas feel.
 - Mapbox Directions is sufficient for MVP connected route visualization.
 - Full public-transit planning is deferred.
+- Hotel search is included in V1 as suggestions via Travala Travel MCP; hotel booking/payment is deferred.
 - Instagram account integration and saved collection import are deferred.
 - Manual paste remains the reliable required input path.
 - PWA share target is useful but not guaranteed on every platform.

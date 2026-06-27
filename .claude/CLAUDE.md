@@ -363,7 +363,7 @@ Read EMDEE in this order before touching any code:
 
 1. `astrail/SPRINTS.md` — current sprint goal, your issues, what's active this week
 2. `astrail/team/zhihao/SPRINT-1.md` or `astrail/team/shaun/SPRINT-1.md` — your personal log
-3. `astrail/CONSTRAINTS.md` — bandwidth and the **19 July Claude Code credit cliff**
+3. `astrail/PRD.md`**
 
 Then come back here for engineering detail.
 

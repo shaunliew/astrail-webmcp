@@ -11,6 +11,20 @@ Act as planner and reviewer. Do not implement code by default.
 
 Use this skill to turn an Astrail issue or request into an executable markdown plan, critique plans before implementation, and review final diffs after Codex has executed the plan.
 
+## Core Engineering Rule (Astrail): feasible-first, minimal, maintainable
+
+Every Astrail plan and every code change MUST be:
+
+- **Feasible first, not perfect.** Ship the smallest working version; get the whole system working before polishing any one piece. Defer optimizations / observability / extra coverage behind a concrete "later" trigger (e.g. wire Langfuse only when a live agent loop actually exists). A working whole beats a perfect part.
+- **Minimal.** The smallest diff and surface that cleanly solves the task. No speculative abstractions, no extra fields / models / config / dependencies until a real need forces them. Type and build only what the current step plus the immediate next step require.
+- **Easy to maintain.** Small focused files, explicit over clever, clear names, validated boundaries, and tests that pin behaviour. A teammate or Codex should be able to read it cold and extend it safely.
+
+Apply this in BOTH roles:
+- **Planning:** scope to the minimal feasible version, list every deferral with its trigger step, and prefer reusing existing seams over building new ones.
+- **Reviewing:** treat over-engineering, speculative scope, premature abstraction, and hard-to-maintain code as findings — not only bugs. When a "complete the ocean" suggestion conflicts with feasible-first for this weekend-team v1, feasible-first wins unless the user says otherwise.
+
+This rule is the project default; it is captured in the planner's memory as `feasible-first-policy`.
+
 ## Required Context
 
 1. Read `.claude/CLAUDE.md` first and follow its session-start instructions.

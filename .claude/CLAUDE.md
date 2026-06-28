@@ -359,7 +359,19 @@ When in doubt about **what** to build: PRD.md. About **why**: CONTEXT.md. About 
 
 ## Session start (read this first)
 
-Read EMDEE in this order before touching any code:
+### Task tracking — single source of truth (READ BEFORE PLANNING)
+
+**The GitHub Project #1 board (`MalaysiaKaki`, id `PVT_kwDOEXlARc4BanGs`) is the ONLY source of truth for what work exists, who owns it, its status, and its ordering.** Load it live before any "what's next / status / plan" answer:
+
+```bash
+gh project item-list 1 --owner MalaysiaKaki --format json --limit 60   # needs `gh auth refresh -s project` once
+```
+
+Do NOT track tasks from `gh issue list` (repo issues are a subset — most work is **draft cards** with no number), from the **Owners line below** (stale TripCanvas numbering), or from memory. Ordering follows the board's **Phase** field; the active task is whatever is **In progress**. Full rules: the **`astrail-task-tracking`** skill (`.claude/skills/` for Claude, `.agents/skills/` for Codex).
+
+### EMDEE reading order
+
+Read EMDEE in this order before touching any code (note: EMDEE MCP may not be configured in your session — fall back to `docs/PRD.md` + the board if so):
 
 1. `astrail/SPRINTS.md` — current sprint goal, your issues, what's active this week
 2. `astrail/team/zhihao/SPRINT-1.md` or `astrail/team/shaun/SPRINT-1.md` — your personal log
@@ -375,6 +387,7 @@ These are committed to the repo — clone the repo and you have them.
 - `haotobuild` — writes X posts and Reel scripts for @haotobuildzip (Zhi Hao's channel)
 - `sprintplan` — after a planning discussion, locks sprint goal + issues into EMDEE and updates the GitHub Projects board; each person runs it for themselves
 - `astrail-plan-and-review` — planner/reviewer role: turns an issue into a markdown plan and reviews plans/diffs before Codex executes. Depends on **gstack** (below) for its `/plan-eng-review`, `/review`, `/qa`, `/autoplan` steps
+- `astrail-task-tracking` — loads GitHub Project #1 as the single source of truth for task tracking. Use before any "what's next / status / plan" answer. Mirrored to `.agents/skills/` so Codex follows the same rule
 
 After every meaningful commit:
 ```
@@ -397,8 +410,10 @@ Key skills for the Astrail workflow: `/autoplan`, `/plan-eng-review`, `/plan-ceo
 
 ### Owners
 
-- **Zhi Hao** — frontend (Next.js, Vercel, Mapbox) → issues #6, #12
-- **Shaun** — backend (FastAPI, Supabase, agents) → issues #4, #5, #7, #8, #9, #10, #11
+> ⚠️ The issue numbers below are **stale** (old TripCanvas numbering). For the live task list, owners, and status, use the **GitHub Project #1 board** (see "Task tracking" above) — not these numbers.
+
+- **Zhi Hao** — frontend (Next.js, Vercel, Mapbox)
+- **Shaun** — backend (FastAPI, Supabase, agents, AI pipeline)
 
 ### Git hook
 

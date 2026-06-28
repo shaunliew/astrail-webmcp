@@ -86,7 +86,9 @@ def test_unknown_subject_raises():
 
 
 def test_baseline_run_prints_no_subject_banner(capsys, monkeypatch):
-    # default (baseline) CLI output is byte-for-byte unchanged: no SUBJECT banner
+    # baseline keeps its prior semantics: no SUBJECT banner, OVERALL PASS, exit 0.
+    # (The gate gained the approved day_places_traceable line, so output is NOT
+    # byte-for-byte identical to pre-Step-2 — but pass/fail + exit code are.)
     monkeypatch.setattr(sys, "argv", ["run_eval", "--case", "japan_first_trip"])
     with pytest.raises(SystemExit) as exc:
         main()
@@ -94,6 +96,8 @@ def test_baseline_run_prints_no_subject_banner(capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "SUBJECT:" not in out
     assert "baseline days:" in out  # label unchanged from today
+    assert "OVERALL: PASS" in out
+    assert "day_places_traceable" in out  # the gate runs on the baseline too
 
 
 def test_pipeline_run_prints_subject_banner(capsys, monkeypatch):

@@ -49,7 +49,8 @@ def build_ctx(case: dict, subject: str = "baseline") -> dict:
     """Build the eval context for a subject under test.
 
     subject="baseline" (default): score the frozen legacy-equivalent itinerary —
-        the #16 bar to beat. Behaviour is byte-for-byte unchanged.
+        the #16 bar to beat. The ctx it builds is identical to today; the only
+        baseline report change is the approved day_places_traceable line (Task 4).
     subject="pipeline": score the offline, fixture-backed pipeline skeleton
         (Step 2). Fully offline — no live OpenAI / Apify / Mapbox / mem0 / Supabase.
     """
@@ -140,8 +141,8 @@ def main() -> None:
         print(f"ERROR: no eval cases found under {CASES_DIR} — nothing to evaluate.")
         sys.exit(1)
     if args.subject != "baseline":
-        # Default (baseline) CLI output stays byte-for-byte unchanged; the banner
-        # only announces an opt-in non-default subject (review finding, Codex).
+        # Banner announces an opt-in non-default subject only; the baseline keeps
+        # its prior pass/fail semantics + exit code (review finding, Codex).
         print(f"SUBJECT: {args.subject}")
     total_failed = 0
     for name in names:

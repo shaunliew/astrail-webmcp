@@ -4,33 +4,57 @@ from pathlib import Path
 import pytest
 
 from pipeline.offline_harness import (
-    assemble_days_naive,
+    assemble_itinerary,
     dedup_passthrough,
     run_offline_pipeline,
 )
+from models.place import CanonicalPlace, PlaceResult
 from pipeline.output import PipelineOutput
 
 FIX = Path(__file__).parent / "fixtures"
 
 
-def test_dedup_passthrough_is_identity():
-    places = [{"name": "A"}, {"name": "B"}]
+def test_dedup_passthrough_wraps_as_canonical():
+    places = [PlaceResult(name="A", category="other", confidence=0.9, evidence_quote="A"),
+              PlaceResult(name="B", category="other", confidence=0.8, evidence_quote="B")]
     out = dedup_passthrough(places)
-    assert out == places
-    assert out is not places  # returns a new list (immutability)
+    assert [p.name for p in out] == ["A", "B"]
+    assert all(isinstance(p, CanonicalPlace) for p in out)
+    assert all(p.times_referenced == 1 for p in out)
 
 
-def test_assemble_days_naive_chunks_in_input_order():
-    places = [{"name": "A"}, {"name": "B"}, {"name": "C"}]
-    days = assemble_days_naive(places, ["2026-06-10", "2026-06-11"])
-    assert [d["day_number"] for d in days] == [1, 2]
-    assert days[0]["place_names"] == ["A", "B"]  # extra goes to earlier day
-    assert days[1]["place_names"] == ["C"]
+def test_assemble_itinerary_chunks_in_input_order():
+    places = [CanonicalPlace(name=n, category="other", confidence=0.9, evidence_quote=n)
+              for n in ("A", "B", "C")]
+    itin = assemble_itinerary(places, ["2026-06-10", "2026-06-11"])
+    assert [d.day_number for d in itin.days] == [1, 2]
+    assert itin.days[0].place_names == ["A", "B"]  # extra goes to the earlier day
+    assert itin.days[1].place_names == ["C"]
 
 
-def test_assemble_days_naive_rejects_zero_dates():
+def test_assemble_itinerary_rejects_zero_dates():
     with pytest.raises(ValueError):
-        assemble_days_naive([{"name": "A"}], [])
+        assemble_itinerary([], [])
+
+
+def test_pipeline_places_validate_and_carry_canonical_fields():
+    out = run_offline_pipeline(
+        reels_path=FIX / "mini_reels.json",
+        places_path=FIX / "mini_places.json",
+        start_date="2026-06-10",
+        end_date="2026-06-11",
+    )
+    # places are serialized CanonicalPlace dicts — carry the flywheel counter + default source_type
+    assert all("times_referenced" in p for p in out.places)
+    assert all(p["source_type"] == "reel_extracted" for p in out.places)
+    # the keys the eval reads are still present + correct
+    assert [p["name"] for p in out.places] == ["Cafe Alpha", "Beta Ramen"]
+    assert all({"name", "lat", "lng", "evidence_quote", "source_url"} <= set(p) for p in out.places)
+    # reels round-trip through ReelData
+    assert [r["short_code"] for r in out.reels] == ["MINI_AAA", "MINI_BBB"]
+    # itinerary unchanged shape
+    assert out.itinerary["source"] == "pipeline"
+    assert out.itinerary["days"][0]["place_names"] == ["Cafe Alpha"]
 
 
 def test_run_offline_pipeline_returns_eval_shaped_output():

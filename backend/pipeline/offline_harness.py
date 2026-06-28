@@ -20,6 +20,9 @@ import time
 from datetime import date, timedelta
 from pathlib import Path
 
+from models.place import CanonicalPlace, PlaceResult
+from models.reel import ReelData
+from models.trip import ItineraryDay, ItineraryOutput
 from pipeline.output import PipelineOutput
 from pipeline.sources import (
     FixturePlaceSource,
@@ -40,37 +43,39 @@ def _date_range(start_date: str, end_date: str) -> list[str]:
     ]
 
 
-def dedup_passthrough(places: list[dict]) -> list[dict]:
-    """Identity dedup (Step 2 placeholder). Step 6 replaces it with semantic+geo.
-
-    Returns a NEW list — never mutate the caller's list (immutability).
+def dedup_passthrough(places: list[PlaceResult]) -> list[CanonicalPlace]:
+    """Identity dedup (Step 2/4 placeholder): wrap each PlaceResult as a
+    CanonicalPlace (times_referenced=1). Step 6 replaces this with two-gate
+    semantic+geo dedup that merges duplicates and increments the counter.
+    Returns a NEW list — never mutate the caller's (immutability).
     """
-    return list(places)
+    return [CanonicalPlace.model_validate(p.model_dump()) for p in places]
 
 
-def assemble_days_naive(places: list[dict], dates: list[str]) -> list[dict]:
+def assemble_itinerary(places: list[CanonicalPlace], dates: list[str]) -> ItineraryOutput:
     """Split places in input order into len(dates) near-even contiguous chunks.
 
-    Pipeline-owned naive narrate (Step 2 placeholder). Step 7 replaces it with
-    route-aware feasibility ordering. Kept separate from evals/baseline.py on
-    purpose (the legacy bar stays frozen; this stage evolves).
+    Pipeline-owned naive narrate (placeholder). Step 7 replaces it with
+    route-aware feasibility ordering. Kept separate from evals/baseline.py.
     """
     n, d = len(places), len(dates)
     if d <= 0:
         raise ValueError("need at least one date")
     base, extra = divmod(n, d)
-    days: list[dict] = []
+    days: list[ItineraryDay] = []
     idx = 0
     for i, day_date in enumerate(dates):
         size = base + (1 if i < extra else 0)
         group = places[idx:idx + size]
         idx += size
-        days.append({
-            "day_number": i + 1,
-            "date": day_date,
-            "place_names": [p["name"] for p in group],
-        })
-    return days
+        days.append(ItineraryDay(day_number=i + 1, date=day_date,
+                                 place_names=[p.name for p in group]))
+    return ItineraryOutput(
+        title="Tokyo (offline pipeline skeleton)",
+        source="pipeline",
+        source_places=[p.name for p in places],
+        days=days,
+    )
 
 
 def run_offline_pipeline(
@@ -85,26 +90,27 @@ def run_offline_pipeline(
 ) -> PipelineOutput:
     """Run the fixture-backed pipeline end-to-end, offline, deterministically.
 
-    `live_*` are seams for Step 5's live sources; in Step 2 they are always None.
-    `clock` is injectable so timing is deterministic in tests (default perf_counter).
-    Records per-stage + total wall-clock into the returned PipelineOutput.timings.
+    Stages now go through typed contracts (ReelData, PlaceResult, CanonicalPlace,
+    ItineraryOutput); the eval boundary stays dicts via model_dump(). `clock` is
+    injectable for deterministic timing tests.
     """
     sw = Stopwatch(clock=clock)
     t0 = clock()
     with sw.stage("scrape"):
-        reels = resolve(live_reels, FixtureReelSource(reels_path))
+        reels = [ReelData.model_validate(r)
+                 for r in resolve(live_reels, FixtureReelSource(reels_path))]
     with sw.stage("extract"):
-        extracted = resolve(live_places, FixturePlaceSource(places_path))
+        extracted = [PlaceResult.model_validate(p)
+                     for p in resolve(live_places, FixturePlaceSource(places_path))]
     with sw.stage("dedup"):
         canonical = dedup_passthrough(extracted)
     with sw.stage("narrate"):
         dates = _date_range(start_date, end_date)
-        days = assemble_days_naive(canonical, dates)
-        itinerary = {
-            "title": "Tokyo (offline pipeline skeleton)",
-            "source": "pipeline",
-            "source_places": [p["name"] for p in canonical],
-            "days": days,
-        }
+        itinerary = assemble_itinerary(canonical, dates)
     sw.mark_total(t0)
-    return PipelineOutput(reels=reels, places=canonical, itinerary=itinerary, timings=sw.timings)
+    return PipelineOutput(
+        reels=[r.model_dump() for r in reels],
+        places=[p.model_dump() for p in canonical],
+        itinerary=itinerary.model_dump(),
+        timings=sw.timings,
+    )

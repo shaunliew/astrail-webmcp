@@ -26,11 +26,23 @@ _STATUS_GLYPH = {"pass": "PASS", "fail": "FAIL", "blocked": "BLOCK", "skipped": 
 
 
 def _load_json(path: pathlib.Path) -> dict:
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def load_case(name: str) -> dict:
     return _load_json(CASES_DIR / f"{name}.json")
+
+
+def gather_case_names(only: str | None = None) -> list[str]:
+    """Case names to run: a single name, or every case file under cases/."""
+    if only:
+        return [only]
+    return [p.stem for p in sorted(CASES_DIR.glob("*.json"))]
+
+
+def count_contractual_failures(contractual: list) -> int:
+    """Number of contractual checks that FAILED (blocked/skipped do not count)."""
+    return sum(1 for c in contractual if c.status == "fail")
 
 
 def build_ctx(case: dict) -> dict:
@@ -73,11 +85,9 @@ def print_report(name: str, result: dict) -> int:
     print("-" * 66)
 
     print("  ACTIVE CONTRACTUAL CHECKS (gating):")
-    failed = 0
     for c in result["contractual"]:
         print(f"    [{_STATUS_GLYPH[c.status]:<5}] {c.name:<22} {c.detail}")
-        if c.status == "fail":
-            failed += 1
+    failed = count_contractual_failures(result["contractual"])
 
     print("  ACTIVE QUALITY METRICS (recorded baseline, non-gating):")
     for k, v in result["metrics"].items():
@@ -99,7 +109,10 @@ def main() -> None:
     parser.add_argument("--case", default=None, help="run a single case by name")
     args = parser.parse_args()
 
-    names = [args.case] if args.case else [p.stem for p in sorted(CASES_DIR.glob("*.json"))]
+    names = gather_case_names(args.case)
+    if not names:
+        print(f"ERROR: no eval cases found under {CASES_DIR} — nothing to evaluate.")
+        sys.exit(1)
     total_failed = 0
     for name in names:
         total_failed += print_report(name, run_case(name))

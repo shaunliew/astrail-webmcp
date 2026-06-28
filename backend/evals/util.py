@@ -13,9 +13,11 @@ JAPAN_BBOX: tuple[float, float, float, float] = (24.0, 46.0, 122.0, 146.0)
 _PLACEHOLDER_DOMAINS: frozenset[str] = frozenset(
     {"example.com", "example.org", "example.net", "test.com", "placeholder.com"}
 )
-_SEARCH_URL_MARKERS: tuple[str, ...] = (
-    "/search", "/maps/search", "searchresults", "/results",
-)
+# Search-result PATH SEGMENTS (matched against path segments only, never the whole
+# URL or query — so a legit "/en/results/booking" venue page is NOT flagged).
+_SEARCH_SEGMENTS: frozenset[str] = frozenset({"search", "searchresults"})
+# Minimum meaningful evidence-quote length (rejects "", " ", "a" — degenerate matches).
+_MIN_EVIDENCE_CHARS: int = 3
 
 
 def haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
@@ -57,16 +59,23 @@ def is_weak_source_url(url: str | None) -> bool:
     """True for low-trust sources: placeholders, search-result pages, or Google Maps links.
 
     A Google Maps link counts as weak because Google is a banned source (CLAUDE.md) and
-    a maps/search link is not a real venue page that proves the place exists.
+    a maps/search link is not a real venue page that proves the place exists. Search markers
+    are matched against PATH SEGMENTS only — a real venue page like
+    `grandhyatt.com/en/results/booking` or `tabelog.com/...?from=searchresults` is NOT flagged.
     """
     if is_placeholder_url(url):
         return True
-    low = (url or "").lower()
-    parsed = urlparse(low)
+    parsed = urlparse((url or "").lower())
     host = parsed.hostname or ""
-    if "google." in host and "/maps" in parsed.path:
+    path = parsed.path or ""
+    # Google Maps links, incl. short links (goo.gl/maps, maps.app.goo.gl)
+    if host == "maps.app.goo.gl":
         return True
-    return any(marker in low for marker in _SEARCH_URL_MARKERS)
+    if ("google." in host or host == "goo.gl") and "/maps" in path:
+        return True
+    # Search-result pages — path segments only (not the query string, not substrings)
+    segments = {seg for seg in path.split("/") if seg}
+    return bool(segments & _SEARCH_SEGMENTS)
 
 
 def reel_corpus(reels: list[dict]) -> str:
@@ -80,8 +89,17 @@ def reel_corpus(reels: list[dict]) -> str:
     return " ".join(parts).lower()
 
 
+def is_meaningful_quote(quote: str | None) -> bool:
+    """True if quote is a non-degenerate evidence string (>= _MIN_EVIDENCE_CHARS non-space chars).
+
+    Rejects "", " ", "a" — a 1-char or whitespace quote would otherwise satisfy the
+    verbatim-substring gate against any caption and falsely score full evidence coverage.
+    """
+    return bool(quote) and len(quote.strip()) >= _MIN_EVIDENCE_CHARS
+
+
 def evidence_in_corpus(quote: str | None, corpus: str) -> bool:
-    """True if quote is a (case-insensitive) verbatim substring of the corpus."""
-    if not quote:
+    """True if quote is a meaningful (case-insensitive) verbatim substring of the corpus."""
+    if not is_meaningful_quote(quote):
         return False
     return quote.lower() in corpus

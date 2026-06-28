@@ -34,7 +34,14 @@ def test_source_places_parity():
     ctx = {"places": [_place("A"), _place("B")],
            "itinerary": {"source_places": ["A", "B"]}}
     assert check_source_places_parity(ctx).status == "pass"
+    # subset is OK (a pipeline may legitimately dedup) — must NOT false-fail
     ctx["itinerary"]["source_places"] = ["A"]
+    assert check_source_places_parity(ctx).status == "pass"
+    # a place not traceable to extraction (hallucinated addition) fails
+    ctx["itinerary"]["source_places"] = ["A", "B", "C"]
+    assert check_source_places_parity(ctx).status == "fail"
+    # empty fails
+    ctx["itinerary"]["source_places"] = []
     assert check_source_places_parity(ctx).status == "fail"
 
 
@@ -49,3 +56,6 @@ def test_evidence_verbatim_pass_and_fail():
         {"places": [_place("Ichiran", ev="Ichiran")], "reels": reels}).status == "pass"
     assert check_evidence_verbatim(
         {"places": [_place("X", ev="Not Present")], "reels": reels}).status == "fail"
+    # a whitespace-only evidence quote must NOT slip through the gate as a substring
+    assert check_evidence_verbatim(
+        {"places": [_place("X", ev=" ")], "reels": reels}).status == "fail"

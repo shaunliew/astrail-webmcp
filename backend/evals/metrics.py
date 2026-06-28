@@ -8,6 +8,7 @@ from __future__ import annotations
 from evals.util import (
     evidence_in_corpus,
     haversine_m,
+    is_meaningful_quote,
     is_placeholder_url,
     is_weak_source_url,
     reel_corpus,
@@ -21,16 +22,25 @@ def dedup_error(ctx: dict) -> int:
 
 
 def mean_intra_day_travel_m(ctx: dict) -> float:
-    """Average metres travelled within a day across the itinerary. Lower = more coherent."""
+    """Average metres travelled within a day across the itinerary. Lower = more coherent.
+
+    Legs are counted only between consecutive stops that BOTH have coordinates. A
+    no-coords stop breaks the chain — it is NOT bridged over (which would silently
+    fabricate an adjacency between its neighbours). In practice the `coords_present`
+    contractual check gates the run before this matters; this guard prevents masking.
+    """
     coords = {p["name"]: (p["lat"], p["lng"]) for p in ctx["places"]
               if p.get("lat") is not None and p.get("lng") is not None}
     per_day: list[float] = []
     for day in ctx["itinerary"]["days"]:
-        pts = [coords[n] for n in day["place_names"] if n in coords]
-        per_day.append(sum(
-            haversine_m(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1])
-            for i in range(len(pts) - 1)
-        ))
+        names = day["place_names"]
+        legs = 0.0
+        for i in range(len(names) - 1):
+            a, b = coords.get(names[i]), coords.get(names[i + 1])
+            if a is None or b is None:
+                continue  # broken leg: do not bridge over a no-coords stop
+            legs += haversine_m(a[0], a[1], b[0], b[1])
+        per_day.append(legs)
     return round(sum(per_day) / len(per_day), 1) if per_day else 0.0
 
 
@@ -59,7 +69,7 @@ def evidence_coverage(ctx: dict) -> float:
     if corpus:
         hits = sum(1 for p in places if evidence_in_corpus(p.get("evidence_quote"), corpus))
     else:
-        hits = sum(1 for p in places if p.get("evidence_quote"))
+        hits = sum(1 for p in places if is_meaningful_quote(p.get("evidence_quote")))
     return round(hits / len(places), 3)
 
 

@@ -35,12 +35,21 @@ def test_is_placeholder_url():
 
 
 def test_is_weak_source_url():
+    # weak: google maps, search-result pages, placeholders, google short links
     assert is_weak_source_url("https://www.google.com/maps/place/x") is True
     assert is_weak_source_url("https://www.google.co.jp/maps?ll=35,139") is True
     assert is_weak_source_url("https://www.google.com/maps/search/?q=x") is True
     assert is_weak_source_url("https://booking.com/searchresults?x=1") is True
-    assert is_weak_source_url("https://example.com/x") is True          # placeholder is weak
-    assert is_weak_source_url("https://grandhyatt.com/tokyo") is False  # real venue page
+    assert is_weak_source_url("https://example.com/x") is True
+    assert is_weak_source_url("https://maps.app.goo.gl/abc123") is True
+
+
+def test_is_weak_source_url_no_false_positives_on_real_venue_pages():
+    # search markers in a legit path word or the query must NOT flag a real venue page
+    assert is_weak_source_url("https://grandhyatt.com/tokyo") is False
+    assert is_weak_source_url("https://grandhyatt.com/en/results/booking") is False
+    assert is_weak_source_url("https://tabelog.com/tokyo/A1301/?from=searchresults") is False
+    assert is_weak_source_url("https://realvenue.com/search-and-stay") is False
 
 
 def test_reel_corpus_and_evidence():
@@ -51,6 +60,9 @@ def test_reel_corpus_and_evidence():
     assert evidence_in_corpus("📍Ichiran", corpus) is True
     assert evidence_in_corpus("Totally Made Up", corpus) is False
     assert evidence_in_corpus(None, corpus) is False
+    # degenerate quotes must NOT satisfy the gate even though they are substrings
+    assert evidence_in_corpus(" ", corpus) is False
+    assert evidence_in_corpus("a", corpus) is False
 
 
 def test_reel_corpus_empty_when_no_captions():

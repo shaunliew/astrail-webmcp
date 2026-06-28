@@ -52,14 +52,23 @@ def check_day_count(ctx: dict) -> CheckResult:
 
 
 def check_source_places_parity(ctx: dict) -> CheckResult:
-    expected = {p["name"] for p in ctx["places"]}
+    """Every itinerary place must trace to an extracted place (no hallucinated additions).
+
+    Compared as a SUBSET, not exact equality: a pipeline may legitimately collapse
+    duplicates via dedup, so `source_places` being smaller than the raw extraction set is
+    expected. Only extra (untraceable) names or an empty set are contract violations.
+    Silent under-coverage is a quality metric (recorded), not a hard gate.
+    """
+    known = {p["name"] for p in ctx["places"]}
     actual = set(ctx["itinerary"].get("source_places", []))
-    if actual != expected:
-        return CheckResult(
-            "source_places_parity", "fail",
-            f"missing={expected - actual} extra={actual - expected}",
-        )
-    return CheckResult("source_places_parity", "pass", f"{len(actual)} source_places match")
+    extra = actual - known
+    if extra:
+        return CheckResult("source_places_parity", "fail",
+                           f"itinerary places not traceable to extraction: {extra}")
+    if not actual:
+        return CheckResult("source_places_parity", "fail", "empty source_places")
+    return CheckResult("source_places_parity", "pass",
+                       f"{len(actual)} source_places all trace to extracted places")
 
 
 def check_evidence_verbatim(ctx: dict) -> CheckResult:

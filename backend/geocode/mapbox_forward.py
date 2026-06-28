@@ -3,7 +3,11 @@
 Endpoint: https://api.mapbox.com/search/searchbox/v1/forward
 Params: q, language, country, types="poi", limit=1, proximity="{lng},{lat}", access_token
 
-TOKEN SAFETY: access_token travels in the query string (Mapbox standard).
+TOKEN SAFETY: access_token travels in the query string — the Mapbox Search Box API
+has no header-auth alternative, so the token MUST be a query param. This module
+never logs request URLs and raises only sanitized errors; do NOT enable httpx
+request-logging / APM URL capture / a logging event-hook on an injected client,
+or the token would be captured externally.
 - NEVER call resp.raise_for_status() — its message embeds the full URL + token.
 - Check resp.status_code manually and raise a sanitized RuntimeError.
 - Catch httpx.RequestError and re-raise a sanitized RuntimeError — never let
@@ -15,6 +19,7 @@ Unit tests inject httpx.MockTransport — no network, no key required.
 from __future__ import annotations
 
 import httpx
+from pydantic import ValidationError
 
 from models.geocode import GeocodeResult
 from models.place import PlaceResult
@@ -33,29 +38,47 @@ def parse_forward_response(data: dict) -> GeocodeResult | None:
       coordinates[1] → lat
     Do NOT swap.
 
-    Returns None when features is absent or empty.
+    Returns None for any missing/malformed shape (empty features, null geometry,
+    non-list or non-numeric coordinates, out-of-range coords) — a bad response is
+    a miss, never a crash.
     """
-    features = data.get("features") or []
-    if not features:
+    if not isinstance(data, dict):
+        return None
+    features = data.get("features")
+    if not isinstance(features, list) or not features:
         return None
     feature = features[0]
-    coords = feature.get("geometry", {}).get("coordinates") or []
-    if len(coords) < 2:
+    if not isinstance(feature, dict):
         return None
-    lng: float = coords[0]
-    lat: float = coords[1]
-    props: dict = feature.get("properties") or {}
+    geometry = feature.get("geometry")
+    if not isinstance(geometry, dict):  # also covers geometry: null
+        return None
+    coords = geometry.get("coordinates")
+    if not isinstance(coords, (list, tuple)) or len(coords) < 2:
+        return None
+    lng, lat = coords[0], coords[1]
+    # bool is an int subclass — reject it; coords must be real numbers, not strings.
+    if isinstance(lng, bool) or isinstance(lat, bool):
+        return None
+    if not isinstance(lng, (int, float)) or not isinstance(lat, (int, float)):
+        return None
+    props = feature.get("properties")
+    if not isinstance(props, dict):
+        props = {}
     name: str | None = props.get("name")
     # full_address is the primary field; fall back to place_formatted (also seen in docs).
     formatted_address: str | None = props.get("full_address") or props.get("place_formatted")
     mapbox_id: str | None = props.get("mapbox_id")
-    return GeocodeResult(
-        lat=lat,
-        lng=lng,
-        name=name,
-        formatted_address=formatted_address,
-        mapbox_id=mapbox_id,
-    )
+    try:
+        return GeocodeResult(
+            lat=lat,
+            lng=lng,
+            name=name,
+            formatted_address=formatted_address,
+            mapbox_id=mapbox_id,
+        )
+    except ValidationError:
+        return None  # out-of-range coords from a bad response → miss
 
 
 async def forward_geocode(
@@ -99,7 +122,8 @@ async def forward_geocode(
     http = client or httpx.AsyncClient(timeout=timeout_s)
 
     try:
-        resp = await http.get(_FORWARD_URL, params=params)
+        # Pass timeout per-request so the contract holds even for an injected client.
+        resp = await http.get(_FORWARD_URL, params=params, timeout=timeout_s)
     except httpx.RequestError as exc:
         # Sanitize: re-raise without the original message (which contains the URL+token).
         raise RuntimeError(
@@ -114,24 +138,27 @@ async def forward_geocode(
         raise RuntimeError(
             f"Mapbox forward failed for {query!r} (HTTP {resp.status_code})"
         )
-    return parse_forward_response(resp.json())
+    try:
+        payload = resp.json()
+    except ValueError:
+        return None  # malformed 2xx body (non-JSON / proxy HTML) → treat as a miss
+    return parse_forward_response(payload)
 
 
 def apply_geocode(place: PlaceResult, geo: GeocodeResult | None) -> PlaceResult:
     """Immutably override a PlaceResult's coords/address from a Mapbox GeocodeResult.
 
-    On a hit (geo is not None): returns a new PlaceResult with lat, lng, and
-    formatted_address from the Mapbox result; all other fields are preserved.
+    On a hit (geo is not None): returns a new PlaceResult with lat + lng from the
+    Mapbox result. formatted_address is overridden ONLY when Mapbox actually provides
+    one — a hit with no address keeps the place's existing (LLM) address rather than
+    deleting it. All other fields are preserved.
     On a miss (geo is None): returns the original place unchanged (LLM coords kept).
 
     This is a pure function — no mutation of the input place.
     """
     if geo is None:
         return place
-    return place.model_copy(
-        update={
-            "lat": geo.lat,
-            "lng": geo.lng,
-            "formatted_address": geo.formatted_address,
-        }
-    )
+    update: dict = {"lat": geo.lat, "lng": geo.lng}
+    if geo.formatted_address:
+        update["formatted_address"] = geo.formatted_address
+    return place.model_copy(update=update)

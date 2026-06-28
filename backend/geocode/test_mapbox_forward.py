@@ -235,9 +235,48 @@ def test_apply_geocode_none_returns_place_unchanged():
     assert result.lng == 56.78
 
 
-def test_apply_geocode_geo_none_formatted_address_overrides_with_none():
-    """When geo is a hit but formatted_address=None, set formatted_address=None on place."""
-    place = _make_place(lat=0.0, lng=0.0, formatted_address="original address")
+def test_apply_geocode_hit_without_address_keeps_existing():
+    """A hit lacking an address must NOT delete the place's existing address (Codex P-MED);
+    coords still update."""
+    place = _make_place(lat=0.0, lng=0.0, formatted_address="original LLM address")
     geo = GeocodeResult(lat=35.0, lng=135.0, formatted_address=None)
     result = apply_geocode(place, geo)
-    assert result.formatted_address is None
+    assert result.formatted_address == "original LLM address", "must keep the existing address"
+    assert abs(result.lat - 35.0) < 1e-9 and abs(result.lng - 135.0) < 1e-9, "coords still update"
+
+
+# ---------------------------------------------------------------------------
+# parse_forward_response — defensive against malformed Mapbox shapes (Codex review)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("bad", [
+    None,                                                              # data not a dict
+    {"features": "not-a-list"},                                       # features not a list
+    {"features": [None]},                                            # feature not a dict
+    {"features": [{"geometry": None, "properties": {}}]},            # geometry null
+    {"features": [{"geometry": {"coordinates": [139.77]}}]},         # coords len < 2
+    {"features": [{"geometry": {"coordinates": "139,35"}}]},         # coords not a list
+    {"features": [{"geometry": {"coordinates": ["139.77", "35.68"]}}]},  # non-numeric coords
+    {"features": [{"geometry": {"coordinates": [9999.0, 9999.0]}}]},  # out-of-range → ValidationError
+])
+def test_parse_forward_response_malformed_returns_none(bad):
+    assert parse_forward_response(bad) is None
+
+
+def test_parse_forward_response_missing_properties_is_a_hit_with_null_metadata():
+    """A feature with valid coords but no properties still resolves (coords are the point)."""
+    fc = {"features": [{"geometry": {"coordinates": [139.77, 35.68]}}]}
+    result = parse_forward_response(fc)
+    assert result is not None
+    assert abs(result.lng - 139.77) < 1e-6 and abs(result.lat - 35.68) < 1e-6
+    assert result.name is None and result.formatted_address is None
+
+
+async def test_forward_geocode_malformed_2xx_body_returns_none():
+    """A 2xx with a non-JSON body (proxy HTML / corruption) is a miss, not a crash (Codex P-HIGH)."""
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, text="<html>not json</html>")
+    ))
+    result = await forward_geocode("place", token="TKN", client=client)
+    assert result is None

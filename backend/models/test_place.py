@@ -65,9 +65,10 @@ def test_canonical_place_adds_times_referenced():
 
 def test_round_trip_preserves_eval_read_values():
     # model_validate + model_dump must preserve every value the eval reads, for EVERY
-    # fixture place (review finding, Codex P3) — this is the parity-anchor guarantee.
-    places = json.loads(EXPECTED.read_text(encoding="utf-8"))["places"]
-    for original in places:
-        dumped = PlaceResult.model_validate(original).model_dump()
-        for key in ("name", "lat", "lng", "evidence_quote", "source_url"):
-            assert dumped.get(key) == original.get(key), (original["name"], key)
+    # fixture place across BOTH fixtures (review finding, Codex P3) — the parity guarantee.
+    for fixture in (EXPECTED, MINI):
+        places = json.loads(fixture.read_text(encoding="utf-8"))["places"]
+        for original in places:
+            dumped = PlaceResult.model_validate(original).model_dump()
+            for key in ("name", "lat", "lng", "evidence_quote", "source_url"):
+                assert dumped.get(key) == original.get(key), (fixture.name, original["name"], key)

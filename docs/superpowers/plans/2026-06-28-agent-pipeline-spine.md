@@ -1,5 +1,7 @@
 # Agent Pipeline Spine Implementation Plan
 
+> ⚠️ **SUPERSEDED — reference only, do NOT execute.** This early all-in-one plan was reframed by `2026-06-28-backend-revamp-roadmap.md` §11 into the per-step plans (`step2`…`step5` etc.), which are the active source of truth. Two things in here are now WRONG: (1) the package lives at **`backend/genagents/`**, not `backend/agents/` — the OpenAI Agents SDK owns the top-level `agents` package and shadows ours (proven: `import agents.narrator` → `ModuleNotFoundError`); the package-clash note below ("this works because Python resolves…") is incorrect. (2) Import the SDK as `from agents import …` from inside `genagents/` modules. Follow the per-step plans, not this file.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Rebuild the core itinerary-generation agent pipeline (extract → dedup → enrich → feasibility → narrate) in `backend/`, measurably higher quality than the legacy TripCanvas hackathon pipeline, runnable standalone with no Supabase/Apify/Mapbox dependency.

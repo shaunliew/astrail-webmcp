@@ -369,14 +369,31 @@ Then come back here for engineering detail.
 
 ### Skills (in `.claude/skills/`)
 
+These are committed to the repo — clone the repo and you have them.
+
 - `shiplog` — after every meaningful commit, run this to log to EMDEE and draft content
 - `haotobuild` — writes X posts and Reel scripts for @haotobuildzip (Zhi Hao's channel)
 - `sprintplan` — after a planning discussion, locks sprint goal + issues into EMDEE and updates the GitHub Projects board; each person runs it for themselves
+- `astrail-plan-and-review` — planner/reviewer role: turns an issue into a markdown plan and reviews plans/diffs before Codex executes. Depends on **gstack** (below) for its `/plan-eng-review`, `/review`, `/qa`, `/autoplan` steps
 
 After every meaningful commit:
 ```
 shiplog "what you did" --type ship|fix|learn|struggle --sprint 1 --author zhihao|shaun
 ```
+
+### gstack (external toolchain — install per machine)
+
+gstack is **not** committed to this repo — it installs globally to `~/.claude/skills/gstack`, so **each teammate installs it themselves**. The `astrail-plan-and-review` skill assumes it's present.
+
+Install once per machine:
+```bash
+git clone --single-branch --depth 1 https://github.com/garrytan/gstack.git ~/.claude/skills/gstack \
+  && cd ~/.claude/skills/gstack && ./setup
+```
+
+**Web browsing (REQUIRED):** use the gstack `/browse` skill for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
+
+Key skills for the Astrail workflow: `/autoplan`, `/plan-eng-review`, `/plan-ceo-review`, `/plan-design-review`, `/review`, `/qa`, `/ship`, `/land-and-deploy`, `/browse`, `/investigate`, `/codex`. Full list lives in your global `~/.claude/CLAUDE.md` after setup, or run `/gstack-upgrade` to refresh.
 
 ### Owners
 

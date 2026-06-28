@@ -45,11 +45,34 @@ def count_contractual_failures(contractual: list) -> int:
     return sum(1 for c in contractual if c.status == "fail")
 
 
-def build_ctx(case: dict) -> dict:
-    """Build the eval context. Subject under test = legacy-equivalent baseline itinerary."""
-    places = _load_json(EVALS_DIR / case["places_fixture"])["places"]
-    reels = _load_json(EVALS_DIR / case["reels_fixture"])["reels"]
-    itinerary = build_baseline_itinerary(places, case["start_date"], case["end_date"])
+def build_ctx(case: dict, subject: str = "baseline") -> dict:
+    """Build the eval context for a subject under test.
+
+    subject="baseline" (default): score the frozen legacy-equivalent itinerary —
+        the #16 bar to beat. Behaviour is byte-for-byte unchanged.
+    subject="pipeline": score the offline, fixture-backed pipeline skeleton
+        (Step 2). Fully offline — no live OpenAI / Apify / Mapbox / mem0 / Supabase.
+    """
+    reels_path = EVALS_DIR / case["reels_fixture"]
+    places_path = EVALS_DIR / case["places_fixture"]
+    if subject == "pipeline":
+        from pipeline.offline_harness import run_offline_pipeline
+
+        out = run_offline_pipeline(
+            reels_path=reels_path,
+            places_path=places_path,
+            start_date=case["start_date"],
+            end_date=case["end_date"],
+        )
+        places, reels, itinerary = out.places, out.reels, out.itinerary
+    elif subject == "baseline":
+        places = _load_json(places_path)["places"]
+        reels = _load_json(reels_path)["reels"]
+        itinerary = build_baseline_itinerary(
+            places, case["start_date"], case["end_date"]
+        )
+    else:
+        raise ValueError(f"unknown subject {subject!r} (expected 'baseline' or 'pipeline')")
     return {
         "places": places,
         "reels": reels,
@@ -60,13 +83,13 @@ def build_ctx(case: dict) -> dict:
     }
 
 
-def run_case(name: str) -> dict:
+def run_case(name: str, subject: str = "baseline") -> dict:
     case = load_case(name)
-    ctx = build_ctx(case)
+    ctx = build_ctx(case, subject)
     contractual = [CONTRACTUAL_CHECKS[c](ctx) for c in case["active_contractual_checks"]]
     metrics = {m: QUALITY_METRICS[m](ctx) for m in case["active_quality_metrics"]}
     pending = list(case.get("pending_checks", []))
-    return {"case": case, "ctx": ctx, "contractual": contractual,
+    return {"case": case, "ctx": ctx, "subject": subject, "contractual": contractual,
             "metrics": metrics, "pending": pending}
 
 
@@ -81,7 +104,8 @@ def print_report(name: str, result: dict) -> int:
     print("\n" + "=" * 66)
     print(f"CASE: {name}  ({case['start_date']} -> {case['end_date']})")
     print(f"  reels: {len(reels)} ({_captured_count(reels)} captured) | "
-          f"places: {len(ctx['places'])} | baseline days: {len(ctx['itinerary']['days'])}")
+          f"places: {len(ctx['places'])} | "
+          f"{ctx['itinerary'].get('source', 'baseline')} days: {len(ctx['itinerary']['days'])}")
     print("-" * 66)
 
     print("  ACTIVE CONTRACTUAL CHECKS (gating):")
@@ -107,15 +131,21 @@ def print_report(name: str, result: dict) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Offline Japan eval runner (issue #16)")
     parser.add_argument("--case", default=None, help="run a single case by name")
+    parser.add_argument("--subject", default="baseline", choices=["baseline", "pipeline"],
+                        help="subject under test: legacy baseline (default) or offline pipeline")
     args = parser.parse_args()
 
     names = gather_case_names(args.case)
     if not names:
         print(f"ERROR: no eval cases found under {CASES_DIR} — nothing to evaluate.")
         sys.exit(1)
+    if args.subject != "baseline":
+        # Default (baseline) CLI output stays byte-for-byte unchanged; the banner
+        # only announces an opt-in non-default subject (review finding, Codex).
+        print(f"SUBJECT: {args.subject}")
     total_failed = 0
     for name in names:
-        total_failed += print_report(name, run_case(name))
+        total_failed += print_report(name, run_case(name, args.subject))
 
     print("\n" + "=" * 66)
     verdict = "PASS (no contractual failures)" if total_failed == 0 else f"FAIL ({total_failed} contractual)"

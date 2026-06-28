@@ -1,0 +1,22 @@
+{
+  "places": [
+    {
+      "name": "Cafe Alpha",
+      "category": "restaurant",
+      "lat": 35.66,
+      "lng": 139.70,
+      "confidence": 0.9,
+      "evidence_quote": "Cafe Alpha",
+      "source_url": "https://cafealpha.example.jp"
+    },
+    {
+      "name": "Beta Ramen",
+      "category": "restaurant",
+      "lat": 35.70,
+      "lng": 139.77,
+      "confidence": 0.8,
+      "evidence_quote": "Beta Ramen",
+      "source_url": "https://betaramen.example.jp"
+    }
+  ]
+}

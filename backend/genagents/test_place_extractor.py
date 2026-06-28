@@ -46,6 +46,20 @@ def test_is_placeholder_url():
     assert is_placeholder_url("https://tabelog.com/tokyo/123") is False
 
 
+def test_count_web_searches():
+    import genagents.place_extractor as pe
+
+    class ToolSearchCallItem:  # how hosted web_search calls appear
+        pass
+
+    class MessageOutputItem:
+        pass
+
+    r = SimpleNamespace(new_items=[ToolSearchCallItem(), MessageOutputItem(), ToolSearchCallItem()])
+    assert pe._count_web_searches(r) == 2
+    assert pe._count_web_searches(SimpleNamespace()) == 0  # no new_items → 0, no crash
+
+
 async def test_extract_places_filters_via_injected_runner(monkeypatch):
     import genagents.place_extractor as pe
     monkeypatch.setattr(pe, "build_extractor", lambda model: object())  # keep the test SDK-free

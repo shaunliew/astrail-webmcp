@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from urllib.parse import urlparse
 
 from models.place import ExtractionResult, PlaceResult
@@ -136,18 +137,38 @@ async def _default_runner(agent, user_input: str):
     return await Runner.run(agent, user_input, max_turns=12)
 
 
+def _count_web_searches(result) -> int:
+    """Count WebSearchTool calls in a run result. Hosted web_search calls appear as
+    `ToolSearchCallItem` (not `ToolCallItem`), so match by class-name. Defensive: a
+    fake/stub result with no `new_items` returns 0 (keeps unit tests offline)."""
+    items = getattr(result, "new_items", None) or []
+    return sum(
+        1 for it in items
+        if "ToolSearch" in type(it).__name__
+        or ("ToolCall" in type(it).__name__ and "search" in type(it).__name__.lower())
+    )
+
+
 async def extract_places(reel: ReelData, *, model: str | None = None, runner=None) -> list[PlaceResult]:
     """Run the extractor on one reel → validated PlaceResults (live unless `runner` injected).
 
     `runner(agent, user_input)` is awaited and must return an object whose
     `.final_output` is an ExtractionResult. Falls back from `model` to gpt-4o on a
-    typed model error. Output is filtered by `keep_valid_places`.
+    typed model error. Output is filtered by `keep_valid_places`. Prints a one-line
+    diagnostic to stderr (model used + web_search calls) so a live run is auditable
+    without the OpenAI Traces dashboard.
     """
     model = model or os.environ.get("ASTRAIL_EXTRACT_MODEL", DEFAULT_MODEL)
     run = runner or _default_runner
     user_input = build_extractor_input(reel)
+    used = model
     try:
         result = await run(build_extractor(model), user_input)
     except _model_errors():
+        used = FALLBACK_MODEL
         result = await run(build_extractor(FALLBACK_MODEL), user_input)
-    return keep_valid_places(result.final_output.places, reel)
+    raw = result.final_output.places
+    kept = keep_valid_places(raw, reel)
+    print(f"  [extract] model={used} web_search_calls={_count_web_searches(result)} "
+          f"places={len(kept)} kept of {len(raw)}", file=sys.stderr)
+    return kept

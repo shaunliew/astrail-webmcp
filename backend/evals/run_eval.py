@@ -14,10 +14,13 @@ import argparse
 import json
 import pathlib
 import sys
+import time
 
 from evals.baseline import build_baseline_itinerary
 from evals.checks import CONTRACTUAL_CHECKS, PENDING_CHECKS
 from evals.metrics import QUALITY_METRICS
+from pipeline.timing import Clock, Stopwatch
+from pipeline.tracing import NullTracer, Tracer
 
 EVALS_DIR = pathlib.Path(__file__).parent
 CASES_DIR = EVALS_DIR / "cases"
@@ -45,14 +48,15 @@ def count_contractual_failures(contractual: list) -> int:
     return sum(1 for c in contractual if c.status == "fail")
 
 
-def build_ctx(case: dict, subject: str = "baseline") -> dict:
-    """Build the eval context for a subject under test.
+def build_ctx(case: dict, subject: str = "baseline", *, clock: Clock = time.perf_counter) -> dict:
+    """Build the eval context for a subject under test, with offline stage timings.
 
     subject="baseline" (default): score the frozen legacy-equivalent itinerary —
-        the #16 bar to beat. The ctx it builds is identical to today; the only
-        baseline report change is the approved day_places_traceable line (Task 4).
-    subject="pipeline": score the offline, fixture-backed pipeline skeleton
-        (Step 2). Fully offline — no live OpenAI / Apify / Mapbox / mem0 / Supabase.
+        the #16 bar to beat. The ctx it builds is identical to today plus a
+        `timings` key (load/build/total around the frozen build_baseline_itinerary).
+    subject="pipeline": score the offline, fixture-backed pipeline skeleton; timings
+        come from the harness (scrape/extract/dedup/narrate/total). Fully offline.
+    `clock` is injectable so timing is deterministic in tests.
     """
     reels_path = EVALS_DIR / case["reels_fixture"]
     places_path = EVALS_DIR / case["places_fixture"]
@@ -64,32 +68,49 @@ def build_ctx(case: dict, subject: str = "baseline") -> dict:
             places_path=places_path,
             start_date=case["start_date"],
             end_date=case["end_date"],
+            clock=clock,
         )
-        places, reels, itinerary = out.places, out.reels, out.itinerary
+        places, reels, itinerary, timings = out.places, out.reels, out.itinerary, out.timings
     elif subject == "baseline":
-        places = _load_json(places_path)["places"]
-        reels = _load_json(reels_path)["reels"]
-        itinerary = build_baseline_itinerary(
-            places, case["start_date"], case["end_date"]
-        )
+        sw = Stopwatch(clock=clock)
+        t0 = clock()
+        with sw.stage("load"):
+            places = _load_json(places_path)["places"]
+            reels = _load_json(reels_path)["reels"]
+        with sw.stage("build"):
+            itinerary = build_baseline_itinerary(
+                places, case["start_date"], case["end_date"]
+            )
+        sw.mark_total(t0)
+        timings = sw.timings
     else:
         raise ValueError(f"unknown subject {subject!r} (expected 'baseline' or 'pipeline')")
     return {
         "places": places,
         "reels": reels,
         "itinerary": itinerary,
+        "timings": timings,
         "start_date": case["start_date"],
         "end_date": case["end_date"],
         "expected_unique": case["expected_unique_places"],
     }
 
 
-def run_case(name: str, subject: str = "baseline") -> dict:
+def run_case(name: str, subject: str = "baseline", *, clock: Clock = time.perf_counter,
+             tracer: Tracer | None = None) -> dict:
+    tracer = tracer if tracer is not None else NullTracer()
     case = load_case(name)
-    ctx = build_ctx(case, subject)
+    ctx = build_ctx(case, subject, clock=clock)
     contractual = [CONTRACTUAL_CHECKS[c](ctx) for c in case["active_contractual_checks"]]
     metrics = {m: QUALITY_METRICS[m](ctx) for m in case["active_quality_metrics"]}
     pending = list(case.get("pending_checks", []))
+    try:
+        # defensive copy: a bad tracer must not mutate the report timings (Codex P3)
+        tracer.record_timings(f"{name}:{subject}", dict(ctx["timings"]))
+    except Exception:
+        # Tracing is a best-effort, non-gating side channel — it must NEVER
+        # affect eval exit semantics (review finding, Codex P3).
+        pass
     return {"case": case, "ctx": ctx, "subject": subject, "contractual": contractual,
             "metrics": metrics, "pending": pending}
 
@@ -117,6 +138,10 @@ def print_report(name: str, result: dict) -> int:
     print("  ACTIVE QUALITY METRICS (recorded baseline, non-gating):")
     for k, v in result["metrics"].items():
         print(f"    {k:<26} = {v}")
+
+    print("  STAGE TIMINGS (offline wall-clock seconds — recorded, non-gating):")
+    for stage, secs in ctx.get("timings", {}).items():
+        print(f"    {stage:<26} = {secs}")
 
     print("  PENDING CHECKS (skipped until their step lands):")
     for p in result["pending"]:

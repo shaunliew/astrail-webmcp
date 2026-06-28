@@ -110,3 +110,59 @@ def test_pipeline_run_prints_subject_banner(capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "SUBJECT: pipeline" in out
     assert "pipeline days:" in out
+
+
+class _Ticker:
+    def __init__(self, step: float = 1.0) -> None:
+        self._t = 0.0
+        self._step = step
+
+    def __call__(self) -> float:
+        v = self._t
+        self._t += self._step
+        return v
+
+
+def test_pipeline_subject_ctx_has_stage_timings():
+    ctx = build_ctx(load_case("japan_first_trip"), subject="pipeline", clock=_Ticker())
+    assert ctx["timings"] == {
+        "scrape": 1.0, "extract": 1.0, "dedup": 1.0, "narrate": 1.0, "total": 9.0,
+    }
+
+
+def test_baseline_subject_ctx_has_timings():
+    # baseline times the legacy monolith as load/build/total (baseline.py is frozen)
+    ctx = build_ctx(load_case("japan_first_trip"), subject="baseline", clock=_Ticker())
+    assert ctx["timings"] == {"load": 1.0, "build": 1.0, "total": 5.0}
+
+
+def test_timings_are_not_quality_metrics():
+    # the parity anchor compares active_quality_metrics; timing must NOT be in there
+    # — check EVERY case, not just the first (review finding, Codex P3).
+    for name in gather_case_names():
+        metrics = load_case(name)["active_quality_metrics"]
+        assert "total_latency_s" not in metrics, name
+        assert not any("latency" in m or "timing" in m for m in metrics), name
+    # also assert the QUALITY_METRICS registry itself stays timing-free (Codex P3)
+    assert not any("latency" in m or "timing" in m for m in QUALITY_METRICS)
+
+
+def test_exploding_tracer_does_not_break_eval():
+    # a failing trace backend must not crash the eval or change its exit semantics
+    class _Boom:
+        def record_timings(self, run_label, timings):
+            raise RuntimeError("trace backend down")
+
+    result = run_case("japan_first_trip", subject="pipeline", clock=_Ticker(), tracer=_Boom())
+    assert count_contractual_failures(result["contractual"]) == 0
+
+
+def test_report_renders_stage_timings_section(capsys, monkeypatch):
+    monkeypatch.setattr(sys, "argv",
+                        ["run_eval", "--case", "japan_first_trip", "--subject", "pipeline"])
+    with pytest.raises(SystemExit) as exc:
+        main()
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "STAGE TIMINGS" in out
+    assert "total" in out

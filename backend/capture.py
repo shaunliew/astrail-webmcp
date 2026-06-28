@@ -45,7 +45,19 @@ async def run_capture(
         reels.append(reel)
         places.extend(reel_places)
         print(f"  [ok]   {url}: {len(reel_places)} place(s)")
+        for p in reel_places:
+            print(_format_place(p))
     return reels, places
+
+
+def _format_place(p: PlaceResult) -> str:
+    """A readable multi-line summary of one extracted place (for human inspection)."""
+    coords = f"{p.lat:.4f},{p.lng:.4f}" if (p.lat is not None and p.lng is not None) else "no-coords"
+    return (
+        f"         - {p.name}  [{p.category}]  @ {coords}  conf={p.confidence}\n"
+        f"           evidence: {p.evidence_quote!r}\n"
+        f"           source:   {p.source_url or '(none)'}"
+    )
 
 
 def _write_fixtures(reels: list[ReelData], places: list[PlaceResult], out_dir: Path) -> None:

@@ -1,7 +1,11 @@
-"""Opt-in LIVE capture: scrape reels (Apify) + extract places (LLM) → refresh offline fixtures.
+"""Opt-in LIVE capture: scrape reels (Apify) + extract places (LLM) + ground coords
+(Mapbox) → refresh offline fixtures.
 
-LIVE — needs APIFY_TOKEN + OPENAI_API_KEY. NEVER run by the test suite (the unit
-test injects fake producers; the live producers + keys are loaded only in main()).
+LIVE — needs APIFY_TOKEN + OPENAI_API_KEY. Set MAPBOX_SECRET_TOKEN (server-side `sk`,
+Search Box scope; the public `pk` is frontend-only) to ground each place's coords +
+address via the Mapbox Search Box /forward API; without it, capture keeps the LLM
+coords and warns. NEVER run by the test suite (the unit test injects fake producers;
+the live producers + keys are loaded only in main()).
 Run by a human to refresh evals/fixtures/* from real reels:
 
     python -m capture --reels <url,url,...> [--out-dir evals/fixtures] [--include-transcript]
@@ -25,14 +29,23 @@ from scrape.reel_url import normalize_reel_url
 EVALS_FIXTURES = Path(__file__).parent / "evals" / "fixtures"
 
 
-async def run_capture(
-    reel_urls: list[str], *, token: str, scrape, extract
-) -> tuple[list[ReelData], list[PlaceResult]]:
-    """Scrape + extract each reel; per-reel errors are logged and skipped (never the token).
+async def _identity_resolve(place: PlaceResult) -> PlaceResult:
+    """Default no-op resolver — keeps the place's existing (LLM) coords. Used in tests
+    and whenever MAPBOX_SECRET_TOKEN is absent, so capture works without Mapbox."""
+    return place
 
-    `scrape(url, token=...)` -> ReelData ; `extract(reel)` -> list[PlaceResult].
-    Producers are injected so this is offline-testable. Returns (reels, places).
+
+async def run_capture(
+    reel_urls: list[str], *, token: str, scrape, extract, resolve=None
+) -> tuple[list[ReelData], list[PlaceResult]]:
+    """Scrape + extract each reel, then ground each place's coords via `resolve`.
+
+    `scrape(url, token=...)` -> ReelData ; `extract(reel)` -> list[PlaceResult] ;
+    `resolve` is an async `(place) -> PlaceResult` (default: identity no-op) that
+    overrides coords with Mapbox's. Per-reel AND per-place failures are tolerated and
+    skipped (never the token). Producers are injected so this is offline-testable.
     """
+    resolve = resolve or _identity_resolve
     reels: list[ReelData] = []
     places: list[PlaceResult] = []
     for url in reel_urls:
@@ -47,18 +60,24 @@ async def run_capture(
                 print(f"  [skip] {url}: {type(exc).__name__}", file=sys.stderr)
             continue
         reels.append(reel)
-        places.extend(reel_places)
         print(f"  [ok]   {url}: {len(reel_places)} place(s)")
-        for p in reel_places:
-            print(_format_place(p))
+        for place in reel_places:
+            try:
+                grounded = await resolve(place)  # Mapbox grounds the coords
+            except Exception as exc:  # a geocode failure must NEVER lose the place
+                print(f"  [geocode-skip] {place.name}: {type(exc).__name__}", file=sys.stderr)
+                grounded = place
+            moved = (grounded.lat, grounded.lng) != (place.lat, place.lng)
+            places.append(grounded)
+            print(_format_place(grounded, coords_src="mapbox" if moved else "llm"))
     return reels, places
 
 
-def _format_place(p: PlaceResult) -> str:
+def _format_place(p: PlaceResult, coords_src: str = "llm") -> str:
     """A readable multi-line summary of one extracted place (for human inspection)."""
     coords = f"{p.lat:.4f},{p.lng:.4f}" if (p.lat is not None and p.lng is not None) else "no-coords"
     return (
-        f"         - {p.name}  [{p.category}]  @ {coords}  conf={p.confidence}\n"
+        f"         - {p.name}  [{p.category}]  @ {coords} (coords={coords_src})  conf={p.confidence}\n"
         f"           evidence: {p.evidence_quote!r}\n"
         f"           source:   {p.source_url or '(none)'}"
     )
@@ -90,6 +109,21 @@ def main(argv: list[str] | None = None) -> int:
     from genagents.place_extractor import extract_places
     from scrape.apify_direct import scrape_reel
 
+    # Mapbox coord resolution — authoritative coords for surviving places. Only wired
+    # when the token is present; without it we warn and keep the LLM coords (graceful).
+    mapbox_token = os.environ.get("MAPBOX_SECRET_TOKEN")
+    resolve = None
+    if mapbox_token:
+        from geocode.mapbox_forward import apply_geocode, forward_geocode
+
+        async def _resolve(place: PlaceResult) -> PlaceResult:
+            geo = await forward_geocode(place.name, token=mapbox_token)
+            return apply_geocode(place, geo)
+        resolve = _resolve
+    else:
+        print("MAPBOX_SECRET_TOKEN not set — skipping Mapbox coord resolution "
+              "(keeping LLM coords).", file=sys.stderr)
+
     urls: list[str] = []
     for raw in args.reels.split(","):
         raw = raw.strip()
@@ -107,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
         return await scrape_reel(url, token=token, include_transcript=args.include_transcript)
 
     reels, places = asyncio.run(
-        run_capture(urls, token=token, scrape=_scrape, extract=extract_places))
+        run_capture(urls, token=token, scrape=_scrape, extract=extract_places, resolve=resolve))
     if not reels:
         print("captured 0 reels; not writing empty fixtures.", file=sys.stderr)
         return 1

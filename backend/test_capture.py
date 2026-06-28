@@ -74,6 +74,56 @@ async def test_run_capture_prints_safe_apify_error_detail(capsys):
     assert "SECRET123" not in err
 
 
+async def test_run_capture_grounds_coords_via_injected_resolver():
+    # an injected async resolver overrides coords (Mapbox grounding)
+    async def scrape(url, *, token):
+        return _reel(url)
+
+    async def extract(reel):
+        return [_place("Cafe")]  # lat=35.6, lng=139.7
+
+    async def resolve(place):
+        return place.model_copy(update={"lat": 35.71, "lng": 139.80, "formatted_address": "Asakusa"})
+
+    _, places = await capture.run_capture(
+        ["u1"], token="T", scrape=scrape, extract=extract, resolve=resolve)
+    assert len(places) == 1
+    assert abs(places[0].lat - 35.71) < 1e-9 and abs(places[0].lng - 139.80) < 1e-9
+    assert places[0].formatted_address == "Asakusa"
+
+
+async def test_run_capture_default_resolve_keeps_llm_coords():
+    # no resolver injected → identity no-op → LLM coords unchanged
+    async def scrape(url, *, token):
+        return _reel(url)
+
+    async def extract(reel):
+        return [_place("Cafe")]
+
+    _, places = await capture.run_capture(["u1"], token="T", scrape=scrape, extract=extract)
+    assert abs(places[0].lat - 35.6) < 1e-9 and abs(places[0].lng - 139.7) < 1e-9
+
+
+async def test_run_capture_geocode_error_keeps_place_and_no_token_leak(capsys):
+    # a resolver failure must NOT lose the place, and its message (may carry a token) is never printed
+    async def scrape(url, *, token):
+        return _reel(url)
+
+    async def extract(reel):
+        return [_place("Cafe")]
+
+    async def resolve(place):
+        raise RuntimeError("mapbox down token=MBSECRET")
+
+    _, places = await capture.run_capture(
+        ["u1"], token="T", scrape=scrape, extract=extract, resolve=resolve)
+    assert len(places) == 1                       # place kept
+    assert abs(places[0].lat - 35.6) < 1e-9       # LLM coords preserved on geocode failure
+    err = capsys.readouterr().err
+    assert "MBSECRET" not in err
+    assert "geocode-skip" in err
+
+
 def test_main_returns_nonzero_and_does_not_write_empty_capture(monkeypatch, tmp_path, capsys):
     async def empty_capture(*args, **kwargs):
         return [], []

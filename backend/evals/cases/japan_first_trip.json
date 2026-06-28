@@ -11,6 +11,7 @@
     "japan_bbox",
     "day_count",
     "source_places_parity",
+    "day_places_traceable",
     "evidence_verbatim"
   ],
   "active_quality_metrics": [

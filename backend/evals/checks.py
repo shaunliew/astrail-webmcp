@@ -71,6 +71,30 @@ def check_source_places_parity(ctx: dict) -> CheckResult:
                        f"{len(actual)} source_places all trace to extracted places")
 
 
+def check_day_places_traceable(ctx: dict) -> CheckResult:
+    """Every place named in an itinerary day must be one of the declared source_places.
+
+    check_source_places_parity validates `source_places` against extraction, but nothing
+    validates the day-level `place_names`; mean_intra_day_travel_m silently skips an
+    unknown day name (coords.get -> None -> continue). Without this check, a narrator that
+    drops a fabricated name into a day passes every gate. Pairs with parity
+    (source_places subset of extracted) to give: day place in source_places subset of extracted.
+    """
+    source = set(ctx["itinerary"].get("source_places", []))
+    bad = sorted({
+        name
+        for day in ctx["itinerary"]["days"]
+        for name in day.get("place_names", [])
+        if name not in source
+    })
+    if bad:
+        return CheckResult("day_places_traceable", "fail",
+                           f"itinerary day places not in source_places: {bad}")
+    total = sum(len(day.get("place_names", [])) for day in ctx["itinerary"]["days"])
+    return CheckResult("day_places_traceable", "pass",
+                       f"all {total} day place references trace to source_places")
+
+
 def check_evidence_verbatim(ctx: dict) -> CheckResult:
     corpus = reel_corpus(ctx["reels"])
     if not corpus:
@@ -91,5 +115,6 @@ CONTRACTUAL_CHECKS: dict[str, object] = {
     "japan_bbox": check_japan_bbox,
     "day_count": check_day_count,
     "source_places_parity": check_source_places_parity,
+    "day_places_traceable": check_day_places_traceable,
     "evidence_verbatim": check_evidence_verbatim,
 }

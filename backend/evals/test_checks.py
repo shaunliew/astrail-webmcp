@@ -1,6 +1,7 @@
 from evals.checks import (
     check_coords_present,
     check_day_count,
+    check_day_places_traceable,
     check_evidence_verbatim,
     check_japan_bbox,
     check_source_places_parity,
@@ -43,6 +44,19 @@ def test_source_places_parity():
     # empty fails
     ctx["itinerary"]["source_places"] = []
     assert check_source_places_parity(ctx).status == "fail"
+
+
+def test_day_places_traceable_pass_and_fail():
+    ctx = {"places": [_place("A"), _place("B")],
+           "itinerary": {"source_places": ["A", "B"],
+                         "days": [{"place_names": ["A"]}, {"place_names": ["B"]}]}}
+    assert check_day_places_traceable(ctx).status == "pass"
+    # a day naming a place absent from source_places (narrator fabrication) must fail
+    ctx["itinerary"]["days"] = [{"place_names": ["A", "Ghost Cafe"]}, {"place_names": ["B"]}]
+    assert check_day_places_traceable(ctx).status == "fail"
+    # an empty day list is vacuously fine (no untraceable names)
+    ctx["itinerary"]["days"] = [{"place_names": []}]
+    assert check_day_places_traceable(ctx).status == "pass"
 
 
 def test_evidence_verbatim_blocked_without_captions():

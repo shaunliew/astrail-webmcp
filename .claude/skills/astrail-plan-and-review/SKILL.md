@@ -19,11 +19,31 @@ Use this skill to turn an Astrail issue or request into an executable markdown p
 
 ## Planning Flow
 
-1. **REQUIRED SUB-SKILL:** Use `superpowers:writing-plans`.
-2. Save the plan to `docs/superpowers/plans/YYYY-MM-DD-<issue-or-feature>.md` unless the user gives a different path.
-3. Include exact assumptions, non-goals, files likely touched, tests, browser QA, and rollback risk.
-4. Map every task to Astrail contracts from `.claude/CLAUDE.md`, `PRD.md`, `DESIGN.md`, or EMDEE.
-5. Keep tasks small enough for Codex to execute task-by-task from the markdown file.
+### Step 1 — Discovery interview (REQUIRED, do this before anything else)
+
+**REQUIRED SUB-SKILL:** Use `superpowers:brainstorming` to run an interview with the user before writing any plan.
+
+Do not assume you understand what they want. Even if the request seems clear, hidden intentions, preferences, and constraints almost always come out in the interview that would change the plan. Skipping this step produces plans full of assumptions the user never agreed to.
+
+The interview must surface:
+- **The "why"** — what problem does this solve for the user right now?
+- **The look and feel** — any references, vibes, flows they have in mind?
+- **Scope boundaries** — what is explicitly in and explicitly out?
+- **Unknowns** — what do you not know that would change the design?
+
+Ask focused questions one or two at a time. Do not dump a list of 10 questions. Listen to the answer before asking the next one. Keep going until you could write the plan without guessing anything material.
+
+Only move to Step 2 when the user says they are done or explicitly asks you to write the plan.
+
+### Step 2 — Write the plan
+
+**REQUIRED SUB-SKILL:** Use `superpowers:writing-plans`.
+
+Write the plan based on what the user said in the interview — not on what you assumed before it. Decisions made during the interview override your prior reading of PRD/DESIGN/EMDEE.
+
+Save the plan to `docs/superpowers/plans/YYYY-MM-DD-<issue-or-feature>.md` unless the user gives a different path.
+
+Include exact assumptions (reference the interview), non-goals, files likely touched, tests, browser QA, and rollback risk. Map every task to Astrail contracts from `.claude/CLAUDE.md`, `PRD.md`, `DESIGN.md`, or EMDEE. Keep tasks small enough for Codex to execute task-by-task.
 
 ## Plan Review Flow
 

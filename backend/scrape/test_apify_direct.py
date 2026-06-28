@@ -42,6 +42,18 @@ async def test_scrape_reel_empty_dataset_raises():
         await scrape_reel(_URL, token="T", client=client)
 
 
+async def test_scrape_reel_error_item_raises():
+    # the actor returns a non-2xx-less error ITEM when the reel is private/blocked/empty
+    err_item = {"error": "no_items", "errorDescription": "Empty or private data for provided input",
+                "inputUrl": _URL}
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(201, json=[err_item])))
+    with pytest.raises(ValueError) as e:
+        await scrape_reel(_URL, token="SECRET", client=client)
+    assert "no_items" in str(e.value)
+    assert "SECRET" not in str(e.value)
+
+
 async def test_scrape_reel_408_is_clear_and_tokenless():
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(408)))
     with pytest.raises(Exception) as e:

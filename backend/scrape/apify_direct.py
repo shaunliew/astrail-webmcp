@@ -59,4 +59,12 @@ async def scrape_reel(
     items = resp.json()
     if not items:
         raise ValueError(f"Apify returned no items for {reel_url}")
-    return map_item_to_reeldata(items[0], reel_url)
+    item = items[0]
+    # The actor signals a failed scrape (private/blocked/empty) as an error ITEM,
+    # not an HTTP error. Detect it so we never feed the extractor an empty ReelData.
+    if item.get("error"):
+        raise ValueError(
+            f"Apify could not scrape {reel_url}: {item.get('error')} "
+            f"({item.get('errorDescription') or 'no detail'})"
+        )
+    return map_item_to_reeldata(item, reel_url)

@@ -157,6 +157,20 @@ def test_exploding_tracer_does_not_break_eval():
     assert count_contractual_failures(result["contractual"]) == 0
 
 
+def test_tracer_cannot_mutate_report_timings():
+    # the defensive dict(ctx["timings"]) copy means a mutating tracer can't corrupt
+    # the report data (review finding, Codex P3)
+    class _Mutator:
+        def record_timings(self, run_label, timings):
+            timings["scrape"] = 999.0
+            timings.clear()
+
+    result = run_case("japan_first_trip", subject="pipeline", clock=_Ticker(), tracer=_Mutator())
+    assert result["ctx"]["timings"] == {
+        "scrape": 1.0, "extract": 1.0, "dedup": 1.0, "narrate": 1.0, "total": 9.0,
+    }
+
+
 def test_report_renders_stage_timings_section(capsys, monkeypatch):
     monkeypatch.setattr(sys, "argv",
                         ["run_eval", "--case", "japan_first_trip", "--subject", "pipeline"])

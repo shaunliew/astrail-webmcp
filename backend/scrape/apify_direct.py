@@ -15,6 +15,10 @@ ACTOR = "apify~instagram-reel-scraper"
 _ENDPOINT = f"https://api.apify.com/v2/acts/{ACTOR}/run-sync-get-dataset-items"
 
 
+class ApifyScrapeError(ValueError):
+    """Token-safe scrape failure from the Apify actor."""
+
+
 def map_item_to_reeldata(item: dict, reel_url: str) -> ReelData:
     """Map one Apify dataset item to a captured ReelData."""
     return ReelData(
@@ -58,13 +62,14 @@ async def scrape_reel(
         raise RuntimeError(f"Apify scrape failed for {reel_url} (HTTP {resp.status_code})")
     items = resp.json()
     if not items:
-        raise ValueError(f"Apify returned no items for {reel_url}")
+        raise ApifyScrapeError(f"Apify returned no items for {reel_url}")
     item = items[0]
     # The actor signals a failed scrape (private/blocked/empty) as an error ITEM,
     # not an HTTP error. Detect it so we never feed the extractor an empty ReelData.
     if item.get("error"):
-        raise ValueError(
-            f"Apify could not scrape {reel_url}: {item.get('error')} "
-            f"({item.get('errorDescription') or 'no detail'})"
-        )
+        detail = item.get("errorDescription") or "no detail"
+        request_errors = item.get("requestErrorMessages") or []
+        if any("request blocked" in str(msg).lower() for msg in request_errors):
+            detail = "blocked by Instagram; actor request was blocked after retries"
+        raise ApifyScrapeError(f"Apify could not scrape {reel_url}: {item.get('error')} ({detail})")
     return map_item_to_reeldata(item, reel_url)

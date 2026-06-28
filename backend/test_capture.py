@@ -2,6 +2,7 @@
 import capture
 from models.place import PlaceResult
 from models.reel import ReelData
+from scrape.apify_direct import ApifyScrapeError
 
 
 def _reel(url):
@@ -58,6 +59,42 @@ async def test_run_capture_never_logs_token_or_secret(capsys):
     err = capsys.readouterr().err
     assert "SECRET123" not in err
     assert "RuntimeError" in err
+
+
+async def test_run_capture_prints_safe_apify_error_detail(capsys):
+    async def scrape(url, *, token):
+        raise ApifyScrapeError(f"Apify could not scrape {url}: blocked by Instagram")
+
+    async def extract(reel):
+        return []
+
+    await capture.run_capture(["u1"], token="SECRET123", scrape=scrape, extract=extract)
+    err = capsys.readouterr().err
+    assert "blocked by Instagram" in err
+    assert "SECRET123" not in err
+
+
+def test_main_returns_nonzero_and_does_not_write_empty_capture(monkeypatch, tmp_path, capsys):
+    async def empty_capture(*args, **kwargs):
+        return [], []
+
+    wrote = {"value": False}
+
+    def fake_write(*args, **kwargs):
+        wrote["value"] = True
+
+    monkeypatch.setenv("APIFY_TOKEN", "T")
+    monkeypatch.setenv("OPENAI_API_KEY", "K")
+    monkeypatch.setattr(capture, "run_capture", empty_capture)
+    monkeypatch.setattr(capture, "_write_fixtures", fake_write)
+
+    rc = capture.main([
+        "--reels", "https://www.instagram.com/reel/DYGH3jFBZHz/",
+        "--out-dir", str(tmp_path),
+    ])
+    assert rc == 1
+    assert wrote["value"] is False
+    assert "captured 0 reels" in capsys.readouterr().err
 
 
 def test_import_capture_needs_no_keys(monkeypatch):

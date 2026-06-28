@@ -2,7 +2,7 @@
 import httpx
 import pytest
 
-from scrape.apify_direct import map_item_to_reeldata, scrape_reel
+from scrape.apify_direct import ApifyScrapeError, map_item_to_reeldata, scrape_reel
 
 _ITEM = {"caption": "📍Tokyo Dream Park", "locationName": "Tokyo, Japan",
          "shortCode": "DYbmT-SNzVK", "url": "https://www.instagram.com/reel/DYbmT-SNzVK/"}
@@ -51,6 +51,21 @@ async def test_scrape_reel_error_item_raises():
     with pytest.raises(ValueError) as e:
         await scrape_reel(_URL, token="SECRET", client=client)
     assert "no_items" in str(e.value)
+    assert "SECRET" not in str(e.value)
+
+
+async def test_scrape_reel_blocked_error_item_mentions_block_without_token():
+    err_item = {
+        "error": "no_items",
+        "errorDescription": "Empty or private data for provided input",
+        "inputUrl": _URL,
+        "requestErrorMessages": ["Error: Request blocked, retrying it again with different session"],
+    }
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(201, json=[err_item])))
+    with pytest.raises(ApifyScrapeError) as e:
+        await scrape_reel(_URL, token="SECRET", client=client)
+    assert "blocked by Instagram" in str(e.value)
     assert "SECRET" not in str(e.value)
 
 

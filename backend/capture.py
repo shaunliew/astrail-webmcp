@@ -19,6 +19,7 @@ from pathlib import Path
 from models.place import PlaceResult
 from models.reel import ReelData
 from pipeline.sources import record_fixture
+from scrape.apify_direct import ApifyScrapeError
 from scrape.reel_url import normalize_reel_url
 
 EVALS_FIXTURES = Path(__file__).parent / "evals" / "fixtures"
@@ -40,7 +41,10 @@ async def run_capture(
             reel_places = await extract(reel)
         except Exception as exc:  # per-reel tolerance — keep going.
             # Log the URL + error TYPE only; the exception MESSAGE may carry the token.
-            print(f"  [skip] {url}: {type(exc).__name__}", file=sys.stderr)
+            if isinstance(exc, ApifyScrapeError):
+                print(f"  [skip] {url}: {exc}", file=sys.stderr)
+            else:
+                print(f"  [skip] {url}: {type(exc).__name__}", file=sys.stderr)
             continue
         reels.append(reel)
         places.extend(reel_places)
@@ -104,6 +108,9 @@ def main(argv: list[str] | None = None) -> int:
 
     reels, places = asyncio.run(
         run_capture(urls, token=token, scrape=_scrape, extract=extract_places))
+    if not reels:
+        print("captured 0 reels; not writing empty fixtures.", file=sys.stderr)
+        return 1
     _write_fixtures(reels, places, Path(args.out_dir))
     print(f"captured {len(reels)} reel(s), {len(places)} place(s) -> {args.out_dir}")
     return 0

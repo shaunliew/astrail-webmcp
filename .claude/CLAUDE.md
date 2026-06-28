@@ -109,7 +109,9 @@ astrail/
 │   ├── scrape/
 │   │   ├── apify_direct.py         # Direct HTTP Apify (no LLM); opt-in transcript fallback
 │   │   └── reel_url.py             # URL normalization + validation
-│   ├── agents/
+│   ├── genagents/                  # LLM pipeline-stage agents. NOT `agents/`: the OpenAI Agents
+│   │   │                           # SDK owns the top-level `agents` package and shadows it
+│   │   │                           # (renamed in Step 5 — `import agents.*` would resolve to the SDK).
 │   │   ├── place_extractor.py      # per-reel extraction (LLM)
 │   │   ├── place_enricher.py       # research + summary + evidence
 │   │   ├── weather.py              # Open-Meteo agent

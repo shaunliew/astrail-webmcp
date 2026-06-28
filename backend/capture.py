@@ -60,6 +60,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--include-transcript", action="store_true")
     args = parser.parse_args(argv)
 
+    # Load backend/.env (the documented key location). Lazy (here, not at import) so
+    # `import capture` stays keyless — the import-time invariant.
+    from dotenv import find_dotenv, load_dotenv
+    load_dotenv(find_dotenv())
+
     token = os.environ.get("APIFY_TOKEN")
     if not token or not os.environ.get("OPENAI_API_KEY"):
         print("capture needs APIFY_TOKEN + OPENAI_API_KEY in the environment.", file=sys.stderr)

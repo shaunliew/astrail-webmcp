@@ -16,6 +16,7 @@ proving the eval seam is wired with zero behaviour drift.
 """
 from __future__ import annotations
 
+import time
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from pipeline.sources import (
     Source,
     resolve,
 )
+from pipeline.timing import Clock, Stopwatch
 
 
 def _date_range(start_date: str, end_date: str) -> list[str]:
@@ -79,22 +81,30 @@ def run_offline_pipeline(
     *,
     live_reels: Source | None = None,
     live_places: Source | None = None,
+    clock: Clock = time.perf_counter,
 ) -> PipelineOutput:
     """Run the fixture-backed pipeline end-to-end, offline, deterministically.
 
-    `live_*` are seams for Step 5's live sources; in Step 2 they are always None,
-    so the run reads only recorded fixtures. Returns output in the eval shape
-    (reels + places + itinerary).
+    `live_*` are seams for Step 5's live sources; in Step 2 they are always None.
+    `clock` is injectable so timing is deterministic in tests (default perf_counter).
+    Records per-stage + total wall-clock into the returned PipelineOutput.timings.
     """
-    reels = resolve(live_reels, FixtureReelSource(reels_path))          # scrape (fixture)
-    extracted = resolve(live_places, FixturePlaceSource(places_path))   # extract (fixture)
-    canonical = dedup_passthrough(extracted)                            # dedup (identity)
-    dates = _date_range(start_date, end_date)
-    days = assemble_days_naive(canonical, dates)                        # narrate (naive)
-    itinerary = {
-        "title": "Tokyo (offline pipeline skeleton)",
-        "source": "pipeline",
-        "source_places": [p["name"] for p in canonical],
-        "days": days,
-    }
-    return PipelineOutput(reels=reels, places=canonical, itinerary=itinerary)
+    sw = Stopwatch(clock=clock)
+    t0 = clock()
+    with sw.stage("scrape"):
+        reels = resolve(live_reels, FixtureReelSource(reels_path))
+    with sw.stage("extract"):
+        extracted = resolve(live_places, FixturePlaceSource(places_path))
+    with sw.stage("dedup"):
+        canonical = dedup_passthrough(extracted)
+    with sw.stage("narrate"):
+        dates = _date_range(start_date, end_date)
+        days = assemble_days_naive(canonical, dates)
+        itinerary = {
+            "title": "Tokyo (offline pipeline skeleton)",
+            "source": "pipeline",
+            "source_places": [p["name"] for p in canonical],
+            "days": days,
+        }
+    sw.mark_total(t0)
+    return PipelineOutput(reels=reels, places=canonical, itinerary=itinerary, timings=sw.timings)

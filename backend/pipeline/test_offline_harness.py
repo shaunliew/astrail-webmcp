@@ -62,3 +62,40 @@ def test_run_offline_pipeline_rejects_reversed_dates():
             start_date="2026-06-12",
             end_date="2026-06-10",
         )
+
+
+class _Ticker:
+    def __init__(self, step: float = 1.0) -> None:
+        self._t = 0.0
+        self._step = step
+
+    def __call__(self) -> float:
+        v = self._t
+        self._t += self._step
+        return v
+
+
+def test_run_offline_pipeline_records_deterministic_timings():
+    # clock calls in order: total_start, scrape(start,end), extract(start,end),
+    # dedup(start,end), narrate(start,end), total_end -> values 0..9
+    out = run_offline_pipeline(
+        reels_path=FIX / "mini_reels.json",
+        places_path=FIX / "mini_places.json",
+        start_date="2026-06-10",
+        end_date="2026-06-11",
+        clock=_Ticker(),
+    )
+    assert out.timings == {
+        "scrape": 1.0, "extract": 1.0, "dedup": 1.0, "narrate": 1.0, "total": 9.0,
+    }
+
+
+def test_run_offline_pipeline_default_clock_records_floats():
+    out = run_offline_pipeline(
+        reels_path=FIX / "mini_reels.json",
+        places_path=FIX / "mini_places.json",
+        start_date="2026-06-10",
+        end_date="2026-06-11",
+    )
+    assert set(out.timings) == {"scrape", "extract", "dedup", "narrate", "total"}
+    assert all(isinstance(v, float) and v >= 0.0 for v in out.timings.values())

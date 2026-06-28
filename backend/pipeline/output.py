@@ -24,6 +24,9 @@ class PipelineOutput:
         itinerary: {title, source, source_places: [name],
             days: [{day_number, date, place_names: [name]}]} — the exact shape
             backend/evals consumes as the subject under test.
+        timings: per-stage + total wall-clock seconds for this offline run, e.g.
+            {"scrape": 0.1, "extract": 0.2, "dedup": 0.0, "narrate": 0.3, "total": 0.6}.
+            Recorded, non-gating.
 
     Frozen: fields cannot be rebound. Treat the contained lists/dict as
     read-only (immutability by convention) — never mutate in place.
@@ -32,3 +35,4 @@ class PipelineOutput:
     reels: list[dict]
     places: list[dict]
     itinerary: dict
+    timings: dict

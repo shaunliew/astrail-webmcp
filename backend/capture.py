@@ -62,12 +62,13 @@ async def run_capture(
         reels.append(reel)
         print(f"  [ok]   {url}: {len(reel_places)} place(s)")
         for place in reel_places:
+            original_coords = (place.lat, place.lng)  # snapshot before resolve (robust to mutating resolvers)
             try:
                 grounded = await resolve(place)  # Mapbox grounds the coords
             except Exception as exc:  # a geocode failure must NEVER lose the place
                 print(f"  [geocode-skip] {place.name}: {type(exc).__name__}", file=sys.stderr)
                 grounded = place
-            moved = (grounded.lat, grounded.lng) != (place.lat, place.lng)
+            moved = (grounded.lat, grounded.lng) != original_coords
             places.append(grounded)
             print(_format_place(grounded, coords_src="mapbox" if moved else "llm"))
     return reels, places

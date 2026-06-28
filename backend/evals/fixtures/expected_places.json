@@ -1,0 +1,100 @@
+{
+  "places": [
+    {
+      "name": "Tokyo Dream Park",
+      "category": "attraction",
+      "city_or_region_guess": "Tokyo",
+      "lat": 35.6290833,
+      "lng": 139.7879722,
+      "formatted_address": "3-3-8 Ariake, Koto City, Tokyo, Japan",
+      "confidence": 0.95,
+      "evidence_quote": "📍Tokyo Dream Park",
+      "source_type": "reel_extracted",
+      "source_url": "https://www.google.co.jp/maps?ll=35.6290833%2C139.7879722&q=35.6290833%2C139.7879722&z=17"
+    },
+    {
+      "name": "Grand Hyatt Tokyo",
+      "category": "hotel",
+      "city_or_region_guess": "Tokyo",
+      "lat": 35.659426,
+      "lng": 139.729104,
+      "formatted_address": "6 Chome-10-3 Roppongi, Minato-ku, Tōkyō-to 106-0032, Japan",
+      "confidence": 0.95,
+      "evidence_quote": "📍 @grandhyatttokyo , Japan",
+      "source_type": "reel_extracted",
+      "source_url": "https://www.coordinatesfinder.com/coordinates/128632-grand-hyatt-tokyo"
+    },
+    {
+      "name": "Akasaka Station",
+      "category": "transport",
+      "city_or_region_guess": "Tokyo",
+      "lat": 35.6723639,
+      "lng": 139.7365333,
+      "formatted_address": "5-4-5 Akasaka, Minato-ku, Tokyo, Japan",
+      "confidence": 0.65,
+      "evidence_quote": "HARRY POTTER TRAIN STATION IN TOKYO!",
+      "source_type": "reel_extracted",
+      "source_url": "https://latitude.to/map/jp/japan/cities/nishi-tokyo-shi/articles/127100/akasaka-station-tokyo"
+    },
+    {
+      "name": "Harry Potter Cafe",
+      "category": "restaurant",
+      "city_or_region_guess": "Tokyo",
+      "lat": 35.6730773,
+      "lng": 139.7363882,
+      "formatted_address": "Akasaka Biz Tower 1F, 5-3-1 Akasaka, Minato-ku, Tokyo, Japan",
+      "confidence": 0.65,
+      "evidence_quote": "Harry Potter Cafe",
+      "source_type": "reel_extracted",
+      "source_url": "https://www.google.com/maps/place/%E8%B5%A4%E5%9D%82Biz%E3%82%BF%E3%83%AF%E3%83%BC/%4035.6730773%2C139.7363882%2C15z/data%3D%214m2%213m1%211s0x0%3A0x7a139753a280af55?sa=X&ved=2ahUKEwicoMbr3fn3AhU6KqYKHbPfAw0Q_BJ6BAhREAU"
+    },
+    {
+      "name": "SANDO LAB TOKYO",
+      "category": "restaurant",
+      "city_or_region_guess": "Tokyo",
+      "lat": 35.7007615,
+      "lng": 139.7717192,
+      "formatted_address": "1F Don Quijote Akihabara, 4-3-3 Sotokanda, Chiyoda-ku, Tokyo 101-0021, Japan",
+      "confidence": 0.65,
+      "evidence_quote": "Sando Lab Tokyo",
+      "source_type": "reel_extracted",
+      "source_url": "https://www.google.com/maps/search/?api=1&query=35.70076150%2C139.77171920"
+    },
+    {
+      "name": "Popo",
+      "category": "restaurant",
+      "city_or_region_guess": "Tokyo",
+      "lat": 35.73159532,
+      "lng": 139.76540491,
+      "formatted_address": "3-6-12 Nishi-Nippori, Arakawa-ku, Tokyo 116-0013, Japan",
+      "confidence": 0.65,
+      "evidence_quote": "Popo",
+      "source_type": "reel_extracted",
+      "source_url": "https://www.google.com/maps/search/?api=1&query=35.73159532%2C139.76540491"
+    },
+    {
+      "name": "CHERMSIDE SANDWICH Harajuku Takeshita Dori",
+      "category": "restaurant",
+      "city_or_region_guess": "Tokyo",
+      "lat": 35.6708238,
+      "lng": 139.7057951,
+      "formatted_address": "2F Iguchi Building, 1-6-8 Jingumae, Shibuya-ku, Tokyo 150-0001, Japan",
+      "confidence": 0.65,
+      "evidence_quote": "Chermside Sandwich",
+      "source_type": "reel_extracted",
+      "source_url": "https://www.google.com/maps/search/?api=1&query=35.6708238%2C139.7057951&query_place_id=ChIJ-zjVQACNGGARet2KqM2zTvo"
+    },
+    {
+      "name": "Pelican Café Asakusa",
+      "category": "restaurant",
+      "city_or_region_guess": "Tokyo",
+      "lat": 35.7069782,
+      "lng": 139.7911622,
+      "formatted_address": "3-9-11 Kotobuki, Taito-ku, Tokyo 111-0042, Japan",
+      "confidence": 0.65,
+      "evidence_quote": "Pelican Cafe",
+      "source_type": "reel_extracted",
+      "source_url": "https://jp.near-place.com/pelican-cafe-3-chome-9-11-kotobuki-taito/da"
+    }
+  ]
+}

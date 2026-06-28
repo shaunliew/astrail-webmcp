@@ -1,0 +1,35 @@
+{
+  "case": "japan_first_trip",
+  "description": "First-time Tokyo trip, no memory. 4 demo reels -> 8 extracted places (legacy ground truth). 3-day window so naive day ordering is route-stressed.",
+  "reels_fixture": "fixtures/japan_demo_reels.json",
+  "places_fixture": "fixtures/expected_places.json",
+  "start_date": "2026-06-10",
+  "end_date": "2026-06-12",
+  "expected_unique_places": 8,
+  "active_contractual_checks": [
+    "coords_present",
+    "japan_bbox",
+    "day_count",
+    "source_places_parity",
+    "evidence_verbatim"
+  ],
+  "active_quality_metrics": [
+    "dedup_error",
+    "mean_intra_day_travel_m",
+    "hallucination_rate",
+    "evidence_coverage",
+    "weak_source_url_rate"
+  ],
+  "pending_checks": [
+    "restaurant_relevance",
+    "hotel_base_reasoning",
+    "memory_use",
+    "transport_legs"
+  ],
+  "known_legacy_weaknesses": [
+    "Legacy itinerary used only 4 of 8 extracted places (silent place drop).",
+    "Several source_urls are Google Maps / search-result links, not real venue pages (banned Google source + low evidence quality).",
+    "Naive day ordering ignores geography across a ~12km Tokyo spread -> high intra-day travel.",
+    "No returning-user personalization."
+  ]
+}

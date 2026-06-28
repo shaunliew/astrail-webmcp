@@ -1,0 +1,33 @@
+{
+  "_note": "The 4 demo Reel URLs are frozen here (from docs/evals/japan-beta-input-template.md, Case 1). caption + location_name require a one-time Apify scrape or manual fill — the offline runner never scrapes. Until captured, capture_status=NEEDS_CAPTURE and the evidence-verbatim check reports 'blocked' (cannot verify a substring without the caption) rather than pass/fail.",
+  "reels": [
+    {
+      "reel_url": "https://www.instagram.com/reel/DYbmT-SNzVK/",
+      "short_code": "DYbmT-SNzVK",
+      "caption": "A few weeks ago I visited the Doraemon 100 & Friends exhibition in Tokyo! 💙\n\nThere’s an outside area packed with more than 100 life-size Doraemon figures, all with different expressions, poses, and gadgets, so there are photo spots literally everywhere. There are also manga, anime, and movie-themed areas (inside the building), plus a few Japan-exclusive Doraemon designs 🥹\n\nI was obsessed with the sakura Doraemon and the onigiri Doraemon plushies 🌸🍙 But you can only buy them after visiting the exhibition because you need a special code that you’ll find once you get to the shop… and of course I had to get them 😭✨\n\nVisitors also receive random Doraemon acrylic pins and promo cards. If you’re in Tokyo before the end of September and grew up with Doraemon, this is such a fun and nostalgic stop 🫶🏻\n\n🗓️ Until September 30, 2026!\n📍Tokyo Dream Park\n\n.\n.\n.\n#doraemon #doraemonlovers #ドラえもん #tokyotokyo mangaanime",
+      "location_name": "Tokyo, Japan",
+      "capture_status": "CAPTURED"
+    },
+    {
+      "reel_url": "https://www.instagram.com/reel/DYM_I5IvLSv/",
+      "short_code": "DYM_I5IvLSv",
+      "caption": "✨ Tokyo feels different when you wake up at Grand Hyatt Tokyo.\n\nLocated in the heart of vibrant Roppongi, this luxury urban retreat blends modern elegance with the electric energy of Tokyo. From sophisticated interiors and skyline views to world-class dining and effortless access to the city’s best neighborhoods, Grand Hyatt Tokyo is the perfect base to experience Japan in style.\n\n📍 @grandhyatttokyo , Japan\n🌃 Would you choose Tokyo for your next luxury city escape?\n\nFollow @earthtourr for more unforgettable stays and travel inspiration around the world.\n\n#GrandHyattTokyo #Tokyo #JapanTravel #グランドハイアット東京 #pr",
+      "location_name": "Grand Hyatt Tokyo -  グランド ハイアット 東京",
+      "capture_status": "CAPTURED"
+    },
+    {
+      "reel_url": "https://www.instagram.com/reel/DYGH3jFBZHz/",
+      "short_code": "DYGH3jFBZHz",
+      "caption": "HARRY POTTER TRAIN STATION IN TOKYO! 🤩 Free to visit however reservations are required if you plan to dine at the Harry Potter Cafe! #harrypotter #tokyo #japan",
+      "location_name": "Tokyo, Japan",
+      "capture_status": "CAPTURED"
+    },
+    {
+      "reel_url": "https://www.instagram.com/reel/DXwcVVliX3B/",
+      "short_code": "DXwcVVliX3B",
+      "caption": "Japan’s viral sandwich scene with @foodtokyotourguide soft, fluffy, and impossibly aesthetic!🥪🇯🇵✨ Tag someone you’d go on a foodie hunt in Tokyo with!🍓💛\n\n🥪 In Tokyo, Japanese “sando” sandwiches are all about perfection — from pillowy milk bread to beautifully layered fillings. Spots like Sando Lab Tokyo are known for their modern, picture-perfect creations, while Popo serves classic fruit sandos packed with fresh cream and seasonal fruits. Chermside Sandwich brings a more gourmet twist with unique flavors, and Pelican Cafe is loved for its iconic thick-cut bread and nostalgic café-style sandwiches.\n\n📍 Tokyo, Japan",
+      "location_name": null,
+      "capture_status": "CAPTURED"
+    }
+  ]
+}

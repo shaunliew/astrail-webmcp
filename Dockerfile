@@ -3,7 +3,8 @@
 FROM python:3.14-slim AS builder
 WORKDIR /app
 RUN pip install --no-cache-dir uv
-COPY pyproject.toml .
+COPY backend/pyproject.toml ./pyproject.toml
+COPY backend/uv.lock ./uv.lock
 # Install dependencies only (the app itself is not a packaged module yet).
 RUN uv sync --no-dev --no-install-project
 

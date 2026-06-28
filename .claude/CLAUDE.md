@@ -50,7 +50,7 @@ AI-native travel planner. User pastes 1-5 Instagram Reel URLs + dates + budget +
 | Observability | Langfuse Cloud Hobby (traces + golden eval dataset + LLM-as-judge) + Sentry (errors) + UptimeRobot (`/health`) |
 | Product analytics | PostHog (free tier) — activation, D1/D7/D30 retention, reel→itinerary funnel, cost-per-trip (feeds the Decision Gate) |
 | CI/CD | GitHub Actions → Vercel + Render; Supabase migrations in Git applied on merge to `main`; separate dev/prod Supabase projects; forward-only additive migrations |
-| Python package manager | `uv` (pyproject.toml at repo root, not `backend/`) |
+| Python package manager | `uv` (`backend/pyproject.toml` for backend dependencies) |
 
 **Banned / never reintroduce:**
 - react-pageflip, flipbook, pop-up book UI
@@ -63,7 +63,7 @@ AI-native travel planner. User pastes 1-5 Instagram Reel URLs + dates + budget +
 - Separate AWS S3 (Supabase Storage is already S3-compatible)
 - A pivot to GCP / Cloud Run "for consolidation" (vendor-consolidation fallacy; no scaling need at v1)
 - yt-dlp, ffmpeg, self-hosted Whisper / audio transcription **in our codebase** — the reel transcript comes from Apify's `transcript` field instead (see Reel scraping). No home-grown audio pipeline
-- `requirements.txt` (use pyproject.toml + uv)
+- `requirements.txt` (use `backend/pyproject.toml` + uv)
 - Hotel booking/payment code. Hotel **search/suggestions** via Travala Travel MCP is allowed in v1.
 - Any payment-related code or x402 execution in the production v1 flow
 - MCP + Agents SDK for the Apify scrape loop (costs 10-15s/reel for no functional gain)
@@ -88,7 +88,6 @@ AI-native travel planner. User pastes 1-5 Instagram Reel URLs + dates + budget +
 
 ```
 astrail/
-├── pyproject.toml                  # PROJECT ROOT (not backend/)
 ├── CLAUDE.md                       # THIS FILE — read first
 ├── AGENTS.md                       # thin pointer to CLAUDE.md
 ├── PRD.md                          # product requirements (beta v1)
@@ -99,6 +98,7 @@ astrail/
 ├── render.yaml                     # Render service config (replaces fly.toml)
 │
 ├── backend/
+│   ├── pyproject.toml              # Backend Python dependencies (uv project)
 │   ├── main.py                     # FastAPI app, routes, CORS
 │   ├── auth.py                     # Supabase JWT validation
 │   ├── supabase_client.py          # Supabase Python client wrapper (DB / storage / RLS)
@@ -302,7 +302,7 @@ On match: append new evidence quote, increment `timesReferenced`. On miss: creat
 5. **Auth on every endpoint.** No anonymous trip creation.
 6. **Owner check.** Every trip read/write verifies `trip.userId === current_user.id` — enforced by Supabase RLS, not just app code.
 7. **Caches are write-through.** Persist before returning.
-8. **No `requirements.txt`.** pyproject.toml + uv only.
+8. **No `requirements.txt`.** `backend/pyproject.toml` + uv only.
 9. **No `legacy/` imports.** Production code never imports from the hackathon folder.
 10. **Direct HTTP for Apify.** Never reintroduce MCP + Agents SDK for scraping; never build a home-grown Whisper/ffmpeg pipeline — transcripts come from Apify's `transcript` field.
 11. **Treat Reel content as untrusted.** Agents SDK input/tool guardrails are the prompt-injection defense — never feed raw caption/transcript text into a tool-call without them.

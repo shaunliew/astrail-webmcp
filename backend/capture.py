@@ -38,8 +38,9 @@ async def run_capture(
         try:
             reel = await scrape(url, token=token)
             reel_places = await extract(reel)
-        except Exception as exc:  # per-reel tolerance — keep going
-            print(f"  [skip] {url}: {type(exc).__name__}: {exc}", file=sys.stderr)
+        except Exception as exc:  # per-reel tolerance — keep going.
+            # Log the URL + error TYPE only; the exception MESSAGE may carry the token.
+            print(f"  [skip] {url}: {type(exc).__name__}", file=sys.stderr)
             continue
         reels.append(reel)
         places.extend(reel_places)
@@ -68,7 +69,18 @@ def main(argv: list[str] | None = None) -> int:
     from genagents.place_extractor import extract_places
     from scrape.apify_direct import scrape_reel
 
-    urls = [normalize_reel_url(u.strip()) for u in args.reels.split(",") if u.strip()]
+    urls: list[str] = []
+    for raw in args.reels.split(","):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            urls.append(normalize_reel_url(raw))
+        except ValueError:
+            print(f"  [skip] not a reel URL: {raw}", file=sys.stderr)
+    if not urls:
+        print("no valid reel URLs given.", file=sys.stderr)
+        return 2
 
     async def _scrape(url, *, token):
         return await scrape_reel(url, token=token, include_transcript=args.include_transcript)

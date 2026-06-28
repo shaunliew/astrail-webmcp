@@ -28,6 +28,20 @@ async def test_run_capture_collects_successes_and_skips_failures():
     assert [p.name for p in places] == ["u1", "u2"]
 
 
+async def test_run_capture_never_logs_token_or_secret(capsys):
+    # a producer error whose message carries a secret must NOT be printed (Codex P2)
+    async def scrape(url, *, token):
+        raise RuntimeError("upstream failure token=SECRET123 leaked")
+
+    async def extract(reel):
+        return []
+
+    await capture.run_capture(["u1"], token="SECRET123", scrape=scrape, extract=extract)
+    err = capsys.readouterr().err
+    assert "SECRET123" not in err
+    assert "RuntimeError" in err
+
+
 def test_import_capture_needs_no_keys(monkeypatch):
     monkeypatch.delenv("APIFY_TOKEN", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

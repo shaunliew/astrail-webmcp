@@ -46,7 +46,10 @@ def test_is_placeholder_url():
     assert is_placeholder_url("https://tabelog.com/tokyo/123") is False
 
 
-async def test_extract_places_filters_via_injected_runner():
+async def test_extract_places_filters_via_injected_runner(monkeypatch):
+    import genagents.place_extractor as pe
+    monkeypatch.setattr(pe, "build_extractor", lambda model: object())  # keep the test SDK-free
+
     async def fake_runner(agent, user_input):
         return SimpleNamespace(final_output=ExtractionResult(places=[
             _place("Cafe Alpha", "📍Cafe Alpha"),
@@ -59,6 +62,7 @@ async def test_extract_places_filters_via_injected_runner():
 async def test_extract_places_falls_back_on_model_error(monkeypatch):
     import genagents.place_extractor as pe
     monkeypatch.setattr(pe, "_model_errors", lambda: (RuntimeError,))
+    monkeypatch.setattr(pe, "build_extractor", lambda model: object())  # keep the test SDK-free
     calls = {"n": 0}
 
     async def flaky_runner(agent, user_input):

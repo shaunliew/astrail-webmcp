@@ -30,6 +30,12 @@ class PlaceResult(BaseModel):
     source_url: str | None = None
     city_or_region_guess: str | None = None
     formatted_address: str | None = None
+    name_local: str | None = Field(
+        default=None,
+        description="Venue name in the local language/script, verbatim from the caption "
+                    "(e.g. '東京タワー'), or None when the caption has no local-script name. "
+                    "Used to ground coords in providers that index POIs in the local script.",
+    )
 
 
 class ExtractionResult(BaseModel):

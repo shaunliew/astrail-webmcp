@@ -40,6 +40,11 @@ from the verified result. If web_search returns a famous nearby venue whose exac
 is NOT in the caption/location tag, reject it and search again.
 Step 4 — return ExtractionResult. For each place:
   - name: canonical name (use the creator-tagged name for Tier 1/2)
+  - name_local: the venue's name in the LOCAL language/script EXACTLY as written in the \
+    caption or location tag (e.g. "東京タワー") — a verbatim substring, character for \
+    character. ALWAYS include this field; set it to null when the caption has no \
+    local-script name (e.g. an English-only caption). NEVER translate or transliterate it \
+    yourself. It grounds coordinates in map providers that index POIs in the local script.
   - category: restaurant | hotel | attraction | transport | other
   - source_type: "reel_extracted"
   - lat / lng: from web_search (null if not found — Pydantic bounds apply)
@@ -51,6 +56,8 @@ Step 4 — return ExtractionResult. For each place:
 
 Rules:
   - evidence_quote MUST be a verbatim substring of the caption/location tag. No paraphrasing.
+  - name_local, when non-null, MUST be a verbatim substring of the caption/location tag \
+    (like evidence_quote). If there is no local-script name in the text, set it to null.
   - A Tier 1 📍 place overrides any conflicting inference.
   - Drop places with confidence < 0.5 or with no lat/lng found after two searches.
   - If the caption + location tag are only city-level (e.g. "Tokyo, Japan") with no \
@@ -96,7 +103,9 @@ def build_extractor_input(reel: ReelData) -> str:
 
 
 def keep_valid_places(places: list[PlaceResult], reel: ReelData) -> list[PlaceResult]:
-    """Drop hallucinations: null coords, non-verbatim evidence_quote, or placeholder source_url."""
+    """Drop hallucinations: null coords, non-verbatim evidence_quote, or placeholder source_url.
+    Also null a non-verbatim name_local (keep the place) so an unreliable local name never
+    reaches the geocoder — guardrails #1 (no hallucinated data) and #11 (untrusted content)."""
     corpus = (reel.caption + " " + (reel.location_name or "")).lower()
     kept: list[PlaceResult] = []
     for p in places:
@@ -106,6 +115,8 @@ def keep_valid_places(places: list[PlaceResult], reel: ReelData) -> list[PlaceRe
             continue
         if p.source_url is not None and is_placeholder_url(p.source_url):
             continue
+        if p.name_local and p.name_local.lower() not in corpus:
+            p = p.model_copy(update={"name_local": None})  # drop only the unreliable local name
         kept.append(p)
     return kept
 

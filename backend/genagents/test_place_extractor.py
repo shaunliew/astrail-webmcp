@@ -130,6 +130,34 @@ def test_import_needs_no_keys(monkeypatch):
     assert pe.is_placeholder_url("https://example.com") is True
 
 
+def _reel_with(caption: str) -> ReelData:
+    return ReelData(reel_url="manual:x", caption=caption, capture_status="MANUAL")
+
+
+def test_place_result_name_local_defaults_none():
+    p = PlaceResult(name="X", category="other", confidence=0.5, evidence_quote="X")
+    assert p.name_local is None
+
+
+def test_keep_valid_places_keeps_verbatim_name_local():
+    # famous venue canonicalized to English `name`, Japanese form present in the caption
+    reel = _reel_with("最高の夜景 📍東京タワー at night")
+    p = PlaceResult(name="Tokyo Tower", category="attraction", confidence=0.95,
+                    evidence_quote="📍東京タワー", lat=35.6586, lng=139.7454,
+                    name_local="東京タワー")
+    kept = keep_valid_places([p], reel)
+    assert len(kept) == 1 and kept[0].name_local == "東京タワー"
+
+
+def test_keep_valid_places_nulls_non_verbatim_name_local_but_keeps_place():
+    reel = _reel_with("amazing tower 📍Tokyo Tower")          # no Japanese in caption
+    p = PlaceResult(name="Tokyo Tower", category="attraction", confidence=0.9,
+                    evidence_quote="📍Tokyo Tower", lat=35.6586, lng=139.7454,
+                    name_local="東京タワー")                    # not in the caption
+    kept = keep_valid_places([p], reel)
+    assert len(kept) == 1 and kept[0].name_local is None       # place kept, bad local name dropped
+
+
 @pytest.mark.live
 async def test_live_single_reel_extraction():
     reel = ReelData(reel_url="https://www.instagram.com/reel/DYbmT-SNzVK/",

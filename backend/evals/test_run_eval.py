@@ -182,3 +182,13 @@ def test_report_renders_stage_timings_section(capsys, monkeypatch):
     out = capsys.readouterr().out
     assert "STAGE TIMINGS" in out
     assert "total" in out
+
+
+def test_pipeline_zero_dedup_error_on_japan_dedupe():
+    # Eval-level regression guard for the union-find dedup fix (issue #16 Step 6).
+    # The 9 raw japan_dedup_places → 8 canonical after two-gate dedup → dedup_error==0.
+    # The baseline subject intentionally scores 1 (no dedup); do NOT add a contractual
+    # check to the case — that would fail the baseline subject which loads 9 raw places.
+    result = run_case("japan_dedupe", subject="pipeline")
+    assert QUALITY_METRICS["dedup_error"](result["ctx"]) == 0
+    assert len(result["ctx"]["places"]) == 8

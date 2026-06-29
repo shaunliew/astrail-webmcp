@@ -64,6 +64,7 @@ def test_cap_never_drops_user_requested():
     places.append(_p("MyPick", 36.5, 140.5, conf=0.10, source_type="user_requested"))
     res = dedupe_places(places, max_places=8)
     assert "MyPick" in [p.name for p in res.places]   # kept despite lowest conf + over cap
+    assert len(res.places) == 8
 
 
 def test_distinct_places_pass_through_unchanged_order():
@@ -110,3 +111,46 @@ def test_confidence_tie_keeps_earliest_as_representative():
     second = _p("Dup", 35.0001, 139.0001, conf=0.9, evidence="second")
     res = dedupe_places([first, second])
     assert len(res.places) == 1 and res.places[0].evidence_quote == "first"
+
+
+def test_transitive_cluster_merges_regardless_of_order():
+    # Regression guard for the union-find fix: A~B (~333 m), B~C (~333 m), A not~C (~666 m).
+    # The bridge place (B) must unite all three regardless of input order. The old sequential
+    # scan produced 1 cluster for [a,b,c] but 2 for [a,c,b] — union-find fixes both.
+    a = _p("Spot", 35.0000, 139.0)
+    b = _p("Spot", 35.0030, 139.0)  # ~333 m from a
+    c = _p("Spot", 35.0060, 139.0)  # ~333 m from b, ~666 m from a
+    res_abc = dedupe_places([a, b, c])
+    assert len(res_abc.places) == 1 and res_abc.places[0].times_referenced == 3
+    res_acb = dedupe_places([a, c, b])
+    assert len(res_acb.places) == 1 and res_acb.places[0].times_referenced == 3
+
+
+def test_geo_gate_boundary_strict_less_than():
+    # 0.00449° ≈ 499 m (< 500 m threshold) → merges; 0.0045° ≈ 500 m (≥ threshold) → no merge.
+    # Verifies the gate is strict < not ≤.
+    under = dedupe_places([_p("Spot", 35.0, 139.0), _p("Spot", 35.00449, 139.0)])
+    assert len(under.places) == 1
+    over = dedupe_places([_p("Spot", 35.0, 139.0), _p("Spot", 35.0045, 139.0)])
+    assert len(over.places) == 2
+
+
+def test_one_sided_no_coords_never_merges():
+    # geo gate requires coords on BOTH sides — one None-coord place must never merge,
+    # even with a same-name place that has valid coords.
+    a = _p("Spot", 35.0, 139.0)
+    b = PlaceResult(name="Spot", category="other", confidence=0.9, evidence_quote="Spot",
+                    lat=None, lng=None)
+    res = dedupe_places([a, b])
+    assert len(res.places) == 2
+
+
+def test_dropped_places_have_dropped_note_not_kept():
+    # In a >cap scenario: each place gets exactly one note. A dropped place must appear
+    # in a "dropped" note and must NOT appear in any "kept" note (pre-fix bug: both).
+    places = [_p(f"P{i}", 35.0 + i, 139.0 + i, conf=round(0.5 + i * 0.05, 2)) for i in range(10)]
+    res = dedupe_places(places, max_places=8)
+    dropped_notes = [n for n in res.notes if "dropped" in n]
+    kept_notes = [n for n in res.notes if "kept" in n]
+    assert any("P0" in n for n in dropped_notes)
+    assert not any("P0" in n for n in kept_notes)

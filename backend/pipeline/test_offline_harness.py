@@ -66,7 +66,7 @@ def test_run_offline_pipeline_returns_eval_shaped_output():
     assert isinstance(out, PipelineOutput)
     # reels surfaced from the scrape seam
     assert [r["short_code"] for r in out.reels] == ["MINI_AAA", "MINI_BBB"]
-    # places surfaced from the extract seam (identity dedup -> both kept)
+    # places surfaced from the extract seam (both kept: two-gate dedup, distinct names + far coords)
     assert [p["name"] for p in out.places] == ["Cafe Alpha", "Beta Ramen"]
     # itinerary shape matches what backend/evals consumes
     it = out.itinerary

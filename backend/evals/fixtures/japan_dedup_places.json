@@ -14,19 +14,6 @@
       "name_local": "一蘭 渋谷店"
     },
     {
-      "name": "一蘭 渋谷店",
-      "category": "restaurant",
-      "city_or_region_guess": "Tokyo",
-      "lat": 35.6612,
-      "lng": 139.7012,
-      "formatted_address": "1 Chome-22-3 Dogenzaka, Shibuya City, Tokyo 150-0043, Japan",
-      "confidence": 0.95,
-      "evidence_quote": "Ichiran 渋谷",
-      "source_type": "reel_extracted",
-      "source_url": "https://ichiran.com/shop/kanto/shibuya/",
-      "name_local": null
-    },
-    {
       "name": "Ichiran",
       "category": "restaurant",
       "city_or_region_guess": "Tokyo",
@@ -116,6 +103,19 @@
       "source_type": "reel_extracted",
       "source_url": "https://www.meijijingu.or.jp/",
       "name_local": "明治神宮"
+    },
+    {
+      "name": "一蘭 渋谷店",
+      "category": "restaurant",
+      "city_or_region_guess": "Tokyo",
+      "lat": 35.6612,
+      "lng": 139.7012,
+      "formatted_address": "1 Chome-22-3 Dogenzaka, Shibuya City, Tokyo 150-0043, Japan",
+      "confidence": 0.95,
+      "evidence_quote": "Ichiran 渋谷",
+      "source_type": "reel_extracted",
+      "source_url": "https://ichiran.com/shop/kanto/shibuya/",
+      "name_local": null
     }
   ]
 }

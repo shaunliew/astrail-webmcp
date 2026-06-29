@@ -9,6 +9,7 @@ from genagents.place_extractor import (
     extract_places,
     is_placeholder_url,
     keep_valid_places,
+    _count_web_searches,
 )
 from models.place import ExtractionResult, PlaceResult
 from models.reel import ReelData
@@ -46,18 +47,45 @@ def test_is_placeholder_url():
     assert is_placeholder_url("https://tabelog.com/tokyo/123") is False
 
 
-def test_count_web_searches():
-    import genagents.place_extractor as pe
+class _Raw:
+    def __init__(self, type_):
+        self.type = type_
 
-    class ToolSearchCallItem:  # how hosted web_search calls appear
+
+class _Item:
+    def __init__(self, raw):
+        self.raw_item = raw
+
+
+class _Result:
+    def __init__(self, items):
+        self.new_items = items
+
+
+def test_count_web_searches_counts_web_search_call_raw_items():
+    # Hosted WebSearchTool calls are ToolCallItems whose raw_item.type is "web_search_call".
+    result = _Result([
+        _Item(_Raw("web_search_call")),
+        _Item(_Raw("function_call")),
+        _Item(_Raw("web_search_call")),
+        _Item({"type": "web_search_call"}),
+        _Item(_Raw("reasoning")),
+        _Item(None),
+    ])
+    assert _count_web_searches(result) == 3
+
+
+def test_count_web_searches_ignores_unrelated_tool_search_items():
+    result = _Result([_Item(_Raw("tool_search_call")), _Item(_Raw("file_search_call"))])
+    assert _count_web_searches(result) == 0
+
+
+def test_count_web_searches_no_new_items_returns_zero():
+    class _Bare:
         pass
 
-    class MessageOutputItem:
-        pass
-
-    r = SimpleNamespace(new_items=[ToolSearchCallItem(), MessageOutputItem(), ToolSearchCallItem()])
-    assert pe._count_web_searches(r) == 2
-    assert pe._count_web_searches(SimpleNamespace()) == 0  # no new_items → 0, no crash
+    assert _count_web_searches(_Bare()) == 0
+    assert _count_web_searches(_Result([])) == 0
 
 
 async def test_extract_places_filters_via_injected_runner(monkeypatch):

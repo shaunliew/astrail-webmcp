@@ -138,15 +138,21 @@ async def _default_runner(agent, user_input: str):
 
 
 def _count_web_searches(result) -> int:
-    """Count WebSearchTool calls in a run result. Hosted web_search calls appear as
-    `ToolSearchCallItem` (not `ToolCallItem`), so match by class-name. Defensive: a
-    fake/stub result with no `new_items` returns 0 (keeps unit tests offline)."""
+    """Count hosted WebSearchTool calls in a run result.
+
+    In openai-agents 0.17.x a hosted web search surfaces as a ToolCallItem whose
+    raw_item is ResponseFunctionWebSearch with type == "web_search_call". The
+    similarly named ToolSearchCallItem is a separate tool-search feature, not web
+    search. Match the raw Responses item type instead of the wrapper class name.
+    """
     items = getattr(result, "new_items", None) or []
-    return sum(
-        1 for it in items
-        if "ToolSearch" in type(it).__name__
-        or ("ToolCall" in type(it).__name__ and "search" in type(it).__name__.lower())
-    )
+    count = 0
+    for it in items:
+        raw = getattr(it, "raw_item", None)
+        raw_type = raw.get("type") if isinstance(raw, dict) else getattr(raw, "type", None)
+        if raw_type == "web_search_call":
+            count += 1
+    return count
 
 
 async def extract_places(reel: ReelData, *, model: str | None = None, runner=None) -> list[PlaceResult]:

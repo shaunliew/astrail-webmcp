@@ -317,7 +317,7 @@ On match: append new evidence quote, increment `timesReferenced`. On miss: creat
 - `output_type` must be a Pydantic model, not a bare list.
 - Pydantic lat/lng bounds: `ge=-90, le=90` and `ge=-180, le=180` — catches hallucinated coords.
 - `evidence_caption_quote` must be verbatim substring of `caption + locationName`. Drop if not.
-- `WebSearchTool` calls appear as `ToolSearchCallItem`, not `ToolCallItem`. Match both class-name patterns.
+- Counting `WebSearchTool` calls: in openai-agents **0.17.x** a hosted web search surfaces in `result.new_items` as a **`ToolCallItem`** whose `raw_item` is `openai.types.responses.ResponseFunctionWebSearch` with **`type == "web_search_call"`** — match `raw_item.type` (tolerating a `dict` raw_item), NOT the wrapper class name. `ToolSearchCallItem` is a **separate, unrelated tool-search feature** — do not match on it. (Corrected 2026-06-29; the old "appears as `ToolSearchCallItem`" note caused `web_search_calls=0` on real runs. See `genagents/place_extractor.py::_count_web_searches`.)
 - Apify MCP `client_session_timeout_seconds` default is 5s — always too short. Irrelevant now (using direct HTTP), but note if SDK ever returns.
 
 ## Build Order (productionising from hackathon)

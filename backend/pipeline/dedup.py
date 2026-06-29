@@ -79,7 +79,11 @@ def dedupe_places(
     """Cluster duplicates (two-gate), build canonical places, then cap to max_places by
     dropping the lowest-confidence non-user-requested places — preserving input order
     among survivors. Returns the canonical places + human-readable keep/drop notes.
-    Never mutates the input list."""
+    Never mutates the input list.
+
+    Edge case: if user-requested places alone exceed max_places, ALL of them are kept and
+    the result intentionally exceeds the cap (the 'never drop a user pick' rule wins over
+    the cap)."""
     clusters: list[list[PlaceResult]] = []
     for p in places:
         for cl in clusters:

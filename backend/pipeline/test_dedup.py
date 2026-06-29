@@ -89,3 +89,24 @@ def test_transitive_cluster_merges_via_any_member():
     a, b, c = _p("Spot", 35.0000, 139.0), _p("Spot", 35.0030, 139.0), _p("Spot", 35.0060, 139.0)
     res = dedupe_places([a, b, c])
     assert len(res.places) == 1 and res.places[0].times_referenced == 3
+
+
+def test_empty_input_returns_empty_result():
+    res = dedupe_places([])
+    assert res.places == [] and res.notes == []
+
+
+def test_user_requested_over_cap_all_kept_even_past_max():
+    # the 'never drop a user pick' rule wins over the cap → result may exceed max_places
+    picks = [_p(f"U{i}", 35.0 + i, 139.0 + i, conf=0.1, source_type="user_requested") for i in range(10)]
+    res = dedupe_places(picks, max_places=8)
+    assert len(res.places) == 10
+    assert all(p.source_type == "user_requested" for p in res.places)
+
+
+def test_confidence_tie_keeps_earliest_as_representative():
+    # equal confidence → first-in-cluster wins (max() returns the earliest maximum)
+    first = _p("Dup", 35.0, 139.0, conf=0.9, evidence="first")
+    second = _p("Dup", 35.0001, 139.0001, conf=0.9, evidence="second")
+    res = dedupe_places([first, second])
+    assert len(res.places) == 1 and res.places[0].evidence_quote == "first"

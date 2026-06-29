@@ -1,6 +1,6 @@
 {
   "case": "japan_dedupe",
-  "description": "9 raw mentions -> 8 unique. One cross-language same-venue pair merges (alias '一蘭 渋谷店' + ~15m); one same-chain pair shares alias 'Ichiran' but is ~3.2km apart so the geo gate keeps them separate. dedup_error: pipeline 0, baseline 1. diverges_from_baseline so the metric-parity anchor test skips it.",
+  "description": "9 raw mentions -> 8 unique. One cross-language same-venue pair merges (alias '一蘭 渋谷店' + ~15m); one same-chain pair shares alias 'Ichiran' but is ~3.2km apart so the geo gate keeps them separate. This case validates DEDUP COUNT (dedup_error: pipeline 0, baseline 1), not travel: mean_intra_day_travel_m is intentionally omitted because the two same-named 'Ichiran' branches collapse under that metric's name-keyed coords (the geo-gate behavior is gated directly by pipeline/test_dedup.py instead). diverges_from_baseline so the metric-parity anchor test skips it.",
   "reels_fixture": "fixtures/japan_demo_reels.json",
   "places_fixture": "fixtures/japan_dedup_places.json",
   "start_date": "2026-06-10",
@@ -16,7 +16,6 @@
   ],
   "active_quality_metrics": [
     "dedup_error",
-    "mean_intra_day_travel_m",
     "hallucination_rate"
   ],
   "pending_checks": []

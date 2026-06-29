@@ -299,6 +299,21 @@ def test_main_reels_provided_without_token_errors_even_with_manual(monkeypatch, 
     assert "APIFY_TOKEN" in capsys.readouterr().err
 
 
+async def test_run_capture_logs_llm_to_mapbox_delta_when_moved(capsys):
+    async def scrape(url, *, token):
+        return _reel(url)
+
+    async def extract(reel):
+        return [_place("Cafe")]  # LLM coords lat=35.6, lng=139.7
+
+    async def resolve(place):
+        return place.model_copy(update={"lat": 35.71, "lng": 139.80})  # Mapbox moves it
+
+    await capture.run_capture(["u1"], token="T", scrape=scrape, extract=extract, resolve=resolve)
+    err = capsys.readouterr().err
+    assert "llm-coords" in err and "35.6000,139.7000" in err and "Δ" in err
+
+
 def test_main_out_dir_defaults_by_mode(monkeypatch):
     # manual-only defaults to captures/ (protects #16); scraping defaults to evals/fixtures
     seen = {}

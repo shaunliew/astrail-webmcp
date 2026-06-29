@@ -25,6 +25,7 @@ import os
 import sys
 from pathlib import Path
 
+from geocode.mapbox_forward import TOKYO
 from models.place import PlaceResult
 from models.reel import ReelData
 from pipeline.sources import record_fixture
@@ -34,6 +35,13 @@ from scrape.reel_url import normalize_reel_url
 
 EVALS_FIXTURES = Path(__file__).parent / "evals" / "fixtures"
 CAPTURES_DEFAULT = Path(__file__).parent / "captures"  # gitignored; manual-only default
+
+# Beta geo-policy: Astrail v1 targets Japan → bias proximity to Tokyo and filter to JP.
+# The query LANGUAGE is per-place (geocode.policy detects it from the query's script).
+# SCALING (multi-country): derive country + proximity from the trip destination
+# (see docs/superpowers/plans/2026-06-29-mapbox-coord-authority-name-local.md "Scalability").
+BETA_COUNTRY = "jp"
+BETA_PROXIMITY = TOKYO
 
 
 async def _identity_resolve(place: PlaceResult) -> PlaceResult:
@@ -48,6 +56,16 @@ def _log_skip(label: str, exc: Exception) -> None:
     token). Used for both scrape and extract failures so the rule is uniform."""
     detail = str(exc) if isinstance(exc, ApifyScrapeError) else type(exc).__name__
     print(f"  [skip] {label}: {detail}", file=sys.stderr)
+
+
+def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Great-circle distance in metres between (lat, lng) points — for the LLM↔Mapbox
+    coord-delta diagnostic only."""
+    import math
+    lat1, lng1, lat2, lng2 = map(math.radians, (a[0], a[1], b[0], b[1]))
+    dlat, dlng = lat2 - lat1, lng2 - lng1
+    h = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlng / 2) ** 2
+    return 2 * 6_371_000 * math.asin(math.sqrt(h))
 
 
 async def _collect_reel(
@@ -74,6 +92,10 @@ async def _collect_reel(
         moved = (grounded.lat, grounded.lng) != original_coords
         places.append(grounded)
         print(_format_place(grounded, coords_src="mapbox" if moved else "llm"))
+        if moved and None not in original_coords and grounded.lat is not None and grounded.lng is not None:
+            d = _haversine_m(original_coords, (grounded.lat, grounded.lng))
+            print(f"           llm-coords: {original_coords[0]:.4f},{original_coords[1]:.4f}"
+                  f"  (Δ {d:.0f} m from mapbox)", file=sys.stderr)
 
 
 async def run_capture(
@@ -196,9 +218,12 @@ def main(argv: list[str] | None = None) -> int:
     resolve = None
     if mapbox_token:
         from geocode.mapbox_forward import apply_geocode, forward_geocode
+        from geocode.policy import geocode_query
 
         async def _resolve(place: PlaceResult) -> PlaceResult:
-            geo = await forward_geocode(place.name, token=mapbox_token)
+            query, language = geocode_query(place)
+            geo = await forward_geocode(query, token=mapbox_token, language=language,
+                                        country=BETA_COUNTRY, proximity_lng_lat=BETA_PROXIMITY)
             return apply_geocode(place, geo)
         resolve = _resolve
     else:

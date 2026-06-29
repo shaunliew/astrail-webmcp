@@ -280,3 +280,21 @@ async def test_forward_geocode_malformed_2xx_body_returns_none():
     ))
     result = await forward_geocode("place", token="TKN", client=client)
     assert result is None
+
+
+async def test_forward_geocode_passes_language_ja():
+    """A Japanese-language query must pass language=ja, country=jp, and the correct q param."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"type": "FeatureCollection", "features": []})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    await forward_geocode("東京タワー", token="TKN", language="ja",
+                          country="jp", proximity_lng_lat=TOKYO, client=client)
+    qs = parse_qs(urlparse(seen["url"]).query)
+    assert qs.get("language") == ["ja"]
+    assert qs.get("country") == ["jp"]
+    assert qs.get("q") == ["東京タワー"]
+    assert qs.get("proximity") == ["139.7671,35.6812"]

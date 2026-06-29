@@ -45,7 +45,10 @@ class ExtractionResult(BaseModel):
 
 
 class CanonicalPlace(PlaceResult):
-    """A deduplicated place. `times_referenced` is the data-flywheel counter
-    (Step 6's semantic+geo dedup increments it on a merge)."""
+    """A deduplicated place. `times_referenced` is the data-flywheel counter (Step 6's
+    two-gate dedup increments it on a merge). `aliases` are the distinct names/local-names
+    of all merged mentions; `evidence_quotes` keeps each merged source's evidence."""
 
     times_referenced: int = 1
+    aliases: list[str] = Field(default_factory=list)
+    evidence_quotes: list[str] = Field(default_factory=list)

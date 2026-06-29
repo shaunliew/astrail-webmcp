@@ -1,0 +1,121 @@
+{
+  "places": [
+    {
+      "name": "Ichiran Shibuya",
+      "category": "restaurant",
+      "city_or_region_guess": "Tokyo",
+      "lat": 35.6611,
+      "lng": 139.7011,
+      "formatted_address": "1 Chome-22-3 Dogenzaka, Shibuya City, Tokyo 150-0043, Japan",
+      "confidence": 0.85,
+      "evidence_quote": "📍一蘭 渋谷店",
+      "source_type": "reel_extracted",
+      "source_url": "https://ichiran.com/shop/kanto/shibuya/",
+      "name_local": "一蘭 渋谷店"
+    },
+    {
+      "name": "一蘭 渋谷店",
+      "category": "restaurant",
+      "city_or_region_guess": "Tokyo",
+      "lat": 35.6612,
+      "lng": 139.7012,
+      "formatted_address": "1 Chome-22-3 Dogenzaka, Shibuya City, Tokyo 150-0043, Japan",
+      "confidence": 0.95,
+      "evidence_quote": "Ichiran 渋谷",
+      "source_type": "reel_extracted",
+      "source_url": "https://ichiran.com/shop/kanto/shibuya/",
+      "name_local": null
+    },
+    {
+      "name": "Ichiran",
+      "category": "restaurant",
+      "city_or_region_guess": "Tokyo",
+      "lat": 35.6650,
+      "lng": 139.7000,
+      "formatted_address": "Shibuya branch, Shibuya City, Tokyo, Japan",
+      "confidence": 0.80,
+      "evidence_quote": "Ichiran ramen Shibuya",
+      "source_type": "reel_extracted",
+      "source_url": "https://ichiran.com/shop/kanto/",
+      "name_local": "一蘭"
+    },
+    {
+      "name": "Ichiran",
+      "category": "restaurant",
+      "city_or_region_guess": "Tokyo",
+      "lat": 35.6938,
+      "lng": 139.7035,
+      "formatted_address": "Shinjuku branch, Shinjuku City, Tokyo, Japan",
+      "confidence": 0.75,
+      "evidence_quote": "Ichiran ramen Shinjuku",
+      "source_type": "reel_extracted",
+      "source_url": "https://ichiran.com/shop/kanto/shinjuku/",
+      "name_local": "一蘭"
+    },
+    {
+      "name": "teamLab Planets",
+      "category": "attraction",
+      "city_or_region_guess": "Tokyo",
+      "lat": 35.6430,
+      "lng": 139.7931,
+      "formatted_address": "6-1-16 Toyosu, Koto City, Tokyo 135-0061, Japan",
+      "confidence": 0.90,
+      "evidence_quote": "teamLab Planets TOKYO",
+      "source_type": "reel_extracted",
+      "source_url": "https://www.teamlab.art/e/planets/",
+      "name_local": "チームラボプラネッツ"
+    },
+    {
+      "name": "Senso-ji",
+      "category": "attraction",
+      "city_or_region_guess": "Tokyo",
+      "lat": 35.7148,
+      "lng": 139.7967,
+      "formatted_address": "2-3-1 Asakusa, Taito City, Tokyo 111-0032, Japan",
+      "confidence": 0.90,
+      "evidence_quote": "Senso-ji Temple Asakusa",
+      "source_type": "reel_extracted",
+      "source_url": "https://www.senso-ji.jp/",
+      "name_local": "浅草寺"
+    },
+    {
+      "name": "Shibuya Sky",
+      "category": "attraction",
+      "city_or_region_guess": "Tokyo",
+      "lat": 35.6584,
+      "lng": 139.7022,
+      "formatted_address": "2-24-12 Shibuya, Shibuya City, Tokyo 150-6145, Japan",
+      "confidence": 0.85,
+      "evidence_quote": "Shibuya Sky observation deck",
+      "source_type": "reel_extracted",
+      "source_url": "https://www.shibuya-scramble-square.com/sky/",
+      "name_local": "渋谷スカイ"
+    },
+    {
+      "name": "Tsukiji Outer Market",
+      "category": "restaurant",
+      "city_or_region_guess": "Tokyo",
+      "lat": 35.6654,
+      "lng": 139.7707,
+      "formatted_address": "4-16-2 Tsukiji, Chuo City, Tokyo 104-0045, Japan",
+      "confidence": 0.85,
+      "evidence_quote": "Tsukiji Outer Market fresh sushi",
+      "source_type": "reel_extracted",
+      "source_url": "https://www.tsukiji.or.jp/",
+      "name_local": "筑地場外市場"
+    },
+    {
+      "name": "Meiji Jingu",
+      "category": "attraction",
+      "city_or_region_guess": "Tokyo",
+      "lat": 35.6763,
+      "lng": 139.6993,
+      "formatted_address": "1-1 Yoyogikamizonocho, Shibuya City, Tokyo 151-8557, Japan",
+      "confidence": 0.88,
+      "evidence_quote": "Meiji Jingu shrine",
+      "source_type": "reel_extracted",
+      "source_url": "https://www.meijijingu.or.jp/",
+      "name_local": "明治神宮"
+    }
+  ]
+}

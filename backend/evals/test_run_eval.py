@@ -65,6 +65,8 @@ def test_pipeline_subject_matches_baseline_metrics_on_current_fixtures():
     # when that lands, this equality is expected to break and the test is updated then.
     for name in gather_case_names():
         case = load_case(name)
+        if case.get("diverges_from_baseline"):
+            continue  # e.g. japan_dedupe: dedup_error intentionally differs from baseline (Step 6)
         base_ctx = build_ctx(case, subject="baseline")
         pipe_ctx = build_ctx(case, subject="pipeline")
         metric_names = case["active_quality_metrics"]

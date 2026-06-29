@@ -5,7 +5,7 @@ Step 2 scope: PLUMBING ONLY. Every stage is a fixture-backed placeholder —
 no LLM agents, no live Apify / Mapbox / Supabase. Real stages replace them later:
   * scrape  -> FixtureReelSource now;  live Apify direct HTTP (Step 5)
   * extract -> FixturePlaceSource now; place_extractor agent (Step 5/6)
-  * dedup   -> identity passthrough now; two-gate semantic+geo (Step 6)
+  * dedup   -> two-gate alias+geo (Step 6)
   * narrate -> naive input-order day chunking now; feasibility ordering (Step 7)
 
 The naive day chunking is deliberately a SEPARATE implementation from
@@ -23,6 +23,7 @@ from pathlib import Path
 from models.place import CanonicalPlace, PlaceResult
 from models.reel import ReelData
 from models.trip import ItineraryDay, ItineraryOutput
+from pipeline.dedup import dedupe_places
 from pipeline.output import PipelineOutput
 from pipeline.sources import (
     FixturePlaceSource,
@@ -41,15 +42,6 @@ def _date_range(start_date: str, end_date: str) -> list[str]:
         (start + timedelta(days=i)).isoformat()
         for i in range((end - start).days + 1)
     ]
-
-
-def dedup_passthrough(places: list[PlaceResult]) -> list[CanonicalPlace]:
-    """Identity dedup (Step 2/4 placeholder): wrap each PlaceResult as a
-    CanonicalPlace (times_referenced=1). Step 6 replaces this with two-gate
-    semantic+geo dedup that merges duplicates and increments the counter.
-    Returns a NEW list — never mutate the caller's (immutability).
-    """
-    return [CanonicalPlace.model_validate(p.model_dump()) for p in places]
 
 
 def assemble_itinerary(places: list[CanonicalPlace], dates: list[str]) -> ItineraryOutput:
@@ -103,7 +95,7 @@ def run_offline_pipeline(
         extracted = [PlaceResult.model_validate(p)
                      for p in resolve(live_places, FixturePlaceSource(places_path))]
     with sw.stage("dedup"):
-        canonical = dedup_passthrough(extracted)
+        canonical = dedupe_places(extracted).places   # two-gate alias+geo, confidence-capped
     with sw.stage("narrate"):
         dates = _date_range(start_date, end_date)
         itinerary = assemble_itinerary(canonical, dates)

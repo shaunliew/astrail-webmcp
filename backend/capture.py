@@ -28,6 +28,7 @@ from pathlib import Path
 from geocode.mapbox_forward import TOKYO
 from models.place import PlaceResult
 from models.reel import ReelData
+from pipeline.geo import haversine_m
 from pipeline.sources import record_fixture
 from scrape.apify_direct import ApifyScrapeError
 from scrape.manual_input import manual_reeldata
@@ -58,16 +59,6 @@ def _log_skip(label: str, exc: Exception) -> None:
     print(f"  [skip] {label}: {detail}", file=sys.stderr)
 
 
-def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
-    """Great-circle distance in metres between (lat, lng) points — for the LLM↔Mapbox
-    coord-delta diagnostic only."""
-    import math
-    lat1, lng1, lat2, lng2 = map(math.radians, (a[0], a[1], b[0], b[1]))
-    dlat, dlng = lat2 - lat1, lng2 - lng1
-    h = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlng / 2) ** 2
-    return 2 * 6_371_000 * math.asin(math.sqrt(h))
-
-
 async def _collect_reel(
     reel: ReelData, *, extract, resolve, reels: list[ReelData],
     places: list[PlaceResult], tag: str, label: str,
@@ -93,7 +84,7 @@ async def _collect_reel(
         places.append(grounded)
         print(_format_place(grounded, coords_src="mapbox" if moved else "llm"))
         if moved and None not in original_coords and grounded.lat is not None and grounded.lng is not None:
-            d = _haversine_m(original_coords, (grounded.lat, grounded.lng))
+            d = haversine_m(original_coords[0], original_coords[1], grounded.lat, grounded.lng)
             print(f"           llm-coords: {original_coords[0]:.4f},{original_coords[1]:.4f}"
                   f"  (Δ {d:.0f} m from mapbox)", file=sys.stderr)
 

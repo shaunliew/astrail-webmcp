@@ -3,9 +3,9 @@ from pathlib import Path
 
 import pytest
 
+from pipeline.dedup import dedupe_places
 from pipeline.offline_harness import (
     assemble_itinerary,
-    dedup_passthrough,
     run_offline_pipeline,
 )
 from models.place import CanonicalPlace, PlaceResult
@@ -14,13 +14,12 @@ from pipeline.output import PipelineOutput
 FIX = Path(__file__).parent / "fixtures"
 
 
-def test_dedup_passthrough_wraps_as_canonical():
-    places = [PlaceResult(name="A", category="other", confidence=0.9, evidence_quote="A"),
-              PlaceResult(name="B", category="other", confidence=0.8, evidence_quote="B")]
-    out = dedup_passthrough(places)
-    assert [p.name for p in out] == ["A", "B"]
-    assert all(isinstance(p, CanonicalPlace) for p in out)
-    assert all(p.times_referenced == 1 for p in out)
+def test_dedupe_distinct_places_pass_through_as_canonical():
+    places = [PlaceResult(name="A", category="other", confidence=0.9, evidence_quote="A", lat=35.0, lng=139.0),
+              PlaceResult(name="B", category="other", confidence=0.8, evidence_quote="B", lat=35.5, lng=139.5)]
+    res = dedupe_places(places)
+    assert [p.name for p in res.places] == ["A", "B"]
+    assert all(isinstance(p, CanonicalPlace) and p.times_referenced == 1 for p in res.places)
 
 
 def test_assemble_itinerary_chunks_in_input_order():

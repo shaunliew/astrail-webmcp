@@ -158,6 +158,16 @@ def test_keep_valid_places_nulls_non_verbatim_name_local_but_keeps_place():
     assert len(kept) == 1 and kept[0].name_local is None       # place kept, bad local name dropped
 
 
+def test_keep_valid_places_normalizes_blank_name_local_to_none():
+    # a blank/whitespace name_local is normalized to None (never reaches the geocoder)
+    reel = _reel_with("📍Tokyo Tower at night")
+    p = PlaceResult(name="Tokyo Tower", category="attraction", confidence=0.9,
+                    evidence_quote="📍Tokyo Tower", lat=35.6586, lng=139.7454,
+                    name_local="   ")
+    kept = keep_valid_places([p], reel)
+    assert len(kept) == 1 and kept[0].name_local is None
+
+
 @pytest.mark.live
 async def test_live_single_reel_extraction():
     reel = ReelData(reel_url="https://www.instagram.com/reel/DYbmT-SNzVK/",

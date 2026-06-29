@@ -115,8 +115,11 @@ def keep_valid_places(places: list[PlaceResult], reel: ReelData) -> list[PlaceRe
             continue
         if p.source_url is not None and is_placeholder_url(p.source_url):
             continue
-        if p.name_local and p.name_local.lower() not in corpus:
-            p = p.model_copy(update={"name_local": None})  # drop only the unreliable local name
+        # Normalize name_local to None unless it is a non-blank verbatim substring of the
+        # caption — blank ("" / whitespace) or non-verbatim values never reach the geocoder
+        # (guardrails #1/#11). Keep the place either way.
+        if p.name_local is not None and (not p.name_local.strip() or p.name_local.lower() not in corpus):
+            p = p.model_copy(update={"name_local": None})
         kept.append(p)
     return kept
 

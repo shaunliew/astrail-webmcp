@@ -15,6 +15,11 @@ def test_query_language_japanese_scripts():
     assert query_language("ひらがな") == "ja"       # hiragana
 
 
+def test_query_language_halfwidth_katakana_is_ja():
+    # NFKC folds halfwidth katakana to fullwidth → detected as Japanese, not mis-routed to en
+    assert query_language("ﾄｰｷｮｰﾀﾜｰ") == "ja"
+
+
 def test_query_language_latin_is_english():
     assert query_language("Tokyo Tower") == "en"
     assert query_language("SANDO LAB TOKYO") == "en"

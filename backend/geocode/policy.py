@@ -7,15 +7,20 @@ language is detected from the chosen query's SCRIPT, not assumed from a constant
 """
 from __future__ import annotations
 
+import unicodedata
+
 from models.place import PlaceResult
 
 
 def _has_japanese(text: str) -> bool:
-    """True if `text` contains Hiragana/Katakana (U+3040-30FF) or CJK ideographs
-    (U+4E00-9FFF, i.e. Kanji)."""
+    """True if `text` contains Japanese script: Hiragana/Katakana (U+3040-30FF) or CJK
+    ideographs (U+4E00-9FFF, Kanji). NFKC-normalize first so compatibility forms map to
+    their canonical code points — e.g. halfwidth katakana (ﾀ → タ) and fullwidth Latin
+    (Ａ → A) — instead of being mis-routed to English."""
+    norm = unicodedata.normalize("NFKC", text)
     return any(
         0x3040 <= ord(ch) <= 0x30FF or 0x4E00 <= ord(ch) <= 0x9FFF
-        for ch in text
+        for ch in norm
     )
 
 

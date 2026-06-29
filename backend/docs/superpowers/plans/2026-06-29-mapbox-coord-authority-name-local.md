@@ -2,48 +2,51 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
 
-**Goal:** Make Mapbox the coord authority for the 3D-map display by letting the extractor emit a verbatim **local-language** venue name (`name_local`), then geocoding that name in its own language so Mapbox grounds POIs it only indexes in the local script (Japan today). Falls back to the English name / LLM coords when no local name exists — never loses a place.
+**Goal:** Make Mapbox the coord authority for the 3D-map display by letting the extractor emit a verbatim **local-language** venue name (`name_local`), then geocoding the best available name in the language matching its **script**, so Mapbox grounds POIs it only indexes in the local script (Japan today). Falls back to the LLM web-search coords on a miss — never loses a place.
 
-**Architecture:** The Mapbox `/forward` client (`geocode/mapbox_forward.py`) is already country-agnostic — it takes `language` and `country` as parameters. This change adds the missing input (a local-script name on `PlaceResult`) and a small, pure query-policy function that decides *(query, language)* per place. The trip's "local language / country" is a single caller-side policy in `capture.main()` — a Japan constant for the beta, with a documented extension point for multi-country. Nothing in the geocode layer hardcodes Japanese.
+**Architecture:** The Mapbox `/forward` client (`geocode/mapbox_forward.py`) already takes `language`, `country`, and `proximity` as parameters. This change adds (1) `name_local` on `PlaceResult`, (2) a small **pure policy** module `geocode/policy.py` that decides *(query, language)* per place by detecting the query's script, and (3) caller wiring in `capture.main()` that supplies the Japan beta geo-policy (country + proximity). The extractor's `name` stays as-is (most-recognizable form, often English for famous venues); `name_local` carries the caption's local-script form so it can be queried in `ja`.
 
 ```
-extractor → PlaceResult{ name (EN), name_local (local script | None) }
+extractor → PlaceResult{ name (canonical, often EN), name_local (local script | None) }
                          │
-                geocode_query_for(place, local_language="ja")   ← pure policy
-                         │  name_local? → (name_local, "ja")   else → (name, "en")
+        geocode_query(place)  ← pure policy (geocode/policy.py)
+          query = name_local or name
+          language = query_language(query)   # JP script → "ja", else "en"
                          ▼
-        forward_geocode(query, language=…, country="jp")  ← already generic
+   forward_geocode(query, language=…, country="jp", proximity=Tokyo)  ← already parameterized
                          │  hit → Mapbox coords (authority)   miss → None
                          ▼
-                  apply_geocode(place, geo)  ← keeps LLM coords on miss
+              apply_geocode(place, geo)  ← keeps LLM coords on miss
 ```
+
+**Why script-detection (not a flat caller constant):** `name` may be English (famous venues canonicalize to English) OR Japanese (creator-tagged in Japanese). A flat `language="ja"` would mis-query an English name; a flat `"en"` would mis-query a Japanese name and miss a groundable POI. Picking language from the *script of the actual query string* is correct for either. For the Japan beta, "contains kana/kanji → `ja`, else `en`" is unambiguous. (The Han `ja`/`zh` ambiguity only matters when China is added — see Scalability.)
 
 **Tech Stack:** Python 3.14, Pydantic v2, openai-agents 0.17.7, httpx (mocked in tests), pytest. No new dependencies.
 
-**Scalability (why this is generic, not Japan-only):** Scaling to US/UK costs **nothing** — English names resolve through the existing English path; `name_local` is simply absent. Scaling to non-Latin scripts (Korea, China, Thailand) reuses the *same* `name_local` mechanism; only the caller-side `local_language`/`country` policy changes (one place), never the geocode module or the model. Adding a country is additive, not a rewrite. We do **not** build the multi-country derivation now (YAGNI) — the beta sets a Japan constant and leaves a documented extension point.
+**Scalability:** US/UK cost nothing — English names query in `en` through the existing path (subject to Mapbox Search Box coverage for that geography). Non-Latin locales (Korea, Thailand) reuse the same `name_local` + script-detection mechanism; only `query_language`'s script→language map and the caller's `country`/`proximity` policy grow — additive, never a geocode-layer rewrite. The one known limit: Han characters are shared by Japanese and Chinese, so when China is added, `query_language` must disambiguate via the trip destination (documented extension point; NOT built now — YAGNI).
 
 ## Global Constraints
 
-- **No hardcoded language inside the geocode module.** `forward_geocode` stays parameterized; the local-language choice lives only in the caller policy (`capture.main`) as a clearly-marked beta constant.
-- **Guardrail #1 (no hallucinated places) + #11 (untrusted content):** `name_local`, when set, MUST be a verbatim substring of `caption + location_name` (same rule as `evidence_quote`). The extractor is instructed never to translate/transliterate; `keep_valid_places` defensively nulls a non-verbatim `name_local` (keeps the place — it still geocodes via the English name).
-- **Never lose a place:** a geocode miss (or absent `name_local`) keeps the existing LLM coords via `apply_geocode` — unchanged behavior.
-- **Token safety (existing invariant):** no secret in any raised exception, log line, or print. `forward_geocode`'s sanitized errors are unchanged; new log lines print only coords/place names, never the token.
-- **Offline default suite stays credential-free and green; the `#16` eval stays green.** `name_local` is an optional field defaulting to `None`; `run_eval` reads only `capture_status` on reels, so the eval is unaffected. All new tests are offline (pure functions / mocked transport / injected producers).
-- **Schema parity (guardrail #4):** `PlaceResult` is NOT currently mirrored in `frontend/lib/trip/backend-types.ts` (it mirrors only SSE + request/response). Adding `name_local` therefore creates **no** TS drift now. Flagged for Zhi Hao to include when the place-rendering types are built — NOT a task here (inventing a full TS `PlaceResult` mirror is frontend scope).
-- **Import-time invariant:** unchanged — `import capture` / `import geocode.mapbox_forward` need no key, no SDK, no network.
+- **Geocode transport stays parameterized; policy lives outside it.** `forward_geocode` keeps `language`/`country`/`proximity_lng_lat` as params. The query/language decision lives in `geocode/policy.py` (pure), and the trip's `country`/`proximity` are caller policy in `capture.main()` (beta Japan constants). No product/geo policy inside the HTTP module. (The module's `"jp"`/`"en"`/`TOKYO` *defaults* stay as documentation, but the caller passes values explicitly so scaling never relies on them.)
+- **Guardrail #1 (no hallucinated places) + #11 (untrusted content):** `name_local`, when set, MUST be a verbatim substring of `caption + location_name` (same rule + same case-folded `.lower()` check as `evidence_quote`). The extractor never translates/transliterates; `keep_valid_places` defensively nulls a non-verbatim `name_local` (keeps the place — it still geocodes via `name`).
+- **Agents SDK strict schema:** every output property is required-on-the-wire even when nullable, so the prompt instructs the model to **always include `name_local`, set it to `null` when absent** (not omit it).
+- **Never lose a place:** a geocode miss (or absent local name) keeps the LLM coords via `apply_geocode` — unchanged.
+- **Token safety:** unchanged. `forward_geocode`'s sanitized errors stand; new capture log lines print only coords/place names, never the token.
+- **Offline suite + `#16` eval stay green.** `name_local` is optional, default `None`. `run_eval` loads and scores `places` but **ignores unknown keys**, so #16 stays green; produced places now carry `name_local: null` (an additive optional key) — the only change to the serialized shape, not a contract break. All new tests are offline (pure / mocked transport / injected producers).
+- **Schema parity (guardrail #4):** `PlaceResult` is NOT mirrored in `frontend/lib/trip/backend-types.ts` yet (it mirrors only SSE + request/response), so adding `name_local` creates no TS drift now. Flag for Zhi Hao when place types are built — NOT a task here.
+- **Import-time invariant:** unchanged — `import capture` / `geocode.mapbox_forward` / `geocode.policy` need no key, no SDK, no network.
 
 ---
 
-### Task 1: Add the `name_local` contract + extractor emission
+### Task 1: `name_local` contract + extractor emission
 
 **Files:**
 - Modify: `backend/models/place.py` (`PlaceResult`)
 - Modify: `backend/genagents/place_extractor.py` (prompt + `keep_valid_places`)
-- Test: `backend/models/test_place.py` (create if absent) and `backend/genagents/test_place_extractor.py`
+- Test: `backend/genagents/test_place_extractor.py`
 
 **Interfaces:**
-- Produces: `PlaceResult.name_local: str | None` (default `None`); `keep_valid_places` nulls a non-verbatim `name_local`. `CanonicalPlace` inherits the field automatically.
-- Consumes: nothing new.
+- Produces: `PlaceResult.name_local: str | None` (default `None`); `keep_valid_places` nulls a non-verbatim `name_local`. `CanonicalPlace` inherits the field.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -59,69 +62,68 @@ def _reel_with(caption):
     return ReelData(reel_url="manual:x", caption=caption, capture_status="MANUAL")
 
 
+def test_place_result_name_local_defaults_none():
+    p = PlaceResult(name="X", category="other", confidence=0.5, evidence_quote="X")
+    assert p.name_local is None
+
+
 def test_keep_valid_places_keeps_verbatim_name_local():
+    # famous venue canonicalized to English `name`, Japanese form present in the caption
     reel = _reel_with("最高の夜景 📍東京タワー at night")
     p = PlaceResult(name="Tokyo Tower", category="attraction", confidence=0.95,
                     evidence_quote="📍東京タワー", lat=35.6586, lng=139.7454,
                     name_local="東京タワー")
     kept = keep_valid_places([p], reel)
-    assert len(kept) == 1
-    assert kept[0].name_local == "東京タワー"   # present verbatim in caption → kept
+    assert len(kept) == 1 and kept[0].name_local == "東京タワー"
 
 
 def test_keep_valid_places_nulls_non_verbatim_name_local_but_keeps_place():
-    reel = _reel_with("amazing tower 📍Tokyo Tower")
+    reel = _reel_with("amazing tower 📍Tokyo Tower")          # no Japanese in caption
     p = PlaceResult(name="Tokyo Tower", category="attraction", confidence=0.9,
                     evidence_quote="📍Tokyo Tower", lat=35.6586, lng=139.7454,
-                    name_local="東京タワー")  # NOT in the (English) caption
+                    name_local="東京タワー")                    # not in the caption
     kept = keep_valid_places([p], reel)
-    assert len(kept) == 1                       # place kept (valid via name + evidence)
-    assert kept[0].name_local is None           # unreliable local name dropped
-
-
-def test_place_result_name_local_defaults_none():
-    p = PlaceResult(name="X", category="other", confidence=0.5, evidence_quote="X")
-    assert p.name_local is None
+    assert len(kept) == 1 and kept[0].name_local is None       # place kept, bad local name dropped
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `cd backend && uv run pytest genagents/test_place_extractor.py -q -k name_local`
-Expected: FAIL — `PlaceResult` has no `name_local` (TypeError/validation), and `keep_valid_places` doesn't null it.
+Expected: FAIL — `PlaceResult` has no `name_local`; `keep_valid_places` doesn't null it.
 
 - [ ] **Step 3: Add the field to `PlaceResult`**
 
-In `backend/models/place.py`, add to `PlaceResult` (after `formatted_address`):
+In `backend/models/place.py`, add to `PlaceResult` after `formatted_address`:
 
 ```python
     name_local: str | None = Field(
         default=None,
         description="Venue name in the local language/script, verbatim from the caption "
-                    "(e.g. '東京タワー'). Used to ground coords in providers that index POIs "
-                    "in the local script. None when the caption gives only an English/romaji name.",
+                    "(e.g. '東京タワー'), or None when the caption has no local-script name. "
+                    "Used to ground coords in providers that index POIs in the local script.",
     )
 ```
 
 - [ ] **Step 4: Emit `name_local` from the extractor + validate it verbatim**
 
-In `backend/genagents/place_extractor.py`, add to the `PLACE_EXTRACTOR_INSTRUCTIONS` Step-4 per-place field list (after the `name:` line):
+In `backend/genagents/place_extractor.py`, add to `PLACE_EXTRACTOR_INSTRUCTIONS` Step-4 per-place field list (after the `name:` line — leave the `name:` guidance unchanged):
 
 ```
   - name_local: the venue's name in the LOCAL language/script EXACTLY as written in the \
     caption or location tag (e.g. "東京タワー") — a verbatim substring, character for \
-    character. null when the caption gives only an English/romanized name. NEVER translate \
-    or transliterate it yourself. This grounds coordinates in map providers that index POIs \
-    in the local script.
+    character. ALWAYS include this field; set it to null when the caption has no \
+    local-script name (e.g. an English-only caption). NEVER translate or transliterate it \
+    yourself. It grounds coordinates in map providers that index POIs in the local script.
 ```
 
-And add to the `Rules:` block:
+Add to the `Rules:` block:
 
 ```
-  - name_local, when set, MUST be a verbatim substring of the caption/location tag (like \
-    evidence_quote). If there is no local-script name in the text, set it to null.
+  - name_local, when non-null, MUST be a verbatim substring of the caption/location tag \
+    (like evidence_quote). If there is no local-script name in the text, set it to null.
 ```
 
-Then update `keep_valid_places` to defensively null a non-verbatim `name_local` (keep the place):
+Update `keep_valid_places`:
 
 ```python
 def keep_valid_places(places: list[PlaceResult], reel: ReelData) -> list[PlaceResult]:
@@ -146,12 +148,12 @@ def keep_valid_places(places: list[PlaceResult], reel: ReelData) -> list[PlaceRe
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `cd backend && uv run pytest genagents/test_place_extractor.py -q`
-Expected: PASS — the 3 new tests plus all pre-existing extractor tests (unchanged behavior for places without `name_local`).
+Expected: PASS — new tests + all pre-existing extractor tests (unchanged behavior for places without `name_local`).
 
 - [ ] **Step 6: Confirm the offline suite + eval are unaffected**
 
 Run: `cd backend && uv run pytest -q` (all pass, 1 live skip)
-Run: `cd backend && uv run python -m evals.run_eval --subject baseline && uv run python -m evals.run_eval --subject pipeline` (both `OVERALL: PASS` — `name_local` is optional, eval reads only `capture_status`).
+Run: `cd backend && uv run python -m evals.run_eval --subject baseline && uv run python -m evals.run_eval --subject pipeline` (both `OVERALL: PASS` — `name_local` is optional; eval ignores unknown keys)
 
 - [ ] **Step 7: Commit**
 
@@ -162,23 +164,25 @@ git commit -m "feat(extractor): emit verbatim name_local for local-language geoc
 
 ---
 
-### Task 2: Geocode query policy + capture wiring + LLM↔Mapbox delta logging
+### Task 2: Script-aware geocode policy + capture wiring + LLM↔Mapbox delta logging
 
 **Files:**
-- Modify: `backend/geocode/mapbox_forward.py` (add `geocode_query_for`)
-- Modify: `backend/capture.py` (resolver uses the policy + beta constants; log both coords)
-- Test: `backend/geocode/test_mapbox_forward.py`, `backend/test_capture.py`
+- Create: `backend/geocode/policy.py`
+- Test: `backend/geocode/test_policy.py`
+- Modify: `backend/capture.py` (resolver + beta geo-policy constants + delta logging)
+- Test: `backend/test_capture.py`, `backend/geocode/test_mapbox_forward.py` (add a `language=ja` request assertion)
 
 **Interfaces:**
-- Consumes: `PlaceResult.name_local` (Task 1).
-- Produces: `geocode_query_for(place: PlaceResult, *, local_language: str) -> tuple[str, str]` — pure; returns `(query, language)`. `capture` gains module constants `BETA_LOCAL_LANGUAGE = "ja"`, `BETA_COUNTRY = "jp"`, and a `_haversine_m` helper for the diagnostic.
+- Produces (in `geocode/policy.py`): `query_language(query: str) -> str` (`"ja"` if the query contains Japanese kana/kanji, else `"en"`); `geocode_query(place: PlaceResult) -> tuple[str, str]` returning `(query, language)`.
+- `capture` gains module constants `BETA_COUNTRY = "jp"`, `BETA_PROXIMITY = TOKYO`, and a `_haversine_m` helper; the live resolver uses `geocode_query` + passes `country`/`proximity_lng_lat` explicitly.
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to `backend/geocode/test_mapbox_forward.py`:
+Create `backend/geocode/test_policy.py`:
 
 ```python
-from geocode.mapbox_forward import geocode_query_for
+"""Geocode query policy — pure, offline, no key, no network."""
+from geocode.policy import geocode_query, query_language
 from models.place import PlaceResult
 
 
@@ -188,74 +192,144 @@ def _place(**kw):
     return PlaceResult(**base)
 
 
-def test_geocode_query_for_prefers_local_name_in_local_language():
-    q, lang = geocode_query_for(_place(name_local="東京タワー"), local_language="ja")
+def test_query_language_japanese_scripts():
+    assert query_language("東京タワー") == "ja"   # kanji
+    assert query_language("サンドイッチ") == "ja"   # katakana
+    assert query_language("ひらがな") == "ja"       # hiragana
+
+
+def test_query_language_latin_is_english():
+    assert query_language("Tokyo Tower") == "en"
+    assert query_language("SANDO LAB TOKYO") == "en"
+
+
+def test_geocode_query_prefers_local_name_in_detected_language():
+    # English canonical name, Japanese name_local → query the Japanese form in ja
+    q, lang = geocode_query(_place(name="Tokyo Tower", name_local="東京タワー"))
     assert q == "東京タワー" and lang == "ja"
 
 
-def test_geocode_query_for_falls_back_to_english_name():
-    q, lang = geocode_query_for(_place(name_local=None), local_language="ja")
-    assert q == "Tokyo Tower" and lang == "en"
+def test_geocode_query_japanese_name_without_local_still_ja():
+    # name itself is Japanese, name_local absent → still detected as ja (not mis-queried as en)
+    q, lang = geocode_query(_place(name="サンドイッチ ポポー", name_local=None))
+    assert q == "サンドイッチ ポポー" and lang == "ja"
+
+
+def test_geocode_query_english_name_without_local_is_english():
+    q, lang = geocode_query(_place(name="Harry Potter Cafe", name_local=None))
+    assert q == "Harry Potter Cafe" and lang == "en"
+```
+
+Add to `backend/geocode/test_mapbox_forward.py` (a Japanese-language request assertion — mirror the existing `test_forward_geocode_request_params`):
+
+```python
+async def test_forward_geocode_passes_language_ja():
+    import httpx
+    from urllib.parse import parse_qs, urlparse
+    from geocode.mapbox_forward import forward_geocode, TOKYO
+    seen = {}
+
+    def handler(request):
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"type": "FeatureCollection", "features": []})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    await forward_geocode("東京タワー", token="TKN", language="ja",
+                          country="jp", proximity_lng_lat=TOKYO, client=client)
+    qs = parse_qs(urlparse(seen["url"]).query)
+    assert qs.get("language") == ["ja"]
+    assert qs.get("country") == ["jp"]
+    assert qs.get("q") == ["東京タワー"]
+    assert qs.get("proximity") == ["139.7671,35.6812"]
 ```
 
 Add to `backend/test_capture.py`:
 
 ```python
 async def test_run_capture_logs_llm_to_mapbox_delta_when_moved(capsys):
-    # when the resolver moves coords, capture prints the original LLM coord + Δ meters
     async def scrape(url, *, token):
         return _reel(url)
 
     async def extract(reel):
-        return [_place("Cafe")]  # lat=35.6, lng=139.7 (LLM)
+        return [_place("Cafe")]  # LLM coords lat=35.6, lng=139.7
 
     async def resolve(place):
         return place.model_copy(update={"lat": 35.71, "lng": 139.80})  # Mapbox moves it
 
     await capture.run_capture(["u1"], token="T", scrape=scrape, extract=extract, resolve=resolve)
     err = capsys.readouterr().err
-    assert "llm-coords" in err
-    assert "35.6000,139.7000" in err   # original LLM coord surfaced for comparison
-    assert "Δ" in err and "m" in err   # a delta in meters is shown
+    assert "llm-coords" in err and "35.6000,139.7000" in err and "Δ" in err
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `cd backend && uv run pytest geocode/test_mapbox_forward.py test_capture.py -q -k "geocode_query_for or delta"`
-Expected: FAIL — `geocode_query_for` doesn't exist; capture prints no `llm-coords` line.
+Run: `cd backend && uv run pytest geocode/test_policy.py geocode/test_mapbox_forward.py test_capture.py -q -k "query or language_ja or delta"`
+Expected: FAIL — `geocode.policy` doesn't exist; capture prints no `llm-coords` line. (The `language=ja` test passes already, since `forward_geocode` accepts the param — keep it as a regression guard.)
 
-- [ ] **Step 3: Add the pure query policy to the geocode module**
+- [ ] **Step 3: Create the pure policy module**
 
-In `backend/geocode/mapbox_forward.py` (it already imports `PlaceResult`), add:
+Create `backend/geocode/policy.py`:
 
 ```python
-def geocode_query_for(place: PlaceResult, *, local_language: str) -> tuple[str, str]:
-    """Choose (query, language) for geocoding `place`.
+"""Geocode query policy — choose (query, language) for a place. Pure, offline, no key.
 
-    Prefer the verbatim local-language name queried in `local_language`, so Mapbox can
-    ground POIs it indexes only in the local script (e.g. Japan); otherwise query the
-    English `name` in English. This module stays country-agnostic — the trip's local
-    language is the caller's policy (see capture.main / BETA_LOCAL_LANGUAGE).
+Mapbox indexes Japan POIs in Japanese, so a Japanese-script query must be sent with
+language="ja"; a Latin query uses "en". The query string itself may be either script
+(a famous venue's `name` is often English; a creator tag is often Japanese), so the
+language is detected from the chosen query's SCRIPT, not assumed from a constant.
+"""
+from __future__ import annotations
+
+from models.place import PlaceResult
+
+
+def _has_japanese(text: str) -> bool:
+    """True if `text` contains Hiragana/Katakana (U+3040-30FF) or CJK ideographs
+    (U+4E00-9FFF, i.e. Kanji)."""
+    return any(
+        0x3040 <= ord(ch) <= 0x30FF or 0x4E00 <= ord(ch) <= 0x9FFF
+        for ch in text
+    )
+
+
+def query_language(query: str) -> str:
+    """Pick the Mapbox query language from the query's script.
+
+    Beta: Japanese script → "ja" (Mapbox indexes Japan POIs in Japanese); otherwise "en".
+    SCALING: extend per added locale. Han (U+4E00-9FFF) is shared by Japanese and Chinese,
+    so when China is added this must disambiguate via the trip destination, not script alone.
     """
-    if place.name_local:
-        return place.name_local, local_language
-    return place.name, "en"
+    return "ja" if _has_japanese(query) else "en"
+
+
+def geocode_query(place: PlaceResult) -> tuple[str, str]:
+    """Choose (query, language) for geocoding `place`: prefer the verbatim local-script
+    name_local over the (possibly English) name, then detect the language from that query."""
+    query = place.name_local or place.name
+    return query, query_language(query)
 ```
 
-- [ ] **Step 4: Wire the policy + beta constants + delta logging into capture**
+- [ ] **Step 4: Run the policy + forward tests**
 
-In `backend/capture.py`, add module constants near the top (after `EVALS_FIXTURES` / `CAPTURES_DEFAULT`):
+Run: `cd backend && uv run pytest geocode/test_policy.py geocode/test_mapbox_forward.py -q`
+Expected: PASS.
+
+- [ ] **Step 5: Wire the policy + beta geo-constants + delta logging into capture**
+
+In `backend/capture.py`, import `TOKYO` and add beta constants near `EVALS_FIXTURES`/`CAPTURES_DEFAULT`:
 
 ```python
-# Beta policy: Astrail v1 targets Japan, so geocode local-language names in Japanese and
-# filter to Japan. SCALING (multi-country): derive these per trip from the destination
+from geocode.mapbox_forward import TOKYO
+
+# Beta geo-policy: Astrail v1 targets Japan → bias proximity to Tokyo and filter to JP.
+# The query LANGUAGE is per-place (geocode.policy detects it from the query's script).
+# SCALING (multi-country): derive country + proximity from the trip destination
 # (see docs/superpowers/plans/2026-06-29-mapbox-coord-authority-name-local.md "Scalability").
-# The geocode module itself stays country-agnostic — this is the single policy point.
-BETA_LOCAL_LANGUAGE = "ja"
 BETA_COUNTRY = "jp"
+BETA_PROXIMITY = TOKYO
 ```
 
-Add a small haversine helper (used only for the human diagnostic):
+Add the haversine diagnostic helper:
 
 ```python
 def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -268,7 +342,7 @@ def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
     return 2 * 6_371_000 * math.asin(math.sqrt(h))
 ```
 
-In the per-place loop of `_collect_reel`, after `places.append(grounded)` / the `print(_format_place(...))`, emit the delta line when Mapbox moved the coord:
+In the per-place loop of `_collect_reel`, after the `print(_format_place(...))` line, emit the delta when Mapbox moved the coord:
 
 ```python
         moved = (grounded.lat, grounded.lng) != original_coords
@@ -280,57 +354,54 @@ In the per-place loop of `_collect_reel`, after `places.append(grounded)` / the 
                   f"  (Δ {d:.0f} m from mapbox)", file=sys.stderr)
 ```
 
-Update the live resolver in `main()` to use the policy + beta constants (lazy import `geocode_query_for` alongside the existing geocode imports):
+Update the live resolver in `main()` (lazy-import `geocode_query`):
 
 ```python
     if mapbox_token:
-        from geocode.mapbox_forward import apply_geocode, forward_geocode, geocode_query_for
+        from geocode.mapbox_forward import apply_geocode, forward_geocode
+        from geocode.policy import geocode_query
 
         async def _resolve(place: PlaceResult) -> PlaceResult:
-            query, language = geocode_query_for(place, local_language=BETA_LOCAL_LANGUAGE)
-            geo = await forward_geocode(query, token=mapbox_token,
-                                        language=language, country=BETA_COUNTRY)
+            query, language = geocode_query(place)
+            geo = await forward_geocode(query, token=mapbox_token, language=language,
+                                        country=BETA_COUNTRY, proximity_lng_lat=BETA_PROXIMITY)
             return apply_geocode(place, geo)
         resolve = _resolve
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [ ] **Step 6: Run the capture tests + full suite + eval + import invariant**
 
-Run: `cd backend && uv run pytest geocode/test_mapbox_forward.py test_capture.py -q`
-Expected: PASS — the new policy + delta tests plus all pre-existing tests (no regressions).
-
-- [ ] **Step 6: Confirm the import invariant + full suite + eval**
-
-Run: `cd backend && env -u OPENAI_API_KEY -u APIFY_TOKEN -u MAPBOX_SECRET_TOKEN uv run python -c "import capture, geocode.mapbox_forward; print('keyless import OK')"`
+Run: `cd backend && uv run pytest test_capture.py geocode -q` (all pass)
+Run: `cd backend && env -u OPENAI_API_KEY -u APIFY_TOKEN -u MAPBOX_SECRET_TOKEN uv run python -c "import capture, geocode.policy, geocode.mapbox_forward; print('keyless import OK')"`
 Run: `cd backend && uv run pytest -q` (all pass, 1 live skip)
 Run: `cd backend && uv run python -m evals.run_eval --subject baseline && uv run python -m evals.run_eval --subject pipeline` (both `OVERALL: PASS`)
 
 - [ ] **Step 7: Commit**
 
 ```bash
-cd backend && git add geocode/mapbox_forward.py capture.py geocode/test_mapbox_forward.py test_capture.py
-git commit -m "feat(geocode): ground coords via local-language name (Mapbox authority for Japan)"
+cd backend && git add geocode/policy.py geocode/test_policy.py geocode/mapbox_forward.py geocode/test_mapbox_forward.py capture.py test_capture.py
+git commit -m "feat(geocode): script-aware local-language grounding (Mapbox authority for Japan)"
 ```
 
 ---
 
 ## Manual verification (human, optional — live)
 
-Hits OpenAI + Mapbox; run with `OPENAI_API_KEY` + `MAPBOX_SECRET_TOKEN` set. Confirms Mapbox now grounds a Japanese-named place AND shows the LLM↔Mapbox delta:
+Hits OpenAI + Mapbox; needs `OPENAI_API_KEY` + `MAPBOX_SECRET_TOKEN`. Confirms Mapbox grounds a Japanese-named place AND shows the LLM↔Mapbox delta you wanted before trusting the switch:
 
 ```bash
 cd backend && uv run python -m capture --reels "https://www.instagram.com/reel/DXwcVVliX3B/" --out-dir captures
 ```
-Expect: for places whose caption carried a Japanese name, a `(coords=mapbox)` line plus a `llm-coords: … (Δ N m from mapbox)` line — the empirical accuracy delta you wanted before committing to this. English-only names stay `coords=llm`.
+Expect: places whose caption carried a Japanese name now show `(coords=mapbox)` + a `llm-coords: … (Δ N m from mapbox)` line; English-only names stay `coords=llm`.
 
 ## NOT in scope / deferred
 
-- **Multi-country language/country derivation** — beta uses the `BETA_LOCAL_LANGUAGE`/`BETA_COUNTRY` constants; deriving per trip destination (or per place) is the documented extension point, built when a 2nd country lands (YAGNI).
-- **TS `PlaceResult` mirror** — `backend-types.ts` doesn't mirror `PlaceResult` yet; no drift to fix now. Flag for Zhi Hao when place types are added.
-- **Reverse-geocoding LLM coords to recover dropped places** — the extractor still drops null-coord places before geocoding; Mapbox refines surviving coords, it doesn't rescue dropped ones (unchanged from the earlier Mapbox step).
-- **Script-detection for language** — rejected for the beta (Han is ambiguous between `ja`/`zh`); the caller policy is the chosen mechanism.
+- **Forcing `name`=English** (approach A) — rejected; we keep `name` flexible and detect script (decision B, 2026-06-29).
+- **Multi-country language derivation / Han `ja`-vs-`zh` disambiguation** — the beta detects Japanese script; China/Korea extend `query_language` + caller `country`/`proximity` when added (YAGNI).
+- **TS `PlaceResult` mirror** — no mirror exists yet; flag for Zhi Hao when place types land.
+- **Reverse-geocoding to rescue dropped (null-coord) places** — unchanged; Mapbox refines surviving coords only.
 
 ## Rollback / risk
 
-- **Blast radius:** one optional model field, one extractor prompt addition + a defensive null, one pure policy function, and a capture resolver/diagnostic tweak. No change to the geocode HTTP path, token safety, or `apply_geocode`. Revert = drop the two commits.
-- **Risk:** Low. `name_local` is optional and defaulted, so existing data/fixtures/eval are unaffected; non-Japan and English-named places behave exactly as today (English path / LLM fallback). The only live-behavior change is that Japanese-named places now query Mapbox in Japanese — which either grounds (better) or misses (keeps LLM coords, as before).
+- **Blast radius:** one optional model field, one extractor prompt addition + a defensive null, one new pure 30-line module, and a capture resolver/diagnostic tweak. No change to `forward_geocode`'s HTTP path, token safety, or `apply_geocode`. Revert = drop the two commits.
+- **Risk:** Low. `name_local` is optional/defaulted → existing data/fixtures/eval unaffected; non-Japan and English-only places behave exactly as today. The only live-behavior change: a Japanese-script query now goes to Mapbox in `ja` (grounds, or misses → LLM coords as before). The delta logging is stderr-only and offline-tested.

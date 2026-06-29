@@ -193,9 +193,12 @@ def test_main_manual_only_does_not_require_apify_token(monkeypatch, tmp_path, ca
     async def fake_capture(reel_urls, *, token, scrape, extract, resolve=None, manual_reels=None):
         captured["manual_reels"] = manual_reels
         captured["reel_urls"] = reel_urls
+        captured["token"] = token
         return [_reel("manual:abc")], [_place("X")]
 
-    monkeypatch.delenv("APIFY_TOKEN", raising=False)   # block wave: no Apify token
+    # setenv "" (falsy) rather than delenv — main() calls load_dotenv(), which would
+    # rehydrate a real APIFY_TOKEN from .env and let this pass for the wrong reason.
+    monkeypatch.setenv("APIFY_TOKEN", "")
     monkeypatch.setenv("OPENAI_API_KEY", "K")
     monkeypatch.setattr(capture, "run_capture", fake_capture)
     monkeypatch.setattr(capture, "_write_fixtures", lambda *a, **k: None)
@@ -207,6 +210,7 @@ def test_main_manual_only_does_not_require_apify_token(monkeypatch, tmp_path, ca
     ])
     assert rc == 0
     assert captured["reel_urls"] == []
+    assert captured["token"] == ""                      # manual-only handed no Apify token
     assert len(captured["manual_reels"]) == 1
     assert captured["manual_reels"][0].caption == "📍Tokyo Tower at night"
 

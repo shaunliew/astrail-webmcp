@@ -174,6 +174,24 @@ def test_distinct_places_pass_through_unchanged_order():
     res = dedupe_places(places)
     assert [p.name for p in res.places] == ["A", "B", "C"]
     assert all(p.times_referenced == 1 for p in res.places)
+
+
+def test_user_requested_protected_even_when_merged_with_higher_conf_rep():
+    # a low-conf user_requested mention merging with a higher-conf reel rep stays protected
+    fillers = [_p(f"P{i}", 35.0 + i, 139.0 + i, conf=0.99) for i in range(8)]
+    rep = _p("MyPick", 36.5, 140.5, conf=0.99)                                  # reel rep (higher conf)
+    req = _p("MyPick", 36.5001, 140.5001, conf=0.10, source_type="user_requested")  # merges with rep
+    res = dedupe_places(fillers + [rep, req], max_places=8)
+    kept = {p.name: p for p in res.places}
+    assert "MyPick" in kept                                  # survived the cap (8 fillers would fill it)
+    assert kept["MyPick"].source_type == "user_requested"    # cluster-level protection
+
+
+def test_transitive_cluster_merges_via_any_member():
+    # A~B (~333 m) and B~C (~333 m) but A~C (~666 m) — all one cluster via B (any-member match)
+    a, b, c = _p("Spot", 35.0000, 139.0), _p("Spot", 35.0030, 139.0), _p("Spot", 35.0060, 139.0)
+    res = dedupe_places([a, b, c])
+    assert len(res.places) == 1 and res.places[0].times_referenced == 3
 ```
 
 - [ ] **Step 6: Run → fail**
@@ -244,11 +262,17 @@ def _merge_cluster(cluster: list[PlaceResult]) -> CanonicalPlace:
                 seen_alias.add(nm)
                 aliases.append(nm)
     canonical = CanonicalPlace.model_validate(rep.model_dump())
-    return canonical.model_copy(update={
+    update: dict = {
         "times_referenced": len(cluster),
         "aliases": aliases,
         "evidence_quotes": [m.evidence_quote for m in cluster],
-    })
+    }
+    # User-requested protection is CLUSTER-level: if ANY merged mention was user-requested,
+    # the canonical is user-requested (so the cap never drops it) — even when a higher-
+    # confidence reel mention is the representative.
+    if any(m.source_type == "user_requested" for m in cluster):
+        update["source_type"] = "user_requested"
+    return canonical.model_copy(update=update)
 
 
 def dedupe_places(
@@ -262,7 +286,9 @@ def dedupe_places(
     clusters: list[list[PlaceResult]] = []
     for p in places:
         for cl in clusters:
-            if _semantic_match(cl[0], p) and _geo_match(cl[0], p, distance_m):
+            # Match against ANY member (not just the first) so transitive duplicates
+            # (A~B, B~C, but A not~C) still land in one cluster.
+            if any(_semantic_match(m, p) and _geo_match(m, p, distance_m) for m in cl):
                 cl.append(p)
                 break
         else:
@@ -312,6 +338,7 @@ git commit -m "feat(dedup): two-gate (alias+geo) in-trip place dedup + confidenc
 - Modify: `backend/pipeline/offline_harness.py` (replace `dedup_passthrough` with `dedupe_places`)
 - Modify: `backend/pipeline/test_offline_harness.py` (update the passthrough test → dedup)
 - Modify: `backend/capture.py` (repoint `_haversine_m` to `pipeline.geo` — DRY)
+- Modify: `backend/evals/test_run_eval.py` (exclude `diverges_from_baseline` cases from the metric-parity anchor)
 - Create: `backend/evals/fixtures/japan_dedup_places.json` + `backend/evals/cases/japan_dedupe.json`
 
 **Interfaces:**
@@ -357,38 +384,63 @@ In `backend/capture.py`, delete the local `_haversine_m` and import the shared o
 
 - [ ] **Step 5: Add the dedup eval case + fixture**
 
-Create `backend/evals/fixtures/japan_dedup_places.json` — 10 raw places that collapse to 8 unique: a same-venue cross-language duplicate that MERGES (Ichiran Shibuya / 一蘭 渋谷店 at ~same coords) and a same-chain different-branch pair that must NOT merge (Ichiran Shibuya vs Ichiran Shinjuku, >500 m), plus distinct venues. Each place carries `name`, `category`, `lat`, `lng`, `confidence`, `evidence_quote`, `source_type`, `source_url`, `name_local` (mirror the shape of `expected_places.json`). Set coordinates so exactly two mentions merge.
+Create `backend/evals/fixtures/japan_dedup_places.json` — **9 raw** places collapsing to **8 unique**:
+- **Merging pair** (cross-language same venue → 1): `{name:"Ichiran Shibuya", name_local:"一蘭 渋谷店", lat:35.6611, lng:139.7011}` + `{name:"一蘭 渋谷店", name_local:null, lat:35.6612, lng:139.7012}` — alias overlap on `一蘭 渋谷店` + ~15 m → merge.
+- **Non-merging same-chain pair** (shared alias, geo-blocked → stays 2): `{name:"Ichiran", lat:35.6650, lng:139.7000}` + `{name:"Ichiran", lat:35.6938, lng:139.7035}` — alias overlap on `ichiran` but ~3.2 km apart → geo gate blocks. (Shared alias is REQUIRED to actually exercise the geo gate — distinct names would never reach it.)
+- **5 distinct venues** (e.g. teamLab Planets, Senso-ji, Shibuya Sky, Tsukiji Outer Market, Meiji Jingu) → 5.
+
+Total **2 + 2 + 5 = 9 raw → 8 unique** (only the first pair merges). Every place carries `name`, `category`, `lat`, `lng` (all inside the Japan bbox), `confidence`, `evidence_quote`, `source_type`, `source_url`, `name_local` (mirror `expected_places.json`'s shape).
 
 Create `backend/evals/cases/japan_dedupe.json`:
 
 ```json
 {
   "case": "japan_dedupe",
-  "description": "Dup-bearing set: 10 raw mentions -> 8 unique. One cross-language same-venue pair merges (alias+geo); one same-chain different-branch pair must NOT merge (geo gate). Demonstrates dedup_error: baseline (no dedup) high, pipeline 0.",
+  "description": "9 raw mentions -> 8 unique. One cross-language same-venue pair merges (alias '一蘭 渋谷店' + ~15m); one same-chain pair shares alias 'Ichiran' but is ~3.2km apart so the geo gate keeps them separate. dedup_error: pipeline 0, baseline 1. diverges_from_baseline so the metric-parity anchor test skips it.",
   "reels_fixture": "fixtures/japan_demo_reels.json",
   "places_fixture": "fixtures/japan_dedup_places.json",
   "start_date": "2026-06-10",
   "end_date": "2026-06-12",
   "expected_unique_places": 8,
+  "diverges_from_baseline": true,
   "active_contractual_checks": ["coords_present", "japan_bbox", "day_count", "source_places_parity", "day_places_traceable"],
   "active_quality_metrics": ["dedup_error", "mean_intra_day_travel_m", "hallucination_rate"],
   "pending_checks": []
 }
 ```
 
-(NB: `active_contractual_checks` here are subject-agnostic — they pass for both baseline and pipeline. `dedup_error` is the recorded metric that distinguishes them: pipeline → 0, baseline → 2. We deliberately do NOT add a gating "count == expected_unique" contractual check, because it would fail the baseline subject and break `run_eval --subject baseline`. Omit `evidence_verbatim` since these fixture quotes aren't in the demo reel corpus — it would `block`, not fail, but omitting keeps the case clean.)
+NB on the case:
+- **`dedup_error` distinguishes the subjects** (it reads `ctx["places"]`): pipeline → `0` (deduped to 8); baseline → `1` (`|9 − 8|`, baseline loads the 9 raw). Non-gating.
+- **No gating "count == expected_unique" check** — it would fail the baseline subject (9 ≠ 8) and break `run_eval --subject baseline`. Dedup correctness is gated by `pipeline/test_dedup.py`; the eval records it via `dedup_error`.
+- **`evidence_verbatim` omitted on purpose:** the case reuses `japan_demo_reels.json` as its corpus, and the dedup fixture's quotes are NOT in it, so the check would **fail** (captions present → not `block`). Omitting is correct.
+- **Baseline is not "no dedup":** `evals/baseline.py` does lowercase exact-name dedup when building its itinerary, so the two `"Ichiran"` mentions collapse in the baseline *itinerary* — harmless, because `dedup_error` reads `ctx["places"]` (the raw 9), not the itinerary, and the contractual checks still pass.
 
-- [ ] **Step 6: Run the full suite + both eval subjects + import invariant**
+- [ ] **Step 6: Exclude the dedup case from the metric-parity anchor test**
+
+`evals/test_run_eval.py::test_pipeline_subject_matches_baseline_metrics_on_current_fixtures` loops every case asserting `pipeline metrics == baseline metrics` — its own docstring says Step 6 will make the pipeline diverge and the test gets updated then. Update it to skip cases that opt out via the new flag:
+
+```python
+    for name in gather_case_names():
+        case = load_case(name)
+        if case.get("diverges_from_baseline"):
+            continue  # e.g. japan_dedupe: dedup_error intentionally differs from baseline (Step 6)
+        base_ctx = build_ctx(case, subject="baseline")
+        ...
+```
+
+(`test_pipeline_subject_passes_all_contractual_checks` still loops ALL cases — `japan_dedupe` must pass its contractual checks under the pipeline subject, which it does: 8 deduped places, all coords, in-bbox, 3 days, traceable. No change needed there.)
+
+- [ ] **Step 7: Run the full suite + both eval subjects + import invariant**
 
 Run: `cd backend && uv run pytest -q` → all pass, 1 live skip.
 Run: `cd backend && env -u OPENAI_API_KEY -u APIFY_TOKEN -u MAPBOX_SECRET_TOKEN uv run python -c "import capture, pipeline.offline_harness; print('keyless import OK')"`
-Run: `cd backend && uv run python -m evals.run_eval --subject baseline` → `OVERALL: PASS`. On the new `japan_dedupe` case the report should show `dedup_error = 2` (baseline doesn't dedup; `ctx["places"]` = 10 raw) — recorded, non-gating.
-Run: `cd backend && uv run python -m evals.run_eval --subject pipeline` → `OVERALL: PASS`. On `japan_dedupe`, `dedup_error = 0` (pipeline merged the cross-language duplicate to reach 8); on `japan_first_trip`, output + `dedup_error = 0` unchanged (parity anchor holds).
+Run: `cd backend && uv run python -m evals.run_eval --subject baseline` → `OVERALL: PASS`; on `japan_dedupe`, `dedup_error = 1` (baseline loads 9 raw) — recorded, non-gating.
+Run: `cd backend && uv run python -m evals.run_eval --subject pipeline` → `OVERALL: PASS`; on `japan_dedupe`, `dedup_error = 0` (pipeline merged the cross-language pair to 8); on `japan_first_trip`, output + `dedup_error = 0` unchanged (parity anchor holds).
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-cd backend && git add pipeline/offline_harness.py pipeline/test_offline_harness.py capture.py evals/fixtures/japan_dedup_places.json evals/cases/japan_dedupe.json
+cd backend && git add pipeline/offline_harness.py pipeline/test_offline_harness.py evals/test_run_eval.py capture.py evals/fixtures/japan_dedup_places.json evals/cases/japan_dedupe.json
 git commit -m "feat(pipeline): wire two-gate dedup into harness + dup eval case"
 ```
 

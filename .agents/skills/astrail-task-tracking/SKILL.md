@@ -15,7 +15,7 @@ metadata:
 
 ## Core Rule
 
-**GitHub Project #1 (owner `MalaysiaKaki`, id `PVT_kwDOEXlARc4BanGs`) is the SINGLE source of truth** for what work exists, who owns it, its status, and its ordering. Always re-read the board **live** before planning, picking the next task, or reporting status. When updating the board, update the Project fields directly and keep `Owner` current with `Status`; Shaun's backend tasks should be assigned to `Shaun` unless he explicitly says otherwise.
+**GitHub Project #1 (owner `MalaysiaKaki`, id `PVT_kwDOEXlARc4BanGs`) is the SINGLE source of truth** for what work exists, who owns it, its status, and its ordering. Always re-read the board **live** before planning, picking the next task, or reporting status. When updating the board, update the Project fields directly and keep `Owner` current with `Status`; Shaun's backend tasks should be assigned to `Shaun` unless he explicitly says otherwise. After a Project status update, update EMDEE as well when the EMDEE MCP is available, so the strategic/project log mirrors the board transition; if EMDEE is unavailable, say so explicitly.
 
 Do NOT treat any of these as the task list:
 - `gh issue list` on `astrail` or `TripCanvas` — repo issues are a subset; most tasks live as **draft cards** with no issue number.
@@ -75,8 +75,9 @@ for it in json.load(sys.stdin)['items']:
 1. Before answering "what should I do next?", "what's the status?", or producing a plan, **load the board** (Step 1). Never answer from memory or a repo issue list.
 2. The board's **Status + Phase are authoritative for task STATE** (what's active, in what order). For task **CONTENT** — what to build, how, and why — read `docs/PRD.md` (what) + `.claude/CLAUDE.md` (how) + EMDEE (why), per the Sources table above.
 3. **Keep the board current.** When work starts or finishes, the matching card's Status must change and the Owner field must be set at the same time. Shaun's tasks should be assigned to `Shaun`; Zhi Hao's frontend tasks to `Zhi Hao`; shared contract tasks to `Both`.
-4. **Don't invent issue numbers.** When a task has no issue number, reference it by **title + phase**.
-5. When picking the next task: lowest open Phase, your owner lane, `Todo` status, respecting any `In progress` item already claimed. Avoid double-claiming an item another agent already moved to `In progress`.
+4. **Mirror Project updates into EMDEE.** After changing Project Status/Owner, update the relevant EMDEE sprint/project log with a short status note and the active/finished card title. Use EMDEE MCP conventions (`get_doc("INFO.md", full=true)` before writes; incremental patch/create tools only). If EMDEE is not configured or unavailable, report that the Project was updated but EMDEE could not be updated.
+5. **Don't invent issue numbers.** When a task has no issue number, reference it by **title + phase**.
+6. When picking the next task: lowest open Phase, your owner lane, `Todo` status, respecting any `In progress` item already claimed. Avoid double-claiming an item another agent already moved to `In progress`.
 
 ## Reference
 

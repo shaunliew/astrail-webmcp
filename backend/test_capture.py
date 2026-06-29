@@ -1,4 +1,9 @@
 """Capture command — offline: producers injected, no live call, import needs no keys."""
+import os
+from pathlib import Path
+import subprocess
+import sys
+
 import capture
 from models.place import PlaceResult
 from models.reel import ReelData
@@ -148,12 +153,27 @@ def test_main_returns_nonzero_and_does_not_write_empty_capture(monkeypatch, tmp_
     assert "captured 0 reels" in capsys.readouterr().err
 
 
-def test_import_capture_needs_no_keys(monkeypatch):
-    monkeypatch.delenv("APIFY_TOKEN", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    import importlib
-    importlib.reload(capture)  # import time: no key required, no live call
-    assert hasattr(capture, "run_capture")
+def test_import_capture_is_keyless_and_sdk_free_in_fresh_interpreter():
+    code = (
+        "import sys; import capture, scrape.manual_input; "
+        "assert 'agents' not in sys.modules, 'Agents SDK imported at import time'; "
+        "assert 'openai' not in sys.modules, 'openai imported at import time'; "
+        "print('IMPORT_OK')"
+    )
+    env = {
+        k: v for k, v in os.environ.items()
+        if k not in ("OPENAI_API_KEY", "APIFY_TOKEN", "MAPBOX_SECRET_TOKEN")
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=str(Path(__file__).parent),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, f"fresh import failed: {result.stderr}"
+    assert "IMPORT_OK" in result.stdout
 
 
 async def test_run_capture_processes_manual_reels_without_scraping():

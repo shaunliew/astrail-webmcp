@@ -41,6 +41,13 @@ def test_manual_reeldata_is_deterministic():
     assert a.reel_url == b.reel_url
 
 
+def test_manual_reeldata_whitespace_padded_location_same_digest():
+    # the digest hashes the NORMALIZED location, so padded == trimmed (regression guard)
+    a = manual_reeldata("cap", location_name="loc")
+    b = manual_reeldata("cap", location_name="  loc  ")
+    assert a.reel_url == b.reel_url
+
+
 def test_manual_reeldata_distinct_text_distinct_url():
     assert manual_reeldata("text one").reel_url != manual_reeldata("text two").reel_url
 

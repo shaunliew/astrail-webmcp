@@ -15,7 +15,7 @@ import hashlib
 from models.reel import ReelData
 from scrape.reel_url import is_reel_url, normalize_reel_url
 
-MANUAL_CAPTURE_STATUS = "MANUAL"
+MANUAL_CAPTURE_STATUS: str = "MANUAL"
 
 
 def manual_reeldata(

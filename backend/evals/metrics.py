@@ -82,10 +82,31 @@ def weak_source_url_rate(ctx: dict) -> float:
     return round(weak / len(places), 3)
 
 
+def max_single_leg_m(ctx: dict) -> float:
+    """Longest single consecutive intra-day leg (m). A high value = a transit-heavy day."""
+    coords = {p["name"]: (p["lat"], p["lng"]) for p in ctx["places"]
+              if p.get("lat") is not None and p.get("lng") is not None}
+    longest = 0.0
+    for day in ctx["itinerary"]["days"]:
+        names = day["place_names"]
+        for i in range(len(names) - 1):
+            a, b = coords.get(names[i]), coords.get(names[i + 1])
+            if a and b:
+                longest = max(longest, haversine_m(a[0], a[1], b[0], b[1]))
+    return round(longest, 1)
+
+
+def feasibility_warning_count(ctx: dict) -> int:
+    """Number of feasibility warnings the pipeline attached (0 for the baseline subject)."""
+    return len(ctx["itinerary"].get("feasibility_warnings", []))
+
+
 QUALITY_METRICS: dict[str, object] = {
     "dedup_error": dedup_error,
     "mean_intra_day_travel_m": mean_intra_day_travel_m,
     "hallucination_rate": hallucination_rate,
     "evidence_coverage": evidence_coverage,
     "weak_source_url_rate": weak_source_url_rate,
+    "max_single_leg_m": max_single_leg_m,
+    "feasibility_warning_count": feasibility_warning_count,
 }

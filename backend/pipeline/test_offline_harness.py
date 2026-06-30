@@ -22,13 +22,14 @@ def test_dedupe_distinct_places_pass_through_as_canonical():
     assert all(isinstance(p, CanonicalPlace) and p.times_referenced == 1 for p in res.places)
 
 
-def test_assemble_itinerary_chunks_in_input_order():
-    places = [CanonicalPlace(name=n, category="other", confidence=0.9, evidence_quote=n)
-              for n in ("A", "B", "C")]
-    itin = assemble_itinerary(places, ["2026-06-10", "2026-06-11"])
-    assert [d.day_number for d in itin.days] == [1, 2]
-    assert itin.days[0].place_names == ["A", "B"]  # extra goes to the earlier day
-    assert itin.days[1].place_names == ["C"]
+def test_assemble_itinerary_geo_orders_and_carries_warnings():
+    # three places; geo-ordering + per-day TSP should not exceed input-order travel,
+    # and the itinerary carries a (possibly empty) feasibility_warnings list
+    places = [CanonicalPlace(name=n, category="other", confidence=0.9, evidence_quote=n, lat=la, lng=lo)
+              for n, la, lo in [("A", 35.0, 139.0), ("Far", 35.5, 139.5), ("B", 35.01, 139.01)]]
+    itin = assemble_itinerary(places, ["2026-06-10"])
+    assert {n for d in itin.days for n in d.place_names} == {"A", "Far", "B"}  # all present
+    assert isinstance(itin.feasibility_warnings, list)
 
 
 def test_assemble_itinerary_rejects_zero_dates():

@@ -57,22 +57,37 @@ def test_pipeline_subject_passes_all_contractual_checks():
         assert result["contractual"], f"expected contractual checks to run for {name}"
 
 
-def test_pipeline_subject_matches_baseline_metrics_on_current_fixtures():
-    # Regression anchor — fixture-scoped, NOT a forever invariant. On the CURRENT demo
-    # fixtures (distinct names, all coords) the offline pipeline (identity dedup + naive
-    # narrate) reproduces the baseline metrics exactly, proving the seam is wired with zero
-    # behaviour drift. Steps 6-7 deliberately make the pipeline diverge (geo-dedup, routing);
-    # when that lands, this equality is expected to break and the test is updated then.
+def test_pipeline_route_beats_or_matches_baseline_on_parity_anchors():
+    # Step 7: the pipeline reorders for shorter routes, so it no longer EQUALS the baseline.
+    # mean_intra_day_travel_m must be <= baseline (route is no worse); every OTHER metric is
+    # unchanged (==). Cases flagged diverges_from_baseline are skipped (e.g. japan_dedupe).
+    IMPROVE = {"mean_intra_day_travel_m"}
     for name in gather_case_names():
         case = load_case(name)
         if case.get("diverges_from_baseline"):
-            continue  # e.g. japan_dedupe: dedup_error intentionally differs from baseline (Step 6)
-        base_ctx = build_ctx(case, subject="baseline")
-        pipe_ctx = build_ctx(case, subject="pipeline")
-        metric_names = case["active_quality_metrics"]
-        base = {m: QUALITY_METRICS[m](base_ctx) for m in metric_names}
-        pipe = {m: QUALITY_METRICS[m](pipe_ctx) for m in metric_names}
-        assert pipe == base, name
+            continue
+        base_ctx, pipe_ctx = build_ctx(case, "baseline"), build_ctx(case, "pipeline")
+        for m in case["active_quality_metrics"]:
+            b, p = QUALITY_METRICS[m](base_ctx), QUALITY_METRICS[m](pipe_ctx)
+            if m in IMPROVE:
+                assert p <= b, f"{name}/{m}: pipeline {p} > baseline {b}"
+            else:
+                assert p == b, f"{name}/{m}: pipeline {p} != baseline {b}"
+
+
+def test_pipeline_strictly_improves_route_on_japan_first_trip():
+    # proves the reorder actually shortens the route (not just matches)
+    base = QUALITY_METRICS["mean_intra_day_travel_m"](build_ctx(load_case("japan_first_trip"), "baseline"))
+    pipe = QUALITY_METRICS["mean_intra_day_travel_m"](build_ctx(load_case("japan_first_trip"), "pipeline"))
+    assert pipe < base, f"expected pipeline route ({pipe}) shorter than baseline ({base})"
+
+
+def test_pipeline_flags_long_leg_and_overpacked_on_feasibility_case():
+    ctx = build_ctx(load_case("japan_feasibility"), "pipeline")
+    kinds = {w["kind"] for w in ctx["itinerary"]["feasibility_warnings"]}
+    assert "long_leg" in kinds        # the ~30km stop is flagged even after optimal ordering
+    assert "overpacked_day" in kinds  # 5 stops in 1 day > balanced cap 4
+    assert QUALITY_METRICS["feasibility_warning_count"](ctx) >= 2
 
 
 def test_default_subject_is_baseline():

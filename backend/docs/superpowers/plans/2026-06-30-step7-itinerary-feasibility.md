@@ -176,19 +176,22 @@ def _path_distance(order: list[CanonicalPlace]) -> float:
 
 def geo_order(places: list[CanonicalPlace]) -> list[CanonicalPlace]:
     """Deterministic nearest-neighbor chain over coord-bearing places; no-coord places are
-    appended (input order) at the end. Anchor = smallest (lat, lng); nearest ties broken by
-    index — so the result is reproducible regardless of input order. Never mutates input."""
+    appended (input order) at the end. Anchor = smallest (lat, lng, name); nearest ties broken
+    by (lat, lng, name) — stable PLACE identity, not list index — so the chain is
+    INPUT-ORDER-INDEPENDENT (any ordering of the same places → the same chain). Never mutates input."""
     coorded = [p for p in places if _has_coords(p)]
     no_coord = [p for p in places if not _has_coords(p)]
     if len(coorded) <= 1:
         return coorded + no_coord
     remaining = list(coorded)
-    start = min(range(len(remaining)), key=lambda i: (remaining[i].lat, remaining[i].lng))
+    start = min(range(len(remaining)),
+                key=lambda i: (remaining[i].lat, remaining[i].lng, remaining[i].name))
     chain = [remaining.pop(start)]
     while remaining:
         last = chain[-1]
         nxt = min(range(len(remaining)),
-                  key=lambda i: (haversine_m(last.lat, last.lng, remaining[i].lat, remaining[i].lng), i))
+                  key=lambda i: (haversine_m(last.lat, last.lng, remaining[i].lat, remaining[i].lng),
+                                 remaining[i].lat, remaining[i].lng, remaining[i].name))
         chain.append(remaining.pop(nxt))
     return chain + no_coord
 
@@ -200,8 +203,11 @@ def optimal_day_order(day_places: list[CanonicalPlace]) -> list[CanonicalPlace]:
     coorded = [p for p in day_places if _has_coords(p)]
     no_coord = [p for p in day_places if not _has_coords(p)]
     if len(coorded) <= 2 or len(coorded) > _BRUTE_FORCE_MAX:
-        return day_places
-    best = min(permutations(coorded), key=_path_distance)
+        return list(day_places)   # new list; trivial (≤2) or too large → keep geo-order
+    # secondary key (name tuple) canonicalizes equal-cost paths (a route and its reverse
+    # have identical distance) so the result is stable, not "whichever permutation came first".
+    best = min(permutations(coorded),
+               key=lambda perm: (_path_distance(perm), tuple(p.name for p in perm)))
     return list(best) + no_coord
 
 
@@ -380,19 +386,19 @@ def test_pipeline_strictly_improves_route_on_japan_first_trip():
 
 - [ ] **Step 6: Add the long-leg/overpacked regression case + fixture**
 
-Create `backend/evals/fixtures/japan_feasibility_places.json` — places where ONE stop is unavoidably far (a long leg survives even optimal ordering) and/or a day is overpacked. E.g. 5 Tokyo-clustered places + 1 place ~30 km out (Yokohama-ish, still in Japan bbox) so any day containing it has a `long_leg` flag. All in-bbox, valid coords, full PlaceResult field shape.
+Create `backend/evals/fixtures/japan_feasibility_places.json` — **5 distinct places over a SINGLE day** so BOTH warnings fire: 4 clustered in central Tokyo + **1 place ~30 km out** (Yokohama-ish, still in the Japan bbox). On one day, all 5 land in that day → `overpacked_day` (5 > balanced cap 4) AND the far stop forces a `long_leg` (≥4 km) even after optimal ordering (it sits at a path endpoint, but its single nearest-neighbor leg is still ~30 km). All in-bbox, valid coords, full PlaceResult field shape (no duplicates → `expected_unique_places: 5`).
 
-Create `backend/evals/cases/japan_feasibility.json`:
+Create `backend/evals/cases/japan_feasibility.json` (note `start_date == end_date` → a single day, which is what forces the 5-stop overpacked day):
 
 ```json
 {
   "case": "japan_feasibility",
-  "description": "Long-leg + overpacked regression. One far-flung stop (~30km) forces a long_leg flag even after optimal ordering; a packed day exceeds the balanced cap. Pipeline attaches feasibility_warnings (baseline does not). diverges_from_baseline so the parity anchor test skips it.",
+  "description": "Long-leg + overpacked regression over a single day. 5 places (4 central Tokyo + 1 ~30km out) all land in day 1 → overpacked (>balanced cap 4) AND a long_leg flag survives optimal ordering. Pipeline attaches feasibility_warnings (baseline does not). diverges_from_baseline so the parity anchor test skips it.",
   "reels_fixture": "fixtures/japan_demo_reels.json",
   "places_fixture": "fixtures/japan_feasibility_places.json",
   "start_date": "2026-06-10",
-  "end_date": "2026-06-11",
-  "expected_unique_places": 6,
+  "end_date": "2026-06-10",
+  "expected_unique_places": 5,
   "diverges_from_baseline": true,
   "active_contractual_checks": ["coords_present", "japan_bbox", "day_count", "source_places_parity", "day_places_traceable"],
   "active_quality_metrics": ["dedup_error", "max_single_leg_m", "feasibility_warning_count", "hallucination_rate"],
@@ -403,11 +409,12 @@ Create `backend/evals/cases/japan_feasibility.json`:
 Add a pytest gate (pipeline-only — baseline emits no warnings, so this can't be a contractual check) in `test_run_eval.py`:
 
 ```python
-def test_pipeline_flags_long_leg_on_feasibility_case():
+def test_pipeline_flags_long_leg_and_overpacked_on_feasibility_case():
     ctx = build_ctx(load_case("japan_feasibility"), "pipeline")
     kinds = {w["kind"] for w in ctx["itinerary"]["feasibility_warnings"]}
-    assert "long_leg" in kinds          # the ~30km stop is flagged even after optimal ordering
-    assert QUALITY_METRICS["feasibility_warning_count"](ctx) >= 1
+    assert "long_leg" in kinds        # the ~30km stop is flagged even after optimal ordering
+    assert "overpacked_day" in kinds  # 5 stops in 1 day > balanced cap 4
+    assert QUALITY_METRICS["feasibility_warning_count"](ctx) >= 2
 ```
 
 - [ ] **Step 7: Run full suite + both eval subjects + import invariant**
@@ -415,7 +422,7 @@ def test_pipeline_flags_long_leg_on_feasibility_case():
 Run: `cd backend && uv run pytest -q` → all pass, 1 live skip (test count up).
 Run: `cd backend && env -u OPENAI_API_KEY -u APIFY_TOKEN -u MAPBOX_SECRET_TOKEN uv run python -c "import capture, pipeline.offline_harness, pipeline.feasibility; print('keyless import OK')"`
 Run: `cd backend && uv run python -m evals.run_eval --subject baseline` → `OVERALL: PASS` (frozen baseline unchanged; `japan_feasibility` baseline records `feasibility_warning_count=0`, `max_single_leg_m` large — non-gating).
-Run: `cd backend && uv run python -m evals.run_eval --subject pipeline` → `OVERALL: PASS`; `japan_first_trip` `mean_intra_day_travel_m` now **< 8163.7** (route improved); `japan_feasibility` shows `feasibility_warning_count >= 1`.
+Run: `cd backend && uv run python -m evals.run_eval --subject pipeline` → `OVERALL: PASS`; `japan_first_trip` `mean_intra_day_travel_m` now **< 8163.7** (≈6229, route improved); `japan_feasibility` shows `feasibility_warning_count >= 2` (a `long_leg` + an `overpacked_day`).
 
 - [ ] **Step 8: Commit**
 

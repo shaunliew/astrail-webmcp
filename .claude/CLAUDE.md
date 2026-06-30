@@ -396,6 +396,16 @@ After every meaningful commit:
 shiplog "what you did" --type ship|fix|learn|struggle --sprint 1 --author zhihao|shaun
 ```
 
+### Subagents (in `.claude/agents/`)
+
+Committed to the repo (clone and you have them). **Use these for the backend dev loop instead of re-writing inline subagent prompts** — they encode our validated patterns + the Astrail guardrails. Dispatch by `subagent_type` (override `model` per call: `sonnet` default, `opus` for the hard final/adversarial review):
+
+- `astrail-developer` — implements ONE task of an approved plan (TDD, transcribe the plan's code incl. review folds, run tests, commit conventional + NO attribution, status protocol). The implementer in subagent-driven-development.
+- `astrail-researcher` — read-only research → cited synthesis + feasible-first recommendation; uses the Mapbox docs + OpenAI docs MCP servers (never answers API/SDK facts from memory) + web search + the code seam. Run before planning a step that touches an unfamiliar API/algorithm.
+- `astrail-reviewer` — read-only skeptic: spec + code-quality + **adversarial** + the Astrail **eval-safety** lens (#16 parity anchor, subset-not-equality checks, frozen `evals/baseline.py`), with confidence calibration. The per-task reviewer AND the final adversarial pass.
+
+Standard loop: plan (`astrail-plan-and-review` + writing-plans) → review the plan (`/plan-eng-review` + Codex) → implement task-by-task via **subagent-driven-development** using `astrail-developer` + `astrail-reviewer` → final gstack `/review` (or `astrail-reviewer` adversarial) → report. (These are Claude Code subagents; Codex uses `/codex:rescue` for its own delegation.)
+
 ### gstack (external toolchain — install per machine)
 
 gstack is **not** committed to this repo — it installs globally to `~/.claude/skills/gstack`, so **each teammate installs it themselves**. The `astrail-plan-and-review` skill assumes it's present.

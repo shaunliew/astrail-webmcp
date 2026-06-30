@@ -91,7 +91,7 @@ def max_single_leg_m(ctx: dict) -> float:
         names = day["place_names"]
         for i in range(len(names) - 1):
             a, b = coords.get(names[i]), coords.get(names[i + 1])
-            if a and b:
+            if a is not None and b is not None:   # explicit None check, matching mean_intra_day_travel_m
                 longest = max(longest, haversine_m(a[0], a[1], b[0], b[1]))
     return round(longest, 1)
 

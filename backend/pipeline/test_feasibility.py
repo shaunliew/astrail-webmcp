@@ -1,7 +1,7 @@
 """Itinerary feasibility — pure, offline, deterministic."""
 from models.place import CanonicalPlace
 from pipeline.feasibility import (
-    LONG_LEG_FLAG_M, assess_feasibility, geo_order, optimal_day_order,
+    LONG_LEG_FLAG_M, DEFAULT_PACE, assess_feasibility, geo_order, optimal_day_order,
 )
 
 
@@ -66,3 +66,77 @@ def test_no_coords_place_never_crashes_ordering_or_legs():
                         lat=None, lng=None)
     assert len(geo_order([a, nc])) == 2
     assert assess_feasibility([(1, [a, nc])], pace="balanced") == []  # leg skipped, no crash
+
+
+def test_assess_feasibility_flags_empty_day():
+    """A day with 0 stops gets an empty_day warning with severity flag."""
+    days = [(1, [_p("A", 35.0, 139.0)]), (2, [])]
+    w = assess_feasibility(days, pace="balanced")
+    empty = [x for x in w if x.kind == "empty_day"]
+    assert len(empty) == 1
+    assert empty[0].day_number == 2
+    assert empty[0].severity == "flag"
+
+
+def test_assess_feasibility_long_leg_flag_severity():
+    """A leg >= LONG_LEG_FLAG_M (4 km) has severity == 'flag'."""
+    # ~120 km apart — well above the flag threshold
+    days = [(1, [_p("A", 35.0, 139.0), _p("B", 35.9, 139.9)])]
+    w = assess_feasibility(days, pace="balanced")
+    long_leg_warnings = [x for x in w if x.kind == "long_leg"]
+    assert long_leg_warnings, "expected at least one long_leg warning"
+    assert long_leg_warnings[0].severity == "flag"
+    assert long_leg_warnings[0].leg_m >= LONG_LEG_FLAG_M
+
+
+def test_assess_feasibility_one_stop_day_no_warnings():
+    """A single-stop day produces no warnings (no legs, not overpacked)."""
+    day = (1, [_p("A", 35.0, 139.0)])
+    assert assess_feasibility([day], pace="balanced") == []
+
+
+def test_assess_feasibility_pace_none_uses_default_cap():
+    """pace=None falls back to the balanced default (no crash, balanced cap applies)."""
+    # 3 stops <= balanced cap 4 → no overpacked warning; pace=None uses default
+    day = (1, [_p(f"P{i}", 35.0 + i * 0.001, 139.0) for i in range(3)])
+    w = assess_feasibility([day], pace=None)
+    assert all(x.kind != "overpacked_day" for x in w)
+
+
+def test_optimal_day_order_no_coord_place_last_on_small_path():
+    """No-coord place is LAST on the ≤2-coord early-return path."""
+    a = _p("A", 35.0, 139.0)
+    nc = CanonicalPlace(name="NC", category="other", confidence=0.5, evidence_quote="NC",
+                        lat=None, lng=None)
+    b = _p("B", 35.9, 139.9)
+    # 2 coord places → early return; NC must end up last, not middle
+    out = optimal_day_order([a, nc, b])
+    assert out[-1].name == "NC"
+
+
+def test_optimal_day_order_large_path_preserves_all_names():
+    """8-coord stops (> _BRUTE_FORCE_MAX 7) takes early-return; all names preserved."""
+    places = [_p(f"P{i}", 35.0 + i * 0.01, 139.0) for i in range(8)]
+    out = optimal_day_order(places)
+    assert {p.name for p in out} == {p.name for p in places}
+
+
+def test_route_aware_ordering_strictly_reduces_zig_zag():
+    """A deliberately zig-zagging input is strictly improved by geo_order + optimal_day_order.
+
+    Replaces the fixture-dependent test_pipeline_strictly_improves_route_on_japan_first_trip
+    which could spuriously pass/fail if the demo fixture happened to already be geo-optimal.
+    """
+    # Input deliberately zig-zags: near, far, near, far
+    places = [
+        _p("A_near", 35.0, 139.0),
+        _p("Far1", 35.5, 139.5),
+        _p("B_near", 35.01, 139.01),
+        _p("Far2", 35.51, 139.51),
+    ]
+    naive_total = _total(places)
+    optimized = optimal_day_order(geo_order(places))
+    optimized_total = _total(optimized)
+    assert optimized_total < naive_total, (
+        f"expected optimized route ({optimized_total:.0f} m) < naive ({naive_total:.0f} m)"
+    )

@@ -15,6 +15,24 @@ from evals.util import (
 )
 
 
+def _legs_by_day(ctx: dict) -> list[list[float]]:
+    """One list of valid consecutive leg distances per day (empty list for <2-stop days).
+    A no-coords stop breaks the chain — it is NOT bridged over, matching the chain-break
+    semantics of mean_intra_day_travel_m / max_single_leg_m."""
+    coords = {p["name"]: (p["lat"], p["lng"]) for p in ctx["places"]
+              if p.get("lat") is not None and p.get("lng") is not None}
+    result: list[list[float]] = []
+    for day in ctx["itinerary"]["days"]:
+        names = day["place_names"]
+        legs: list[float] = []
+        for i in range(len(names) - 1):
+            a, b = coords.get(names[i]), coords.get(names[i + 1])
+            if a is not None and b is not None:
+                legs.append(haversine_m(a[0], a[1], b[0], b[1]))
+        result.append(legs)
+    return result
+
+
 def dedup_error(ctx: dict) -> int:
     """|produced canonical place count − known unique count|. 0 = perfect dedup."""
     produced = len(ctx["places"])
@@ -29,18 +47,7 @@ def mean_intra_day_travel_m(ctx: dict) -> float:
     fabricate an adjacency between its neighbours). In practice the `coords_present`
     contractual check gates the run before this matters; this guard prevents masking.
     """
-    coords = {p["name"]: (p["lat"], p["lng"]) for p in ctx["places"]
-              if p.get("lat") is not None and p.get("lng") is not None}
-    per_day: list[float] = []
-    for day in ctx["itinerary"]["days"]:
-        names = day["place_names"]
-        legs = 0.0
-        for i in range(len(names) - 1):
-            a, b = coords.get(names[i]), coords.get(names[i + 1])
-            if a is None or b is None:
-                continue  # broken leg: do not bridge over a no-coords stop
-            legs += haversine_m(a[0], a[1], b[0], b[1])
-        per_day.append(legs)
+    per_day = [sum(legs) for legs in _legs_by_day(ctx)]
     return round(sum(per_day) / len(per_day), 1) if per_day else 0.0
 
 
@@ -84,16 +91,8 @@ def weak_source_url_rate(ctx: dict) -> float:
 
 def max_single_leg_m(ctx: dict) -> float:
     """Longest single consecutive intra-day leg (m). A high value = a transit-heavy day."""
-    coords = {p["name"]: (p["lat"], p["lng"]) for p in ctx["places"]
-              if p.get("lat") is not None and p.get("lng") is not None}
-    longest = 0.0
-    for day in ctx["itinerary"]["days"]:
-        names = day["place_names"]
-        for i in range(len(names) - 1):
-            a, b = coords.get(names[i]), coords.get(names[i + 1])
-            if a is not None and b is not None:   # explicit None check, matching mean_intra_day_travel_m
-                longest = max(longest, haversine_m(a[0], a[1], b[0], b[1]))
-    return round(longest, 1)
+    all_legs = [d for day_legs in _legs_by_day(ctx) for d in day_legs]
+    return round(max(all_legs), 1) if all_legs else 0.0
 
 
 def feasibility_warning_count(ctx: dict) -> int:

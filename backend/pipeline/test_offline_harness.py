@@ -23,13 +23,18 @@ def test_dedupe_distinct_places_pass_through_as_canonical():
 
 
 def test_assemble_itinerary_geo_orders_and_carries_warnings():
-    # three places; geo-ordering + per-day TSP should not exceed input-order travel,
-    # and the itinerary carries a (possibly empty) feasibility_warnings list
+    # three places in a zig-zag input order (A, Far, B); geo-ordering + per-day TSP must
+    # reorder them so "Far" (the outlier) is not left in the middle position.
+    # Also verifies all places are present and feasibility_warnings is a list.
     places = [CanonicalPlace(name=n, category="other", confidence=0.9, evidence_quote=n, lat=la, lng=lo)
               for n, la, lo in [("A", 35.0, 139.0), ("Far", 35.5, 139.5), ("B", 35.01, 139.01)]]
     itin = assemble_itinerary(places, ["2026-06-10"])
     assert {n for d in itin.days for n in d.place_names} == {"A", "Far", "B"}  # all present
     assert isinstance(itin.feasibility_warnings, list)
+    # route-aware reorder: "Far" is not in the middle (input position 1); it should be last
+    day_names = itin.days[0].place_names
+    assert day_names != ["A", "Far", "B"], "expected reordering away from zig-zag input order"
+    assert day_names[-1] == "Far", f"expected 'Far' to be last after geo+TSP order; got {day_names}"
 
 
 def test_assemble_itinerary_rejects_zero_dates():

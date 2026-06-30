@@ -19,10 +19,11 @@ class ItineraryDay(BaseModel):
 
 
 class FeasibilityWarning(BaseModel):
-    kind: Literal["long_leg", "overpacked_day"]
+    kind: Literal["long_leg", "overpacked_day", "empty_day"]
     day_number: int
     detail: str
     leg_m: float | None = None
+    severity: Literal["warn", "flag"] | None = None
 
 
 class ItineraryOutput(BaseModel):

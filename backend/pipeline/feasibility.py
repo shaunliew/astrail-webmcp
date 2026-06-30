@@ -65,7 +65,7 @@ def optimal_day_order(day_places: list[CanonicalPlace]) -> list[CanonicalPlace]:
     coorded = [p for p in day_places if _has_coords(p)]
     no_coord = [p for p in day_places if not _has_coords(p)]
     if len(coorded) <= 2 or len(coorded) > _BRUTE_FORCE_MAX:
-        return list(day_places)   # new list; trivial (≤2) or too large → keep geo-order
+        return list(coorded) + no_coord   # no-coord places consistently last on all paths
     # secondary key (name tuple) canonicalizes equal-cost paths (a route and its reverse
     # have identical distance) so the result is stable, not "whichever permutation came first".
     best = min(permutations(coorded),
@@ -76,20 +76,28 @@ def optimal_day_order(day_places: list[CanonicalPlace]) -> list[CanonicalPlace]:
 def assess_feasibility(
     numbered_days: list[tuple[int, list[CanonicalPlace]]], *, pace: str = DEFAULT_PACE
 ) -> list[FeasibilityWarning]:
-    """Flag overpacked days (stops > pace cap) and long legs (≥WARN / ≥FLAG metres). A
-    missing-coord leg is skipped (no warning, no crash)."""
+    """Flag empty days, overpacked days (stops > pace cap), and long legs (≥WARN / ≥FLAG metres).
+    A missing-coord leg is skipped (no warning, no crash). Every warning carries a severity field:
+    empty_day → 'flag'; overpacked_day → 'warn'; long_leg → 'flag' if ≥LONG_LEG_FLAG_M else 'warn'."""
     cap = PACE_STOP_CAP.get(pace, PACE_STOP_CAP[DEFAULT_PACE])
     warnings: list[FeasibilityWarning] = []
     for day_number, day in numbered_days:
+        if len(day) == 0:
+            warnings.append(FeasibilityWarning(
+                kind="empty_day", day_number=day_number,
+                detail="day has no stops", severity="flag"))
+            continue
         if len(day) > cap:
             warnings.append(FeasibilityWarning(
                 kind="overpacked_day", day_number=day_number,
-                detail=f"{len(day)} stops exceeds the {pace} pace cap of {cap}"))
+                detail=f"{len(day)} stops exceeds the {pace} pace cap of {cap}",
+                severity="warn"))
         for i in range(len(day) - 1):
             d = _leg_m(day[i], day[i + 1])
             if d is not None and d >= LONG_LEG_WARN_M:
-                level = "flag" if d >= LONG_LEG_FLAG_M else "warn"
+                severity = "flag" if d >= LONG_LEG_FLAG_M else "warn"
                 warnings.append(FeasibilityWarning(
                     kind="long_leg", day_number=day_number, leg_m=d,
-                    detail=f"{d:.0f} m {day[i].name} -> {day[i + 1].name} ({level})"))
+                    detail=f"{d:.0f} m {day[i].name} -> {day[i + 1].name} ({severity})",
+                    severity=severity))
     return warnings

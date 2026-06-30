@@ -56,7 +56,7 @@ def assemble_itinerary(
     ordered = geo_order(places)
     base, extra = divmod(len(ordered), d)
     days: list[ItineraryDay] = []
-    numbered: list[tuple[int, list[CanonicalPlace]]] = []
+    day_groups: list[tuple[int, list[CanonicalPlace]]] = []
     idx = 0
     for i, day_date in enumerate(dates):
         size = base + (1 if i < extra else 0)
@@ -64,13 +64,13 @@ def assemble_itinerary(
         idx += size
         days.append(ItineraryDay(day_number=i + 1, date=day_date,
                                  place_names=[p.name for p in group]))
-        numbered.append((i + 1, group))
+        day_groups.append((i + 1, group))
     return ItineraryOutput(
         title="Tokyo (offline pipeline skeleton)",
         source="pipeline",
         source_places=[p.name for p in places],
         days=days,
-        feasibility_warnings=assess_feasibility(numbered, pace=pace),
+        feasibility_warnings=assess_feasibility(day_groups, pace=pace),
     )
 
 
@@ -83,6 +83,7 @@ def run_offline_pipeline(
     live_reels: Source | None = None,
     live_places: Source | None = None,
     clock: Clock = time.perf_counter,
+    pace: str = DEFAULT_PACE,
 ) -> PipelineOutput:
     """Run the fixture-backed pipeline end-to-end, offline, deterministically.
 
@@ -102,7 +103,7 @@ def run_offline_pipeline(
         canonical = dedupe_places(extracted).places   # two-gate alias+geo, confidence-capped
     with sw.stage("narrate"):
         dates = _date_range(start_date, end_date)
-        itinerary = assemble_itinerary(canonical, dates)
+        itinerary = assemble_itinerary(canonical, dates, pace=pace)
     sw.mark_total(t0)
     return PipelineOutput(
         reels=[r.model_dump() for r in reels],

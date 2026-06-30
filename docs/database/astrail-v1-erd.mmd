@@ -1,0 +1,297 @@
+erDiagram
+  USERS ||--o| TRAVELER_PROFILES : has_profile
+  USERS ||--o{ USER_PREFERENCE_FACTS : owns
+  USERS ||--o{ TRIPS : creates
+  USERS ||--o{ FEEDBACK : provides
+  USERS ||--o{ JOBS : triggers
+  USERS ||--o{ MEMORY_EVENTS : logs
+  USERS ||--o{ USER_DAILY_USAGE : tracks
+
+  TRIPS ||--o{ TRIP_INSPIRATION_ITEMS : contains
+  TRIPS ||--o{ TRIP_PLACES : organizes
+  TRIPS ||--o{ TRIP_DAYS : subdivides
+  TRIPS ||--o{ TRANSPORT_LEGS : plans
+  TRIPS ||--o{ RESTAURANT_SUGGESTIONS : generates
+  TRIPS ||--o{ HOTEL_SUGGESTIONS : generates
+  TRIPS ||--o{ FEEDBACK : receives
+  TRIPS ||--o{ GENERATION_EVENTS : tracks
+  TRIPS ||--o{ JOBS : initiates
+  TRIPS o|--o{ MEMORY_EVENTS : may_document
+
+  REEL_CACHE o|--o{ TRIP_INSPIRATION_ITEMS : may_feed
+  PLACES o|--o{ TRIP_INSPIRATION_ITEMS : may_resolve
+  PLACES ||--o{ TRIP_PLACES : marks
+  PLACES o|--o{ TRANSPORT_LEGS : may_connect_from
+  PLACES o|--o{ TRANSPORT_LEGS : may_connect_to
+  PLACES o|--o{ RESTAURANT_SUGGESTIONS : restaurant
+  PLACES o|--o{ RESTAURANT_SUGGESTIONS : near_stop
+  PLACES o|--o{ HOTEL_SUGGESTIONS : may_anchor
+  TRIP_DAYS o|--o{ TRANSPORT_LEGS : may_schedule
+  TRIP_DAYS o|--o{ RESTAURANT_SUGGESTIONS : may_include
+  TRIP_DAYS o|--o{ HOTEL_SUGGESTIONS : may_include
+
+  LOCATION_GRAPH_NODES ||--o{ LOCATION_GRAPH_EDGES : originates
+  LOCATION_GRAPH_NODES ||--o{ LOCATION_GRAPH_EDGES : targets
+
+  %% source_trip_id on USER_PREFERENCE_FACTS is currently a logical pointer,
+  %% not an enforced SQL foreign key in the draft schema.
+
+  USERS {
+    uuid id PK
+    text email
+    text full_name
+    text avatar_url
+    text role
+    text beta_status
+    timestamptz created_at
+    timestamptz updated_at
+  }
+
+  TRAVELER_PROFILES {
+    uuid id PK,FK
+    text origin_city
+    text[] travel_style_tags
+    text[] preference_tags
+    text preference_notes
+    boolean onboarding_completed
+    int onboarding_version
+    int profile_revision
+    timestamptz created_at
+    timestamptz updated_at
+  }
+
+  USER_PREFERENCE_FACTS {
+    uuid id PK
+    uuid user_id FK
+    text category
+    text fact_key
+    jsonb fact_value
+    text source
+    numeric confidence
+    text status
+    uuid source_trip_id
+    text mem0_memory_id
+    timestamptz created_at
+    timestamptz updated_at
+  }
+
+  TRIPS {
+    uuid id PK
+    uuid user_id FK
+    text status
+    text destination_hint
+    text inferred_destination
+    date start_date
+    date end_date
+    text origin_city
+    text budget_level
+    int adult_count
+    int child_count
+    int room_count
+    jsonb occupancy_json
+    jsonb hotel_preference_json
+    jsonb persona_snapshot_json
+    jsonb preference_sources
+    text preference_summary
+    timestamptz created_at
+    timestamptz updated_at
+  }
+
+  REEL_CACHE {
+    uuid id PK
+    text normalized_url UK
+    text source_platform
+    text caption
+    text location_name
+    text transcript
+    text thumbnail_url
+    jsonb raw_payload
+    timestamptz scraped_at
+    timestamptz expires_at
+  }
+
+  PLACES {
+    uuid id PK
+    text name
+    text place_type
+    double lat
+    double lng
+    text country
+    text city
+    text area
+    text[] aliases
+    jsonb source_summary
+    text embedding
+    timestamptz created_at
+    timestamptz updated_at
+  }
+
+  TRIP_INSPIRATION_ITEMS {
+    uuid id PK
+    uuid trip_id FK
+    text item_type
+    text source
+    text normalized_reel_url
+    uuid reel_cache_id FK
+    text requested_place_text
+    uuid resolved_place_id FK
+    text status
+    timestamptz created_at
+    timestamptz updated_at
+  }
+
+  TRIP_PLACES {
+    uuid id PK
+    uuid trip_id FK
+    uuid place_id FK
+    text source_type
+    jsonb evidence_json
+    int day_number
+    int sort_order
+    timestamptz created_at
+  }
+
+  TRIP_DAYS {
+    uuid id PK
+    uuid trip_id FK
+    int day_number
+    date day_date
+    text title
+    text summary
+    timestamptz created_at
+    timestamptz updated_at
+  }
+
+  TRANSPORT_LEGS {
+    uuid id PK
+    uuid trip_id FK
+    uuid trip_day_id FK
+    uuid from_place_id FK
+    uuid to_place_id FK
+    int leg_order
+    text transport_mode
+    text routing_provider
+    text routing_profile
+    text status
+    int duration_seconds
+    int distance_meters
+    jsonb route_geometry
+    text warning
+    jsonb raw_payload
+    timestamptz created_at
+  }
+
+  RESTAURANT_SUGGESTIONS {
+    uuid id PK
+    uuid trip_id FK
+    uuid trip_day_id FK
+    uuid restaurant_place_id FK
+    uuid near_place_id FK
+    text cuisine
+    text summary
+    text source_url
+    jsonb evidence_json
+    jsonb preference_match_json
+    timestamptz created_at
+  }
+
+  HOTEL_SUGGESTIONS {
+    uuid id PK
+    uuid trip_id FK
+    uuid trip_day_id FK
+    uuid base_place_id FK
+    text name
+    text area
+    numeric star_rating
+    jsonb price_snapshot
+    text travala_hotel_id
+    text travala_session_id
+    text travala_package_id
+    jsonb travala_result_json
+    jsonb preference_match_json
+    text source
+    text status
+    timestamptz searched_at
+    timestamptz created_at
+  }
+
+  FEEDBACK {
+    uuid id PK
+    uuid trip_id FK
+    uuid user_id FK
+    text artifact_type
+    uuid artifact_id
+    text feedback_type
+    int rating
+    text comment
+    text source_type
+    text generation_stage
+    text preference_source
+    jsonb metadata_json
+    timestamptz created_at
+  }
+
+  GENERATION_EVENTS {
+    uuid id PK
+    uuid trip_id FK
+    text event_type
+    text stage
+    text message
+    jsonb payload
+    timestamptz created_at
+  }
+
+  JOBS {
+    uuid id PK
+    uuid trip_id FK
+    uuid user_id FK
+    text idempotency_key UK
+    text status
+    int attempt_count
+    timestamptz locked_at
+    timestamptz started_at
+    timestamptz completed_at
+    text error_message
+    timestamptz created_at
+    timestamptz updated_at
+  }
+
+  LOCATION_GRAPH_NODES {
+    uuid id PK
+    text node_type
+    text ref_table
+    uuid ref_id
+    jsonb properties
+    timestamptz created_at
+    timestamptz updated_at
+  }
+
+  LOCATION_GRAPH_EDGES {
+    uuid id PK
+    uuid from_node_id FK
+    uuid to_node_id FK
+    text edge_type
+    jsonb evidence_json
+    numeric confidence
+    timestamptz created_at
+  }
+
+  MEMORY_EVENTS {
+    uuid id PK
+    uuid user_id FK
+    uuid trip_id FK
+    text event_type
+    jsonb learned_facts_json
+    timestamptz created_at
+  }
+
+  USER_DAILY_USAGE {
+    uuid id PK
+    uuid user_id FK
+    date usage_date
+    int generated_trip_count
+    int reel_scrape_count
+    int hotel_search_count
+    timestamptz created_at
+    timestamptz updated_at
+  }

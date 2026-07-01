@@ -92,7 +92,6 @@ foreign key (source_trip_id, user_id) references public.trips(id, user_id) on de
 
 create index trips_user_id_idx on public.trips (user_id);
 create index trips_user_status_created_at_idx on public.trips (user_id, status, created_at desc);
-create index jobs_trip_id_idx on public.jobs (trip_id);
 create index jobs_user_id_idx on public.jobs (user_id);
 create index jobs_trip_user_id_idx on public.jobs (trip_id, user_id);
 create index jobs_status_created_at_idx on public.jobs (status, created_at);
@@ -116,6 +115,8 @@ grant all on public.jobs to service_role;
 
 grant select on public.generation_events to authenticated;
 grant all on public.generation_events to service_role;
+
+grant usage on schema private to service_role;
 
 create policy trips_select_own
 on public.trips
@@ -156,6 +157,8 @@ begin
     status = 'running',
     locked_at = now(),
     started_at = coalesce(started_at, now()),
+    completed_at = null,
+    error_message = null,
     attempt_count = attempt_count + 1,
     updated_at = now()
   where id = (

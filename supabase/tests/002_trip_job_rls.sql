@@ -14,10 +14,10 @@ values
   ('10000000-0000-0000-0000-000000000301', '00000000-0000-0000-0000-000000000301', 'generating', 'Tokyo', 2, 0, 1),
   ('10000000-0000-0000-0000-000000000302', '00000000-0000-0000-0000-000000000302', 'complete', 'Osaka', 1, 0, 1);
 
-insert into public.jobs (id, trip_id, user_id, idempotency_key, status, error_message, completed_at)
+insert into public.jobs (id, trip_id, user_id, idempotency_key, status, error_message, completed_at, created_at)
 values
-  ('20000000-0000-0000-0000-000000000301', '10000000-0000-0000-0000-000000000301', '00000000-0000-0000-0000-000000000301', 'trip-a-key', 'pending', null, null),
-  ('20000000-0000-0000-0000-000000000302', '10000000-0000-0000-0000-000000000302', '00000000-0000-0000-0000-000000000302', 'trip-b-key', 'retryable', 'previous failure', now());
+  ('20000000-0000-0000-0000-000000000301', '10000000-0000-0000-0000-000000000301', '00000000-0000-0000-0000-000000000301', 'trip-a-key', 'pending', null, null, '2026-01-01 00:00:00+00'),
+  ('20000000-0000-0000-0000-000000000302', '10000000-0000-0000-0000-000000000302', '00000000-0000-0000-0000-000000000302', 'trip-b-key', 'retryable', 'previous failure', now(), '2026-01-01 00:00:01+00');
 
 insert into public.generation_events (trip_id, event_type, stage, message)
 values

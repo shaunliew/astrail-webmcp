@@ -31,8 +31,27 @@ create table public.places (
   updated_at timestamptz not null default now(),
   constraint places_lat_range check (lat >= -90 and lat <= 90),
   constraint places_lng_range check (lng >= -180 and lng <= 180),
-  constraint places_place_type_check check (place_type in ('attraction', 'restaurant', 'hotel', 'area', 'city', 'country', 'station', 'shop', 'other'))
+  constraint places_place_type_check check (place_type in ('attraction', 'restaurant', 'hotel', 'area', 'city', 'country', 'station', 'shop', 'other')),
+  constraint places_source_summary_public_shape_check check (
+    jsonb_typeof(source_summary) = 'object'
+    and not (
+      source_summary ?| array[
+        'caption',
+        'mem0_memory_id',
+        'normalized_reel_url',
+        'preference_notes',
+        'raw_payload',
+        'reel_cache_id',
+        'transcript',
+        'trip_id',
+        'user_id'
+      ]
+    )
+  )
 );
+
+comment on column public.places.source_summary is
+  'Public canonical place summary only. Do not store per-user preferences, Reel captions/transcripts, raw payloads, or private evidence here; put trip-specific evidence in trip_places.evidence_json.';
 
 create trigger places_set_updated_at
 before update on public.places
@@ -102,7 +121,15 @@ create table public.location_graph_nodes (
   properties jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  constraint location_graph_nodes_node_type_check check (node_type in ('reel', 'place', 'area', 'city', 'country', 'hotel_search_snapshot', 'restaurant_suggestion'))
+  constraint location_graph_nodes_node_type_check check (node_type in ('reel', 'place', 'area', 'city', 'country', 'hotel_search_snapshot', 'restaurant_suggestion')),
+  constraint location_graph_nodes_ref_table_check check (
+    ref_table is null
+    or ref_table in ('reel_cache', 'places', 'hotel_suggestions', 'restaurant_suggestions')
+  ),
+  constraint location_graph_nodes_ref_pair_check check (
+    (ref_table is null and ref_id is null)
+    or (ref_table is not null and ref_id is not null)
+  )
 );
 
 create trigger location_graph_nodes_set_updated_at
@@ -122,7 +149,6 @@ create table public.location_graph_edges (
   constraint location_graph_edges_no_self_edge check (from_node_id <> to_node_id)
 );
 
-create index reel_cache_normalized_url_idx on public.reel_cache (normalized_url);
 create index reel_cache_expires_at_idx on public.reel_cache (expires_at)
 where expires_at is not null;
 create index places_type_city_area_idx on public.places (place_type, country, city, area);
@@ -130,13 +156,17 @@ create index places_lat_lng_idx on public.places (lat, lng);
 create index places_embedding_hnsw_idx on public.places using hnsw (embedding vector_cosine_ops)
 where embedding is not null;
 create index trip_inspiration_items_trip_id_idx on public.trip_inspiration_items (trip_id);
+create unique index trip_inspiration_items_trip_reel_url_unique_idx
+on public.trip_inspiration_items (trip_id, normalized_reel_url)
+where item_type = 'reel_url' and normalized_reel_url is not null;
 create index trip_inspiration_items_reel_cache_id_idx on public.trip_inspiration_items (reel_cache_id)
 where reel_cache_id is not null;
 create index trip_inspiration_items_resolved_place_id_idx on public.trip_inspiration_items (resolved_place_id)
 where resolved_place_id is not null;
-create index trip_places_trip_id_idx on public.trip_places (trip_id);
 create index trip_places_place_id_idx on public.trip_places (place_id);
 create index location_graph_nodes_ref_idx on public.location_graph_nodes (ref_table, ref_id)
+where ref_table is not null and ref_id is not null;
+create unique index location_graph_nodes_ref_unique_idx on public.location_graph_nodes (node_type, ref_table, ref_id)
 where ref_table is not null and ref_id is not null;
 create index location_graph_nodes_properties_gin_idx on public.location_graph_nodes using gin (properties jsonb_path_ops);
 create index location_graph_edges_from_node_id_idx on public.location_graph_edges (from_node_id);

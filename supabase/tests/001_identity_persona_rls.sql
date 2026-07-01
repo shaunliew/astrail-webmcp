@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(19);
+select plan(24);
 
 select has_table('public', 'users', 'users table exists');
 select has_table('public', 'traveler_profiles', 'traveler_profiles table exists');
@@ -81,6 +81,13 @@ select lives_ok(
 );
 
 select throws_ok(
+  $$insert into public.user_preference_facts (user_id, category, fact_key, fact_value, source, confidence) values ('00000000-0000-0000-0000-000000000202', 'food', 'cross_user', '{"value":"udon"}', 'explicit_input', 0.7)$$,
+  '42501',
+  'new row violates row-level security policy for table "user_preference_facts"',
+  'traveler A cannot insert preference facts for traveler B'
+);
+
+select throws_ok(
   $$insert into public.user_preference_facts (user_id, category, fact_key, fact_value, source, confidence) values ('00000000-0000-0000-0000-000000000101', 'food', 'generated', '{"value":"sushi"}', 'generation', 0.7)$$,
   '42501',
   'new row violates row-level security policy for table "user_preference_facts"',
@@ -106,6 +113,44 @@ select throws_ok(
   '42501',
   'new row violates row-level security policy for table "user_preference_facts"',
   'traveler A cannot update preference fact into backend provenance'
+);
+
+select throws_ok(
+  $$update public.user_preference_facts set mem0_memory_id = 'mem_123' where user_id = '00000000-0000-0000-0000-000000000101' and fact_key = 'likes'$$,
+  '42501',
+  'new row violates row-level security policy for table "user_preference_facts"',
+  'traveler A cannot add mem0 provenance to a preference fact'
+);
+
+select throws_ok(
+  $$update public.user_preference_facts set source_trip_id = '10000000-0000-0000-0000-000000000101' where user_id = '00000000-0000-0000-0000-000000000101' and fact_key = 'likes'$$,
+  '42501',
+  'new row violates row-level security policy for table "user_preference_facts"',
+  'traveler A cannot add trip provenance to a preference fact'
+);
+
+select results_eq(
+  $$with attempted as (
+      update public.user_preference_facts
+      set fact_value = '{"value":"changed"}'
+      where user_id = '00000000-0000-0000-0000-000000000202'
+        and fact_key = 'prefers'
+      returning id
+    )
+    select count(*)::integer from attempted$$,
+  $$values (0::integer)$$,
+  'traveler A cannot update traveler B preference facts'
+);
+
+select results_eq(
+  $$with attempted as (
+      delete from public.user_preference_facts
+      where user_id = '00000000-0000-0000-0000-000000000202'
+      returning id
+    )
+    select count(*)::integer from attempted$$,
+  $$values (0::integer)$$,
+  'traveler A cannot delete traveler B preference facts'
 );
 
 select results_eq(

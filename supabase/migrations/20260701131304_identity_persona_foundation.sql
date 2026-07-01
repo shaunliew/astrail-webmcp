@@ -153,7 +153,6 @@ create index user_preference_facts_user_status_category_idx on public.user_prefe
 create index user_preference_facts_mem0_memory_id_idx on public.user_preference_facts (mem0_memory_id)
 where mem0_memory_id is not null;
 create index memory_events_user_id_created_at_idx on public.memory_events (user_id, created_at desc);
-create index user_daily_usage_user_id_usage_date_idx on public.user_daily_usage (user_id, usage_date desc);
 
 alter table public.users enable row level security;
 alter table public.traveler_profiles enable row level security;
@@ -219,14 +218,26 @@ create policy user_preference_facts_insert_own
 on public.user_preference_facts
 for insert
 to authenticated
-with check ((select auth.uid()) = user_id);
+with check (
+  (select auth.uid()) = user_id
+  and source in ('onboarding', 'explicit_input')
+  and status = 'active'
+  and source_trip_id is null
+  and mem0_memory_id is null
+);
 
 create policy user_preference_facts_update_own
 on public.user_preference_facts
 for update
 to authenticated
 using ((select auth.uid()) = user_id)
-with check ((select auth.uid()) = user_id);
+with check (
+  (select auth.uid()) = user_id
+  and source in ('onboarding', 'explicit_input')
+  and status = 'active'
+  and source_trip_id is null
+  and mem0_memory_id is null
+);
 
 create policy user_preference_facts_delete_own
 on public.user_preference_facts

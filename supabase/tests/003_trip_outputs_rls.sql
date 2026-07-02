@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(20);
+select plan(24);
 
 insert into auth.users (id, email)
 values
@@ -31,15 +31,15 @@ values
   ('10000000-0000-0000-0000-000000000401', 'reel_url', 'manual_paste', 'https://www.instagram.com/reel/a/', '30000000-0000-0000-0000-000000000401', 'places_found'),
   ('10000000-0000-0000-0000-000000000402', 'reel_url', 'manual_paste', 'https://www.instagram.com/reel/b/', '30000000-0000-0000-0000-000000000402', 'places_found');
 
-insert into public.trip_places (trip_id, place_id, source_type, day_number, sort_order)
+insert into public.trip_places (trip_id, place_id, source_type, evidence_json, day_number, sort_order)
 values
-  ('10000000-0000-0000-0000-000000000401', '40000000-0000-0000-0000-000000000401', 'reel_extracted', 1, 1),
-  ('10000000-0000-0000-0000-000000000402', '40000000-0000-0000-0000-000000000402', 'reel_extracted', 1, 1);
+  ('10000000-0000-0000-0000-000000000401', '40000000-0000-0000-0000-000000000401', 'reel_extracted', '{"confidence":0.94,"sourceUrl":"https://www.instagram.com/reel/a/","quote":"Tokyo Tower"}', 1, 1),
+  ('10000000-0000-0000-0000-000000000402', '40000000-0000-0000-0000-000000000402', 'reel_extracted', '{"confidence":0.91,"sourceUrl":"https://www.instagram.com/reel/b/","quote":"Kyoto Tower"}', 1, 1);
 
-insert into public.trip_days (id, trip_id, day_number, day_date, title)
+insert into public.trip_days (id, trip_id, day_number, day_date, title, weather_summary, weather_source, weather_payload)
 values
-  ('50000000-0000-0000-0000-000000000401', '10000000-0000-0000-0000-000000000401', 1, '2026-12-01', 'Tokyo arrival'),
-  ('50000000-0000-0000-0000-000000000402', '10000000-0000-0000-0000-000000000402', 1, '2026-12-02', 'Kyoto arrival');
+  ('50000000-0000-0000-0000-000000000401', '10000000-0000-0000-0000-000000000401', 1, '2026-12-01', 'Tokyo arrival', 'Cloudy, light rain possible.', 'open_meteo', '{"temperatureC":12,"precipitationChance":40}'),
+  ('50000000-0000-0000-0000-000000000402', '10000000-0000-0000-0000-000000000402', 1, '2026-12-02', 'Kyoto arrival', 'Clear and cool.', 'open_meteo', '{"temperatureC":10,"precipitationChance":10}');
 
 insert into public.transport_legs (id, trip_id, trip_day_id, from_place_id, to_place_id, leg_order, transport_mode, routing_provider, routing_profile, status, duration_seconds, distance_meters)
 values
@@ -83,9 +83,9 @@ select results_eq(
 );
 
 select results_eq(
-  $$select title from public.trip_days$$,
-  $$values ('Tokyo arrival'::text)$$,
-  'traveler A can read own trip days'
+  $$select title, weather_summary, weather_source, weather_payload ->> 'temperatureC' from public.trip_days$$,
+  $$values ('Tokyo arrival'::text, 'Cloudy, light rain possible.'::text, 'open_meteo'::text, '12'::text)$$,
+  'traveler A can read own trip day and weather output'
 );
 
 select results_eq(
@@ -117,11 +117,31 @@ select results_eq(
   'traveler A can read only own feedback'
 );
 
-select throws_ok(
+select lives_ok(
+  $$insert into public.feedback (trip_id, user_id, artifact_type, artifact_id, feedback_type, rating, preference_source) values ('10000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000401', 'place', '40000000-0000-0000-0000-000000000401', 'rating', 4, 'explicit')$$,
+  'traveler A can insert feedback on own place'
+);
+
+select lives_ok(
+  $$insert into public.feedback (trip_id, user_id, artifact_type, artifact_id, feedback_type, rating, preference_source) values ('10000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000401', 'transport_leg', '60000000-0000-0000-0000-000000000401', 'rating', 4, 'explicit')$$,
+  'traveler A can insert feedback on own transport leg'
+);
+
+select lives_ok(
+  $$insert into public.feedback (trip_id, user_id, artifact_type, artifact_id, feedback_type, rating, preference_source) values ('10000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000401', 'restaurant_suggestion', '70000000-0000-0000-0000-000000000401', 'rating', 4, 'explicit')$$,
+  'traveler A can insert feedback on own restaurant suggestion'
+);
+
+select lives_ok(
   $$insert into public.feedback (trip_id, user_id, artifact_type, artifact_id, feedback_type, rating, preference_source) values ('10000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000401', 'hotel_suggestion', '80000000-0000-0000-0000-000000000401', 'rating', 1, 'explicit')$$,
+  'traveler A can insert feedback on own hotel suggestion'
+);
+
+select throws_ok(
+  $$insert into public.feedback (trip_id, user_id, artifact_type, artifact_id, feedback_type, rating, preference_source) values ('10000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000401', 'hotel_suggestion', '80000000-0000-0000-0000-000000000402', 'rating', 1, 'explicit')$$,
   '42501',
   'new row violates row-level security policy for table "feedback"',
-  'traveler A cannot insert artifact feedback directly'
+  'traveler A cannot insert feedback on traveler B hotel suggestion'
 );
 
 select throws_ok(

@@ -25,6 +25,7 @@ Latest continuation work:
 ```text
 feat(database): add generated trip output schema
 test(database): cover/tighten trip output rls
+fix(database): support artifact feedback and weather output
 docs(database): update db implementation handoff
 ```
 
@@ -51,6 +52,7 @@ supabase/migrations/20260701131304_identity_persona_foundation.sql
 supabase/migrations/20260701151718_trip_job_backbone.sql
 supabase/migrations/20260701162954_global_knowledge_foundation.sql
 supabase/migrations/20260702012806_generated_trip_outputs.sql
+supabase/migrations/20260702134839_artifact_feedback_weather_contracts.sql
 supabase/tests/001_identity_persona_rls.sql
 supabase/tests/002_trip_job_rls.sql
 supabase/tests/003_trip_outputs_rls.sql
@@ -71,10 +73,10 @@ supabase db query "<foreign-key index inspection query>"
 Results:
 
 - `supabase db reset`: applies M1, M2, M3, and M4 successfully.
-- `supabase test db`: 3 files, 64 tests passing.
+- `supabase test db`: 3 files, 68 tests passing.
   - `001_identity_persona_rls.sql`: 24 tests.
   - `002_trip_job_rls.sql`: 20 tests.
-  - `003_trip_outputs_rls.sql`: 20 tests.
+  - `003_trip_outputs_rls.sql`: 24 tests.
 - `supabase db lint`: no schema errors on a fresh reset.
 - Missing FK index inspection: zero rows.
 - `supabase migration list`: not available until this repo is linked to a remote Supabase project; local migration files are present in timestamp order.
@@ -141,10 +143,29 @@ M4:
 - Added same-trip integrity for optional day links:
   - `trip_days` has `unique (id, trip_id)`.
   - output tables use composite `(trip_day_id, trip_id)` FKs to `trip_days(id, trip_id)`.
-- Direct authenticated `feedback` inserts are beta-limited to trip-level feedback:
+- Initial M4 direct authenticated `feedback` inserts were beta-limited to trip-level feedback:
   - `artifact_type = 'trip'`
   - `artifact_id is null`
-  - richer artifact feedback should go through a service-side validator later.
+  - this was widened by the follow-up PRD alignment fix below.
+
+Follow-up PRD alignment fix:
+
+- `feedback_insert_own_trip` now permits authenticated artifact-level feedback when the artifact belongs to the user's own trip:
+  - `place` -> `trip_places.place_id`
+  - `transport_leg` -> `transport_legs.id`
+  - `restaurant_suggestion` -> `restaurant_suggestions.id`
+  - `hotel_suggestion` -> `hotel_suggestions.id`
+  - `generation_event` -> `generation_events.id`
+- Wrong-trip artifacts remain blocked by RLS.
+- `trip_days` now has structured weather output fields:
+  - `weather_summary`
+  - `weather_source`
+  - `weather_payload`
+- `trip_places.evidence_json` now has a database comment documenting the visible-place evidence contract:
+  - confidence
+  - sourceUrl or trusted tool metadata
+  - evidence quote or rationale
+  - source type
 
 Task 8 tests:
 
@@ -152,8 +173,10 @@ Task 8 tests:
 - Prove `places` only becomes readable through own trip-linked output context.
 - Prove generated output reads are owner-scoped with wrong-owner fixtures.
 - Prove feedback reads are owner-scoped with a wrong-owner fixture.
+- Prove authenticated users can insert feedback on their own place, transport leg, restaurant suggestion, and hotel suggestion.
+- Prove authenticated users cannot insert feedback on another user's hotel suggestion.
 - Prove cross-trip `trip_day_id` references are rejected for transport, restaurant, and hotel outputs.
-- Prove direct artifact feedback insert is rejected even for the user's own artifact.
+- Prove trip days can carry structured weather output.
 
 ## Database Contracts Now Available
 
@@ -194,6 +217,8 @@ Observed state:
 
 - Backend files are still placeholders/TODO stubs.
 - The next implementation plan can wire backend reads/writes against concrete table names instead of the Mermaid draft.
+- Backend should write per-day Open-Meteo output into `trip_days.weather_summary`, `trip_days.weather_source`, and `trip_days.weather_payload`.
+- Backend/frontend can submit artifact feedback directly as authenticated users when the artifact is attached to the user's own trip.
 - Generated Supabase TypeScript DB types are deferred for now.
 - Frontend still consumes `frontend/lib/trip/backend-types.ts` until direct Supabase table reads are wired.
 

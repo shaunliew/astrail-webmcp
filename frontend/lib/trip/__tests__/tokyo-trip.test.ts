@@ -41,4 +41,41 @@ describe('Tokyo fixture invariants', () => {
     expect(TOKYO_TRIP.events.length).toBeGreaterThanOrEqual(5)
     expect(TOKYO_TRIP.events.some((e) => e.event_type === 'decision')).toBe(true)
   })
+
+  it('all place references resolve within the bundle', () => {
+    const ids = new Set(TOKYO_TRIP.places.map((p) => p.place_id))
+    for (const l of TOKYO_TRIP.transport_legs) {
+      if (l.from_place_id) expect(ids.has(l.from_place_id)).toBe(true)
+      if (l.to_place_id) expect(ids.has(l.to_place_id)).toBe(true)
+    }
+    for (const r of TOKYO_TRIP.restaurants) {
+      if (r.restaurant_place_id) expect(ids.has(r.restaurant_place_id)).toBe(true)
+      if (r.near_place_id) expect(ids.has(r.near_place_id)).toBe(true)
+    }
+    for (const h of TOKYO_TRIP.hotels) {
+      if (h.base_place_id) expect(ids.has(h.base_place_id)).toBe(true)
+    }
+  })
+
+  it('ok legs carry geometry matching their endpoints', () => {
+    const byId = new Map(TOKYO_TRIP.places.map((p) => [p.place_id, p.place]))
+    for (const l of TOKYO_TRIP.transport_legs) {
+      if (l.status !== 'ok') continue
+      expect(l.route_geometry).not.toBeNull()
+      const from = byId.get(l.from_place_id!)!
+      const to = byId.get(l.to_place_id!)!
+      expect(l.route_geometry!.coordinates[0]).toEqual([from.lng, from.lat])
+      expect(l.route_geometry!.coordinates[1]).toEqual([to.lng, to.lat])
+    }
+  })
+
+  it('every referenced trip_day_id exists', () => {
+    const dayIds = new Set(TOKYO_TRIP.days.map((d) => d.id))
+    const referenced = [
+      ...TOKYO_TRIP.transport_legs.map((l) => l.trip_day_id),
+      ...TOKYO_TRIP.restaurants.map((r) => r.trip_day_id),
+      ...TOKYO_TRIP.hotels.map((h) => h.trip_day_id),
+    ].filter((x): x is string => x !== null)
+    for (const id of referenced) expect(dayIds.has(id)).toBe(true)
+  })
 })

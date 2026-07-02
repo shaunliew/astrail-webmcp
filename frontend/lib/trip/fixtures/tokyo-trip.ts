@@ -36,7 +36,7 @@ const trip: Trip = {
 
 const tp = (
   id: string, p: Place, source_type: TripPlace['source_type'],
-  ev: TripPlace['evidence_json'], day_number: number, sort_order: number,
+  ev: TripPlace['evidence_json'], day_number: number | null, sort_order: number | null,
 ): TripPlace => ({
   id, trip_id: TRIP_ID, place_id: p.id, source_type,
   evidence_json: ev, day_number, sort_order, place: p,
@@ -64,6 +64,11 @@ const places: TripPlace[] = [
     confidence: 1, source_url: null, quote: 'Also want to go Tokyo Disneyland',
     rationale: null, evidence_kind: 'requested_by_you',
   }, 3, 0),
+  tp('tp_hotelbase', P.hotelBase, 'agent_suggested', {
+    confidence: 0.75, source_url: null, quote: null,
+    rationale: 'Central Shinjuku base suggested for the trip; not tied to a specific day.',
+    evidence_kind: 'suggested_by_astrail',
+  }, null, null),
 ]
 
 const days: TripDay[] = [
@@ -82,30 +87,30 @@ const days: TripDay[] = [
   {
     id: 'day_3', trip_id: TRIP_ID, day_number: 3, day_date: '2026-08-16',
     title: 'Tokyo Disneyland', summary: 'Full-day anchor at your requested park.',
-    weather_summary: null, weather_source: 'none', weather_payload: {},
+    weather_summary: null, weather_source: 'none', weather_payload: {}, // intentional weather gap — beyond forecast window
   },
 ]
 
 const leg = (
-  id: string, day: string, from: string, to: string, order: number,
+  id: string, day: string, from: Place, to: Place, order: number,
   status: TransportLeg['status'], mode: TransportLeg['transport_mode'],
   profile: TransportLeg['routing_profile'], dur: number | null, dist: number | null,
   warning: string | null,
 ): TransportLeg => ({
-  id, trip_id: TRIP_ID, trip_day_id: day, from_place_id: from, to_place_id: to,
+  id, trip_id: TRIP_ID, trip_day_id: day, from_place_id: from.id, to_place_id: to.id,
   leg_order: order, transport_mode: mode, routing_provider: profile ? 'mapbox' : 'none',
   routing_profile: profile, status, duration_seconds: dur, distance_meters: dist,
   route_geometry: status === 'ok'
-    ? { type: 'LineString', coordinates: [[P.senso.lng, P.senso.lat], [P.teamlab.lng, P.teamlab.lat]] }
+    ? { type: 'LineString', coordinates: [[from.lng, from.lat], [to.lng, to.lat]] }
     : null,
   warning,
 })
 
 const transport_legs: TransportLeg[] = [
-  leg('leg_1', 'day_1', 'pl_senso', 'pl_teamlab', 0, 'ok', 'drive', 'driving', 1500, 9200, null),
-  leg('leg_2', 'day_2', 'pl_shibuya', 'pl_ichiran', 0, 'ok', 'walk', 'walking', 240, 300, null),
+  leg('leg_1', 'day_1', P.senso, P.teamlab, 0, 'ok', 'drive', 'driving', 1500, 9200, null),
+  leg('leg_2', 'day_2', P.shibuya, P.ichiran, 0, 'ok', 'walk', 'walking', 240, 300, null),
   // Baked partial failure (PRD §17): no route to Disneyland.
-  leg('leg_3', 'day_3', 'pl_shibuya', 'pl_disney', 0, 'no_route', 'transit_hint', null, null, null,
+  leg('leg_3', 'day_3', P.shibuya, P.disney, 0, 'no_route', 'transit_hint', null, null, null,
     'Long transfer. Public transit may be preferable; detailed train routing is not available in v1.'),
 ]
 
@@ -121,7 +126,7 @@ const restaurants: RestaurantSuggestion[] = [
 
 const hotels: HotelSuggestion[] = [
   {
-    id: 'hotel_1', trip_id: TRIP_ID, trip_day_id: null, base_place_id: 'pl_hotelbase',
+    id: 'hotel_1', trip_id: TRIP_ID, trip_day_id: null, base_place_id: 'pl_hotelbase', // single base hotel — intentionally not tied to a specific day
     name: 'Shinjuku Granbell Hotel', area: 'Shinjuku', star_rating: 4,
     price_snapshot: { currency: 'USD', nightly: 128 }, travala_hotel_id: 'tv_12345',
     preference_match_json: { matched: ['central', 'mid_range'] },
@@ -141,7 +146,7 @@ const inspiration: TripInspirationItem[] = [
     id: 'insp_1', trip_id: TRIP_ID, item_type: 'reel_url', source: 'manual_paste',
     normalized_reel_url: 'https://www.instagram.com/reel/AAA/', reel_cache_id: 'rc_1',
     requested_place_text: null, resolved_place_id: 'pl_senso', status: 'places_found',
-    thumbnail_url: '/reference/YAAY-showing-proof-of-extraction.jpg',
+    thumbnail_url: null,
   },
   {
     id: 'insp_2', trip_id: TRIP_ID, item_type: 'reel_url', source: 'clipboard',

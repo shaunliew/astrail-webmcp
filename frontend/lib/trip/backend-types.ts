@@ -90,7 +90,7 @@ export type TransportLeg = {
   status: TransportStatus
   duration_seconds: number | null
   distance_meters: number | null
-  route_geometry: GeoJSON.LineString | null
+  route_geometry: GeoJSON.LineString | null  // jsonb in DB; narrowed to Mapbox Directions leg geometry
   warning: string | null
 }
 
@@ -117,6 +117,7 @@ export type HotelSuggestion = {
   star_rating: number | null
   price_snapshot: Record<string, unknown>
   travala_hotel_id: string | null
+  // travala_session_id, travala_package_id, travala_result_json (DB columns) omitted — backend-only Travala search metadata not consumed by the frontend.
   preference_match_json: Record<string, unknown>
   source: 'travala' | 'manual' | 'agent'
   status: HotelStatus
@@ -200,7 +201,7 @@ export type UserPreferenceFact = {
 // ---- SSE stream types (preserve the existing envelope) ----
 export type StageEvent = {
   type: 'stage'
-  stage: Exclude<GenerationStage, never>
+  stage: GenerationStage
   msg: string
 }
 export type HeartbeatEvent = { type: 'heartbeat'; elapsed_s: number }

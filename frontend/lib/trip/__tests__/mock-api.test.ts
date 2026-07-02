@@ -36,4 +36,14 @@ describe('mock-api', () => {
     expect(events.some((e) => e.type === 'heartbeat')).toBe(true)
     expect(events.at(-1)?.type).toBe('result')
   })
+
+  it('cancel() before timers fire suppresses all events', () => {
+    vi.useFakeTimers()
+    const events: StreamEvent[] = []
+    const handle = streamGeneration('trip_tokyo_demo', (e) => events.push(e))
+    handle.cancel()
+    vi.runAllTimers()
+    vi.useRealTimers()
+    expect(events).toHaveLength(0)
+  })
 })

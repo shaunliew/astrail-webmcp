@@ -1,11 +1,12 @@
 import type {
-  TripBundle, Trip, TravelerProfile, UserPreferenceFact, StreamEvent, StageEvent,
+  TripBundle, Trip, TravelerProfile, UserPreferenceFact, StreamEvent,
 } from '@/lib/trip/backend-types'
 import { TOKYO_TRIP, DEMO_PROFILE, DEMO_PREFERENCE_FACTS } from '@/lib/trip/fixtures'
 
 // Simulated network latency so loading/skeleton states are visible in the shell.
 export const MOCK_LATENCY_MS = 350
 
+// Note: delay() uses setTimeout — tests that await the async API fns under fake timers must advance the timers.
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 export async function getTrip(tripId: string): Promise<TripBundle | null> {
@@ -53,7 +54,7 @@ const SCRIPT: Array<{ at: number; event: StreamEvent }> = [
   { at: 4600, event: { type: 'stage', stage: 'transport', msg: 'Computed 2 of 3 route legs.' } },
   { at: 5200, event: { type: 'stage', stage: 'narrate', msg: 'Writing your day-by-day…' } },
   { at: 5800, event: { type: 'stage', stage: 'summarize', msg: 'Summarizing…' } },
-  { at: 6200, event: { type: 'result', content: JSON.stringify({ tripId: TOKYO_TRIP.trip.id }) } },
+  { at: 6200, event: { type: 'result', content: JSON.stringify({ trip_id: TOKYO_TRIP.trip.id }) } },
 ]
 
 export function streamGeneration(

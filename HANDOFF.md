@@ -20,11 +20,12 @@
 
 ## Commits Created
 
-Latest continuation commits:
+Latest continuation work:
 
 ```text
-e21bcba test(database): cover trip output rls
-a604f79 feat(database): add generated trip output schema
+feat(database): add generated trip output schema
+test(database): cover/tighten trip output rls
+docs(database): update db implementation handoff
 ```
 
 Previous DB implementation commits:
@@ -70,10 +71,10 @@ supabase db query "<foreign-key index inspection query>"
 Results:
 
 - `supabase db reset`: applies M1, M2, M3, and M4 successfully.
-- `supabase test db`: 3 files, 63 tests passing.
+- `supabase test db`: 3 files, 64 tests passing.
   - `001_identity_persona_rls.sql`: 24 tests.
   - `002_trip_job_rls.sql`: 20 tests.
-  - `003_trip_outputs_rls.sql`: 19 tests.
+  - `003_trip_outputs_rls.sql`: 20 tests.
 - `supabase db lint`: no schema errors on a fresh reset.
 - Missing FK index inspection: zero rows.
 - `supabase migration list`: not available until this repo is linked to a remote Supabase project; local migration files are present in timestamp order.
@@ -150,6 +151,7 @@ Task 8 tests:
 - Prove authenticated users cannot read `reel_cache` directly.
 - Prove `places` only becomes readable through own trip-linked output context.
 - Prove generated output reads are owner-scoped with wrong-owner fixtures.
+- Prove feedback reads are owner-scoped with a wrong-owner fixture.
 - Prove cross-trip `trip_day_id` references are rejected for transport, restaurant, and hotel outputs.
 - Prove direct artifact feedback insert is rejected even for the user's own artifact.
 

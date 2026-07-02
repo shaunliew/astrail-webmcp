@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(19);
+select plan(20);
 
 insert into auth.users (id, email)
 values
@@ -56,6 +56,10 @@ values
   ('80000000-0000-0000-0000-000000000401', '10000000-0000-0000-0000-000000000401', '50000000-0000-0000-0000-000000000401', '40000000-0000-0000-0000-000000000404', 'Tokyo Station Base', 'Tokyo Station', 'travala', 'suggested'),
   ('80000000-0000-0000-0000-000000000402', '10000000-0000-0000-0000-000000000402', '50000000-0000-0000-0000-000000000402', '40000000-0000-0000-0000-000000000402', 'Kyoto Tower Base', 'Kyoto Station', 'travala', 'suggested');
 
+insert into public.feedback (id, trip_id, user_id, artifact_type, feedback_type, rating, comment, preference_source)
+values
+  ('90000000-0000-0000-0000-000000000402', '10000000-0000-0000-0000-000000000402', '00000000-0000-0000-0000-000000000402', 'trip', 'rating', 2, 'Wrong-owner feedback.', 'explicit');
+
 set local role authenticated;
 set local request.jwt.claim.sub = '00000000-0000-0000-0000-000000000401';
 set local request.jwt.claims = '{"sub":"00000000-0000-0000-0000-000000000401","role":"authenticated"}';
@@ -105,6 +109,12 @@ select results_eq(
 select lives_ok(
   $$insert into public.feedback (trip_id, user_id, artifact_type, feedback_type, rating, preference_source) values ('10000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000401', 'trip', 'rating', 5, 'explicit')$$,
   'traveler A can insert feedback on own trip'
+);
+
+select results_eq(
+  $$select rating from public.feedback order by rating$$,
+  $$values (5::integer)$$,
+  'traveler A can read only own feedback'
 );
 
 select throws_ok(

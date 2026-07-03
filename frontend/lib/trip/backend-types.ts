@@ -153,6 +153,7 @@ export type Trip = {
   status: TripStatus
   destination_hint: string | null
   inferred_destination: string | null
+  title: string | null
   start_date: string | null
   end_date: string | null
   origin_city: string | null

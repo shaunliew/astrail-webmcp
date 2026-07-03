@@ -41,7 +41,7 @@ Extract:
 - **--author**: `zhihao` or `shaun`. Default: infer from `git config user.name` — names containing "Shaun/shaun" → shaun, else → zhihao.
 - **--sprint**: Sprint number. Default: `1`.
 - **--issues**: Comma-separated issue numbers to commit to this sprint. Default: author's full owned list.
-- **--status**: `todo` or `in_progress`. Which GitHub status to set for the committed issues. Default: `in_progress`.
+- **--status**: `todo`, `in_progress`, or `done`. Which GitHub status to set for the committed issues. Default: `in_progress`. Use `done` when issues have been committed and tested — this moves them to Done on the board AND closes the GitHub issues.
 
 If goal is missing, ask: *"One sentence — what is the goal for this sprint?"*
 
@@ -164,7 +164,7 @@ gh api graphql -f query='
 Parse and hold:
 - `projectId` — the project node ID
 - `statusFieldId` — ID of the field named `Status`
-- `statusOptionId` for the target status (e.g. `In progress` or `Todo`)
+- `statusOptionId` for the target status (e.g. `In progress`, `Todo`, or `Done`)
 - `sprintFieldId` — ID of the field named `Sprint` (if it exists)
 
 ### 6b — Fetch project items and match to issue numbers
@@ -214,17 +214,27 @@ mutation {
 
 If a Sprint field exists, also set it to `Sprint [N]` for each item.
 
-### 6d — Report results
+### 6d — Close GitHub issues when status is `done`
+
+If `--status done`, also close each GitHub issue:
+
+```bash
+gh issue close [number] --repo MalaysiaKaki/astrail
+```
+
+Run for each issue in the committed list. If closing fails, show the error and the manual fallback — do not stop the rest of the step.
+
+### 6e — Report results
 
 Print a summary table:
 
 ```
 GitHub Projects update
-──────────────────────────────────
-Issue  Title                                    Status
-#6     connect Vercel frontend to backend       → In progress ✓
-#12    ensure evidence and tradeoff UI is wired → In progress ✓
-──────────────────────────────────
+──────────────────────────────────────────────────────
+Issue  Title                                    Status        Issue closed
+#6     connect Vercel frontend to backend       → Done ✓      closed ✓
+#12    ensure evidence and tradeoff UI is wired → In progress ✓  —
+──────────────────────────────────────────────────────
 ```
 
 If any update fails, show the error and the manual fallback:
@@ -257,4 +267,5 @@ Next: run /shiplog after each meaningful commit.
 sprintplan "ship auth + Supabase schema" --author zhihao --sprint 1
 sprintplan "stabilise backend pipeline" --author shaun --sprint 1 --issues 7,8,9
 sprintplan "wire frontend to live backend" --sprint 1 --status in_progress
+sprintplan --author zhihao --sprint 1 --issues 6 --status done   # mark #6 Done + close it
 ```

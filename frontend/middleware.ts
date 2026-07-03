@@ -1,7 +1,13 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
+import { MOCK_AUTH_ENABLED } from '@/lib/auth/mock-auth'
 
 export async function middleware(request: NextRequest) {
+  // Mock-auth bypass: let the hardcoded shell run with zero backend.
+  if (MOCK_AUTH_ENABLED) {
+    return NextResponse.next({ request })
+  }
+
   let supabaseResponse = NextResponse.next({ request })
 
   const supabase = createServerClient(
@@ -25,7 +31,6 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  // Refresh session — required for Server Components to read auth state
   const { data: { user } } = await supabase.auth.getUser()
 
   if (!user && request.nextUrl.pathname.startsWith('/app')) {

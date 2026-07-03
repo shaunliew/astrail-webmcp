@@ -25,7 +25,7 @@ const P = {
 
 const trip: Trip = {
   id: TRIP_ID, user_id: USER_ID, status: 'saved_with_gaps',
-  destination_hint: 'Tokyo, Japan', inferred_destination: 'Tokyo, Japan', title: 'Tokyo Adventure',
+  destination_hint: 'Tokyo, Japan', inferred_destination: 'Tokyo, Japan',
   start_date: '2026-08-14', end_date: '2026-08-16',
   origin_city: 'Kuala Lumpur', budget_level: 'mid_range',
   adult_count: 2, child_count: 0, room_count: 1,

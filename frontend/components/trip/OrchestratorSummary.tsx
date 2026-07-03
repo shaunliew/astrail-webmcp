@@ -2,7 +2,7 @@ import type { TripBundle } from '@/lib/trip/backend-types'
 
 function Stat({ value, label }: { value: string | number; label: string }) {
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col" data-testid={`stat-${label}`}>
       <span className="type-display text-2xl leading-none text-[var(--starlight)]">{value}</span>
       <span className="type-label text-[10px] uppercase tracking-wide text-[var(--faint)]">{label}</span>
     </div>
@@ -14,7 +14,7 @@ export default function OrchestratorSummary({ bundle }: { bundle: TripBundle }) 
   return (
     <div className="surface rounded-xl p-4">
       <div className="flex items-center justify-between">
-        <h2 className="type-display text-lg text-[var(--starlight)]">{bundle.trip.title ?? 'Your trip'}</h2>
+        <h2 className="type-display text-lg text-[var(--starlight)]">{bundle.trip.inferred_destination ?? bundle.trip.destination_hint ?? 'Your trip'}</h2>
         {withGaps ? (
           <span className="type-label rounded-full border border-[var(--brass)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--brass)]">
             Saved with gaps

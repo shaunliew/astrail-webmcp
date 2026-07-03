@@ -1,0 +1,22 @@
+import { describe, it, expect } from 'vitest'
+import { render, screen, within } from '@testing-library/react'
+import TransportStrip from '@/components/trip/TransportStrip'
+import { legsForDay, buildPlaceIndex } from '@/lib/trip/selectors'
+import { TOKYO_TRIP } from '@/lib/trip/fixtures'
+
+const idx = buildPlaceIndex(TOKYO_TRIP)
+
+describe('TransportStrip', () => {
+  it('renders each leg with from → to place names', () => {
+    const legs = legsForDay(TOKYO_TRIP, 'day_1')
+    render(<TransportStrip legs={legs} placeIndex={idx} />)
+    const from = idx.get(legs[0].from_place_id!)!.name
+    expect(screen.getByText(new RegExp(from, 'i'))).toBeInTheDocument()
+  })
+
+  it('surfaces the warning for a no_route leg instead of a duration', () => {
+    const legs = legsForDay(TOKYO_TRIP, 'day_3') // baked no_route leg
+    render(<TransportStrip legs={legs} placeIndex={idx} />)
+    expect(screen.getByText(/no route|long transfer/i)).toBeInTheDocument()
+  })
+})

@@ -308,7 +308,7 @@ On match: append new evidence quote, increment `timesReferenced`. On miss: creat
 9. **No `legacy/` imports.** Production code never imports from the hackathon folder.
 10. **Direct HTTP for Apify.** Never reintroduce MCP + Agents SDK for scraping; never build a home-grown Whisper/ffmpeg pipeline — transcripts come from Apify's `transcript` field.
 11. **Treat Reel content as untrusted.** Agents SDK input/tool guardrails are the prompt-injection defense — never feed raw caption/transcript text into a tool-call without them.
-12. **Trip generation is a durable job.** Persist a `jobs` row before work, use idempotency keys, recover in-flight jobs on startup. A Render restart must never silently drop a run.
+12. **Trip generation is a durable job.** Persist a `jobs` row before work, use idempotency keys, and re-sweep `in_progress` jobs on startup. Recovery is **restart-with-cache-reuse, not mid-run resume**: the job row + idempotency key record *that* a run exists, not per-stage progress, so a crashed run re-executes from Phase 1, leaning on the write-through reel/place caches (#7) to skip re-scraping Apify and re-paying extraction. A Render restart must never *silently* drop a run — it must resurface as re-queued or explicitly failed. True mid-run resume (per-stage checkpointing) is deferred until restart cost is a *measured* problem — the same honest trigger line as Temporal (see EMDEE `ASTRAIL ROADMAP BACKEND MULTI AGENT PIPELINE DESIGN`). `idempotency ≠ resumability`.
 
 ## Hard-Won Lessons from Hackathon (do not regress)
 

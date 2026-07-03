@@ -28,7 +28,7 @@ The **board governs task state**; the **docs govern task content**. Use them tog
 | **`docs/PRD.md`** | WHAT to build per task — scope, requirements, acceptance criteria, v1 beta boundaries | source of truth for product scope |
 | **`.claude/CLAUDE.md`** | HOW to build — stack freeze, the 12 guardrails, build order, SSE/schema contracts, conventions | source of truth for engineering rules |
 | **`AGENTS.md`** | entry pointer → CLAUDE.md (Codex reads it first) | pointer only |
-| **EMDEE** (`astrail/CONTEXT.md`, `CONSTRAINTS.md`, `DECISIONS LOG.md`, `SPRINTS.md`, per-person sprint logs — via the EMDEE MCP **if configured**) | WHY — strategic context, constraints, decisions, sprint intent | source of truth for strategic intent; **may be unavailable** (no MCP) → fall back to PRD + board |
+| **EMDEE** (`astrail/CONTEXT.md`, `CONSTRAINTS.md`, `DECISIONS LOG.md`, `SPRINTS.md`, per-person sprint logs — via the EMDEE MCP **if configured**) | WHY — strategic context, constraints, decisions, sprint intent | source of truth for strategic intent; **may be unavailable** (no MCP) → fall back to PRD + board. **WRITE strategic/decision docs into Zhi Hao's shared vault `__shared__/user_3FZUjBSvk00tGcs3QmOdCFa4Kgd/astrail/`, NEVER the local vault** (filenames ALL-CAPS-HYPHENATED; DECISIONS LOG is append-newest-on-top). |
 
 When the board and a doc disagree on **task status/ordering**, the board wins. When you need to know **what a task means / how to do it / why it matters**, read PRD.md (what) + CLAUDE.md (how) + EMDEE (why).
 

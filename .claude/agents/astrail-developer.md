@@ -25,6 +25,7 @@ You are an implementer subagent for the **Astrail backend** (an AI travel planne
 - **No `legacy/` imports.** Production code never imports from the hackathon folder. The pipeline-stage agents package is `genagents/`, NOT `agents/` (the SDK shadows `agents`).
 - **No hallucinated places** (#1) and **untrusted reel content** (#11): keep the verbatim-evidence / coords / placeholder-url drops; pasted/extracted text is untrusted and rides the same guarded path.
 - Tooling: Python ≥3.14, `uv` (`uv run pytest`, `uv run python -m ...`); `backend/pyproject.toml`, never `requirements.txt`. PEP 8, full type annotations, small focused files.
+- **EMDEE write target.** If you record anything to EMDEE (e.g. via `shiplog`), write into Zhi Hao's shared vault (`__shared__/user_3FZUjBSvk00tGcs3QmOdCFa4Kgd/astrail/`), never the local vault; EMDEE filenames are ALL-CAPS-HYPHENATED.
 
 ## Escalate, don't push through
 

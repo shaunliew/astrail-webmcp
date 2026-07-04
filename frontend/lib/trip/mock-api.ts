@@ -51,6 +51,25 @@ export async function createTrip(req: GenerateTripRequest): Promise<GenerateTrip
   return { trip_id: TOKYO_TRIP.trip.id }
 }
 
+// Simulates PATCH /profile: persists the onboarding answers and marks onboarding complete.
+// Offline/deterministic — echoes the input on the demo profile id.
+export async function saveProfile(input: {
+  origin_city: string | null
+  travel_style_tags: string[]
+  preference_tags: string[]
+  preference_notes: string | null
+}): Promise<TravelerProfile> {
+  await delay(MOCK_LATENCY_MS)
+  return {
+    id: DEMO_PROFILE.id,
+    origin_city: input.origin_city,
+    travel_style_tags: input.travel_style_tags,
+    preference_tags: input.preference_tags,
+    preference_notes: input.preference_notes,
+    onboarding_completed: true,
+  }
+}
+
 // Scripted generation replay. Mirrors the SSE contract stage names (CLAUDE.md).
 // Reveals map pins first, then days — demonstrating "time to first mapped value" (PRD §16).
 const SCRIPT: Array<{ at: number; event: StreamEvent }> = [

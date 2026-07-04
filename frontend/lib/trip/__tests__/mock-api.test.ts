@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { getTrip, listTrips, getProfile, submitFeedback, streamGeneration, createTrip } from '@/lib/trip/mock-api'
+import { getTrip, listTrips, getProfile, submitFeedback, streamGeneration, createTrip, saveProfile } from '@/lib/trip/mock-api'
 import type { StreamEvent } from '@/lib/trip/backend-types'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures'
 
@@ -74,5 +74,29 @@ describe('createTrip', () => {
       destination_hint: null, start_date: null, end_date: null,
       budget_level: null, origin_city: null, preferences: null,
     })).rejects.toThrow(/at least one/i)
+  })
+})
+
+describe('saveProfile', () => {
+  it('returns a completed profile echoing the onboarding input', async () => {
+    const res = await saveProfile({
+      origin_city: 'Tokyo',
+      travel_style_tags: ['food-led', 'walkable'],
+      preference_tags: ['ramen'],
+      preference_notes: 'avoid rushing',
+    })
+    expect(res.onboarding_completed).toBe(true)
+    expect(res.origin_city).toBe('Tokyo')
+    expect(res.travel_style_tags).toEqual(['food-led', 'walkable'])
+    expect(res.preference_tags).toEqual(['ramen'])
+    expect(res.preference_notes).toBe('avoid rushing')
+  })
+
+  it('accepts null origin and notes and still completes onboarding', async () => {
+    const res = await saveProfile({
+      origin_city: null, travel_style_tags: [], preference_tags: [], preference_notes: null,
+    })
+    expect(res.onboarding_completed).toBe(true)
+    expect(res.origin_city).toBeNull()
   })
 })

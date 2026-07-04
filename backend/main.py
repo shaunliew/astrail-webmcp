@@ -73,20 +73,21 @@ async def generate_trip(
         .execute()
     ).data[0]
     trip_id = trip["id"]
-    await record_event(
-        client, trip_id, event_type="stage", stage="create_trip", message="trip created",
-        payload={
-            "reel_urls": req.reel_urls,
-            "start_date": req.start_date,
-            "end_date": req.end_date,
-            "pace": req.pace,
-        },
-    )
-
     try:
+        await record_event(
+            client, trip_id, event_type="stage", stage="create_trip", message="trip created",
+            payload={
+                "reel_urls": req.reel_urls,
+                "start_date": req.start_date,
+                "end_date": req.end_date,
+                "pace": req.pace,
+            },
+        )
         job_id, winning_trip_id = await enqueue_job(trip_id, user_id, idem)
     except APIError:
-        # Never leave an orphan trip with no durable job.
+        # Never leave an orphan trip with no durable job: a failure between the
+        # trip insert and the enqueue must not leave the trip stuck `generating`
+        # with nothing to recover it (recovery only scans `jobs`).
         await client.table("trips").update({"status": "failed"}).eq("id", trip_id).eq(
             "user_id", user_id
         ).execute()
@@ -112,7 +113,7 @@ async def stream(
     user_id: str = Depends(get_user_id_from_query_or_header),
 ) -> StreamingResponse:
     client = await get_supabase_client()
-    owner = await client.table("trips").select("user_id").eq("id", trip_id).execute()
-    if not owner.data or owner.data[0]["user_id"] != user_id:  # guardrail #6 owner check
+    owner = await client.table("trips").select("user_id").eq("id", trip_id).maybe_single().execute()
+    if owner.data is None or owner.data["user_id"] != user_id:  # guardrail #6 owner check
         raise HTTPException(status_code=404, detail="Trip not found")
     return StreamingResponse(stream_trip_events(client, trip_id), media_type="text/event-stream")

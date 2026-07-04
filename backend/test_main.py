@@ -152,6 +152,26 @@ def test_generate_trip_replays_same_trip_for_same_idempotency_key(ctx):
     assert len(calls) == 1  # dispatched only once; replay never dispatches again
 
 
+def test_generate_trip_marks_trip_failed_when_create_trip_event_fails(ctx, monkeypatch):
+    """A failure recording the create_trip event (between trip-insert and enqueue)
+    must not leave the trip stuck `generating` with no job to recover it — Fix 3."""
+    from postgrest.exceptions import APIError
+
+    tc, db, calls = ctx
+
+    async def _failing_record_event(*_args, **_kwargs):
+        raise APIError({"message": "boom", "code": "500", "details": None, "hint": None})
+
+    monkeypatch.setattr(main, "record_event", _failing_record_event)
+
+    r = tc.post("/generate-trip", json=_PAYLOAD)
+    assert r.status_code == 500
+    assert len(db["trips"]) == 1
+    assert db["trips"][0]["status"] == "failed"
+    assert db.get("jobs", []) == []  # enqueue_job never ran
+    assert calls == []  # never dispatched
+
+
 def test_generate_trip_idempotency_race_deletes_orphan_and_redirects(ctx, monkeypatch):
     tc, db, calls = ctx
 

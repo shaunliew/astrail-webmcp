@@ -31,33 +31,42 @@ async def stream_trip_events(
     """
     seen: set[str] = set()
     for _ in range(max_polls):
-        result = await (
-            client.table("generation_events")
-            .select("*")
-            .eq("trip_id", trip_id)
-            .order("created_at")
-            .order("id")
-            .execute()
-        )
-        for row in result.data:
-            if row["id"] in seen:
-                continue
-            seen.add(row["id"])
-            yield format_sse({
-                "type": row["event_type"],
-                "stage": row["stage"],
-                "msg": row["message"],
-                "content": row["payload"],
-            })
-            if row["event_type"] == "result":
-                yield DONE
-                return
+        try:
+            result = await (
+                client.table("generation_events")
+                .select("*")
+                .eq("trip_id", trip_id)
+                .order("created_at")
+                .order("id")
+                .execute()
+            )
+        except Exception:
+            # Transient Supabase blip: events are durable, so the next poll
+            # catches up. Skip this iteration rather than ending the stream.
+            result = None
+        if result is not None:
+            for row in result.data:
+                if row["id"] in seen:
+                    continue
+                seen.add(row["id"])
+                is_result = row["event_type"] == "result"
+                yield format_sse({
+                    "type": row["event_type"],
+                    "stage": row["stage"],
+                    "msg": row["message"],
+                    # result.content MUST be a JSON string (repo's most breaking
+                    # SSE contract) — other event types stay as-is (additive).
+                    "content": json.dumps(row["payload"]) if is_result else row["payload"],
+                })
+                if is_result:
+                    yield DONE
+                    return
         if poll_s:
             yield ": heartbeat\n\n"
             await asyncio.sleep(poll_s)
     # Timeout: synthesize a terminal result so the client never sees a bare DONE.
     yield format_sse({
         "type": "result", "stage": "save", "msg": "stream timed out",
-        "content": {"error": "generation timed out"},
+        "content": json.dumps({"error": "generation timed out"}),
     })
     yield DONE

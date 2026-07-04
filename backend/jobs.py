@@ -8,7 +8,7 @@ POST never double-runs. See CLAUDE.md guardrail #12.
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from postgrest.exceptions import APIError
 
@@ -63,5 +63,16 @@ async def mark_job_done(client, job_id: str, *, status: str) -> None:
 
 
 async def recover_inflight_jobs(*, client=None, stale_after_s: int = 900) -> list[dict]:
-    """Re-queue runs a crash left mid-flight (implemented in Task 5)."""
-    raise NotImplementedError  # Task 5
+    """Flip STALE running (locked_at older than stale_after_s) -> retryable, then return
+    reclaimable jobs. The atomic CAS in mark_job_running (on redispatch) is what prevents a
+    double-run when two instances recover the same job — so this select-then-flip is safe
+    (flipping to retryable twice is idempotent). Restart-with-cache-reuse, NOT resume (#12)."""
+    client = client or await get_supabase_client()
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=stale_after_s)).isoformat()
+    stale = (await client.table("jobs").select("id").eq("status", "running")
+             .lt("locked_at", cutoff).execute()).data
+    for r in stale:
+        await client.table("jobs").update({"status": "retryable"}).eq("id", r["id"]).execute()
+    reclaimable = (await client.table("jobs").select("id,trip_id,user_id")
+                   .in_("status", ["pending", "retryable"]).execute()).data
+    return reclaimable

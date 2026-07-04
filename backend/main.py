@@ -13,6 +13,8 @@ trip ownership (guardrail #6), and streams generation_events as SSE.
 """
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -21,7 +23,7 @@ from postgrest.exceptions import APIError
 from api.schemas import GenerateTripRequest, GenerateTripResponse
 from api.streaming import stream_trip_events
 from auth import get_current_user_id, get_user_id_from_query_or_header
-from jobs import compute_idempotency_key, enqueue_job
+from jobs import compute_idempotency_key, enqueue_job, recover_inflight_jobs
 from pipeline.runner import record_event, run_generation
 from supabase_client import get_supabase_client
 
@@ -117,3 +119,32 @@ async def stream(
     if owner.data is None or owner.data["user_id"] != user_id:  # guardrail #6 owner check
         raise HTTPException(status_code=404, detail="Trip not found")
     return StreamingResponse(stream_trip_events(client, trip_id), media_type="text/event-stream")
+
+
+async def _redispatch(client, job: dict) -> None:
+    """Reconstruct a reclaimable job's run inputs from its create_trip event and re-run it.
+
+    If no create_trip event exists, skip (leave it for a human/next sweep) — never crash
+    startup. run_generation's CAS claim (mark_job_running) makes a concurrent double-dispatch
+    of the same job safe.
+    """
+    ev = await (
+        client.table("generation_events").select("payload").eq("trip_id", job["trip_id"])
+        .eq("stage", "create_trip").maybe_single().execute()
+    )
+    if ev is None or ev.data is None:
+        return  # no inputs to replay; leave it for a human/next sweep
+    payload = ev.data["payload"]
+    await run_generation(
+        job["trip_id"], job["user_id"], payload["reel_urls"], payload["start_date"],
+        payload["end_date"], job_id=job["id"], pace=payload.get("pace", "balanced"),
+    )
+
+
+@app.on_event("startup")
+async def _recover_jobs_on_startup() -> None:
+    """Guardrail #12: on boot, re-queue and re-run anything a crash left mid-flight
+    (restart-with-cache-reuse, NOT resume — a reclaimed job re-executes from Phase 1)."""
+    client = await get_supabase_client()
+    for job in await recover_inflight_jobs(client=client):
+        asyncio.create_task(_redispatch(client, job))

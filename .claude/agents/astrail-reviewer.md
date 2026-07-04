@@ -19,6 +19,12 @@ The diff (a review package, or `git diff BASE..HEAD`), the task brief or plan se
 2. **Code quality** — separation of concerns, error handling, DRY without premature abstraction, edge cases; tests verify real behavior (not mocks) and cover the task's edges; each file has one clear responsibility. Test output must be pristine (warnings are findings).
 3. **Adversarial** (for the final/whole-branch pass, and worth a thought always) — how will this **silently produce wrong results or break in production**? Try reorderings and non-determinism (e.g. the extractor's `asyncio.gather` order), edge inputs (empty / 1-element / more-days-than-places / no-coords / duplicate-name), off-by-one at thresholds, and whether a "passing" test would actually catch a regression. This lens has repeatedly caught real criticals the structured passes missed (order-dependent clustering; blank itinerary days that pass subset-based gates).
 
+## Use gstack skills in your gate
+
+- **`/review` on the diff.** gstack `/review` is the standard Astrail diff-review pass — run it as part of your gate when the diff is non-trivial (multi-file, auth/SSE/pipeline, or 100+ lines), and **fold its findings into yours** (dedup — don't double-report the same issue). For a tiny mechanical diff, your own three lenses suffice; say you skipped `/review` and why.
+- **`/qa` evidence for flow changes.** For a diff touching **UI, auth, SSE, Mapbox, or a full request flow**, require gstack `/qa` evidence — confirm the implementer provided it, or run `/qa` yourself. Do NOT return `Approved` on such a change with zero runtime evidence.
+- These compose with (never replace) your own skeptical read — you still verify every claim against the actual code.
+
 ## Astrail eval-safety lens (check these specifically)
 
 - The **`#16` parity anchor**: the offline pipeline is scored against a frozen `evals/baseline.py`. Don't accept changes that break the parity test silently — at Step 6/7 it was deliberately converted to "pipeline beats/matches baseline." `evals/baseline.py` is FROZEN.

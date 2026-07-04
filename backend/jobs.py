@@ -10,7 +10,11 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timezone
 
+from postgrest.exceptions import APIError
+
 from supabase_client import get_supabase_client
+
+_UNIQUE_VIOLATION = "23505"   # Postgres unique_violation (stable; use exc.code, NOT str(exc))
 
 
 def _now() -> str:
@@ -23,35 +27,39 @@ def compute_idempotency_key(user_id: str, reel_urls: list[str], start_date: str,
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
-async def enqueue_job(trip_id: str, user_id: str, idempotency_key: str, *, client=None) -> str:
-    """Persist a pending job and return its id (idempotent on the key)."""
-    client = client or get_supabase_client()
-    row = {"trip_id": trip_id, "user_id": user_id,
-           "idempotency_key": idempotency_key, "status": "pending"}
+async def enqueue_job(trip_id: str, user_id: str, idempotency_key: str, *, client=None) -> tuple[str, str]:
+    """Insert a pending job; return (job_id, trip_id). On a duplicate key, return the
+    EXISTING job's (id, trip_id) — which may be a DIFFERENT trip when two same-key POSTs
+    race, so the caller MUST redirect to the returned trip_id (see main.py)."""
+    client = client or await get_supabase_client()
+    row = {"trip_id": trip_id, "user_id": user_id, "idempotency_key": idempotency_key, "status": "pending"}
     try:
-        return client.table("jobs").insert(row).execute().data[0]["id"]
-    except Exception as exc:
-        if "idempotency_key" not in str(exc) and "duplicate key" not in str(exc):
+        created = (await client.table("jobs").insert(row).execute()).data[0]
+        return created["id"], created["trip_id"]
+    except APIError as exc:
+        if exc.code != _UNIQUE_VIOLATION:
             raise
-        existing = (client.table("jobs").select("id")
-                    .eq("idempotency_key", idempotency_key).execute())
-        return existing.data[0]["id"]
+        existing = await (client.table("jobs").select("id,trip_id")
+                          .eq("idempotency_key", idempotency_key).maybe_single().execute())
+        if existing is None or existing.data is None:
+            raise                       # unique violation but no matching row → surface, don't mask
+        return existing.data["id"], existing.data["trip_id"]
 
 
-async def mark_job_running(client, job_id: str) -> None:
-    """pending/retryable -> running; stamp locked_at + started_at, bump attempt_count."""
-    current = client.table("jobs").select("attempt_count,started_at").eq("id", job_id).execute().data
-    attempt = (current[0].get("attempt_count", 0) if current else 0) + 1
-    started = (current[0].get("started_at") if current else None) or _now()
-    client.table("jobs").update({
-        "status": "running", "locked_at": _now(), "started_at": started,
-        "attempt_count": attempt, "completed_at": None, "error_message": None,
-    }).eq("id", job_id).execute()
+async def mark_job_running(client, job_id: str) -> bool:
+    """Atomic CAS claim: pending/retryable -> running in ONE statement. Returns True iff
+    THIS caller won (empty result = already claimed/running/done → caller must abort).
+    (attempt_count increment is deferred — postgrest can't do `col = col + 1`; not load-bearing.)"""
+    result = await (client.table("jobs").update(
+        {"status": "running", "locked_at": _now(), "started_at": _now(),
+         "completed_at": None, "error_message": None})
+        .eq("id", job_id).in_("status", ["pending", "retryable"]).execute())
+    return bool(result.data)
 
 
 async def mark_job_done(client, job_id: str, *, status: str) -> None:
     """running -> succeeded|failed; stamp completed_at."""
-    client.table("jobs").update({"status": status, "completed_at": _now()}).eq("id", job_id).execute()
+    await client.table("jobs").update({"status": status, "completed_at": _now()}).eq("id", job_id).execute()
 
 
 async def recover_inflight_jobs(*, client=None, stale_after_s: int = 900) -> list[dict]:

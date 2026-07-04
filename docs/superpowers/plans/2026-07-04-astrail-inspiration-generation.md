@@ -132,6 +132,12 @@ describe('normalizeReelUrl', () => {
     expect(normalizeReelUrl('just some text')).toBeNull()
     expect(normalizeReelUrl('instagram.com/accounts/login')).toBeNull()
   })
+
+  it('rejects look-alike domains that merely contain "instagram.com" as a substring', () => {
+    expect(normalizeReelUrl('https://notinstagram.com/reel/ABC')).toBeNull()
+    expect(normalizeReelUrl('https://instagram.com.evil.com/reel/ABC')).toBeNull()
+    expect(normalizeReelUrl('xinstagram.com/reel/ABC')).toBeNull()
+  })
 })
 
 describe('buildReelItems', () => {
@@ -243,9 +249,12 @@ export type BriefInput = {
   preferences: string
 }
 
-// Accepts reel / reels / p / tv, optionally under /share/, with or without scheme/subdomain,
-// ignoring any query string or fragment. Canonical output: https://www.instagram.com/<type>/<code>/
-const IG_RE = /(?:https?:\/\/)?(?:www\.|m\.)?instagram\.com\/(?:share\/)?(reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i
+// Accepts reel / reels / p / tv, optionally under /share/, with or without scheme,
+// on host instagram.com (or www./m. subdomains only), ignoring any query string or fragment.
+// The leading (?:^|\/\/|\s) boundary anchors the host so a look-alike domain such as
+// "notinstagram.com" or "instagram.com.evil.com" is rejected, not matched on substring.
+// Canonical output: https://www.instagram.com/<type>/<code>/
+const IG_RE = /(?:^|\/\/|\s)(?:www\.|m\.)?instagram\.com\/(?:share\/)?(reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i
 
 export function normalizeReelUrl(raw: string): string | null {
   const m = raw.match(IG_RE)

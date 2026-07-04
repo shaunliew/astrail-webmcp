@@ -70,6 +70,12 @@ export async function saveProfile(input: {
   }
 }
 
+// Simulates POST /settings/memory/clear (PRD §18). No-op-but-resolves for the offline shell.
+export async function clearMemory(): Promise<{ ok: true }> {
+  await delay(MOCK_LATENCY_MS)
+  return { ok: true }
+}
+
 // Scripted generation replay. Mirrors the SSE contract stage names (CLAUDE.md).
 // Reveals map pins first, then days — demonstrating "time to first mapped value" (PRD §16).
 const SCRIPT: Array<{ at: number; event: StreamEvent }> = [

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { getTrip, listTrips, getProfile, submitFeedback, streamGeneration, createTrip, saveProfile } from '@/lib/trip/mock-api'
+import { getTrip, listTrips, getProfile, submitFeedback, streamGeneration, createTrip, saveProfile, clearMemory } from '@/lib/trip/mock-api'
 import type { StreamEvent } from '@/lib/trip/backend-types'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures'
 
@@ -98,5 +98,11 @@ describe('saveProfile', () => {
     })
     expect(res.onboarding_completed).toBe(true)
     expect(res.origin_city).toBeNull()
+  })
+})
+
+describe('clearMemory', () => {
+  it('resolves ok', async () => {
+    expect(await clearMemory()).toEqual({ ok: true })
   })
 })

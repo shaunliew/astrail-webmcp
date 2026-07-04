@@ -1055,6 +1055,26 @@ describe('CreateTripFlow', () => {
     expect(await screen.findByText('Mapped 4 verified places.')).toBeInTheDocument()
     await waitFor(() => expect(push).toHaveBeenCalledWith('/app/trip/trip_tokyo_demo'))
   })
+
+  it('does not start the stream or navigate if unmounted while createTrip is pending', async () => {
+    let resolveCreate!: (v: { trip_id: string }) => void
+    createTrip.mockImplementationOnce(() => new Promise((res) => { resolveCreate = res }))
+
+    const { unmount } = render(<CreateTripFlow />)
+    fireEvent.change(screen.getByLabelText(/paste.*reel/i), {
+      target: { value: 'https://www.instagram.com/reel/AAA/' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /add links/i }))
+    fireEvent.click(screen.getByRole('button', { name: /generate/i }))
+
+    await waitFor(() => expect(createTrip).toHaveBeenCalledTimes(1))
+    unmount() // unmount BEFORE createTrip resolves
+    resolveCreate({ trip_id: 'trip_tokyo_demo' })
+    await Promise.resolve(); await Promise.resolve() // flush the awaited continuation
+
+    expect(streamGeneration).not.toHaveBeenCalled()
+    expect(push).not.toHaveBeenCalled()
+  })
 })
 ```
 
@@ -1102,14 +1122,28 @@ export default function CreateTripFlow() {
   const [phase, setPhase] = useState<'compose' | 'generating'>('compose')
   const [events, setEvents] = useState<StreamEvent[]>([])
   const handleRef = useRef<{ cancel: () => void } | null>(null)
+  const activeRef = useRef(true)
 
-  useEffect(() => () => handleRef.current?.cancel(), [])
+  // Mounted-guard: createTrip is async (network latency). If the component unmounts
+  // while it is pending, we must NOT start the stream afterward — otherwise the cleanup
+  // (which already ran) can never cancel it, and its callback would setState / navigate
+  // on an unmounted component. `activeRef` is re-armed on mount so StrictMode's
+  // mount→unmount→mount double-invoke leaves it true.
+  useEffect(() => {
+    activeRef.current = true
+    return () => {
+      activeRef.current = false
+      handleRef.current?.cancel()
+    }
+  }, [])
 
   async function handleGenerate() {
     setPhase('generating')
     setEvents([])
     const { trip_id } = await createTrip(toGenerateRequest(items, brief))
+    if (!activeRef.current) return // unmounted during createTrip — do not start the stream
     handleRef.current = streamGeneration(trip_id, (event) => {
+      if (!activeRef.current) return
       setEvents((prev) => [...prev, event])
       if (event.type === 'result') {
         router.push(`/app/trip/${tripIdFromResult(event.content, trip_id)}`)

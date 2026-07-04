@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react'
 import mapboxgl from 'mapbox-gl'
 import 'mapbox-gl/dist/mapbox-gl.css'
 import type { TripBundle, PlaceSourceType } from '@/lib/trip/backend-types'
-import { placesForDay, legsForDay, orderedDays, buildPlaceIndex } from '@/lib/trip/selectors'
+import { legsForDay, orderedDays, buildPlaceIndex } from '@/lib/trip/selectors'
 
 const TOKEN = process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN
 

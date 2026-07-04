@@ -17,6 +17,6 @@ describe('TransportStrip', () => {
   it('surfaces the warning for a no_route leg instead of a duration', () => {
     const legs = legsForDay(TOKYO_TRIP, 'day_3') // baked no_route leg
     render(<TransportStrip legs={legs} placeIndex={idx} />)
-    expect(screen.getByText(/no route|long transfer/i)).toBeInTheDocument()
+    expect(screen.getByText(/public transit may be preferable/i)).toBeInTheDocument()
   })
 })

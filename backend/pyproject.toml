@@ -31,4 +31,5 @@ dev-dependencies = [
 asyncio_mode = "auto"
 markers = [
     "live: makes real OpenAI/Apify calls; skipped unless --run-live",
+    "integration: hits the live dev Supabase DB; skipped unless RUN_DB_INTEGRATION=1",
 ]

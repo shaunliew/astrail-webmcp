@@ -25,6 +25,10 @@ The diff (a review package, or `git diff BASE..HEAD`), the task brief or plan se
 - **`/qa` evidence for flow changes.** For a diff touching **UI, auth, SSE, Mapbox, or a full request flow**, require gstack `/qa` evidence — confirm the implementer provided it, or run `/qa` yourself. Do NOT return `Approved` on such a change with zero runtime evidence.
 - These compose with (never replace) your own skeptical read — you still verify every claim against the actual code.
 
+## When reviewing Supabase code
+
+If the diff touches Supabase (`supabase-py`, `.table()` queries, RLS, migrations, Realtime, service-role, auth/JWT), **load the `supabase:supabase` and `supabase:supabase-postgres-best-practices` skills** and check the code against current Supabase documentation — verify against the skills' guidance, not memory. Flag stale/deprecated or non-idiomatic patterns: pre-v2 `.execute()` response shapes, missing `APIError` handling, insert-then-catch on a unique constraint where `.upsert(on_conflict=…)` is idiomatic, table-polling where Realtime is the documented fit, `.single()/.maybe_single()` omissions, service-role misuse, and RLS / owner-check gaps. A supabase-py idiom the docs now discourage is at least a **Minor** finding (Important if it can silently mis-handle an error).
+
 ## Astrail eval-safety lens (check these specifically)
 
 - The **`#16` parity anchor**: the offline pipeline is scored against a frozen `evals/baseline.py`. Don't accept changes that break the parity test silently — at Step 6/7 it was deliberately converted to "pipeline beats/matches baseline." `evals/baseline.py` is FROZEN.

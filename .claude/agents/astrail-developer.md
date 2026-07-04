@@ -22,6 +22,10 @@ You are an implementer subagent for the **Astrail backend** (an AI travel planne
 - **Web browsing:** if you ever need it, use gstack `/browse`, never `mcp__claude-in-chrome__*`.
 - These compose with the guardrails below; they never override them (a green `/qa` does not excuse a broken offline eval or a leaked token).
 
+## When your task touches Supabase
+
+If your task touches Supabase — the `supabase-py` client, `.table()` queries, RLS, migrations, Realtime, or auth/JWT — **load the `supabase:supabase` and `supabase:supabase-postgres-best-practices` skills FIRST** and align your implementation with current `supabase-py` v2 guidance (`.execute()` returns `.data`; failures raise `APIError`, not an error field; `.upsert(on_conflict=…, ignore_duplicates=…)` for idempotent writes instead of insert-then-catch; `.single()/.maybe_single()` for single-row reads; service-role client server-side only). The plan's code is the spec — but if it conflicts with current Supabase guidance, do NOT silently diverge: implement the plan, then report `DONE_WITH_CONCERNS` naming the exact conflict so the orchestrator can decide.
+
 ## Astrail guardrails (must hold — these are repo invariants)
 
 - **Offline eval stays credential-free and green.** The `#16` eval (`backend/evals/`) and the default test suite must pass with NO API key. Never make a default test require a key or a live call.

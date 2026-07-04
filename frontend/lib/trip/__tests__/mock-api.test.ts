@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
-import { getTrip, listTrips, getProfile, submitFeedback, streamGeneration } from '@/lib/trip/mock-api'
+import { getTrip, listTrips, getProfile, submitFeedback, streamGeneration, createTrip } from '@/lib/trip/mock-api'
 import type { StreamEvent } from '@/lib/trip/backend-types'
+import { TOKYO_TRIP } from '@/lib/trip/fixtures'
 
 describe('mock-api', () => {
   it('getTrip returns the Tokyo bundle for the demo id, null otherwise', async () => {
@@ -45,5 +46,33 @@ describe('mock-api', () => {
     vi.runAllTimers()
     vi.useRealTimers()
     expect(events).toHaveLength(0)
+  })
+})
+
+describe('createTrip', () => {
+  it('returns the demo trip id for a request with at least one reel', async () => {
+    const res = await createTrip({
+      reel_urls: ['https://www.instagram.com/reel/AAA/'], requested_places: [],
+      destination_hint: null, start_date: null, end_date: null,
+      budget_level: null, origin_city: null, preferences: null,
+    })
+    expect(res.trip_id).toBe(TOKYO_TRIP.trip.id)
+  })
+
+  it('accepts a request with only a requested place', async () => {
+    const res = await createTrip({
+      reel_urls: [], requested_places: ['Tokyo Disneyland'],
+      destination_hint: null, start_date: null, end_date: null,
+      budget_level: null, origin_city: null, preferences: null,
+    })
+    expect(res.trip_id).toBe(TOKYO_TRIP.trip.id)
+  })
+
+  it('rejects a request with no reels and no requested places', async () => {
+    await expect(createTrip({
+      reel_urls: [], requested_places: [],
+      destination_hint: null, start_date: null, end_date: null,
+      budget_level: null, origin_city: null, preferences: null,
+    })).rejects.toThrow(/at least one/i)
   })
 })

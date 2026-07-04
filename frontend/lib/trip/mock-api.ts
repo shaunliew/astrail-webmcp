@@ -1,5 +1,6 @@
 import type {
   TripBundle, Trip, TravelerProfile, UserPreferenceFact, StreamEvent,
+  GenerateTripRequest, GenerateTripResponse,
 } from '@/lib/trip/backend-types'
 import { TOKYO_TRIP, DEMO_PROFILE, DEMO_PREFERENCE_FACTS } from '@/lib/trip/fixtures'
 
@@ -38,6 +39,16 @@ export type FeedbackInput = {
 export async function submitFeedback(_input: FeedbackInput): Promise<{ ok: true }> {
   await delay(MOCK_LATENCY_MS)
   return { ok: true }
+}
+
+// Simulates POST /trips: creates the durable trip row and returns its id (PRD §16: trip row < 2s).
+// Offline/deterministic — always resolves to the Tokyo fixture so streamGeneration can chain onto it.
+export async function createTrip(req: GenerateTripRequest): Promise<GenerateTripResponse> {
+  await delay(MOCK_LATENCY_MS)
+  if (req.reel_urls.length + req.requested_places.length < 1) {
+    throw new Error('Provide at least one Reel URL or requested place to generate a trip.')
+  }
+  return { trip_id: TOKYO_TRIP.trip.id }
 }
 
 // Scripted generation replay. Mirrors the SSE contract stage names (CLAUDE.md).

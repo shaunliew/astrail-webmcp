@@ -61,22 +61,26 @@ Include exact assumptions (reference the interview), non-goals, files likely tou
 
 ## Plan Review Flow
 
-Use gstack before marking a plan ready:
+### Step 3 — Review the plan with gstack (REQUIRED, before any implementation)
 
-- For normal engineering plans, use `/plan-eng-review`.
-- For scope/product tradeoffs, use `/plan-ceo-review`.
-- For frontend or visual work, use `/plan-design-review`.
-- For full automatic review, use `/autoplan`.
+**REQUIRED SUB-SKILL:** A plan is NOT "ready" until it has passed a gstack review. Run the gstack review skill that matches the plan's nature — this is mandatory, not optional:
 
-Fix blocking findings in the plan before handing it to Codex.
+- Normal engineering / backend plans → gstack `/plan-eng-review`.
+- Scope / product tradeoffs → gstack `/plan-ceo-review`.
+- Frontend or visual work → gstack `/plan-design-review`.
+- Full automatic multi-lens review → gstack `/autoplan`.
+
+Then run the Codex peer review as the second, adversarial pass — the standard backend loop is **gstack `/plan-eng-review` + Codex** (`/codex:rescue Review this implementation plan and score it: <plan path>`). Pass criteria: overall >= 7.0 and no dimension <= 3.
+
+Fix every blocking finding in the plan file before handoff, and re-run the gstack review after any material change. Do not hand a plan to an implementer (Codex or the `astrail-developer` subagent) that has not passed gstack review.
 
 ## Final Diff Review Flow
 
-When Codex returns an implementation branch:
+When an implementation branch returns (from Codex or the `astrail-developer` subagent):
 
 1. Review the branch against the approved plan and `.claude/CLAUDE.md`.
-2. Use gstack `/review` for the diff.
-3. For UI, auth, SSE, Mapbox, or full-flow changes, require gstack `/qa` evidence from Codex or run it before approval.
+2. **REQUIRED:** Run gstack `/review` on the diff — every backend diff gets a gstack review before approval.
+3. For UI, auth, SSE, Mapbox, or full-flow changes, **REQUIRED:** gstack `/qa` evidence — run it yourself or require it from the implementer before approval.
 4. Findings come first, ordered by severity, with file and line references.
 5. Return `PASS` only when there are no blocking or material findings.
 

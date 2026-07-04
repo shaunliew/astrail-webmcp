@@ -24,6 +24,159 @@
 
 ---
 
+## Supabase Alignment Amendment (BINDS Tasks 2–5 — supersedes any sync code shown below)
+
+A Supabase-doc-alignment review (against installed `supabase==2.31.0`/`postgrest`) found the original sync code blocks are non-idiomatic and carry two concurrency defects. **This amendment is authoritative — where a task's code block below shows the sync/older form, use the async/atomic form here instead.** Implementers: load the `supabase:supabase` + `supabase:supabase-postgres-best-practices` skills first.
+
+**A. Async client, awaited everywhere (§5 — blocking-loop fix).** `supabase-py`'s sync client blocks FastAPI's event loop. Use the async client + a lazy async singleton (NOT `lru_cache`, which can't memoize an async factory), and `await` every `.execute()` at every call site (jobs, runner, streaming poll loop, main, recovery):
+
+```python
+# backend/supabase_client.py
+"""Async service-role Supabase client (server-side only; never exposed to the frontend)."""
+from __future__ import annotations
+
+import asyncio
+import os
+
+from supabase import AsyncClient, acreate_client
+
+_client: AsyncClient | None = None
+_lock = asyncio.Lock()
+
+
+async def get_supabase_client() -> AsyncClient:
+    """Lazily create + memoize one service-role AsyncClient (double-checked lock)."""
+    global _client
+    if _client is None:
+        async with _lock:
+            if _client is None:
+                _client = await acreate_client(
+                    os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"])
+    return _client
+```
+
+Every consumer becomes `client = await get_supabase_client()` and `await client.table(...)...execute()`. `record_event` / `_set_status` / `mark_job_*` / `enqueue_job` / `recover_inflight_jobs` / `stream_trip_events`'s poll are all `async` and `await` their queries.
+
+**B. `jobs.py` — idiomatic + atomic (§1, §1b, T2 idiom fixes):**
+
+```python
+# backend/jobs.py
+from __future__ import annotations
+
+import hashlib
+from datetime import datetime, timedelta, timezone
+
+from postgrest.exceptions import APIError
+
+from supabase_client import get_supabase_client
+
+_UNIQUE_VIOLATION = "23505"   # Postgres unique_violation (stable; use exc.code, NOT str(exc))
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def compute_idempotency_key(user_id: str, reel_urls: list[str], start_date: str, end_date: str) -> str:
+    material = "|".join([user_id, ",".join(sorted(reel_urls)), start_date, end_date])
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+async def enqueue_job(trip_id: str, user_id: str, idempotency_key: str, *, client=None) -> tuple[str, str]:
+    """Insert a pending job; return (job_id, trip_id). On a duplicate key, return the
+    EXISTING job's (id, trip_id) — which may be a DIFFERENT trip when two same-key POSTs
+    race, so the caller MUST redirect to the returned trip_id (see main.py)."""
+    client = client or await get_supabase_client()
+    row = {"trip_id": trip_id, "user_id": user_id, "idempotency_key": idempotency_key, "status": "pending"}
+    try:
+        created = (await client.table("jobs").insert(row).execute()).data[0]
+        return created["id"], created["trip_id"]
+    except APIError as exc:
+        if exc.code != _UNIQUE_VIOLATION:
+            raise
+        existing = await (client.table("jobs").select("id,trip_id")
+                          .eq("idempotency_key", idempotency_key).maybe_single().execute())
+        if existing is None or existing.data is None:
+            raise                       # unique violation but no matching row → surface, don't mask
+        return existing.data["id"], existing.data["trip_id"]
+
+
+async def mark_job_running(client, job_id: str) -> bool:
+    """Atomic CAS claim: pending/retryable -> running in ONE statement. Returns True iff
+    THIS caller won (empty result = already claimed/running/done → caller must abort).
+    (attempt_count increment is deferred — postgrest can't do `col = col + 1`; not load-bearing.)"""
+    result = await (client.table("jobs").update(
+        {"status": "running", "locked_at": _now(), "started_at": _now(),
+         "completed_at": None, "error_message": None})
+        .eq("id", job_id).in_("status", ["pending", "retryable"]).execute())
+    return bool(result.data)
+
+
+async def mark_job_done(client, job_id: str, *, status: str) -> None:
+    await client.table("jobs").update({"status": status, "completed_at": _now()}).eq("id", job_id).execute()
+
+
+async def recover_inflight_jobs(*, client=None, stale_after_s: int = 900) -> list[dict]:
+    """Flip STALE running (locked_at older than stale_after_s) -> retryable, then return
+    reclaimable jobs. The atomic CAS in mark_job_running (on redispatch) is what prevents a
+    double-run when two instances recover the same job — so this select-then-flip is safe
+    (flipping to retryable twice is idempotent). Restart-with-cache-reuse, NOT resume (#12)."""
+    client = client or await get_supabase_client()
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=stale_after_s)).isoformat()
+    stale = (await client.table("jobs").select("id").eq("status", "running").lt("locked_at", cutoff).execute()).data
+    for r in stale:
+        await client.table("jobs").update({"status": "retryable"}).eq("id", r["id"]).execute()
+    reclaimable = (await client.table("jobs").select("id,trip_id,user_id")
+                   .in_("status", ["pending", "retryable"]).execute()).data
+    return reclaimable
+```
+
+**C. `run_generation` claim guard (Task 3).** At the top, atomically claim before any work; abort if another instance already owns it:
+
+```python
+    client = client or await get_supabase_client()
+    if job_id and not await mark_job_running(client, job_id):
+        return {"skipped": "job already claimed by another run"}   # atomic double-run guard
+```
+
+All `record_event` / `_set_status` calls become `await` (both are `async`; `_set_status` keeps the `.eq("id", trip_id).eq("user_id", user_id)` owner filter). `_fail` calls `await mark_job_done(client, job_id, status="failed")` when `job_id`. On success, `await mark_job_done(client, job_id, status="succeeded")`.
+
+**D. `POST /generate-trip` idempotency race (Task 4, §1).** Pre-check with `maybe_single`; on a lost race, delete the orphan trip and redirect to the winner — never double-dispatch:
+
+```python
+    client = await get_supabase_client()
+    idem = compute_idempotency_key(user_id, req.reel_urls, req.start_date, req.end_date)
+    existing = await (client.table("jobs").select("trip_id").eq("idempotency_key", idem)
+                      .maybe_single().execute())
+    if existing is not None and existing.data is not None:
+        return GenerateTripResponse(trip_id=existing.data["trip_id"])         # idempotent replay
+    trip = (await client.table("trips").insert({...}).execute()).data[0]
+    trip_id = trip["id"]
+    await record_event(client, trip_id, event_type="stage", stage="create_trip",
+                       message="trip created",
+                       payload={"reel_urls": req.reel_urls, "start_date": req.start_date,
+                                "end_date": req.end_date, "pace": req.pace})
+    try:
+        job_id, winning_trip_id = await enqueue_job(trip_id, user_id, idem)
+    except APIError:
+        await client.table("trips").update({"status": "failed"}).eq("id", trip_id).eq("user_id", user_id).execute()
+        raise HTTPException(status_code=500, detail="Could not enqueue generation job")
+    if winning_trip_id != trip_id:                    # lost the race → another POST is canonical
+        await client.table("trips").delete().eq("id", trip_id).eq("user_id", user_id).execute()
+        return GenerateTripResponse(trip_id=winning_trip_id)                  # do NOT dispatch
+    background.add_task(run_generation, trip_id, user_id, req.reel_urls,
+                        req.start_date, req.end_date, job_id=job_id, pace=req.pace)
+    return GenerateTripResponse(trip_id=trip_id)
+```
+
+**E. Single-row reads** use `.maybe_single()` (returns `None` on 0 rows, `APIError` on >1) instead of `.execute().data[0]` wherever a lookup can legitimately miss (existing-job pre-check, `enqueue_job` fallback). Guarded `.data[0]` after a just-inserted row (trip insert) is fine.
+
+**F. Tests** for the async client use an async fake whose `execute()` is `async` (awaitable) and model `postgrest.exceptions.APIError(code="23505")` for the duplicate path (not a plain `Exception` string), plus a test for the re-raise branch (a non-23505 `APIError` propagates) and the `mark_job_running` CAS returning `False` when status is already `running`.
+
+**Polling vs Realtime (§4) and RLS/owner-check (§6): reviewed, NO change** — table-polling is a deliberate, defensible choice (reconnect-replay, one persistence path, backend-owned `[DONE]` contract; `generation_events` is intentionally not in the Realtime publication), and the RLS + app-level owner filters already match current service-role guidance.
+
+---
+
 ## Database Connectivity & Integration Testing
 
 The Astrail **online Supabase (dev) project is already connected** — the migrations in `supabase/migrations/` (`trips`, `jobs`, `generation_events`, and `private.claim_next_generation_job()`) are live. So slices A/B/D can be validated against the **real database**, not only mocked clients.

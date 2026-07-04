@@ -1,4 +1,6 @@
 import os
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from jose import jwt
 from fastapi import HTTPException
@@ -50,4 +52,29 @@ async def test_query_falls_back_to_header():
 async def test_query_missing_both_raises_401():
     with pytest.raises(HTTPException) as ei:
         await get_user_id_from_query_or_header(token=None, authorization=None)
+    assert ei.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_header_expired_token_raises_401():
+    expired = datetime.now(timezone.utc) - timedelta(hours=1)
+    tok = _token({"sub": "u", "aud": "authenticated", "exp": expired})
+    with pytest.raises(HTTPException) as ei:
+        await get_current_user_id(f"Bearer {tok}")
+    assert ei.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_header_missing_subject_raises_401():
+    tok = _token({"aud": "authenticated"})
+    with pytest.raises(HTTPException) as ei:
+        await get_current_user_id(f"Bearer {tok}")
+    assert ei.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_token_missing_aud_raises_401():
+    tok = _token({"sub": "u"})
+    with pytest.raises(HTTPException) as ei:
+        await get_current_user_id(f"Bearer {tok}")
     assert ei.value.status_code == 401

@@ -17,9 +17,15 @@ def _decode(token: str) -> str:
     """Validate a Supabase HS256 token and return its subject; raise 401 on failure."""
     secret = os.environ["SUPABASE_JWT_SECRET"]
     try:
-        claims = jwt.decode(token, secret, algorithms=["HS256"], audience="authenticated")
+        claims = jwt.decode(
+            token,
+            secret,
+            algorithms=["HS256"],
+            audience="authenticated",
+            options={"require_aud": True},
+        )
     except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+        raise HTTPException(status_code=401, detail="Invalid or expired token") from None
     user_id = claims.get("sub")
     if not user_id:
         raise HTTPException(status_code=401, detail="Token missing subject")

@@ -146,6 +146,8 @@ async def test_query_missing_both_raises_401():
     assert ei.value.status_code == 401
 ```
 
+Review also added 3 more 401-path tests to `backend/test_auth.py` (the plan's original set omitted them): `test_header_expired_token_raises_401` (past `exp` → 401), `test_header_missing_subject_raises_401` (no `sub` → 401), and `test_token_missing_aud_raises_401` (correct secret, no `aud` → 401 — locks `require_aud`). See the shipped test file for the code.
+
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `cd backend && uv run pytest test_auth.py -v`
@@ -174,9 +176,12 @@ def _decode(token: str) -> str:
     """Validate a Supabase HS256 token and return its subject; raise 401 on failure."""
     secret = os.environ["SUPABASE_JWT_SECRET"]
     try:
-        claims = jwt.decode(token, secret, algorithms=["HS256"], audience="authenticated")
+        # require_aud: python-jose only validates `aud` when the claim is present;
+        # requiring it rejects a correctly-signed token that omits aud=authenticated.
+        claims = jwt.decode(token, secret, algorithms=["HS256"], audience="authenticated",
+                            options={"require_aud": True})
     except JWTError:
-        raise HTTPException(status_code=401, detail="Invalid or expired token")
+        raise HTTPException(status_code=401, detail="Invalid or expired token") from None
     user_id = claims.get("sub")
     if not user_id:
         raise HTTPException(status_code=401, detail="Token missing subject")

@@ -8,21 +8,49 @@ green. See docs/superpowers/plans/2026-07-04-runtime-spine.md
 import os
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
+from jose import jwk as jose_jwk
 from jose import jwt
 
 pytestmark = pytest.mark.integration
 RUN = os.environ.get("RUN_DB_INTEGRATION") == "1"
 
+_TEST_KID = "integration-test-kid"
+
 
 @pytest.mark.skipif(not RUN, reason="set RUN_DB_INTEGRATION=1 to run against the dev DB")
 async def test_generate_trip_end_to_end(monkeypatch):
+    import auth
     import main
     from models.place import PlaceResult
     from models.reel import ReelData
     from pipeline import runner
 
     user_id = os.environ["ASTRAIL_TEST_USER_ID"]
+
+    # Auth is self-contained: verification only needs a JWKS whose kid matches
+    # the token we mint below, not the real Supabase project's private key.
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+    public_pem = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+    public_jwk = jose_jwk.construct(public_pem, "ES256").to_dict()
+    public_jwk["kid"] = _TEST_KID
+
+    monkeypatch.setattr(auth, "_JWKS_CACHE", {})
+
+    async def _fake_fetch_jwks() -> dict[str, dict]:
+        return {_TEST_KID: public_jwk}
+
+    monkeypatch.setattr(auth, "_fetch_jwks", _fake_fetch_jwks)
 
     async def scrape(url):
         return ReelData(reel_url=url, caption="📍Tokyo Tower", location_name="Tokyo",
@@ -42,8 +70,9 @@ async def test_generate_trip_end_to_end(monkeypatch):
     monkeypatch.setattr(main, "run_generation", run)
     token = jwt.encode(
         {"sub": user_id, "aud": "authenticated"},
-        os.environ["SUPABASE_JWT_SECRET"],
-        algorithm="HS256",
+        private_pem,
+        algorithm="ES256",
+        headers={"kid": _TEST_KID},
     )
     tc = TestClient(main.app)
     resp = tc.post(

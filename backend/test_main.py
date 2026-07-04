@@ -11,7 +11,6 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("SUPABASE_JWT_SECRET", "test-secret")
 os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "service-role-key")
 

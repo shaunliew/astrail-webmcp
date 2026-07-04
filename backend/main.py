@@ -14,11 +14,11 @@ trip ownership (guardrail #6), and streams generation_events as SSE.
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from postgrest.exceptions import APIError
 
 from api.schemas import GenerateTripRequest, GenerateTripResponse
 from api.streaming import stream_trip_events
@@ -27,7 +27,29 @@ from jobs import compute_idempotency_key, enqueue_job, recover_inflight_jobs
 from pipeline.runner import record_event, run_generation
 from supabase_client import get_supabase_client
 
-app = FastAPI(title="Astrail Backend")
+_RECOVERY_TASKS: set = set()
+_RECOVERY_SEM = asyncio.Semaphore(3)   # bound boot fan-out so a backlog doesn't stampede Apify/OpenAI/DB
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Guardrail #12: on boot, re-queue and re-run anything a crash left mid-flight
+    (restart-with-cache-reuse, NOT resume — a reclaimed job re-executes from Phase 1).
+    A boot-time DB blip must DEGRADE, not crash startup: the app must still start and
+    serve /health even if Supabase is unreachable; the next restart's sweep re-picks
+    pending jobs."""
+    try:
+        client = await get_supabase_client()
+        for job in await recover_inflight_jobs(client=client):
+            task = asyncio.create_task(_redispatch(client, job))
+            _RECOVERY_TASKS.add(task)                     # retain ref so it isn't GC'd mid-flight
+            task.add_done_callback(_RECOVERY_TASKS.discard)
+    except Exception:
+        pass   # boot-time DB blip must not down the app; the next restart's sweep will re-pick pending jobs
+    yield
+
+
+app = FastAPI(title="Astrail Backend", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -86,10 +108,11 @@ async def generate_trip(
             },
         )
         job_id, winning_trip_id = await enqueue_job(trip_id, user_id, idem)
-    except APIError:
-        # Never leave an orphan trip with no durable job: a failure between the
-        # trip insert and the enqueue must not leave the trip stuck `generating`
-        # with nothing to recover it (recovery only scans `jobs`).
+    except Exception:
+        # Never leave an orphan trip with no durable job: ANY failure between the
+        # trip insert and the enqueue (not just APIError — a transient httpx
+        # ConnectError/ReadTimeout counts too) must not leave the trip stuck
+        # `generating` with nothing to recover it (recovery only scans `jobs`).
         await client.table("trips").update({"status": "failed"}).eq("id", trip_id).eq(
             "user_id", user_id
         ).execute()
@@ -135,16 +158,8 @@ async def _redispatch(client, job: dict) -> None:
     if ev is None or ev.data is None:
         return  # no inputs to replay; leave it for a human/next sweep
     payload = ev.data["payload"]
-    await run_generation(
-        job["trip_id"], job["user_id"], payload["reel_urls"], payload["start_date"],
-        payload["end_date"], job_id=job["id"], pace=payload.get("pace", "balanced"),
-    )
-
-
-@app.on_event("startup")
-async def _recover_jobs_on_startup() -> None:
-    """Guardrail #12: on boot, re-queue and re-run anything a crash left mid-flight
-    (restart-with-cache-reuse, NOT resume — a reclaimed job re-executes from Phase 1)."""
-    client = await get_supabase_client()
-    for job in await recover_inflight_jobs(client=client):
-        asyncio.create_task(_redispatch(client, job))
+    async with _RECOVERY_SEM:  # bound concurrent boot re-dispatch (Fix 3)
+        await run_generation(
+            job["trip_id"], job["user_id"], payload["reel_urls"], payload["start_date"],
+            payload["end_date"], job_id=job["id"], pace=payload.get("pace", "balanced"),
+        )

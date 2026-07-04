@@ -192,3 +192,21 @@ def test_generate_trip_requires_auth():
     tc = TestClient(main.app)
     r = tc.post("/generate-trip", json=_PAYLOAD)
     assert r.status_code == 401
+
+
+def test_boot_time_recovery_failure_does_not_down_the_app(monkeypatch):
+    """A DB blip during the startup recovery sweep must DEGRADE, not crash the app —
+    it must still start and serve /health even if Supabase is unreachable at boot (Fix 2)."""
+
+    async def _get_client():
+        return object()  # never touched further; recover_inflight_jobs raises first
+
+    async def _failing_recover(**_kwargs):
+        raise RuntimeError("boot-time db blip")
+
+    monkeypatch.setattr(main, "get_supabase_client", _get_client)
+    monkeypatch.setattr(main, "recover_inflight_jobs", _failing_recover)
+
+    with TestClient(main.app) as tc:  # __enter__ drives the ASGI lifespan startup
+        r = tc.get("/health")
+    assert r.status_code == 200

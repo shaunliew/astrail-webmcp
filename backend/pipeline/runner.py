@@ -35,36 +35,52 @@ async def _set_status(client, trip_id, user_id, status) -> None:
 
 
 async def _fail(client, trip_id, user_id, job_id, stage, message) -> dict:
-    await record_event(client, trip_id, event_type="error", stage=stage, message=message)
-    await _set_status(client, trip_id, user_id, "failed")
-    await record_event(client, trip_id, event_type="result", stage=stage,
-                        message="generation failed", payload={"error": message})
+    """Best-effort terminal failure write: each write is independent so one Supabase
+    error (e.g. the original failure was connectivity) doesn't block the others — the
+    terminal `result` event and the job-failed mark are the load-bearing ones."""
+    try:
+        await record_event(client, trip_id, event_type="error", stage=stage, message=message)
+    except Exception:
+        pass
+    try:
+        await _set_status(client, trip_id, user_id, "failed")
+    except Exception:
+        pass
+    try:
+        await record_event(client, trip_id, event_type="result", stage=stage,
+                            message="generation failed", payload={"error": message})
+    except Exception:
+        pass
     if job_id:
-        await mark_job_done(client, job_id, status="failed")
+        try:
+            await mark_job_done(client, job_id, status="failed")
+        except Exception:
+            pass
     return {"error": message}
 
 
 async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                           *, job_id=None, pace="balanced", client=None, scrape=None, extract=None) -> dict:
     """Run the deterministic spine; own the job lifecycle; always write a terminal result."""
-    client = client or await get_supabase_client()
-
-    # Atomic claim guard (amendment §C): abort BEFORE any work if another instance
-    # already owns this job (double-run guard on recovery + original dispatch racing).
-    if job_id and not await mark_job_running(client, job_id):
-        return {"skipped": "job already claimed by another run"}
-
-    if scrape is None:
-        from scrape.apify_direct import scrape_reel
-        token = os.environ["APIFY_TOKEN"]
-
-        async def scrape(url):
-            return await scrape_reel(url, token=token)
-    if extract is None:
-        from genagents.place_extractor import extract_places
-        extract = extract_places
-
     try:
+        if client is None:
+            client = await get_supabase_client()
+
+        if scrape is None:
+            from scrape.apify_direct import scrape_reel
+            token = os.environ["APIFY_TOKEN"]
+
+            async def scrape(url):
+                return await scrape_reel(url, token=token)
+        if extract is None:
+            from genagents.place_extractor import extract_places
+            extract = extract_places
+
+        # Atomic claim guard (amendment §C): abort BEFORE any work if another instance
+        # already owns this job (double-run guard on recovery + original dispatch racing).
+        if job_id and not await mark_job_running(client, job_id):
+            return {"skipped": "job already claimed by another run"}
+
         await _set_status(client, trip_id, user_id, "generating")
         degraded = False
 
@@ -107,6 +123,8 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
         await record_event(client, trip_id, event_type="stage", stage="narrate",
                             message="assembling itinerary")
         itinerary = assemble_itinerary(canonical, _date_range(start_date, end_date), pace=pace)
+        if any(w.severity == "flag" for w in itinerary.feasibility_warnings):
+            degraded = True
 
         status = "saved_with_gaps" if degraded else "complete"
         await record_event(client, trip_id, event_type="stage", stage="save", message="saving trip")
@@ -119,4 +137,6 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
         return payload
     except Exception:
         # Any unexpected error → terminal result, failed status, failed job (never hang the stream).
+        if client is None:
+            raise  # never got a client → BackgroundTasks logs it; startup recovery sweep re-picks the still-pending job
         return await _fail(client, trip_id, user_id, job_id, "save", "unexpected generation error")

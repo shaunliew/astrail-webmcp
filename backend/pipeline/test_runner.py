@@ -1,7 +1,8 @@
 """Live runner tests: fully offline, async fake Supabase client (execute() is
 awaitable). Covers happy path, partial failure (degraded), critical failure (no
 places/reels survive), an unexpected exception outside the per-reel isolation,
-and the atomic CAS claim guard that aborts a double-dispatched run."""
+a blank-day feasibility flag downgrading status even with no scrape/extract
+failures, and the atomic CAS claim guard that aborts a double-dispatched run."""
 import pytest
 
 from models.place import PlaceResult
@@ -168,6 +169,25 @@ async def test_unexpected_exception_still_writes_terminal_result():
     assert "error" in out
     assert [e for e in c.events if e["event_type"] == "result"]  # never a hanging stream
     assert c.db["jobs"][0]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_blank_day_reports_saved_with_gaps():
+    c = _Client(jobs=[{"id": "job-1", "status": "pending"}])
+
+    async def scrape(url):
+        return _reel(url)
+
+    async def extract(reel):
+        return [_place("Tokyo Tower")]
+
+    out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01",
+                                       "2026-08-03", job_id="job-1", client=c, scrape=scrape, extract=extract)
+    assert len(out["itinerary"]["days"]) == 3
+    assert out["itinerary"]["days"][1]["place_names"] == []
+    assert out["itinerary"]["days"][2]["place_names"] == []
+    assert c.trip_updates[-1]["status"] == "saved_with_gaps"
+    assert c.db["jobs"][0]["status"] == "succeeded"
 
 
 @pytest.mark.asyncio

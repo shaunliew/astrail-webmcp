@@ -121,7 +121,7 @@ Public:
 - `GET /health`
 
 Authenticated (Supabase JWT required):
-- `POST /generate-trip` — accepts preferences + reelUrls, creates a Supabase trip row + enqueues a durable job, returns `{tripId}`
+- `POST /generate-trip` — accepts preferences + reelUrls, creates a Supabase trip row + enqueues a durable job, returns `{trip_id}` (snake_case, per the shipped `GenerateTripResponse`)
 - `GET /generate-trip/stream/:tripId` — SSE stream
 - `GET /trips/:tripId`
 - `DELETE /trips/:tripId`

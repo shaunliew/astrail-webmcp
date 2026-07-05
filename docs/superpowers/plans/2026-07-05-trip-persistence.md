@@ -462,7 +462,12 @@ from pipeline.persist import persist_itinerary
         status = "saved_with_gaps" if degraded else "complete"
         await record_event(client, trip_id, event_type="stage", stage="save", message="saving trip")
         try:
-            await persist_itinerary(client, trip_id, canonical, itinerary)
+            # persist takes `dates` (identity-based day assignment via the shared
+            # group_places_by_day helper) — NOT the itinerary. The narrate stage already
+            # computes `dates = _date_range(start_date, end_date)`; reuse that variable here
+            # (assign it once at narrate: `dates = _date_range(start_date, end_date)` then
+            # `itinerary = assemble_itinerary(canonical, dates, pace=pace)`).
+            await persist_itinerary(client, trip_id, canonical, dates)
         except Exception:
             status = "saved_with_gaps"   # itinerary is still durable in the result event below
             await record_event(client, trip_id, event_type="warning", stage="save",

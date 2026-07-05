@@ -15,3 +15,11 @@ def haversine_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     h = math.sin(dlat / 2) ** 2 + math.cos(rlat1) * math.cos(rlat2) * math.sin(dlng / 2) ** 2
     h = min(1.0, h)  # clamp to guard against math domain error on near-antipodal/hallucinated coords
     return 2 * _EARTH_RADIUS_M * math.asin(math.sqrt(h))
+
+
+def centroid(places) -> tuple[float, float] | None:
+    """Mean (lat, lng) over places that have coordinates; None if none do."""
+    pts = [(p.lat, p.lng) for p in places if p.lat is not None and p.lng is not None]
+    if not pts:
+        return None
+    return (sum(la for la, _ in pts) / len(pts), sum(ln for _, ln in pts) / len(pts))

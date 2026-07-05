@@ -5,6 +5,7 @@ a blank-day feasibility flag downgrading status even with no scrape/extract
 failures, and the atomic CAS claim guard that aborts a double-dispatched run."""
 import pytest
 
+from models.enrichment import WeatherReport
 from models.place import PlaceResult
 from models.reel import ReelData
 from pipeline import runner
@@ -119,6 +120,10 @@ def _place(name):
                         source_url="https://example.org/a", formatted_address=None)
 
 
+async def _no_weather(*_a, **_k):
+    return []
+
+
 @pytest.mark.asyncio
 async def test_happy_path_completes_marks_job_and_emits_result():
     c = _Client(jobs=[{"id": "job-1", "status": "pending"}])
@@ -130,7 +135,8 @@ async def test_happy_path_completes_marks_job_and_emits_result():
         return [_place("Tokyo Tower")]
 
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01",
-                                       "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract)
+                                       "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                       weather=_no_weather)
     assert out["itinerary"]["days"][0]["place_names"] == ["Tokyo Tower"]
     stages = [e["stage"] for e in c.events]
     assert stages[:4] == ["scrape", "extract", "dedup", "narrate"]
@@ -153,7 +159,7 @@ async def test_one_reel_fails_saves_with_gaps():
 
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/ok", "https://ig/bad"],
                                        "2026-08-01", "2026-08-01", job_id="job-1", client=c,
-                                       scrape=scrape, extract=extract)
+                                       scrape=scrape, extract=extract, weather=_no_weather)
     assert out["itinerary"]["days"]
     assert any(e["event_type"] == "warning" for e in c.events)
     assert c.trip_updates[-1]["status"] == "saved_with_gaps"
@@ -171,7 +177,8 @@ async def test_all_reels_fail_is_critical_failure():
         return []
 
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/bad"], "2026-08-01",
-                                       "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract)
+                                       "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                       weather=_no_weather)
     assert "error" in out
     assert [e for e in c.events if e["event_type"] == "result"][0]["payload"]["error"]
     assert c.db["jobs"][0]["status"] == "failed"
@@ -189,7 +196,8 @@ async def test_unexpected_exception_still_writes_terminal_result():
         raise ValueError("unexpected non-async boom")  # wrong shape → raises before gather()
 
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01",
-                                       "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=boom)
+                                       "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=boom,
+                                       weather=_no_weather)
     assert "error" in out
     assert [e for e in c.events if e["event_type"] == "result"]  # never a hanging stream
     assert c.db["jobs"][0]["status"] == "failed"
@@ -206,7 +214,8 @@ async def test_blank_day_reports_saved_with_gaps():
         return [_place("Tokyo Tower")]
 
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01",
-                                       "2026-08-03", job_id="job-1", client=c, scrape=scrape, extract=extract)
+                                       "2026-08-03", job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                       weather=_no_weather)
     assert len(out["itinerary"]["days"]) == 3
     assert out["itinerary"]["days"][1]["place_names"] == []
     assert out["itinerary"]["days"][2]["place_names"] == []
@@ -225,7 +234,8 @@ async def test_runner_persists_normalized_rows_on_success():
         return [_place("Tokyo Tower")]
 
     await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01",
-                                 "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract)
+                                 "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                 weather=_no_weather)
     assert c.db.get("places") and c.db["places"][0]["name"] == "Tokyo Tower"
     trip_places = c.db.get("trip_places")
     assert trip_places and all(tp["trip_id"] == "trip-1" for tp in trip_places)
@@ -248,7 +258,8 @@ async def test_runner_degrades_to_saved_with_gaps_when_persist_fails(monkeypatch
 
     monkeypatch.setattr(runner, "persist_itinerary", _boom)
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01",
-                                       "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract)
+                                       "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                       weather=_no_weather)
     assert out["itinerary"]["days"]                       # itinerary still produced + returned
     assert any(e["event_type"] == "warning" for e in c.events)
     assert c.trip_updates[-1]["status"] == "saved_with_gaps"
@@ -270,7 +281,8 @@ async def test_runner_degrades_when_persist_drops_a_place():
                             source_url="https://example.org/a", formatted_address=None)]
 
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01",
-                                       "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract)
+                                       "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                       weather=_no_weather)
     assert out["itinerary"]["days"]                       # itinerary still shows both places
     assert any(e["event_type"] == "warning" and "not saved" in e["message"] for e in c.events)
     assert c.trip_updates[-1]["status"] == "saved_with_gaps"
@@ -288,8 +300,77 @@ async def test_cas_abort_skips_when_job_already_claimed():
         raise AssertionError("extract must not run when the CAS claim is lost")
 
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01",
-                                       "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract)
+                                       "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                       weather=_no_weather)
     assert out == {"skipped": "job already claimed by another run"}
     assert c.events == []
     assert c.trip_updates == []
     assert c.db["jobs"][0]["status"] == "running"  # untouched — not re-claimed
+
+
+@pytest.mark.asyncio
+async def test_runner_persists_weather_on_trip_days():
+    c = _Client(jobs=[{"id": "job-1", "status": "pending", "attempt_count": 0, "started_at": None}])
+
+    async def scrape(url):
+        return _reel(url)
+
+    async def extract(reel):
+        return [_place("Tokyo Tower")]
+
+    async def weather(lat, lng, dates):
+        return [WeatherReport(date=d, temp_min_c=24.0, temp_max_c=31.0, precipitation_mm=0.0,
+                              weather_code=2, summary="Partly cloudy, 24-31°C") for d in dates]
+
+    await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+                                job_id="job-1", client=c, scrape=scrape, extract=extract, weather=weather)
+    td = c.db["trip_days"]
+    assert td and td[0].get("weather_source") == "open_meteo"
+    assert td[0].get("weather_summary")
+    assert any(e["stage"] == "weather" for e in c.events)
+    assert c.trip_updates[-1]["status"] == "complete"   # weather success does not degrade
+
+
+@pytest.mark.asyncio
+async def test_runner_skips_weather_when_all_places_lack_coords():
+    c = _Client(jobs=[{"id": "job-1", "status": "pending", "attempt_count": 0, "started_at": None}])
+
+    async def scrape(url):
+        return _reel(url)
+
+    async def extract(reel):
+        return [PlaceResult(name="No Coords Spot", name_local=None, category="attraction",
+                             source_type="reel_extracted", lat=None, lng=None,
+                             confidence=0.9, evidence_quote="📍No Coords Spot",
+                             source_url="https://example.org/a", formatted_address=None)]
+
+    async def weather(lat, lng, dates):
+        raise AssertionError("weather must not be called when centroid is None")
+
+    out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+                                      job_id="job-1", client=c, scrape=scrape, extract=extract, weather=weather)
+    assert out["itinerary"]["days"]                            # itinerary still produced
+    assert not any(e["stage"] == "weather" for e in c.events)  # centroid is None → weather skipped entirely
+    assert c.trip_updates[-1]["status"] == "saved_with_gaps"   # the no-coord place is dropped by persist
+    assert c.db["jobs"][0]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_runner_weather_failure_is_non_critical():
+    c = _Client(jobs=[{"id": "job-1", "status": "pending", "attempt_count": 0, "started_at": None}])
+
+    async def scrape(url):
+        return _reel(url)
+
+    async def extract(reel):
+        return [_place("Tokyo Tower")]
+
+    async def weather(lat, lng, dates):
+        raise RuntimeError("open-meteo down")
+
+    out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+                                      job_id="job-1", client=c, scrape=scrape, extract=extract, weather=weather)
+    assert out["itinerary"]["days"]                        # trip still produced
+    assert any(e["event_type"] == "warning" and e["stage"] == "weather" for e in c.events)
+    assert c.trip_updates[-1]["status"] == "complete"      # weather failure does NOT degrade or fail
+    assert c.db["jobs"][0]["status"] == "succeeded"

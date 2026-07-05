@@ -76,9 +76,17 @@ async def test_generate_trip_end_to_end(monkeypatch):
                             confidence=0.9, evidence_quote="📍Tokyo Tower",
                             source_url="https://example.org/a", formatted_address=None)]
 
+    async def weather(lat, lng, dates):
+        from models.enrichment import WeatherReport
+        # Deterministic fake (a real Open-Meteo call for a >16-day-out trip has no forecast);
+        # the fetch logic is MockTransport-unit-tested — here we prove persist → trip_days.weather_*.
+        return [WeatherReport(date=d, temp_min_c=24.0, temp_max_c=31.0, precipitation_mm=0.0,
+                              weather_code=2, summary="Partly cloudy, 24-31°C") for d in dates]
+
     async def run(trip_id, uid, urls, sd, ed, **kw):
         return await runner.run_generation(
-            trip_id, uid, urls, sd, ed, job_id=kw.get("job_id"), scrape=scrape, extract=extract,
+            trip_id, uid, urls, sd, ed, job_id=kw.get("job_id"),
+            scrape=scrape, extract=extract, weather=weather,
         )
 
     monkeypatch.setattr(main, "run_generation", run)
@@ -121,9 +129,11 @@ async def test_generate_trip_end_to_end(monkeypatch):
         places = (await client.table("places").select("id,name,lat,lng")
                   .in_("id", place_ids).execute()).data
         assert places and all(p["lat"] is not None and p["lng"] is not None for p in places)
-        trip_days = (await client.table("trip_days").select("day_number")
+        trip_days = (await client.table("trip_days").select("day_number,weather_source,weather_summary")
                      .eq("trip_id", trip_id).execute()).data
         assert trip_days, "expected trip_days rows for the generated trip"
+        # Weather landed additively on trip_days (Phase-3 enrich).
+        assert any(d["weather_source"] == "open_meteo" and d["weather_summary"] for d in trip_days)
     finally:
         # Cascade: deleting the trip cleans up its jobs / generation_events / trip_places /
         # trip_days (all FK ON DELETE CASCADE). The global `places` rows are intentionally

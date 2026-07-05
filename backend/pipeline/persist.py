@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 
+from models.enrichment import WeatherReport
 from models.place import CanonicalPlace
 from pipeline.dedup import DEFAULT_DISTANCE_M, normalize_name
 from pipeline.feasibility import group_places_by_day
@@ -145,3 +146,15 @@ async def persist_itinerary(client, trip_id: str, canonical: list[CanonicalPlace
         }).execute()
 
     return dropped
+
+
+async def persist_weather(client, trip_id: str, reports: list[WeatherReport]) -> None:
+    """Additive: write each day's weather onto the existing trip_days row (matched by
+    day_date). MUST run AFTER persist_itinerary has (re)created the trip_days rows —
+    an earlier write is wiped by persist's delete, and a missing row is a silent no-op."""
+    for r in reports:
+        await client.table("trip_days").update({
+            "weather_summary": r.summary,
+            "weather_source": "open_meteo",
+            "weather_payload": r.model_dump(),
+        }).eq("trip_id", trip_id).eq("day_date", r.date).execute()

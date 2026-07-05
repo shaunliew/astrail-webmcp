@@ -17,6 +17,7 @@ import os
 from models.place import PlaceResult
 from pipeline.dedup import dedupe_places
 from pipeline.offline_harness import _date_range, assemble_itinerary
+from pipeline.persist import persist_itinerary
 from jobs import mark_job_done, mark_job_running
 from supabase_client import get_supabase_client
 
@@ -122,12 +123,19 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
         # PHASE 4: NARRATE (deterministic route assembly)
         await record_event(client, trip_id, event_type="stage", stage="narrate",
                             message="assembling itinerary")
-        itinerary = assemble_itinerary(canonical, _date_range(start_date, end_date), pace=pace)
+        dates = _date_range(start_date, end_date)
+        itinerary = assemble_itinerary(canonical, dates, pace=pace)
         if any(w.severity == "flag" for w in itinerary.feasibility_warnings):
             degraded = True
 
         status = "saved_with_gaps" if degraded else "complete"
         await record_event(client, trip_id, event_type="stage", stage="save", message="saving trip")
+        try:
+            await persist_itinerary(client, trip_id, canonical, dates)
+        except Exception:
+            status = "saved_with_gaps"
+            await record_event(client, trip_id, event_type="warning", stage="save",
+                                message="normalized persistence failed; itinerary saved to the result event only")
         await _set_status(client, trip_id, user_id, status)
         payload = {"itinerary": itinerary.model_dump()}
         await record_event(client, trip_id, event_type="result", stage="save",

@@ -3,7 +3,6 @@ import pytest
 from models.enrichment import WeatherReport
 from models.place import CanonicalPlace
 from pipeline import persist
-from pipeline import persist as _persist
 from pipeline.feasibility import group_places_by_day
 
 
@@ -186,7 +185,7 @@ async def test_persist_weather_updates_trip_days_by_date():
     ]})
     reports = [WeatherReport(date="2026-08-01", temp_min_c=24.0, temp_max_c=31.0,
                              precipitation_mm=0.0, weather_code=2, summary="Partly cloudy, 24-31°C")]
-    await _persist.persist_weather(c, "trip-1", reports)
+    await persist.persist_weather(c, "trip-1", reports)
     d1 = [d for d in c.db["trip_days"] if d["day_date"] == "2026-08-01"][0]
     assert d1["weather_source"] == "open_meteo"
     assert d1["weather_summary"].startswith("Partly cloudy")

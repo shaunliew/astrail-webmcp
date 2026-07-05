@@ -122,7 +122,7 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                             message=f"deduping {len(places)} place(s)")
         canonical = dedupe_places(places).places
 
-        # PHASE 4: NARRATE (deterministic route assembly)
+        # NARRATE — route assembly (deterministic)
         await record_event(client, trip_id, event_type="stage", stage="narrate",
                             message="assembling itinerary")
         dates = _date_range(start_date, end_date)
@@ -130,18 +130,18 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
         if any(w.severity == "flag" for w in itinerary.feasibility_warnings):
             degraded = True
 
-        # PHASE 3: WEATHER (best-effort, partial-failure isolated). FULLY SELF-CONTAINED:
+        # ENRICH — weather (Phase-3 agent, partial-failure isolated). FULLY SELF-CONTAINED:
         # the default-injection, the fetch, and even the warning-write are ALL inside one
         # try/except that swallows everything — a weather failure (broken import, API error,
         # or a failed warning-write) must NEVER propagate to the outer `_fail` (guardrail #3).
         weather_reports = []
         try:
-            await record_event(client, trip_id, event_type="stage", stage="weather",
-                               message="fetching weather")
             if weather is None:
                 from genagents.weather import fetch_weather as weather   # resolved here, isolated
             center = centroid(canonical)
             if center is not None:
+                await record_event(client, trip_id, event_type="stage", stage="weather",
+                                   message="fetching weather")
                 weather_reports = await weather(center[0], center[1], dates)
         except Exception:
             weather_reports = []

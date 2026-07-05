@@ -332,6 +332,30 @@ async def test_runner_persists_weather_on_trip_days():
 
 
 @pytest.mark.asyncio
+async def test_runner_skips_weather_when_all_places_lack_coords():
+    c = _Client(jobs=[{"id": "job-1", "status": "pending", "attempt_count": 0, "started_at": None}])
+
+    async def scrape(url):
+        return _reel(url)
+
+    async def extract(reel):
+        return [PlaceResult(name="No Coords Spot", name_local=None, category="attraction",
+                             source_type="reel_extracted", lat=None, lng=None,
+                             confidence=0.9, evidence_quote="📍No Coords Spot",
+                             source_url="https://example.org/a", formatted_address=None)]
+
+    async def weather(lat, lng, dates):
+        raise AssertionError("weather must not be called when centroid is None")
+
+    out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+                                      job_id="job-1", client=c, scrape=scrape, extract=extract, weather=weather)
+    assert out["itinerary"]["days"]                            # itinerary still produced
+    assert not any(e["stage"] == "weather" for e in c.events)  # centroid is None → weather skipped entirely
+    assert c.trip_updates[-1]["status"] == "saved_with_gaps"   # the no-coord place is dropped by persist
+    assert c.db["jobs"][0]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
 async def test_runner_weather_failure_is_non_critical():
     c = _Client(jobs=[{"id": "job-1", "status": "pending", "attempt_count": 0, "started_at": None}])
 

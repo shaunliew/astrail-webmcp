@@ -5,11 +5,17 @@ and the auth gate. GET /generate-trip/stream is exercised end-to-end via
 api/test_streaming.py (the generator) plus the owner-check here is a thin
 FastAPI wrapper around trips lookups already covered by the runner's owner
 filters in pipeline/test_runner.py.
+
+Drives the ASGI app with an async httpx client over ASGITransport (NOT the sync
+`starlette.testclient.TestClient`, which is deprecated with httpx and spins a
+separate portal loop). ASGITransport awaits the full ASGI call, including the
+Starlette BackgroundTask, so `run_generation` dispatch is observable by the time
+the POST resolves.
 """
 import os
 
+import httpx
 import pytest
-from fastapi.testclient import TestClient
 
 os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "service-role-key")
@@ -90,8 +96,12 @@ class _Client:
         return _Table(name, self.db)
 
 
+def _async_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test")
+
+
 @pytest.fixture
-def ctx(monkeypatch):
+async def ctx(monkeypatch):
     db: dict = {}
     client = _Client(db)
 
@@ -120,16 +130,17 @@ def ctx(monkeypatch):
     monkeypatch.setattr(main, "run_generation", _run_generation)
 
     main.app.dependency_overrides[get_current_user_id] = lambda: "user-1"
-    yield TestClient(main.app), db, calls
+    async with _async_client() as ac:
+        yield ac, db, calls
     main.app.dependency_overrides.clear()
 
 
 _PAYLOAD = {"reel_urls": ["https://ig/r1"], "start_date": "2026-08-01", "end_date": "2026-08-02"}
 
 
-def test_generate_trip_creates_trip_and_persists_create_trip_event(ctx):
-    tc, db, calls = ctx
-    r = tc.post("/generate-trip", json=_PAYLOAD)
+async def test_generate_trip_creates_trip_and_persists_create_trip_event(ctx):
+    ac, db, calls = ctx
+    r = await ac.post("/generate-trip", json=_PAYLOAD)
     assert r.status_code == 200
     trip_id = r.json()["trip_id"]
     assert len(db["trips"]) == 1
@@ -141,29 +152,29 @@ def test_generate_trip_creates_trip_and_persists_create_trip_event(ctx):
     assert calls[0][0][0] == trip_id  # dispatched for the trip that was created
 
 
-def test_generate_trip_replays_same_trip_for_same_idempotency_key(ctx):
-    tc, db, calls = ctx
-    first = tc.post("/generate-trip", json=_PAYLOAD)
-    second = tc.post("/generate-trip", json=_PAYLOAD)
+async def test_generate_trip_replays_same_trip_for_same_idempotency_key(ctx):
+    ac, db, calls = ctx
+    first = await ac.post("/generate-trip", json=_PAYLOAD)
+    second = await ac.post("/generate-trip", json=_PAYLOAD)
     assert first.status_code == 200 and second.status_code == 200
     assert first.json()["trip_id"] == second.json()["trip_id"]
     assert len(db["trips"]) == 1  # no second insert
     assert len(calls) == 1  # dispatched only once; replay never dispatches again
 
 
-def test_generate_trip_marks_trip_failed_when_create_trip_event_fails(ctx, monkeypatch):
+async def test_generate_trip_marks_trip_failed_when_create_trip_event_fails(ctx, monkeypatch):
     """A failure recording the create_trip event (between trip-insert and enqueue)
     must not leave the trip stuck `generating` with no job to recover it — Fix 3."""
     from postgrest.exceptions import APIError
 
-    tc, db, calls = ctx
+    ac, db, calls = ctx
 
     async def _failing_record_event(*_args, **_kwargs):
         raise APIError({"message": "boom", "code": "500", "details": None, "hint": None})
 
     monkeypatch.setattr(main, "record_event", _failing_record_event)
 
-    r = tc.post("/generate-trip", json=_PAYLOAD)
+    r = await ac.post("/generate-trip", json=_PAYLOAD)
     assert r.status_code == 500
     assert len(db["trips"]) == 1
     assert db["trips"][0]["status"] == "failed"
@@ -171,31 +182,31 @@ def test_generate_trip_marks_trip_failed_when_create_trip_event_fails(ctx, monke
     assert calls == []  # never dispatched
 
 
-def test_generate_trip_idempotency_race_deletes_orphan_and_redirects(ctx, monkeypatch):
-    tc, db, calls = ctx
+async def test_generate_trip_idempotency_race_deletes_orphan_and_redirects(ctx, monkeypatch):
+    ac, db, calls = ctx
 
     async def _racing_enqueue(_trip_id, _user_id, _key, **_kw):
         return "job-winner", "winner-trip-id"  # a concurrent POST already won the race
 
     monkeypatch.setattr(main, "enqueue_job", _racing_enqueue)
 
-    r = tc.post("/generate-trip", json=_PAYLOAD)
+    r = await ac.post("/generate-trip", json=_PAYLOAD)
     assert r.status_code == 200
     assert r.json()["trip_id"] == "winner-trip-id"
     assert db["trips"] == []  # our orphan trip was deleted, not left behind
     assert calls == []  # never dispatched for the losing trip
 
 
-def test_generate_trip_requires_auth():
+async def test_generate_trip_requires_auth():
     main.app.dependency_overrides.clear()
-    tc = TestClient(main.app)
-    r = tc.post("/generate-trip", json=_PAYLOAD)
+    async with _async_client() as ac:
+        r = await ac.post("/generate-trip", json=_PAYLOAD)
     assert r.status_code == 401
 
 
-def test_boot_time_recovery_failure_does_not_down_the_app(monkeypatch):
+async def test_boot_time_recovery_failure_does_not_down_the_app(monkeypatch):
     """A DB blip during the startup recovery sweep must DEGRADE, not crash the app —
-    it must still start and serve /health even if Supabase is unreachable at boot (Fix 2)."""
+    the lifespan must not raise, and /health must still serve (Fix 2)."""
 
     async def _get_client():
         return object()  # never touched further; recover_inflight_jobs raises first
@@ -206,6 +217,11 @@ def test_boot_time_recovery_failure_does_not_down_the_app(monkeypatch):
     monkeypatch.setattr(main, "get_supabase_client", _get_client)
     monkeypatch.setattr(main, "recover_inflight_jobs", _failing_recover)
 
-    with TestClient(main.app) as tc:  # __enter__ drives the ASGI lifespan startup
-        r = tc.get("/health")
+    # The lifespan startup must swallow the recovery error (not propagate it).
+    async with main.lifespan(main.app):
+        pass
+
+    # And the app still serves /health.
+    async with _async_client() as ac:
+        r = await ac.get("/health")
     assert r.status_code == 200

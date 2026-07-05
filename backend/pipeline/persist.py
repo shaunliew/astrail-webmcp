@@ -14,11 +14,9 @@ from __future__ import annotations
 import math
 
 from models.place import CanonicalPlace
-from pipeline.dedup import normalize_name
+from pipeline.dedup import DEFAULT_DISTANCE_M, normalize_name
 from pipeline.feasibility import group_places_by_day
 from pipeline.geo import haversine_m
-
-_GEO_GATE_M = 500.0            # same threshold as pipeline/dedup.DEFAULT_DISTANCE_M
 
 _VALID_PLACE_TYPES = {"attraction", "restaurant", "hotel", "area", "city",
                       "country", "station", "shop", "other"}
@@ -62,8 +60,8 @@ def _place_matches(place: CanonicalPlace, row: dict) -> bool:
 def _bbox_deltas(lat: float) -> tuple[float, float]:
     """lat/lng degree deltas that always ENCLOSE a 500m radius (globally safe — a fixed
     0.01° lng box is < 500m at high latitude and would exclude a true near-duplicate)."""
-    lat_delta = _GEO_GATE_M / 111_320.0
-    lng_delta = _GEO_GATE_M / (111_320.0 * max(math.cos(math.radians(lat)), 1e-6))
+    lat_delta = DEFAULT_DISTANCE_M / 111_320.0
+    lng_delta = DEFAULT_DISTANCE_M / (111_320.0 * max(math.cos(math.radians(lat)), 1e-6))
     return lat_delta, lng_delta
 
 
@@ -80,7 +78,7 @@ async def _find_or_create_place(client, place: CanonicalPlace) -> str:
                   .execute()).data
     for row in candidates:
         if _place_matches(place, row) and \
-                haversine_m(place.lat, place.lng, row["lat"], row["lng"]) < _GEO_GATE_M:
+                haversine_m(place.lat, place.lng, row["lat"], row["lng"]) < DEFAULT_DISTANCE_M:
             return row["id"]
     inserted = (await client.table("places").insert({
         "name": place.name,
@@ -94,7 +92,7 @@ async def _find_or_create_place(client, place: CanonicalPlace) -> str:
 
 
 async def persist_itinerary(client, trip_id: str, canonical: list[CanonicalPlace],
-                            dates: list[str]) -> None:
+                            dates: list[str]) -> int:
     """Persist the trip's normalized rows. Retry-safe (clears this trip's links/days first).
 
     Day assignment is IDENTITY-based: `group_places_by_day` produces the same geo-order +
@@ -102,6 +100,11 @@ async def persist_itinerary(client, trip_id: str, canonical: list[CanonicalPlace
     identity — not by matching place NAMES against the rendered itinerary. Two distinct
     places sharing a name (e.g. two "7-Eleven") land on whichever day their own position in
     the geo-chain puts them, not both on the same day.
+
+    Returns the count of places shown in the itinerary but NOT persisted to trip_places —
+    either dropped for missing coordinates, or skipped because a distinct canonical place
+    resolved to an already-linked global place_id (the flywheel collision). The caller
+    degrades trip status to saved_with_gaps when this is > 0.
 
     Raises on a DB error — the caller (runner) degrades to saved_with_gaps.
     """
@@ -114,16 +117,19 @@ async def persist_itinerary(client, trip_id: str, canonical: list[CanonicalPlace
     await client.table("trip_days").delete().eq("trip_id", trip_id).execute()
 
     linked: set[str] = set()   # dedup place_ids within this trip
+    dropped = 0
     for day_number, group in groups:
         sort_order = 0
         for place in group:
             if place.lat is None or place.lng is None:   # coord filter (places.lat/lng NOT NULL)
+                dropped += 1
                 continue
             place_id = await _find_or_create_place(client, place)
             # Two distinct canonical places can resolve to the SAME global place_id (the DB's
             # accumulated aliases merge more than in-trip dedup). Guard the trip_places
             # UNIQUE(trip_id, place_id): keep the first link, skip the duplicate.
             if place_id in linked:
+                dropped += 1
                 continue
             linked.add(place_id)
             await client.table("trip_places").insert({
@@ -137,3 +143,5 @@ async def persist_itinerary(client, trip_id: str, canonical: list[CanonicalPlace
         await client.table("trip_days").insert({
             "trip_id": trip_id, "day_number": day_number, "day_date": dates[day_number - 1],
         }).execute()
+
+    return dropped

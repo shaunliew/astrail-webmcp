@@ -131,7 +131,12 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
         status = "saved_with_gaps" if degraded else "complete"
         await record_event(client, trip_id, event_type="stage", stage="save", message="saving trip")
         try:
-            await persist_itinerary(client, trip_id, canonical, dates)
+            dropped = await persist_itinerary(client, trip_id, canonical, dates)
+            if dropped:
+                status = "saved_with_gaps"
+                await record_event(client, trip_id, event_type="warning", stage="save",
+                                   message=f"{dropped} place(s) shown in the itinerary were not saved "
+                                           "(missing coordinates or merged with an existing place)")
         except Exception:
             status = "saved_with_gaps"
             await record_event(client, trip_id, event_type="warning", stage="save",

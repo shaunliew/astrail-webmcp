@@ -91,8 +91,9 @@ async def test_persist_writes_places_trip_places_and_days():
     c = _Client()
     canonical = [_cp("Tokyo Tower", 35.6586, 139.7454),
                  _cp("Senso-ji", 35.7148, 139.7967)]
-    await persist.persist_itinerary(c, "trip-1", canonical, ["2026-08-01"])
+    dropped = await persist.persist_itinerary(c, "trip-1", canonical, ["2026-08-01"])
 
+    assert dropped == 0
     assert len(c.db["places"]) == 2
     tps = c.db["trip_places"]
     assert len(tps) == 2
@@ -107,7 +108,8 @@ async def test_persist_writes_places_trip_places_and_days():
 async def test_persist_drops_no_coord_places():
     c = _Client()
     canonical = [_cp("Has Coords", 35.0, 139.0), _cp("No Coords", None, None)]
-    await persist.persist_itinerary(c, "trip-1", canonical, ["2026-08-01"])
+    dropped = await persist.persist_itinerary(c, "trip-1", canonical, ["2026-08-01"])
+    assert dropped == 1
     assert len(c.db["places"]) == 1 and c.db["places"][0]["name"] == "Has Coords"
     assert len(c.db["trip_places"]) == 1
 
@@ -133,7 +135,8 @@ async def test_two_canonical_resolving_to_same_place_link_once():
     canonical = [_cp("Tokyo Tower", 35.65861, 139.74541),
                  _cp("東京タワー", 35.65859, 139.74539, name_local="東京タワー",
                      aliases=["東京タワー"])]
-    await persist.persist_itinerary(c, "trip-1", canonical, ["2026-08-01"])
+    dropped = await persist.persist_itinerary(c, "trip-1", canonical, ["2026-08-01"])
+    assert dropped == 1  # the second canonical place resolved to the SAME place_id, skipped
     assert len(c.db.get("places", [])) == 1
     assert len(c.db["trip_places"]) == 1  # both resolved to existing-1 → linked once, no UNIQUE crash
 

@@ -256,6 +256,28 @@ async def test_runner_degrades_to_saved_with_gaps_when_persist_fails(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_runner_degrades_when_persist_drops_a_place():
+    c = _Client(jobs=[{"id": "job-1", "status": "pending"}])
+
+    async def scrape(url):
+        return _reel(url)
+
+    async def extract(reel):
+        return [_place("Tokyo Tower"),
+                PlaceResult(name="No Coords Spot", name_local=None, category="attraction",
+                            source_type="reel_extracted", lat=None, lng=None,
+                            confidence=0.9, evidence_quote="📍No Coords Spot",
+                            source_url="https://example.org/a", formatted_address=None)]
+
+    out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01",
+                                       "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract)
+    assert out["itinerary"]["days"]                       # itinerary still shows both places
+    assert any(e["event_type"] == "warning" and "not saved" in e["message"] for e in c.events)
+    assert c.trip_updates[-1]["status"] == "saved_with_gaps"
+    assert c.db["jobs"][0]["status"] == "succeeded"        # a dropped place is non-critical
+
+
+@pytest.mark.asyncio
 async def test_cas_abort_skips_when_job_already_claimed():
     c = _Client(jobs=[{"id": "job-1", "status": "running"}])  # already claimed by another run
 

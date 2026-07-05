@@ -1,8 +1,8 @@
 import pytest
 
 from models.place import CanonicalPlace
-from models.trip import ItineraryDay, ItineraryOutput
 from pipeline import persist
+from pipeline.feasibility import group_places_by_day
 
 
 def _cp(name, lat, lng, *, category="attraction", source_type="reel_extracted",
@@ -14,11 +14,6 @@ def _cp(name, lat, lng, *, category="attraction", source_type="reel_extracted",
         city_or_region_guess="Tokyo", aliases=aliases or [name],
         evidence_quotes=[f"📍{name}"], times_referenced=1,
     )
-
-
-def _itin(days):
-    return ItineraryOutput(title="t", source="pipeline", source_places=[],
-                           days=days, feasibility_warnings=[])
 
 
 # --- pure mappers -----------------------------------------------------------
@@ -38,13 +33,15 @@ def test_source_summary_never_contains_blocked_keys():
         assert blocked not in ss
 
 
-def test_day_lookup_maps_name_to_day_and_sort_order():
-    itin = _itin([
-        ItineraryDay(day_number=1, date="2026-08-01", place_names=["A", "B"]),
-        ItineraryDay(day_number=2, date="2026-08-02", place_names=["C"]),
-    ])
-    lu = persist._day_lookup(itin)
-    assert lu["A"] == (1, 0) and lu["B"] == (1, 1) and lu["C"] == (2, 0)
+def test_group_places_by_day_is_identity_based_not_name_based():
+    # Two DISTINCT places sharing the literal name "7-Eleven" but far apart still land in
+    # groups keyed by object identity, not merged/confused by name.
+    a = _cp("7-Eleven", 35.0, 139.0)
+    b = _cp("7-Eleven", 35.06, 139.06)   # ~7.5km away
+    groups = group_places_by_day([a, b], ["2026-08-01", "2026-08-02"])
+    all_places = [p for _, group in groups for p in group]
+    assert all_places.count(a) == 1 and all_places.count(b) == 1
+    assert a is not b
 
 
 # --- async fake client ------------------------------------------------------
@@ -94,9 +91,7 @@ async def test_persist_writes_places_trip_places_and_days():
     c = _Client()
     canonical = [_cp("Tokyo Tower", 35.6586, 139.7454),
                  _cp("Senso-ji", 35.7148, 139.7967)]
-    itin = _itin([ItineraryDay(day_number=1, date="2026-08-01",
-                               place_names=["Tokyo Tower", "Senso-ji"])])
-    await persist.persist_itinerary(c, "trip-1", canonical, itin)
+    await persist.persist_itinerary(c, "trip-1", canonical, ["2026-08-01"])
 
     assert len(c.db["places"]) == 2
     tps = c.db["trip_places"]
@@ -112,9 +107,7 @@ async def test_persist_writes_places_trip_places_and_days():
 async def test_persist_drops_no_coord_places():
     c = _Client()
     canonical = [_cp("Has Coords", 35.0, 139.0), _cp("No Coords", None, None)]
-    itin = _itin([ItineraryDay(day_number=1, date="2026-08-01",
-                               place_names=["Has Coords", "No Coords"])])
-    await persist.persist_itinerary(c, "trip-1", canonical, itin)
+    await persist.persist_itinerary(c, "trip-1", canonical, ["2026-08-01"])
     assert len(c.db["places"]) == 1 and c.db["places"][0]["name"] == "Has Coords"
     assert len(c.db["trip_places"]) == 1
 
@@ -125,8 +118,7 @@ async def test_dedup_on_write_reuses_existing_nearby_place():
     c = _Client({"places": [{"id": "existing-1", "name": "Tokyo Tower",
                              "aliases": ["Tokyo Tower"], "lat": 35.6586, "lng": 139.7454}]})
     canonical = [_cp("Tokyo Tower", 35.65861, 139.74541)]  # ~1m away
-    itin = _itin([ItineraryDay(day_number=1, date="2026-08-01", place_names=["Tokyo Tower"])])
-    await persist.persist_itinerary(c, "trip-1", canonical, itin)
+    await persist.persist_itinerary(c, "trip-1", canonical, ["2026-08-01"])
     assert len(c.db["places"]) == 1  # NOT a new row — flywheel reuse
     assert c.db["trip_places"][0]["place_id"] == "existing-1"
 
@@ -141,9 +133,7 @@ async def test_two_canonical_resolving_to_same_place_link_once():
     canonical = [_cp("Tokyo Tower", 35.65861, 139.74541),
                  _cp("東京タワー", 35.65859, 139.74539, name_local="東京タワー",
                      aliases=["東京タワー"])]
-    itin = _itin([ItineraryDay(day_number=1, date="2026-08-01",
-                               place_names=["Tokyo Tower", "東京タワー"])])
-    await persist.persist_itinerary(c, "trip-1", canonical, itin)
+    await persist.persist_itinerary(c, "trip-1", canonical, ["2026-08-01"])
     assert len(c.db.get("places", [])) == 1
     assert len(c.db["trip_places"]) == 1  # both resolved to existing-1 → linked once, no UNIQUE crash
 
@@ -152,9 +142,26 @@ async def test_two_canonical_resolving_to_same_place_link_once():
 async def test_persist_is_retry_safe_deletes_prior_rows():
     c = _Client()
     canonical = [_cp("Tokyo Tower", 35.6586, 139.7454)]
-    itin = _itin([ItineraryDay(day_number=1, date="2026-08-01", place_names=["Tokyo Tower"])])
-    await persist.persist_itinerary(c, "trip-1", canonical, itin)
-    await persist.persist_itinerary(c, "trip-1", canonical, itin)  # retry
+    await persist.persist_itinerary(c, "trip-1", canonical, ["2026-08-01"])
+    await persist.persist_itinerary(c, "trip-1", canonical, ["2026-08-01"])  # retry
     assert len(c.db["trip_places"]) == 1   # not doubled
     assert len(c.db["trip_days"]) == 1
     assert len(c.db["places"]) == 1        # dedup reused the place from attempt 1
+
+
+@pytest.mark.asyncio
+async def test_persist_assigns_distinct_days_by_identity_not_name():
+    # Two DISTINCT canonical places sharing the literal name "7-Eleven", ~6km apart, over a
+    # 2-day span. Name-based day assignment (the old `_day_lookup`) would collapse both onto
+    # whichever day the FIRST "7-Eleven" occupied in the itinerary's place_names list — a
+    # silently-wrong result. Identity-based assignment (`group_places_by_day`) must place them
+    # on their own geo-chain days.
+    c = _Client()
+    near = _cp("7-Eleven", 35.6586, 139.7454)
+    far = _cp("7-Eleven", 35.70, 139.80)   # ~6km away
+    canonical = [near, far]
+    await persist.persist_itinerary(c, "trip-1", canonical, ["2026-08-01", "2026-08-02"])
+
+    tps = c.db["trip_places"]
+    assert len(tps) == 2
+    assert len({tp["day_number"] for tp in tps}) == 2   # DIFFERENT days, not both on day 1

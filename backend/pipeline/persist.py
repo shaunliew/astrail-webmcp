@@ -12,10 +12,10 @@ reused when it matches by name/alias AND haversine < 500m (the same two-gate
 from __future__ import annotations
 
 import math
-import re
 
 from models.place import CanonicalPlace
-from models.trip import ItineraryOutput
+from pipeline.dedup import normalize_name
+from pipeline.feasibility import group_places_by_day
 from pipeline.geo import haversine_m
 
 _GEO_GATE_M = 500.0            # same threshold as pipeline/dedup.DEFAULT_DISTANCE_M
@@ -23,15 +23,6 @@ _GEO_GATE_M = 500.0            # same threshold as pipeline/dedup.DEFAULT_DISTAN
 _VALID_PLACE_TYPES = {"attraction", "restaurant", "hotel", "area", "city",
                       "country", "station", "shop", "other"}
 _CATEGORY_MAP = {"transport": "station"}   # extractor emits 'transport'; enum has 'station'
-
-_NON_WORD = re.compile(r"[^\w\s]", re.UNICODE)
-_WS = re.compile(r"\s+")
-
-
-def _norm(name: str | None) -> str:
-    if not name:
-        return ""
-    return _WS.sub(" ", _NON_WORD.sub(" ", name.lower())).strip()
 
 
 def _place_type(category: str) -> str:
@@ -59,20 +50,11 @@ def _evidence_json(place: CanonicalPlace) -> dict:
     }
 
 
-def _day_lookup(itinerary: ItineraryOutput) -> dict[str, tuple[int, int]]:
-    """name -> (day_number, sort_order) from the itinerary's per-day place_names."""
-    lookup: dict[str, tuple[int, int]] = {}
-    for day in itinerary.days:
-        for i, name in enumerate(day.place_names):
-            lookup.setdefault(name, (day.day_number, i))
-    return lookup
-
-
 def _place_matches(place: CanonicalPlace, row: dict) -> bool:
-    keys = {_norm(place.name), _norm(getattr(place, "name_local", None))}
-    keys |= {_norm(a) for a in (getattr(place, "aliases", []) or [])}
+    keys = {normalize_name(place.name), normalize_name(getattr(place, "name_local", None))}
+    keys |= {normalize_name(a) for a in (getattr(place, "aliases", []) or [])}
     keys.discard("")
-    row_keys = {_norm(row.get("name"))} | {_norm(a) for a in (row.get("aliases") or [])}
+    row_keys = {normalize_name(row.get("name"))} | {normalize_name(a) for a in (row.get("aliases") or [])}
     row_keys.discard("")
     return bool(keys & row_keys)
 
@@ -112,13 +94,18 @@ async def _find_or_create_place(client, place: CanonicalPlace) -> str:
 
 
 async def persist_itinerary(client, trip_id: str, canonical: list[CanonicalPlace],
-                            itinerary: ItineraryOutput) -> None:
+                            dates: list[str]) -> None:
     """Persist the trip's normalized rows. Retry-safe (clears this trip's links/days first).
+
+    Day assignment is IDENTITY-based: `group_places_by_day` produces the same geo-order +
+    contiguous-split grouping the itinerary narrator uses, keyed by CanonicalPlace object
+    identity — not by matching place NAMES against the rendered itinerary. Two distinct
+    places sharing a name (e.g. two "7-Eleven") land on whichever day their own position in
+    the geo-chain puts them, not both on the same day.
 
     Raises on a DB error — the caller (runner) degrades to saved_with_gaps.
     """
-    places = [p for p in canonical if p.lat is not None and p.lng is not None]
-    day_of = _day_lookup(itinerary)
+    groups = group_places_by_day(canonical, dates)   # identity-preserving, same grouping as the itinerary
 
     # Retry-safety: clear THIS trip's links/days (places are global — never deleted here).
     # The runner's atomic CAS claim makes this single-writer per job/trip, so the
@@ -127,23 +114,26 @@ async def persist_itinerary(client, trip_id: str, canonical: list[CanonicalPlace
     await client.table("trip_days").delete().eq("trip_id", trip_id).execute()
 
     linked: set[str] = set()   # dedup place_ids within this trip
-    for place in places:
-        place_id = await _find_or_create_place(client, place)
-        # Two distinct canonical places can resolve to the SAME global place_id (the DB's
-        # accumulated aliases merge more than in-trip dedup). Guard the trip_places
-        # UNIQUE(trip_id, place_id): keep the first link, skip the duplicate.
-        if place_id in linked:
-            continue
-        linked.add(place_id)
-        day_number, sort_order = day_of.get(place.name, (None, None))
-        await client.table("trip_places").insert({
-            "trip_id": trip_id, "place_id": place_id,
-            "source_type": place.source_type,
-            "evidence_json": _evidence_json(place),
-            "day_number": day_number, "sort_order": sort_order,
-        }).execute()
+    for day_number, group in groups:
+        sort_order = 0
+        for place in group:
+            if place.lat is None or place.lng is None:   # coord filter (places.lat/lng NOT NULL)
+                continue
+            place_id = await _find_or_create_place(client, place)
+            # Two distinct canonical places can resolve to the SAME global place_id (the DB's
+            # accumulated aliases merge more than in-trip dedup). Guard the trip_places
+            # UNIQUE(trip_id, place_id): keep the first link, skip the duplicate.
+            if place_id in linked:
+                continue
+            linked.add(place_id)
+            await client.table("trip_places").insert({
+                "trip_id": trip_id, "place_id": place_id, "source_type": place.source_type,
+                "evidence_json": _evidence_json(place),
+                "day_number": day_number, "sort_order": sort_order,
+            }).execute()
+            sort_order += 1
 
-    for day in itinerary.days:
+    for day_number, _group in groups:
         await client.table("trip_days").insert({
-            "trip_id": trip_id, "day_number": day.day_number, "day_date": day.date,
+            "trip_id": trip_id, "day_number": day_number, "day_date": dates[day_number - 1],
         }).execute()

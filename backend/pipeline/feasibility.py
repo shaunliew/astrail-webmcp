@@ -73,6 +73,26 @@ def optimal_day_order(day_places: list[CanonicalPlace]) -> list[CanonicalPlace]:
     return list(best) + no_coord
 
 
+def group_places_by_day(
+    places: list[CanonicalPlace], dates: list[str]
+) -> list[tuple[int, list[CanonicalPlace]]]:
+    """Geo-order places, split into near-even contiguous day groups (one per date),
+    intra-day-optimized. Returns [(day_number, [CanonicalPlace])] — the identity-preserving
+    grouping that assemble_itinerary renders to names and persist maps to trip_places days."""
+    d = len(dates)
+    if d <= 0:
+        raise ValueError("need at least one date")
+    ordered = geo_order(places)
+    base, extra = divmod(len(ordered), d)
+    groups, idx = [], 0
+    for i in range(d):
+        size = base + (1 if i < extra else 0)
+        group = optimal_day_order(ordered[idx:idx + size])
+        idx += size
+        groups.append((i + 1, group))
+    return groups
+
+
 def assess_feasibility(
     numbered_days: list[tuple[int, list[CanonicalPlace]]], *, pace: str = DEFAULT_PACE
 ) -> list[FeasibilityWarning]:

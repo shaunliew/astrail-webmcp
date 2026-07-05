@@ -20,7 +20,7 @@ _NON_WORD = re.compile(r"[^\w\s]", re.UNICODE)   # \w + re.UNICODE keeps CJK; dr
 _WS = re.compile(r"\s+")
 
 
-def _normalize(name: str | None) -> str:
+def normalize_name(name: str | None) -> str:
     """Lowercase, drop punctuation/emoji, collapse whitespace. '' for blank/None."""
     if not name:
         return ""
@@ -29,7 +29,7 @@ def _normalize(name: str | None) -> str:
 
 def _aliases(place: PlaceResult) -> set[str]:
     """Normalized match keys for a place: its name and its local-language name."""
-    return {a for a in (_normalize(place.name), _normalize(place.name_local)) if a}
+    return {a for a in (normalize_name(place.name), normalize_name(place.name_local)) if a}
 
 
 def _semantic_match(a: PlaceResult, b: PlaceResult) -> bool:

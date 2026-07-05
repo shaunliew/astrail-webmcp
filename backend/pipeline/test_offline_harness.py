@@ -1,0 +1,130 @@
+"""Offline pipeline skeleton tests — produces eval-shaped output, no API key."""
+from pathlib import Path
+
+import pytest
+
+from pipeline.dedup import dedupe_places
+from pipeline.offline_harness import (
+    assemble_itinerary,
+    run_offline_pipeline,
+)
+from models.place import CanonicalPlace, PlaceResult
+from pipeline.output import PipelineOutput
+
+FIX = Path(__file__).parent / "fixtures"
+
+
+def test_dedupe_distinct_places_pass_through_as_canonical():
+    places = [PlaceResult(name="A", category="other", confidence=0.9, evidence_quote="A", lat=35.0, lng=139.0),
+              PlaceResult(name="B", category="other", confidence=0.8, evidence_quote="B", lat=35.5, lng=139.5)]
+    res = dedupe_places(places)
+    assert [p.name for p in res.places] == ["A", "B"]
+    assert all(isinstance(p, CanonicalPlace) and p.times_referenced == 1 for p in res.places)
+
+
+def test_assemble_itinerary_geo_orders_and_carries_warnings():
+    # three places in a zig-zag input order (A, Far, B); geo-ordering + per-day TSP must
+    # reorder them so "Far" (the outlier) is not left in the middle position.
+    # Also verifies all places are present and feasibility_warnings is a list.
+    places = [CanonicalPlace(name=n, category="other", confidence=0.9, evidence_quote=n, lat=la, lng=lo)
+              for n, la, lo in [("A", 35.0, 139.0), ("Far", 35.5, 139.5), ("B", 35.01, 139.01)]]
+    itin = assemble_itinerary(places, ["2026-06-10"])
+    assert {n for d in itin.days for n in d.place_names} == {"A", "Far", "B"}  # all present
+    assert isinstance(itin.feasibility_warnings, list)
+    # route-aware reorder: "Far" is not in the middle (input position 1); it should be last
+    day_names = itin.days[0].place_names
+    assert day_names != ["A", "Far", "B"], "expected reordering away from zig-zag input order"
+    assert day_names[-1] == "Far", f"expected 'Far' to be last after geo+TSP order; got {day_names}"
+
+
+def test_assemble_itinerary_rejects_zero_dates():
+    with pytest.raises(ValueError):
+        assemble_itinerary([], [])
+
+
+def test_pipeline_places_validate_and_carry_canonical_fields():
+    out = run_offline_pipeline(
+        reels_path=FIX / "mini_reels.json",
+        places_path=FIX / "mini_places.json",
+        start_date="2026-06-10",
+        end_date="2026-06-11",
+    )
+    # places are serialized CanonicalPlace dicts — carry the flywheel counter + default source_type
+    assert all("times_referenced" in p for p in out.places)
+    assert all(p["source_type"] == "reel_extracted" for p in out.places)
+    # the keys the eval reads are still present + correct
+    assert [p["name"] for p in out.places] == ["Cafe Alpha", "Beta Ramen"]
+    assert all({"name", "lat", "lng", "evidence_quote", "source_url"} <= set(p) for p in out.places)
+    # reels round-trip through ReelData
+    assert [r["short_code"] for r in out.reels] == ["MINI_AAA", "MINI_BBB"]
+    # itinerary unchanged shape
+    assert out.itinerary["source"] == "pipeline"
+    assert out.itinerary["days"][0]["place_names"] == ["Cafe Alpha"]
+
+
+def test_run_offline_pipeline_returns_eval_shaped_output():
+    out = run_offline_pipeline(
+        reels_path=FIX / "mini_reels.json",
+        places_path=FIX / "mini_places.json",
+        start_date="2026-06-10",
+        end_date="2026-06-11",
+    )
+    assert isinstance(out, PipelineOutput)
+    # reels surfaced from the scrape seam
+    assert [r["short_code"] for r in out.reels] == ["MINI_AAA", "MINI_BBB"]
+    # places surfaced from the extract seam (both kept: two-gate dedup, distinct names + far coords)
+    assert [p["name"] for p in out.places] == ["Cafe Alpha", "Beta Ramen"]
+    # itinerary shape matches what backend/evals consumes
+    it = out.itinerary
+    assert it["source"] == "pipeline"
+    assert it["source_places"] == ["Cafe Alpha", "Beta Ramen"]
+    assert len(it["days"]) == 2
+    assert it["days"][0]["place_names"] == ["Cafe Alpha"]
+    assert it["days"][1]["place_names"] == ["Beta Ramen"]
+
+
+def test_run_offline_pipeline_rejects_reversed_dates():
+    with pytest.raises(ValueError):
+        run_offline_pipeline(
+            reels_path=FIX / "mini_reels.json",
+            places_path=FIX / "mini_places.json",
+            start_date="2026-06-12",
+            end_date="2026-06-10",
+        )
+
+
+class _Ticker:
+    def __init__(self, step: float = 1.0) -> None:
+        self._t = 0.0
+        self._step = step
+
+    def __call__(self) -> float:
+        v = self._t
+        self._t += self._step
+        return v
+
+
+def test_run_offline_pipeline_records_deterministic_timings():
+    # clock calls in order: total_start, scrape(start,end), extract(start,end),
+    # dedup(start,end), narrate(start,end), total_end -> values 0..9
+    out = run_offline_pipeline(
+        reels_path=FIX / "mini_reels.json",
+        places_path=FIX / "mini_places.json",
+        start_date="2026-06-10",
+        end_date="2026-06-11",
+        clock=_Ticker(),
+    )
+    assert out.timings == {
+        "scrape": 1.0, "extract": 1.0, "dedup": 1.0, "narrate": 1.0, "total": 9.0,
+    }
+
+
+def test_run_offline_pipeline_default_clock_records_floats():
+    out = run_offline_pipeline(
+        reels_path=FIX / "mini_reels.json",
+        places_path=FIX / "mini_places.json",
+        start_date="2026-06-10",
+        end_date="2026-06-11",
+    )
+    assert set(out.timings) == {"scrape", "extract", "dedup", "narrate", "total"}
+    assert all(isinstance(v, float) and v >= 0.0 for v in out.timings.values())

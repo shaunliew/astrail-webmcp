@@ -1,0 +1,54 @@
+{
+  "places": [
+    {
+      "name": "Shinjuku Station",
+      "category": "transport",
+      "lat": 35.6896,
+      "lng": 139.7006,
+      "confidence": 0.95,
+      "evidence_quote": "Shinjuku Station",
+      "source_type": "reel_extracted",
+      "source_url": "https://www.tokyometro.jp/station/shinjuku/index.html"
+    },
+    {
+      "name": "Tokyo Metropolitan Government Building",
+      "category": "attraction",
+      "lat": 35.6894,
+      "lng": 139.6917,
+      "confidence": 0.90,
+      "evidence_quote": "Tokyo Metropolitan Government Building",
+      "source_type": "reel_extracted",
+      "source_url": "https://www.metro.tokyo.lg.jp/english/offices/observat.htm"
+    },
+    {
+      "name": "Omoide Yokocho",
+      "category": "restaurant",
+      "lat": 35.6916,
+      "lng": 139.6985,
+      "confidence": 0.85,
+      "evidence_quote": "Omoide Yokocho",
+      "source_type": "reel_extracted",
+      "source_url": "https://www.shinjuku-omoide.com/"
+    },
+    {
+      "name": "Shinjuku Gyoen",
+      "category": "attraction",
+      "lat": 35.6851,
+      "lng": 139.7100,
+      "confidence": 0.90,
+      "evidence_quote": "Shinjuku Gyoen",
+      "source_type": "reel_extracted",
+      "source_url": "https://www.env.go.jp/garden/shinjukugyoen/english/index.html"
+    },
+    {
+      "name": "Yokohama Chinatown",
+      "category": "attraction",
+      "lat": 35.4426,
+      "lng": 139.6450,
+      "confidence": 0.85,
+      "evidence_quote": "Yokohama Chinatown",
+      "source_type": "reel_extracted",
+      "source_url": "https://www.chinatown.or.jp/en/"
+    }
+  ]
+}

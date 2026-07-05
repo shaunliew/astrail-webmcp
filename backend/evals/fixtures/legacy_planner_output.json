@@ -1,0 +1,160 @@
+{
+  "title": "Tokyo Rain-to-Sun City Stroll: 10–13 June 2026",
+  "days": [
+    {
+      "day_number": 1,
+      "date": "2026-06-10",
+      "activities": "Morning: keep the day light in Singapore with packing, mobile Suica setup, eSIM checks, and advance reservations for Harry Potter Cafe and any timed-entry exhibitions at Tokyo Dream Park. Afternoon: prepare for a rainy Tokyo arrival by packing a compact umbrella, waterproof shoes, and a small onsen kit for later in the trip. Evening: head to Singapore Changi for Scoot TR808, the late-evening nonstop economy flight to Tokyo Narita, settling in for the roughly 7h05m overnight journey.",
+      "hotel": "The Royal Park Hotel Iconic Tokyo Shiodome",
+      "narration": "The trip begins before Tokyo appears, in the glow of Changi’s departure boards and the quiet thrill of a boarding pass in hand. Rain waits across the sea, but so do steaming ramen bowls, neon walks, and the soft hush of a hotel high above Shiodome."
+    },
+    {
+      "day_number": 2,
+      "date": "2026-06-11",
+      "activities": "Morning: arrive at Tokyo Narita on Scoot TR808, transfer into the city, drop bags at The Royal Park Hotel Iconic Tokyo Shiodome, then ease into the rainy day with a relaxed breakfast or coffee near Shiodome. Afternoon: visit Akasaka for a reserved Harry Potter Cafe seating at Akasaka Biz Tower, ideal in wet weather, enjoying themed dishes before a short covered-station hop toward Roppongi. Evening: spend time at Grand Hyatt Tokyo in Roppongi Hills as an activity rather than a hotel stop—book dinner at one of its polished restaurants or unwind with a drink at its lobby bar, then stroll the sheltered Roppongi Hills area if the rain softens.",
+      "hotel": "The Royal Park Hotel Iconic Tokyo Shiodome",
+      "narration": "Tokyo greets you in silver rain, turning station tiles and taxi lights into a watercolor welcome. By evening, the city feels cosier: spellbound café details, warm dining rooms, and Roppongi’s glossy towers shining through the drizzle."
+    },
+    {
+      "day_number": 3,
+      "date": "2026-06-12",
+      "activities": "Morning: with dry weather returning, head to Akihabara for a walking-friendly start among electronics shops and anime streets, then stop at Sando Lab Tokyo in Don Quijote Akihabara 1F for a casual fried-sandwich bite. Afternoon: ride across to Ariake for Tokyo Dream Park, planning any timed-entry or paid exhibition slots in advance to see its TV Asahi-linked content, Doraemon-related exhibits or figures, event spaces, and rooftop terrace area. Evening: continue nearby to Odaiba or the Ariake waterfront for open-air views, then return toward Shiodome for a mid-range ramen dinner and, if energy allows, a soothing onsen-style bathhouse or spa visit to match your love of onsen.",
+      "hotel": "The Royal Park Hotel Iconic Tokyo Shiodome",
+      "narration": "Sunlight changes the rhythm of Tokyo: Akihabara buzzes, sandwich wrappers crackle, and the bay breeze opens the city wide. By the time you reach Ariake’s rooftops, the trip feels playful and bright, with ramen steam waiting at the end of the day."
+    },
+    {
+      "day_number": 4,
+      "date": "2026-06-13",
+      "activities": "Morning: check out of The Royal Park Hotel Iconic Tokyo Shiodome and leave luggage if needed, then enjoy a final walking-friendly loop around Shiodome, Shimbashi, or Ginza for coffee, stationery, and last-minute snacks. Afternoon: keep the dry-weather pace gentle with a final ramen lunch or an easy bathhouse-style soak if your departure timing allows. Evening: transfer onward for your next journey, allowing extra time for airport rail connections and souvenir shopping before departure.",
+      "hotel": null,
+      "narration": "The last morning is unhurried, full of polished sidewalks, convenience-store treasures, and the quiet satisfaction of knowing your favorite corners by station name. Tokyo sends you off not with a grand farewell, but with one last warm bowl and the promise of another visit."
+    }
+  ],
+  "source_places": [
+    "Tokyo Dream Park",
+    "Grand Hyatt Tokyo",
+    "Harry Potter Cafe",
+    "Sando Lab Tokyo"
+  ],
+  "source": "live",
+  "recommended_hotel": "The Royal Park Hotel Iconic Tokyo Shiodome",
+  "hotel_booking_url": "https://www.booking.com/hotel/jp/royalpark-shiodometower.html?nad_placement=SR_MAIN",
+  "recommended_flight": "Scoot TR808, Singapore Changi (SIN) to Tokyo Narita (NRT), economy nonstop, departing 2026-06-10 late evening and arriving 2026-06-11 morning; approx 7h05m; fare surfaced around US$202 one-way / Scoot fares from about SGD523 depending booking page and availability.",
+  "flight_booking_url": "https://www.flyscoot.com/flights/en-sg/flights-from-singapore-to-tokyo",
+  "places": [
+    {
+      "name": "Tokyo Dream Park",
+      "summary": "New large-scale entertainment complex in Ariake, opened March 27, 2026. Highlights include TV Asahi-linked content, event spaces, Doraemon-related exhibits/figures, and a rooftop terrace area; check the official site for the latest ticketed event hours and admission because programming changes. Tip: plan timed-entry/paid exhibitions ahead and combine with nearby Odaiba/Ariake attractions.",
+      "source_url": "https://www.gotokyo.org/en/new-and-now/new-and-trending/260427/topics.html"
+    },
+    {
+      "name": "Grand Hyatt Tokyo",
+      "summary": "Luxury hotel in Roppongi Hills at 6-10-3 Roppongi, Minato-ku, with strong dining access, spa/fitness facilities, and convenient walking access to Roppongi shopping, restaurants, museums, and nightlife. No admission fee as a hotel; restaurant/spa bookings are recommended. Tip: best for a polished Roppongi base, but it is above mid-range pricing.",
+      "source_url": "https://www.gotokyo.org/en/spot/810/index.html"
+    },
+    {
+      "name": "Harry Potter Cafe",
+      "summary": "Theme café in Akasaka Biz Tower inspired by the Wizarding World. Current listed hours: café 10:00–17:00, dinner 17:00–22:00, takeout window 11:00–21:00, with last order 30 minutes before closing. Admission is via dining reservation/seat availability rather than a separate entry ticket. Tip: reserve in advance, especially evenings and weekends.",
+      "source_url": "https://hpcafe.jp/information/"
+    },
+    {
+      "name": "Sando Lab Tokyo",
+      "summary": "Fried-sandwich specialist in Akihabara, located at 4-3-3 Sotokanda, Don Quijote Akihabara 1F. Listed hours: weekdays 10:30–21:30; weekends/holidays 10:00–21:45. No admission fee; pay per food order. Tip: good casual stop while walking Akihabara, especially if you want a quick bite rather than a full sit-down meal.",
+      "source_url": "https://www.enjoytokyo.jp/spot/l_20119096/"
+    }
+  ],
+  "weather_report": {
+    "destination": "Tokyo",
+    "day_forecasts": [
+      {
+        "date": "2026-06-10",
+        "temp_min_c": 18.0,
+        "temp_max_c": 23.9,
+        "precipitation_mm": 1.0,
+        "summary": "Light rain, 18-24°C."
+      },
+      {
+        "date": "2026-06-11",
+        "temp_min_c": 18.2,
+        "temp_max_c": 23.2,
+        "precipitation_mm": 3.2,
+        "summary": "Rain, 18-23°C."
+      },
+      {
+        "date": "2026-06-12",
+        "temp_min_c": 17.5,
+        "temp_max_c": 24.6,
+        "precipitation_mm": 0.0,
+        "summary": "Dry, 18-25°C."
+      },
+      {
+        "date": "2026-06-13",
+        "temp_min_c": 19.1,
+        "temp_max_c": 25.2,
+        "precipitation_mm": 0.0,
+        "summary": "Dry, 19-25°C."
+      }
+    ]
+  },
+  "bookings": {
+    "items": [
+      {
+        "booking_id": "off_0000B6vOkm3WkG9Z4BpdRD",
+        "category": "flight",
+        "name": "China Eastern Airlines SIN->NRT (2026-06-10)",
+        "price_estimate_sgd": 206.2,
+        "status": "confirmed",
+        "book_url": "https://app.duffel.com/offers/off_0000B6vOkm3WkG9Z4BpdRD",
+        "source": "duffel_sandbox",
+        "is_mock": true,
+        "notes": "Duffel sandbox offer off_0000B6vOkm3WkG9Z4BpdRD; price USD 206.20."
+      },
+      {
+        "booking_id": "TC-MOCK-1c00dc23",
+        "category": "hotel",
+        "name": "The Royal Park Hotel Iconic Tokyo Shiodome",
+        "price_estimate_sgd": null,
+        "status": "reserved",
+        "book_url": "https://www.booking.com/searchresults.html?ss=Tokyo&checkin=2026-06-10&checkout=2026-06-13&group_adults=2&no_rooms=1",
+        "source": "booking_deeplink",
+        "is_mock": true,
+        "notes": "Reserved for 2026-06-10->2026-06-13 (2 adults). Click book_url to confirm on Booking.com."
+      },
+      {
+        "booking_id": "TC-MOCK-238b9e4c",
+        "category": "attraction",
+        "name": "Tokyo Dream Park",
+        "price_estimate_sgd": null,
+        "status": "reserved",
+        "book_url": "https://www.klook.com/search/?keyword=Tokyo+Dream+Park",
+        "source": "klook_deeplink",
+        "is_mock": true,
+        "notes": "Reserved via Klook search for Tokyo Dream Park in Tokyo."
+      },
+      {
+        "booking_id": "TC-MOCK-ef86652f",
+        "category": "attraction",
+        "name": "Harry Potter Cafe",
+        "price_estimate_sgd": null,
+        "status": "reserved",
+        "book_url": "https://www.klook.com/search/?keyword=Harry+Potter+Cafe",
+        "source": "klook_deeplink",
+        "is_mock": true,
+        "notes": "Reserved via Klook search for Harry Potter Cafe in Tokyo."
+      },
+      {
+        "booking_id": "TC-MOCK-2b2a4fe6",
+        "category": "attraction",
+        "name": "Sando Lab Tokyo",
+        "price_estimate_sgd": null,
+        "status": "reserved",
+        "book_url": "https://www.klook.com/search/?keyword=Sando+Lab+Tokyo",
+        "source": "klook_deeplink",
+        "is_mock": true,
+        "notes": "Reserved via Klook search for Sando Lab Tokyo in Tokyo."
+      }
+    ],
+    "total_estimate_sgd": 206.2,
+    "is_mock": true
+  }
+}

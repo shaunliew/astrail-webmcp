@@ -14,7 +14,6 @@
 
 ```
 astrail/
-├── pyproject.toml                  # PROJECT ROOT (not backend/)
 ├── CLAUDE.md                       # gstack enforcement (root)
 ├── AGENTS.md                       # thin pointer to CLAUDE.md
 ├── docs/PRD.md                     # product requirements (beta v1); UX/UI spec is EMDEE astrail/DESIGN.md
@@ -24,6 +23,7 @@ astrail/
 ├── render.yaml                     # Render service config (replaces fly.toml)
 │
 ├── backend/
+│   ├── pyproject.toml              # backend Python deps (uv project — NOT repo root)
 │   ├── main.py                     # FastAPI app, routes, CORS
 │   ├── auth.py                     # Supabase JWT validation
 │   ├── supabase_client.py          # Supabase Python client wrapper (DB / storage / RLS)
@@ -34,7 +34,7 @@ astrail/
 │   ├── scrape/
 │   │   ├── apify_direct.py         # Direct HTTP Apify (no LLM); opt-in transcript fallback
 │   │   └── reel_url.py             # URL normalization + validation
-│   ├── agents/
+│   ├── genagents/                  # LLM pipeline agents — renamed from `agents/`: the OpenAI Agents SDK shadows the top-level `agents` package
 │   │   ├── place_extractor.py      # per-reel extraction (LLM)
 │   │   ├── place_enricher.py       # research + summary + evidence
 │   │   ├── weather.py              # Open-Meteo agent
@@ -121,7 +121,7 @@ Public:
 - `GET /health`
 
 Authenticated (Supabase JWT required):
-- `POST /generate-trip` — accepts preferences + reelUrls, creates a Supabase trip row + enqueues a durable job, returns `{tripId}`
+- `POST /generate-trip` — accepts preferences + reelUrls, creates a Supabase trip row + enqueues a durable job, returns `{trip_id}` (snake_case, per the shipped `GenerateTripResponse`)
 - `GET /generate-trip/stream/:tripId` — SSE stream
 - `GET /trips/:tripId`
 - `DELETE /trips/:tripId`

@@ -10,9 +10,9 @@
 ```
 OPENAI_API_KEY
 APIFY_TOKEN
-SUPABASE_URL
-SUPABASE_SERVICE_ROLE_KEY        # server-side, full access (never exposed to client)
-SUPABASE_JWT_SECRET              # verify Supabase-issued JWTs on every request
+SUPABASE_URL                     # project URL + JWKS source: auth verifies ES256 tokens via {URL}/auth/v1/.well-known/jwks.json
+SUPABASE_SERVICE_ROLE_KEY        # server-side secret key (sb_secret_… or legacy service_role); bypasses RLS, never exposed to client
+# SUPABASE_JWT_SECRET removed — project uses asymmetric ES256 signing keys (JWKS), not a shared HS256 secret
 MAPBOX_SECRET_TOKEN              # sk — Search Box API resolution, server-side only
 MEM0_API_KEY
 LANGFUSE_PUBLIC_KEY

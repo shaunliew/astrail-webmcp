@@ -39,3 +39,6 @@ Thumbs.db
 
 # Shiplog queue (local only, processed via /shiplog)
 .shiplog_queue.md
+
+# Local live-capture output for inspection (never committed; refresh real fixtures with --out-dir evals/fixtures)
+backend/captures/

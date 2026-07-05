@@ -1,0 +1,43 @@
+{
+  "case": "japan_second_trip",
+  "description": "Returning user with stored preferences. Memory effects are PENDING until mem0 lands (Phase 1.3); this case only scaffolds the expected behavior.",
+  "reels_fixture": "fixtures/japan_demo_reels.json",
+  "places_fixture": "fixtures/expected_places.json",
+  "start_date": "2026-06-10",
+  "end_date": "2026-06-12",
+  "expected_unique_places": 8,
+  "user_profile": {
+    "budget_style": "mid_range",
+    "pace": "relaxed",
+    "food_preference": ["ramen", "cafes"],
+    "transport_tolerance": "walkable",
+    "avoid": ["theme_parks"]
+  },
+  "expected_memory_effects": [
+    "pace=relaxed -> fewer stops/day than the first trip",
+    "food_preference=ramen/cafes -> ramen/cafe places ranked/kept over theme-park-adjacent stops",
+    "avoid theme_parks -> Tokyo Dream Park deprioritized vs the first trip"
+  ],
+  "active_contractual_checks": [
+    "coords_present",
+    "japan_bbox",
+    "day_count",
+    "source_places_parity",
+    "day_places_traceable",
+    "evidence_verbatim"
+  ],
+  "active_quality_metrics": [
+    "dedup_error",
+    "mean_intra_day_travel_m",
+    "hallucination_rate",
+    "evidence_coverage",
+    "weak_source_url_rate"
+  ],
+  "pending_checks": [
+    "memory_use",
+    "restaurant_relevance",
+    "hotel_base_reasoning",
+    "transport_legs"
+  ],
+  "memory_check": "PENDING"
+}

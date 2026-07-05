@@ -45,7 +45,7 @@
 | Observability | Langfuse Cloud Hobby (traces + golden eval dataset + LLM-as-judge) + Sentry (errors) + UptimeRobot (`/health`) |
 | Product analytics | PostHog (free tier) — activation, D1/D7/D30 retention, reel→itinerary funnel, cost-per-trip (feeds the Decision Gate) |
 | CI/CD | GitHub Actions → Vercel + Render; Supabase migrations in Git applied on merge to `main`; separate dev/prod Supabase projects; forward-only additive migrations |
-| Python package manager | `uv` (pyproject.toml at repo root, not `backend/`) |
+| Python package manager | `uv` (`backend/pyproject.toml` — backend deps, NOT repo root) |
 
 ## Banned / never reintroduce
 
@@ -59,7 +59,7 @@
 - Separate AWS S3 (Supabase Storage is already S3-compatible)
 - A pivot to GCP / Cloud Run "for consolidation" (vendor-consolidation fallacy; no scaling need at v1)
 - yt-dlp, ffmpeg, self-hosted Whisper / audio transcription **in our codebase** — the reel transcript comes from Apify's `transcript` field instead (see Reel scraping). No home-grown audio pipeline
-- `requirements.txt` (use pyproject.toml + uv)
+- `requirements.txt` (use `backend/pyproject.toml` + uv)
 - Hotel booking/payment code. Hotel **search/suggestions** via Travala Travel MCP is allowed in v1.
 - Any payment-related code or x402 execution in the production v1 flow
 - MCP + Agents SDK for the Apify scrape loop (costs 10-15s/reel for no functional gain)

@@ -1,0 +1,18 @@
+{
+  "reels": [
+    {
+      "reel_url": "https://www.instagram.com/reel/MINI_AAA/",
+      "short_code": "MINI_AAA",
+      "caption": "Best coffee in Tokyo at Cafe Alpha. 📍 Cafe Alpha",
+      "location_name": "Tokyo, Japan",
+      "capture_status": "CAPTURED"
+    },
+    {
+      "reel_url": "https://www.instagram.com/reel/MINI_BBB/",
+      "short_code": "MINI_BBB",
+      "caption": "Late-night ramen at Beta Ramen. 📍 Beta Ramen",
+      "location_name": null,
+      "capture_status": "CAPTURED"
+    }
+  ]
+}

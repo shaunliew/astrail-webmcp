@@ -1,0 +1,24 @@
+{
+  "case": "japan_feasibility",
+  "description": "Long-leg + overpacked regression over a single day. 5 places (4 central Tokyo + 1 ~30km out) all land in day 1 -> overpacked (>balanced cap 4) AND a long_leg flag survives optimal ordering. Pipeline attaches feasibility_warnings (baseline does not). diverges_from_baseline so the parity anchor test skips it.",
+  "reels_fixture": "fixtures/japan_demo_reels.json",
+  "places_fixture": "fixtures/japan_feasibility_places.json",
+  "start_date": "2026-06-10",
+  "end_date": "2026-06-10",
+  "expected_unique_places": 5,
+  "diverges_from_baseline": true,
+  "active_contractual_checks": [
+    "coords_present",
+    "japan_bbox",
+    "day_count",
+    "source_places_parity",
+    "day_places_traceable"
+  ],
+  "active_quality_metrics": [
+    "dedup_error",
+    "max_single_leg_m",
+    "feasibility_warning_count",
+    "hallucination_rate"
+  ],
+  "pending_checks": []
+}

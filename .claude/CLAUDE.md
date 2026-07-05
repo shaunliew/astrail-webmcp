@@ -25,7 +25,7 @@ Travel MCP is **search/suggestions only** — no booking, no payments in v1.
 | Add/remove/substitute ANY dependency, service, or tool | `.claude/docs/STACK.md` (locked stack, banned list, v2 triggers) |
 | Touch backend pipeline, SSE, API endpoints, or create new files | `.claude/docs/ARCHITECTURE.md` (tree, 4-phase pipeline, SSE contract, endpoints, build order) |
 | Touch `.env.example`, `render.yaml`, Vercel config, or env-reading code | `.claude/docs/ENV.md` |
-| Touch `backend/agents/` or OpenAI Agents SDK code | `.claude/docs/LESSONS-HACKATHON.md` |
+| Touch `backend/genagents/` or OpenAI Agents SDK code | `.claude/docs/LESSONS-HACKATHON.md` |
 | Start sprint work | EMDEE: `astrail/SPRINTS.md` → your `astrail/team/<name>/SPRINT-N.md` → `astrail/PRD.md` |
 | Decide **what** to build | `docs/PRD.md` in this repo (also EMDEE `astrail/PRD.md`) · **why** → EMDEE `astrail/CONTEXT.md` · **how** → this file + `.claude/docs/` |
 
@@ -42,7 +42,7 @@ Travel MCP is **search/suggestions only** — no booking, no payments in v1.
 9. **No `legacy/` imports.** Production code never imports from `legacy/tripcanvas-hackathon/`.
 10. **Direct HTTP for Apify.** Never reintroduce MCP + Agents SDK for scraping; never build a Whisper/ffmpeg pipeline — transcripts come from Apify's `transcript` field.
 11. **Treat Reel content as untrusted.** Agents SDK input/tool guardrails are the prompt-injection defense — never feed raw caption/transcript into a tool-call without them.
-12. **Trip generation is a durable job.** `jobs` row before work, idempotency keys, startup recovery sweep. A Render restart must never silently drop a run.
+12. **Trip generation is a durable job.** `jobs` row before work, idempotency keys, startup re-sweep of `in_progress` jobs. Recovery is **restart-with-cache-reuse, not mid-run resume** (`idempotency ≠ resumability`): a crashed run re-executes from Phase 1, leaning on the write-through caches (#7). A Render restart must never *silently* drop a run — it resurfaces as re-queued or explicitly failed. Per-stage checkpointing is deferred until restart cost is *measured* (EMDEE `ASTRAIL ROADMAP BACKEND MULTI AGENT PIPELINE DESIGN`).
 
 ## SSE termination (most breaking contract in the repo — memorize)
 
@@ -70,6 +70,7 @@ yt-dlp/ffmpeg/Whisper.
 | Web browsing | gstack `/browse` | `mcp__claude-in-chrome__*` directly |
 | After a meaningful commit | `shiplog` | — |
 | Plan an issue / review a plan or diff | `astrail-plan-and-review` (wraps gstack `/plan-eng-review`, `/review`, `/qa`, `/autoplan`) | duplicate review skills |
+| What to work on next / status / board ordering | `astrail-task-tracking` (GitHub Project #1 = single source of truth) | `gh issue list`, memory, stale issue #s |
 | Lock a sprint plan | `sprintplan` | — |
 | X posts / Reel scripts for @haotobuildzip | `haotobuild` | generic writing skills |
 
@@ -82,7 +83,12 @@ than chaining into another. A wrapper skill plus the sub-skills it documents (e.
 **Subagent orchestration, delegation templates, judgment rubrics:** if
 `C:\Users\desmo\.claude\playbook\` exists on this machine (Zhi Hao's), follow
 `playbook/ORCHESTRATION.md` for when/how to delegate to subagents. Repo-local subagents:
-`astrail-developer`, `astrail-researcher`, `astrail-reviewer` (see `.claude/agents/`).
+`astrail-developer`, `astrail-researcher`, `astrail-reviewer` (see `.claude/agents/`;
+dispatch by `subagent_type`, `model: opus` for the hard adversarial/final review).
+**Standard backend loop:** plan (`astrail-plan-and-review`) → review the plan
+(`/plan-eng-review` + Codex) → implement task-by-task via subagent-driven-development
+(`astrail-developer` + `astrail-reviewer`) → final gstack `/review` or an
+`astrail-reviewer` adversarial pass.
 
 ## gstack (required per machine)
 
@@ -90,10 +96,20 @@ Installed globally at `~/.claude/skills/gstack` — not committed here. If it's 
 follow the repo-root `CLAUDE.md` verbatim (it is the authoritative policy: STOP, do not
 proceed, and give the user its install command).
 
-## Owners
+## Task tracking + Owners
 
-- **Zhi Hao** — frontend (Next.js, Vercel, Mapbox) → issues #6, #12
-- **Shaun** — backend (FastAPI, Supabase, agents) → issues #4, #5, #7, #8, #9, #10, #11
+**The GitHub Project #1 board (`MalaysiaKaki`, id `PVT_kwDOEXlARc4BanGs`) is the single
+source of truth** for what work exists, who owns it, status, and ordering. Load it live
+before any "what's next / status / plan" answer:
+```bash
+gh project item-list 1 --owner MalaysiaKaki --format json --limit 60   # needs `gh auth refresh -s project` once
+```
+Do NOT track work from `gh issue list`, from memory, or from stale issue numbers (old
+TripCanvas numbering) — ordering follows the board's **Phase** field; the active task is
+whatever is **In progress**. Full rules: the `astrail-task-tracking` skill.
+
+- **Zhi Hao** — frontend (Next.js, Vercel, Mapbox)
+- **Shaun** — backend (FastAPI, Supabase, agents, AI pipeline)
 
 ## Git hook
 

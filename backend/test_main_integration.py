@@ -116,7 +116,7 @@ async def test_generate_trip_end_to_end(monkeypatch):
                        .eq("trip_id", trip_id).execute()).data
         assert trip_places, "expected trip_places rows for the generated trip"
         assert all(tp["place_id"] for tp in trip_places)
-        assert any(tp["day_number"] for tp in trip_places)            # day assignment persisted
+        assert all(tp["day_number"] for tp in trip_places)            # identity-based: every row has a day
         place_ids = [tp["place_id"] for tp in trip_places]
         places = (await client.table("places").select("id,name,lat,lng")
                   .in_("id", place_ids).execute()).data

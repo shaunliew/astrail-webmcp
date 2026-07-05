@@ -16,8 +16,9 @@ import os
 
 from models.place import PlaceResult
 from pipeline.dedup import dedupe_places
+from pipeline.geo import centroid
 from pipeline.offline_harness import _date_range, assemble_itinerary
-from pipeline.persist import persist_itinerary
+from pipeline.persist import persist_itinerary, persist_weather
 from jobs import mark_job_done, mark_job_running
 from supabase_client import get_supabase_client
 
@@ -61,7 +62,8 @@ async def _fail(client, trip_id, user_id, job_id, stage, message) -> dict:
 
 
 async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
-                          *, job_id=None, pace="balanced", client=None, scrape=None, extract=None) -> dict:
+                          *, job_id=None, pace="balanced", client=None, scrape=None, extract=None,
+                          weather=None) -> dict:
     """Run the deterministic spine; own the job lifecycle; always write a terminal result."""
     try:
         if client is None:
@@ -128,6 +130,27 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
         if any(w.severity == "flag" for w in itinerary.feasibility_warnings):
             degraded = True
 
+        # PHASE 3: WEATHER (best-effort, partial-failure isolated). FULLY SELF-CONTAINED:
+        # the default-injection, the fetch, and even the warning-write are ALL inside one
+        # try/except that swallows everything — a weather failure (broken import, API error,
+        # or a failed warning-write) must NEVER propagate to the outer `_fail` (guardrail #3).
+        weather_reports = []
+        try:
+            await record_event(client, trip_id, event_type="stage", stage="weather",
+                               message="fetching weather")
+            if weather is None:
+                from genagents.weather import fetch_weather as weather   # resolved here, isolated
+            center = centroid(canonical)
+            if center is not None:
+                weather_reports = await weather(center[0], center[1], dates)
+        except Exception:
+            weather_reports = []
+            try:
+                await record_event(client, trip_id, event_type="warning", stage="weather",
+                                   message="weather unavailable")
+            except Exception:
+                pass   # best-effort: a warning-write failure must not fail the trip either
+
         status = "saved_with_gaps" if degraded else "complete"
         await record_event(client, trip_id, event_type="stage", stage="save", message="saving trip")
         try:
@@ -137,6 +160,15 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                 await record_event(client, trip_id, event_type="warning", stage="save",
                                    message=f"{dropped} place(s) shown in the itinerary were not saved "
                                            "(missing coordinates or merged with an existing place)")
+            if weather_reports:                       # weather AFTER persist created trip_days (ordering!)
+                try:
+                    await persist_weather(client, trip_id, weather_reports)
+                except Exception:
+                    try:
+                        await record_event(client, trip_id, event_type="warning", stage="weather",
+                                           message="weather persist failed")
+                    except Exception:
+                        pass   # best-effort — weather persist failure is non-critical
         except Exception:
             status = "saved_with_gaps"
             await record_event(client, trip_id, event_type="warning", stage="save",

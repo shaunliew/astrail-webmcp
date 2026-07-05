@@ -110,6 +110,22 @@ async def test_generate_trip_end_to_end(monkeypatch):
         assert any(e["event_type"] == "result" for e in events)  # spine ran to completion
         job = (await client.table("jobs").select("status").eq("trip_id", trip_id).execute()).data
         assert job and job[0]["status"] in ("succeeded", "failed")  # terminal job status
+
+        # Normalized persistence landed (the queryable trip the frontend reads).
+        trip_places = (await client.table("trip_places").select("place_id,day_number,source_type")
+                       .eq("trip_id", trip_id).execute()).data
+        assert trip_places, "expected trip_places rows for the generated trip"
+        assert all(tp["place_id"] for tp in trip_places)
+        assert all(tp["day_number"] for tp in trip_places)            # identity-based: every row has a day
+        place_ids = [tp["place_id"] for tp in trip_places]
+        places = (await client.table("places").select("id,name,lat,lng")
+                  .in_("id", place_ids).execute()).data
+        assert places and all(p["lat"] is not None and p["lng"] is not None for p in places)
+        trip_days = (await client.table("trip_days").select("day_number")
+                     .eq("trip_id", trip_id).execute()).data
+        assert trip_days, "expected trip_days rows for the generated trip"
     finally:
-        # cascade: deleting the trip cleans up its jobs + generation_events rows
+        # Cascade: deleting the trip cleans up its jobs / generation_events / trip_places /
+        # trip_days (all FK ON DELETE CASCADE). The global `places` rows are intentionally
+        # left — they are cross-trip flywheel rows, reused (deduped) by the next run.
         await client.table("trips").delete().eq("id", trip_id).eq("user_id", user_id).execute()

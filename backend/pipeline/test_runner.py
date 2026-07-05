@@ -24,6 +24,7 @@ class _Table:
         self._op = None
         self._filters: dict = {}
         self._in_filters: dict = {}
+        self._range: dict = {}
 
     def insert(self, row):
         self._op = ("insert", row)
@@ -31,6 +32,10 @@ class _Table:
 
     def update(self, row):
         self._op = ("update", row)
+        return self
+
+    def delete(self):
+        self._op = ("delete", None)
         return self
 
     def select(self, cols):
@@ -45,24 +50,43 @@ class _Table:
         self._in_filters[col] = values
         return self
 
+    def gte(self, col, val):
+        self._range[(col, "gte")] = val
+        return self
+
+    def lte(self, col, val):
+        self._range[(col, "lte")] = val
+        return self
+
     def _matches(self, row):
         if not all(row.get(k) == v for k, v in self._filters.items()):
             return False
-        return all(row.get(k) in v for k, v in self._in_filters.items())
+        if not all(row.get(k) in v for k, v in self._in_filters.items()):
+            return False
+        for (col, op), val in self._range.items():
+            if op == "gte" and not row.get(col, 0) >= val:
+                return False
+            if op == "lte" and not row.get(col, 0) <= val:
+                return False
+        return True
 
     async def execute(self):
         op, arg = self._op
+        rows = self.db.setdefault(self.name, [])
         if op == "insert":
-            self.db.setdefault(self.name, []).append(arg)
-            return _Result([arg])
+            row = {"id": f"{self.name}-{len(rows) + 1}", **arg}
+            rows.append(row)
+            return _Result([row])
         if op == "update":
-            rows = self.db.get(self.name, [])
             matched = [r for r in rows if self._matches(r)]
             for r in matched:
                 r.update(arg)
             self.db.setdefault(self.name + "_updates", []).append(arg)
             return _Result(matched)
-        rows = self.db.get(self.name, [])
+        if op == "delete":
+            keep = [r for r in rows if not self._matches(r)]
+            self.db[self.name] = keep
+            return _Result([])
         matched = [r for r in rows if self._matches(r)]
         return _Result(matched)
 
@@ -188,6 +212,69 @@ async def test_blank_day_reports_saved_with_gaps():
     assert out["itinerary"]["days"][2]["place_names"] == []
     assert c.trip_updates[-1]["status"] == "saved_with_gaps"
     assert c.db["jobs"][0]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_runner_persists_normalized_rows_on_success():
+    c = _Client(jobs=[{"id": "job-1", "status": "pending"}])
+
+    async def scrape(url):
+        return _reel(url)
+
+    async def extract(reel):
+        return [_place("Tokyo Tower")]
+
+    await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01",
+                                 "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract)
+    assert c.db.get("places") and c.db["places"][0]["name"] == "Tokyo Tower"
+    trip_places = c.db.get("trip_places")
+    assert trip_places and all(tp["trip_id"] == "trip-1" for tp in trip_places)
+    assert c.db.get("trip_days")
+    assert c.trip_updates[-1]["status"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_runner_degrades_to_saved_with_gaps_when_persist_fails(monkeypatch):
+    c = _Client(jobs=[{"id": "job-1", "status": "pending"}])
+
+    async def scrape(url):
+        return _reel(url)
+
+    async def extract(reel):
+        return [_place("Tokyo Tower")]
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("persist db error")
+
+    monkeypatch.setattr(runner, "persist_itinerary", _boom)
+    out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01",
+                                       "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract)
+    assert out["itinerary"]["days"]                       # itinerary still produced + returned
+    assert any(e["event_type"] == "warning" for e in c.events)
+    assert c.trip_updates[-1]["status"] == "saved_with_gaps"
+    assert c.db["jobs"][0]["status"] == "succeeded"       # NOT failed — persist is non-critical
+
+
+@pytest.mark.asyncio
+async def test_runner_degrades_when_persist_drops_a_place():
+    c = _Client(jobs=[{"id": "job-1", "status": "pending"}])
+
+    async def scrape(url):
+        return _reel(url)
+
+    async def extract(reel):
+        return [_place("Tokyo Tower"),
+                PlaceResult(name="No Coords Spot", name_local=None, category="attraction",
+                            source_type="reel_extracted", lat=None, lng=None,
+                            confidence=0.9, evidence_quote="📍No Coords Spot",
+                            source_url="https://example.org/a", formatted_address=None)]
+
+    out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01",
+                                       "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract)
+    assert out["itinerary"]["days"]                       # itinerary still shows both places
+    assert any(e["event_type"] == "warning" and "not saved" in e["message"] for e in c.events)
+    assert c.trip_updates[-1]["status"] == "saved_with_gaps"
+    assert c.db["jobs"][0]["status"] == "succeeded"        # a dropped place is non-critical
 
 
 @pytest.mark.asyncio

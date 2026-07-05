@@ -23,7 +23,7 @@ from models.place import CanonicalPlace, PlaceResult
 from models.reel import ReelData
 from models.trip import ItineraryDay, ItineraryOutput
 from pipeline.dedup import dedupe_places
-from pipeline.feasibility import DEFAULT_PACE, assess_feasibility, geo_order, optimal_day_order
+from pipeline.feasibility import DEFAULT_PACE, assess_feasibility, group_places_by_day
 from pipeline.output import PipelineOutput
 from pipeline.sources import (
     FixturePlaceSource,
@@ -53,25 +53,13 @@ def assemble_itinerary(
     d = len(dates)
     if d <= 0:
         raise ValueError("need at least one date")
-    ordered = geo_order(places)
-    base, extra = divmod(len(ordered), d)
-    days: list[ItineraryDay] = []
-    day_groups: list[tuple[int, list[CanonicalPlace]]] = []
-    idx = 0
-    for i, day_date in enumerate(dates):
-        size = base + (1 if i < extra else 0)
-        group = optimal_day_order(ordered[idx:idx + size])
-        idx += size
-        days.append(ItineraryDay(day_number=i + 1, date=day_date,
-                                 place_names=[p.name for p in group]))
-        day_groups.append((i + 1, group))
+    groups = group_places_by_day(places, dates)
+    days = [ItineraryDay(day_number=dn, date=dates[dn - 1], place_names=[p.name for p in group])
+            for dn, group in groups]
     return ItineraryOutput(
-        title="Tokyo (offline pipeline skeleton)",
-        source="pipeline",
-        source_places=[p.name for p in places],
-        days=days,
-        feasibility_warnings=assess_feasibility(day_groups, pace=pace),
-    )
+        title="Tokyo (offline pipeline skeleton)", source="pipeline",
+        source_places=[p.name for p in places], days=days,
+        feasibility_warnings=assess_feasibility(groups, pace=pace))
 
 
 def run_offline_pipeline(

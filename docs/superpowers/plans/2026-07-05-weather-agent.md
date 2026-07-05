@@ -290,7 +290,7 @@ async def test_persist_weather_updates_trip_days_by_date():
     assert "weather_source" not in d2  # untouched day (no report)
 ```
 
-Note: the persist test's fake `_Table.update()` must apply to the matched rows and its `execute()` return them (the file's fake already supports `update`+`eq`; confirm it filters correctly on two `.eq(...)`).
+**CONFIRMED gap:** `pipeline/test_persist.py`'s fake `_Table` does NOT support `update()` (it has insert/delete/select/eq/gte/lte only). `persist_weather` uses `.update(...).eq(...).eq(...).execute()`, so you MUST add `update()` to that fake: `def update(self, row): self._op = ("update", row); return self`, and in `execute()` apply it to the rows matching ALL `.eq()` filters and return them (mirror `test_main.py`'s fake `_Table`, which already has a working `update`). Without this the `test_persist_weather_*` test errors before it can assert behavior.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -405,22 +405,27 @@ from pipeline.persist import persist_itinerary, persist_weather
 async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                          *, job_id=None, pace="balanced", client=None, scrape=None, extract=None, weather=None):
     ...
-    # inside the try, after the default-injection of scrape/extract:
-    if weather is None:
-        from genagents.weather import fetch_weather
-        weather = fetch_weather
-    ...
     # NARRATE stage stays; it assigns `dates = _date_range(start_date, end_date)`.
-    # NEW — WEATHER stage, after narrate, before the save stage:
-        await record_event(client, trip_id, event_type="stage", stage="weather", message="fetching weather")
+    # NEW — WEATHER stage, after narrate, before the save stage. FULLY SELF-CONTAINED:
+    # the default-injection, the fetch, and even the warning-write are ALL inside one
+    # try/except that swallows everything — a weather failure (broken import, API error,
+    # or a failed warning-write) must NEVER propagate to the outer `_fail` (guardrail #3).
         weather_reports = []
-        center = centroid(canonical)
-        if center is not None:
-            try:
+        try:
+            await record_event(client, trip_id, event_type="stage", stage="weather",
+                               message="fetching weather")
+            if weather is None:
+                from genagents.weather import fetch_weather as weather   # resolved here, isolated
+            center = centroid(canonical)
+            if center is not None:
                 weather_reports = await weather(center[0], center[1], dates)
-            except Exception:
+        except Exception:
+            weather_reports = []
+            try:
                 await record_event(client, trip_id, event_type="warning", stage="weather",
                                    message="weather unavailable")
+            except Exception:
+                pass   # best-effort: a warning-write failure must not fail the trip either
     # SAVE stage — after persist_itinerary + the dropped-count handling, before _set_status:
         try:
             dropped = await persist_itinerary(client, trip_id, canonical, dates)
@@ -433,8 +438,11 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                 try:
                     await persist_weather(client, trip_id, weather_reports)
                 except Exception:
-                    await record_event(client, trip_id, event_type="warning", stage="weather",
-                                       message="weather persist failed")
+                    try:
+                        await record_event(client, trip_id, event_type="warning", stage="weather",
+                                           message="weather persist failed")
+                    except Exception:
+                        pass   # best-effort — weather persist failure is non-critical
         except Exception:
             status = "saved_with_gaps"
             await record_event(client, trip_id, event_type="warning", stage="save",
@@ -444,6 +452,8 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
 ```
 
 (Only the narrate/save region changes; scrape/extract/dedup and `_fail` are untouched. `persist_weather` is inside the `persist_itinerary` try so a persist-layer exception still routes correctly, but the weather-persist has its own inner try so its failure is a warning, not a trip failure.)
+
+**CRITICAL test fix (do this or existing tests hit the network):** every EXISTING `run_generation(...)` call in `pipeline/test_runner.py` passes `scrape=`/`extract=` but NOT `weather=`, so after this change they would default to the real `fetch_weather` and hit Open-Meteo. Add a module-level `async def _no_weather(*_a, **_k): return []` in `test_runner.py` and pass `weather=_no_weather` to EVERY existing `run_generation` call (the new weather tests inject their own `weather`). Verify no test makes a live HTTP call (run the runner suite offline/keyless).
 
 - [ ] **Step 4: Run to verify they pass + eval untouched**
 
@@ -511,4 +521,5 @@ git commit -m "test(api): assert weather lands on trip_days in the live integrat
 **Risks for review:**
 1. **Weather-persist ordering** — the single most important correctness point: `persist_weather` matches `trip_days` by `(trip_id, day_date)` and MUST run after `persist_itinerary` recreated them. If persist failed (its `except`), `weather_reports` are simply never written (the `if weather_reports` is inside the persist try) — acceptable (no trip_days to attach to).
 2. **Centroid over a spread-out trip** — a single centroid point can be far from an outlier place's actual location; acceptable for a trip-level weather line at ≤8 places (per-place weather is the deferred enhancement).
-3. **>16-day horizon** — handled by skipping null days in `fetch_weather`; a fully-out-of-horizon trip yields `[]` reports (no weather rows), trip still completes. The Climate API fallback is deferred behind a measured trigger.
+3. **>16-day horizon** — `fetch_weather` skips null days, BUT Open-Meteo may instead **reject** an out-of-range `end_date` with a 400 (not return nulls). Either way the outcome is safe: a 400 makes `fetch_weather` raise → the runner's self-contained `except` catches it → no weather, trip still completes. The imperfect case is a trip *partially* past the horizon: if the API 400s the whole request, that trip gets NO weather instead of partial. Accepted for v1 (most trips are near-term). A wall-clock horizon pre-filter is deliberately NOT added — it would break the deterministic unit tests (which use fixed future dates). The Climate API fallback is deferred behind a measured "trips-created->16-days-out" trigger.
+4. **`precipitation_sum` null** → defaults to `0.0` (a null precip renders as "dry"); rare when the day otherwise has data (code/temp present), acceptable display default.

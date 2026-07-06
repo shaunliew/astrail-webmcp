@@ -162,6 +162,8 @@ export type Trip = {
   room_count: number
   preference_sources: PreferenceSource[]
   preference_summary: string | null
+  title: string | null            // generated trip title (narrator) — backend narration output
+  summary: string | null          // read-only orchestrator summary (narrator)
   created_at: string
   updated_at: string
 }

@@ -89,6 +89,23 @@ async def _inspect(client, trip_id: str) -> None:
         warn = f"  ⚠ {lg['warning']}" if lg.get("warning") else ""
         print(f"    #{lg['leg_order']} {lg.get('transport_mode')}/{lg.get('status')}  "
               f"{frm} -> {to}  {mins} {dist_s}{warn}")
+    rests = (
+        await client.table("restaurant_suggestions")
+        .select("trip_day_id,restaurant_place_id,near_place_id,cuisine,summary")
+        .eq("trip_id", trip_id).execute()
+    ).data
+    # restaurant places may not be in `by_id` (that only holds itinerary places) — fetch their names.
+    rest_pids = [r["restaurant_place_id"] for r in rests if r.get("restaurant_place_id")]
+    rest_names = {}
+    if rest_pids:
+        rest_names = {p["id"]: p["name"] for p in
+                      (await client.table("places").select("id,name").in_("id", rest_pids).execute()).data}
+    print(f"=== restaurant_suggestions: {len(rests)}")
+    for rs in rests:
+        name = rest_names.get(rs.get("restaurant_place_id"), "?")
+        near = by_id.get(rs.get("near_place_id"), {}).get("name", "?")
+        cuisine = rs.get("cuisine") or "-"
+        print(f"    {name} [{cuisine}]  near {near}  — {rs.get('summary')}")
 
 
 async def _run(args: argparse.Namespace) -> None:

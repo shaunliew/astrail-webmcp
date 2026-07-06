@@ -92,10 +92,18 @@ async def test_generate_trip_end_to_end(monkeypatch):
         # Deterministic fake (real Mapbox needs a token/network) — proves persist → transport_legs.
         return [{"duration_s": 300, "distance_m": 400, "code": "Ok"} for _ in range(len(coords) - 1)]
 
+    async def restaurant_fn(places, *, city=None):
+        from models.enrichment import RestaurantCandidate
+        # Deterministic fake (real Mapbox+OpenAI need tokens/network) — proves persist → restaurant_suggestions.
+        return [RestaurantCandidate(name="Ramen Ichiban", name_local="ラーメン一番", cuisine="ramen",
+                                    summary="Tonkotsu near Tokyo Tower", lat=35.6587, lng=139.7455,
+                                    address="Tokyo", mapbox_id="poi.int", categories=["レストラン"], distance_m=20)]
+
     async def run(trip_id, uid, urls, sd, ed, **kw):
         return await runner.run_generation(
             trip_id, uid, urls, sd, ed, job_id=kw.get("job_id"),
             scrape=scrape, extract=extract, weather=weather, transport=transport_fn,
+            restaurant=restaurant_fn,
         )
 
     monkeypatch.setattr(main, "run_generation", run)
@@ -149,6 +157,11 @@ async def test_generate_trip_end_to_end(monkeypatch):
         assert legs, "expected at least one transport_leg for the 2-place day"
         assert all(l["status"] in ("ok", "no_route") for l in legs)
         assert all(l["transport_mode"] == "walk" and l["routing_profile"] == "walking" for l in legs)
+        # Restaurant suggestions landed additively (Phase-3 hybrid enrich).
+        rests = (await client.table("restaurant_suggestions")
+                 .select("summary,restaurant_place_id,near_place_id").eq("trip_id", trip_id).execute()).data
+        assert rests, "expected at least one restaurant_suggestion"
+        assert all(r["summary"] and r["restaurant_place_id"] and r["near_place_id"] for r in rests)
     finally:
         # Cascade: deleting the trip cleans up its jobs / generation_events / trip_places /
         # trip_days / transport_legs (all FK ON DELETE CASCADE). The global `places` rows are

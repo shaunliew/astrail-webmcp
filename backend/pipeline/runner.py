@@ -18,7 +18,7 @@ from models.place import PlaceResult
 from pipeline.dedup import dedupe_places
 from pipeline.geo import centroid
 from pipeline.offline_harness import _date_range, assemble_itinerary
-from pipeline.persist import persist_itinerary, persist_weather
+from pipeline.persist import persist_itinerary, persist_transport, persist_weather
 from jobs import mark_job_done, mark_job_running
 from supabase_client import get_supabase_client
 
@@ -63,7 +63,7 @@ async def _fail(client, trip_id, user_id, job_id, stage, message) -> dict:
 
 async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                           *, job_id=None, pace="balanced", client=None, scrape=None, extract=None,
-                          weather=None) -> dict:
+                          weather=None, transport=None) -> dict:
     """Run the deterministic spine; own the job lifecycle; always write a terminal result."""
     try:
         if client is None:
@@ -169,6 +169,16 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                                            message="weather persist failed")
                     except Exception:
                         pass   # best-effort — weather persist failure is non-critical
+            try:
+                await record_event(client, trip_id, event_type="stage", stage="transport",
+                                   message="computing routes")
+                await persist_transport(client, trip_id, fetch_legs=transport)
+            except Exception:
+                try:
+                    await record_event(client, trip_id, event_type="warning", stage="transport",
+                                       message="transport legs unavailable")
+                except Exception:
+                    pass   # best-effort — transport failure is non-critical, never fails the trip
         except Exception:
             status = "saved_with_gaps"
             await record_event(client, trip_id, event_type="warning", stage="save",

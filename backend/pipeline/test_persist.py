@@ -520,3 +520,20 @@ async def test_persist_narration_blank_trip_summary_does_not_write_trip():
     await persist.persist_narration(c, "trip-1", "u1", narrate=narrate)
     trip = next(t for t in c.db["trips"] if t["id"] == "trip-1")
     assert trip["summary"] == "old"   # a blank narrator trip_summary never nulls a prior value
+
+
+@pytest.mark.asyncio
+async def test_persist_narration_owner_check_blocks_foreign_user():
+    # Guardrail #6 regression net: the trips UPDATE filters on id AND user_id (service_role bypasses
+    # RLS). A foreign user_id must NOT overwrite the owner's trips.title/summary — the sole direct
+    # trips write in the persist layer. Without the .eq("user_id", ...) this test would fail.
+    c = _Client({"trips": [{"id": "trip-1", "user_id": "u1", "summary": "old"}]})
+    await _seed_two_places_one_day(c)
+
+    async def narrate(days, *, city=None):
+        return NarrationResult(days=[DayNarration(day_number=1, title="t", summary="s")],
+                               trip_title="Hijacked", trip_summary="Should not persist.")
+
+    await persist.persist_narration(c, "trip-1", "not-the-owner", narrate=narrate)
+    trip = next(t for t in c.db["trips"] if t["id"] == "trip-1")
+    assert trip.get("title") is None and trip["summary"] == "old"   # foreign user_id blocked the trips write

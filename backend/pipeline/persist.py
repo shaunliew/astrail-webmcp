@@ -401,7 +401,7 @@ async def persist_narration(client, trip_id: str, user_id: str, *, narrate=None)
            .eq("trip_id", trip_id).execute()).data
     if not tps:
         return 0
-    tds = (await client.table("trip_days").select("id,day_number,day_date,weather_summary")
+    tds = (await client.table("trip_days").select("day_number,day_date,weather_summary")
            .eq("trip_id", trip_id).execute()).data
     pids = list({tp["place_id"] for tp in tps})
     places = (await client.table("places").select("id,name,place_type,city").in_("id", pids).execute()).data

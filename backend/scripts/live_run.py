@@ -109,6 +109,16 @@ async def _inspect(client, trip_id: str) -> None:
         near = by_id.get(rs.get("near_place_id"), {}).get("name", "?")
         cuisine = rs.get("cuisine") or "-"
         print(f"    {name} [{cuisine}]  near {near}  — {rs.get('summary')}")
+    hotels = (
+        await client.table("hotel_suggestions")
+        .select("name,area,star_rating,price_snapshot,status").eq("trip_id", trip_id).execute()
+    ).data
+    print(f"=== hotel_suggestions: {len(hotels)}")
+    for h in hotels:
+        price = (h.get("price_snapshot") or {})
+        star = h.get("star_rating")
+        print(f"    {h.get('name')}  ★{star if star is not None else '-'}  "
+              f"{price.get('pricePerNight')}/{price.get('currency')}  [{h.get('area') or ''}]")
 
 
 async def _run(args: argparse.Namespace) -> None:

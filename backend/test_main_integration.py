@@ -72,13 +72,16 @@ async def test_generate_trip_end_to_end(monkeypatch):
 
     async def extract(reel):
         # Two coord-bearing places on the single day -> exactly one transport leg.
+        # city_or_region_guess="Tokyo" so persist_hotels can derive a location via places.city.
         return [
             PlaceResult(name="Tokyo Tower", name_local=None, category="attraction",
                         source_type="reel_extracted", lat=35.6586, lng=139.7454, confidence=0.9,
-                        evidence_quote="📍Tokyo Tower", source_url="https://example.org/a", formatted_address=None),
+                        evidence_quote="📍Tokyo Tower", source_url="https://example.org/a", formatted_address=None,
+                        city_or_region_guess="Tokyo"),
             PlaceResult(name="Senso-ji", name_local=None, category="attraction",
                         source_type="reel_extracted", lat=35.7148, lng=139.7967, confidence=0.9,
-                        evidence_quote="📍Senso-ji", source_url="https://example.org/b", formatted_address=None),
+                        evidence_quote="📍Senso-ji", source_url="https://example.org/b", formatted_address=None,
+                        city_or_region_guess="Tokyo"),
         ]
 
     async def weather(lat, lng, dates):
@@ -106,11 +109,17 @@ async def test_generate_trip_end_to_end(monkeypatch):
                                                   summary="Tokyo Tower, then Senso-ji.")],
                                trip_title="Tokyo in a Day", trip_summary="A compact highlights run.")
 
+    async def hotel_fn(location, check_in, check_out, rooms):
+        # Deterministic fake (real Travala needs network) — proves persist -> hotel_suggestions.
+        return "sess-int", [{"name": "Grand Hyatt Tokyo", "star": 5, "pricePerNight": 500,
+                             "totalPrice": 1000, "currency": "USD", "hotelId": 18119,
+                             "packageId": "pkg-int", "headline": "In Tokyo (Roppongi)"}]
+
     async def run(trip_id, uid, urls, sd, ed, **kw):
         return await runner.run_generation(
             trip_id, uid, urls, sd, ed, job_id=kw.get("job_id"),
             scrape=scrape, extract=extract, weather=weather, transport=transport_fn,
-            restaurant=restaurant_fn, narrator=narrator_fn,
+            restaurant=restaurant_fn, narrator=narrator_fn, hotel=hotel_fn,
         )
 
     monkeypatch.setattr(main, "run_generation", run)
@@ -175,6 +184,11 @@ async def test_generate_trip_end_to_end(monkeypatch):
         assert any(d.get("title") and d.get("summary") for d in ntd), "expected per-day narration"
         trip_row = (await client.table("trips").select("title,summary").eq("id", trip_id).execute()).data
         assert trip_row and trip_row[0].get("summary"), "expected trip-level orchestrator summary"
+        # Hotel suggestions landed additively (Phase-3): per-trip Travala search.
+        hs = (await client.table("hotel_suggestions")
+              .select("name,source,status,star_rating,travala_hotel_id").eq("trip_id", trip_id).execute()).data
+        assert hs and all(h["source"] == "travala" and h["status"] == "suggested" for h in hs)
+        assert hs[0]["name"] and hs[0]["travala_hotel_id"]
     finally:
         # Cascade: deleting the trip cleans up its jobs / generation_events / trip_places /
         # trip_days / transport_legs (all FK ON DELETE CASCADE). The global `places` rows are

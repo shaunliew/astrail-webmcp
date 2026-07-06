@@ -2,11 +2,10 @@
 streamed as generation_events and persisted progressively. Owns the durable job
 lifecycle via an atomic CAS claim guard. Reuses the pure offline helpers; NEVER
 imports or mutates offline_harness.run_offline_pipeline (the frozen #16 eval
-anchor). Weather, transport, restaurants, and narration (Phase-3)
+anchor). Weather, transport, restaurants, hotels, and narration (Phase-3)
 are live: each runs as its own self-contained, best-effort enrich stage (sequential,
-not asyncio.gather fan-out — no enrich failure ever fails the trip). Remaining: hotel
-search (Travala). Narration is the LLM prose layer over the deterministic `narrate`
-assembly.
+not asyncio.gather fan-out — no enrich failure ever fails the trip). Narration is the
+LLM prose layer over the deterministic `narrate` assembly.
 
 Guardrails: #3 (partial pipeline failure degrades, never hangs), #6 (owner check
 on every trips write), #12 (durable job = restart-with-cache-reuse). Every
@@ -21,7 +20,7 @@ from models.place import PlaceResult
 from pipeline.dedup import dedupe_places
 from pipeline.geo import centroid
 from pipeline.offline_harness import _date_range, assemble_itinerary
-from pipeline.persist import persist_itinerary, persist_narration, persist_restaurants, persist_transport, persist_weather
+from pipeline.persist import persist_hotels, persist_itinerary, persist_narration, persist_restaurants, persist_transport, persist_weather
 from jobs import mark_job_done, mark_job_running
 from supabase_client import get_supabase_client
 
@@ -66,7 +65,7 @@ async def _fail(client, trip_id, user_id, job_id, stage, message) -> dict:
 
 async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                           *, job_id=None, pace="balanced", client=None, scrape=None, extract=None,
-                          weather=None, transport=None, restaurant=None, narrator=None) -> dict:
+                          weather=None, transport=None, restaurant=None, narrator=None, hotel=None) -> dict:
     """Run the deterministic spine; own the job lifecycle; always write a terminal result."""
     try:
         if client is None:
@@ -200,6 +199,16 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                                        message="restaurant suggestions unavailable")
                 except Exception:
                     pass   # best-effort — restaurant failure is non-critical, never fails the trip
+            try:
+                await record_event(client, trip_id, event_type="stage", stage="hotels",
+                                   message="searching hotels")
+                await persist_hotels(client, trip_id, fetch=hotel)
+            except Exception:
+                try:
+                    await record_event(client, trip_id, event_type="warning", stage="hotels",
+                                       message="hotel suggestions unavailable")
+                except Exception:
+                    pass   # best-effort — hotel failure is non-critical, never fails the trip
             try:
                 await record_event(client, trip_id, event_type="stage", stage="summarize",
                                    message="narrating the trip")

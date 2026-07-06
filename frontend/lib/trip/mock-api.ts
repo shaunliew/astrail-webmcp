@@ -1,5 +1,6 @@
 import type {
   TripBundle, Trip, TravelerProfile, UserPreferenceFact, StreamEvent,
+  GenerateTripRequest, GenerateTripResponse,
 } from '@/lib/trip/backend-types'
 import { TOKYO_TRIP, DEMO_PROFILE, DEMO_PREFERENCE_FACTS } from '@/lib/trip/fixtures'
 
@@ -36,6 +37,41 @@ export type FeedbackInput = {
 }
 
 export async function submitFeedback(_input: FeedbackInput): Promise<{ ok: true }> {
+  await delay(MOCK_LATENCY_MS)
+  return { ok: true }
+}
+
+// Simulates POST /trips: creates the durable trip row and returns its id (PRD §16: trip row < 2s).
+// Offline/deterministic — always resolves to the Tokyo fixture so streamGeneration can chain onto it.
+export async function createTrip(req: GenerateTripRequest): Promise<GenerateTripResponse> {
+  await delay(MOCK_LATENCY_MS)
+  if (req.reel_urls.length + req.requested_places.length < 1) {
+    throw new Error('Provide at least one Reel URL or requested place to generate a trip.')
+  }
+  return { trip_id: TOKYO_TRIP.trip.id }
+}
+
+// Simulates PATCH /profile: persists the onboarding answers and marks onboarding complete.
+// Offline/deterministic — echoes the input on the demo profile id.
+export async function saveProfile(input: {
+  origin_city: string | null
+  travel_style_tags: string[]
+  preference_tags: string[]
+  preference_notes: string | null
+}): Promise<TravelerProfile> {
+  await delay(MOCK_LATENCY_MS)
+  return {
+    id: DEMO_PROFILE.id,
+    origin_city: input.origin_city,
+    travel_style_tags: input.travel_style_tags,
+    preference_tags: input.preference_tags,
+    preference_notes: input.preference_notes,
+    onboarding_completed: true,
+  }
+}
+
+// Simulates POST /settings/memory/clear (PRD §18). No-op-but-resolves for the offline shell.
+export async function clearMemory(): Promise<{ ok: true }> {
   await delay(MOCK_LATENCY_MS)
   return { ok: true }
 }

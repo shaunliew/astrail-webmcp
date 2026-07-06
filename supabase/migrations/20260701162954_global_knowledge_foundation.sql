@@ -26,7 +26,7 @@ create table public.places (
   area text,
   aliases text[] not null default '{}',
   source_summary jsonb not null default '{}'::jsonb,
-  embedding vector(1536),
+  embedding extensions.vector(1536),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint places_lat_range check (lat >= -90 and lat <= 90),
@@ -153,7 +153,7 @@ create index reel_cache_expires_at_idx on public.reel_cache (expires_at)
 where expires_at is not null;
 create index places_type_city_area_idx on public.places (place_type, country, city, area);
 create index places_lat_lng_idx on public.places (lat, lng);
-create index places_embedding_hnsw_idx on public.places using hnsw (embedding vector_cosine_ops)
+create index places_embedding_hnsw_idx on public.places using hnsw (embedding extensions.vector_cosine_ops)
 where embedding is not null;
 create index trip_inspiration_items_trip_id_idx on public.trip_inspiration_items (trip_id);
 create unique index trip_inspiration_items_trip_reel_url_unique_idx

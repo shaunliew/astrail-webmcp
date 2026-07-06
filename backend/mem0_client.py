@@ -8,19 +8,33 @@ The mem0 client constructor makes a BLOCKING network ping to validate the key
 (even AsyncMemoryClient.__init__ uses the blocking `requests` lib), so:
   * NEVER construct at module import — the offline #16 eval imports must stay
     credential-free and network-free;
-  * construct inside asyncio.to_thread so the one-time ping never blocks the
-    event loop;
+  * construct in a dedicated single-worker executor (never the event loop, and
+    never the shared asyncio.to_thread pool — see _CONSTRUCT_EXECUTOR below);
   * warm it once at app startup (main.lifespan) so the first trip doesn't pay it.
 """
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import os
 import sys
 
 _client = None          # AsyncMemoryClient | None
 _initialized = False
 _lock = asyncio.Lock()
+
+# mem0's AsyncMemoryClient.__init__ validates the key via a SYNC `requests.get`
+# ping with NO `timeout=` kwarg, and `socket.setdefaulttimeout` is rejected here
+# because it's process-global (would silently reach into unrelated code, e.g.
+# Apify's own HTTP calls). `asyncio.wait_for` only bounds the asyncio-side wait
+# — it cannot kill the underlying thread, so a hung ping otherwise leaks one
+# zombie thread per retry (guardrail A6: retry-on-every-call) into the shared
+# default `asyncio.to_thread` pool during a sustained mem0 outage. A dedicated
+# single-worker executor caps that leak at exactly ONE stuck thread — later
+# attempts queue behind it and their own `wait_for` still times out cleanly.
+_CONSTRUCT_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="mem0-construct"
+)
 
 
 def _construct():
@@ -51,7 +65,10 @@ async def get_mem0_client():
         try:
             # Timeout-bounded (Codex C6): a slow/hung hosted ping must not wedge boot or
             # the first trip. Memoize ONLY on success.
-            _client = await asyncio.wait_for(asyncio.to_thread(_construct), timeout=8)
+            _client = await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(_CONSTRUCT_EXECUTOR, _construct),
+                timeout=8,
+            )
             _initialized = True
         except Exception as e:  # noqa: BLE001 — timeout / API error → disabled THIS attempt only
             print(f"[mem0] client unavailable this attempt, memory disabled: {type(e).__name__}",

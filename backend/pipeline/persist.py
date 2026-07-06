@@ -8,12 +8,14 @@ trip_days.weather_*) get additive inserts here once their agents exist.
 Reuses the pure route/dedup helpers' spirit: an existing global `places` row is
 reused when it matches by name/alias AND haversine < 500m (the same two-gate
 `pipeline/dedup.py` applies in-trip), so `places` stays canonical across trips.
+Enrich RESTAURANTS instead dedup by the Mapbox POI's stable `mapbox_id` (see
+`_find_or_create_restaurant_place`): dense chain branches share an English label
+but not a POI id, so the name+geo gate would wrongly merge them.
 """
 from __future__ import annotations
 
 import math
 from collections import defaultdict
-from types import SimpleNamespace
 
 from genagents.transport import VALID_PROFILES, profile_to_mode   # keyless import (no network at module scope)
 from models.enrichment import WeatherReport
@@ -285,15 +287,49 @@ def _nearest_place_id(lat: float, lng: float, anchors: list[tuple[str, float, fl
     return best_id
 
 
+async def _find_or_create_restaurant_place(client, cand, city) -> str:
+    """Restaurants dedup on the Mapbox POI's stable `mapbox_id` (stored in source_summary), NOT the
+    itinerary flywheel's name+geo — the latter mis-merges dense chain branches (e.g. two "ガスト"
+    within 500m whose LLM English label both collapse to "Gusto") into one pin. Reuse a places row
+    carrying the same mapbox_id, else insert a fresh restaurant row. The bbox pre-filter keeps the
+    lookup on the (lat,lng) index; the mapbox_id equality decides. `mapbox_id` is allowed in
+    source_summary (the public-shape CHECK blacklists per-trip/user keys, not POI ids)."""
+    if cand.mapbox_id:
+        lat_d, lng_d = _bbox_deltas(cand.lat)
+        nearby = (await client.table("places").select("id,source_summary")
+                  .gte("lat", cand.lat - lat_d).lte("lat", cand.lat + lat_d)
+                  .gte("lng", cand.lng - lng_d).lte("lng", cand.lng + lng_d)
+                  .execute()).data
+        for row in nearby:
+            if (row.get("source_summary") or {}).get("mapbox_id") == cand.mapbox_id:
+                return row["id"]
+    source_summary: dict = {}
+    if cand.mapbox_id:
+        source_summary["mapbox_id"] = cand.mapbox_id
+    if cand.address:
+        source_summary["formatted_address"] = cand.address
+    inserted = (await client.table("places").insert({
+        "name": cand.name,
+        "place_type": "restaurant",
+        "lat": cand.lat, "lng": cand.lng,
+        "city": city,
+        "aliases": [a for a in (cand.name, cand.name_local) if a],
+        "source_summary": source_summary,
+    }).execute()).data
+    return inserted[0]["id"]
+
+
 async def persist_restaurants(client, trip_id: str, *, suggest=None) -> int:
     """Additive: for each day, get grounded restaurant suggestions (Mapbox + LLM) near the day's
     places and INSERT them into restaurant_suggestions. MUST run AFTER persist_itinerary created
     trip_places/trip_days. Retry-safe (deletes this trip's rows first). Returns rows written.
     `suggest` is injectable (defaults to the real hybrid call).
 
-    Each grounded restaurant becomes a first-class places row via _find_or_create_place (its coords
-    are real Mapbox POIs), so restaurant_place_id is populated (name + map pin). near_place_id is the
-    day's place nearest the suggestion; preference_match_json stays {} until prefs are wired (Step 9).
+    Each grounded restaurant becomes a first-class places row via _find_or_create_restaurant_place,
+    deduped by the Mapbox POI's stable mapbox_id (NOT the itinerary flywheel's name+geo, which would
+    mis-merge dense chain branches whose LLM English label collides), so restaurant_place_id is
+    populated (name + map pin). near_place_id is the day's place nearest the suggestion;
+    preference_match_json stays {} until prefs are wired (Step 9).
 
     No per-day failure isolation: restaurant_suggestions has no status column to record a failed day,
     so a `suggest` failure PROPAGATES and the runner turns it into one clean best-effort warning
@@ -332,13 +368,7 @@ async def persist_restaurants(client, trip_id: str, *, suggest=None) -> int:
         city = next((p.get("city") for p in entries if p.get("city")), None)
         candidates = await suggest(day_places, city=city)   # a failure here propagates -> runner warns
         for cand in candidates:
-            rest_place = SimpleNamespace(
-                name=cand.name, name_local=cand.name_local, category="restaurant",
-                lat=cand.lat, lng=cand.lng, city_or_region_guess=city,
-                aliases=[a for a in (cand.name, cand.name_local) if a],
-                formatted_address=cand.address,
-            )
-            restaurant_place_id = await _find_or_create_place(client, rest_place)
+            restaurant_place_id = await _find_or_create_restaurant_place(client, cand, city)
             await client.table("restaurant_suggestions").insert({
                 "trip_id": trip_id,
                 "trip_day_id": trip_day_id,

@@ -430,3 +430,46 @@ async def test_persist_restaurants_no_trip_places_returns_zero():
         raise AssertionError("suggest must not be called with no trip_places")
 
     assert await persist.persist_restaurants(c, "trip-1", suggest=suggest) == 0
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_distinct_mapbox_ids_not_merged():
+    # Two chain branches within 500m whose LLM name_en collapses to the SAME "Gusto" but with
+    # DIFFERENT mapbox_ids must get SEPARATE places rows. The itinerary flywheel's name+geo dedup
+    # would mis-merge them (same "gusto" key + <500m); restaurant dedup is by mapbox_id.
+    c = _Client()
+    await _seed_two_places_one_day(c)
+    b1 = RestaurantCandidate(name="Gusto", name_local="ガスト 渋谷店", cuisine="family",
+                             summary="branch one", lat=35.6586, lng=139.7454, address="A",
+                             mapbox_id="poi.a", categories=["レストラン"], distance_m=10)
+    b2 = RestaurantCandidate(name="Gusto", name_local="ガスト 道玄坂店", cuisine="family",
+                             summary="branch two", lat=35.6588, lng=139.7456, address="B",
+                             mapbox_id="poi.b", categories=["レストラン"], distance_m=30)
+
+    async def suggest(places, *, city=None):
+        return [b1, b2]
+
+    written = await persist.persist_restaurants(c, "trip-1", suggest=suggest)
+    assert written == 2
+    rest_ids = {r["restaurant_place_id"] for r in c.db["restaurant_suggestions"]}
+    assert len(rest_ids) == 2, "distinct-mapbox_id branches must not merge into one places row"
+    by_pid = {p["id"]: p for p in c.db["places"]}
+    assert {by_pid[pid]["source_summary"].get("mapbox_id") for pid in rest_ids} == {"poi.a", "poi.b"}
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_same_mapbox_id_reuses_place():
+    # The same POI suggested twice (near two stops, or on a retry) dedups to ONE places row.
+    c = _Client()
+    await _seed_two_places_one_day(c)
+    places_before = len(c.db["places"])
+    cand = _rcand("Ramen X", 35.70, 139.75)          # mapbox_id="poi.1" (default)
+
+    async def suggest(places, *, city=None):
+        return [cand, cand]
+
+    written = await persist.persist_restaurants(c, "trip-1", suggest=suggest)
+    assert written == 2                                # two suggestion rows...
+    rest_ids = {r["restaurant_place_id"] for r in c.db["restaurant_suggestions"]}
+    assert len(rest_ids) == 1                          # ...sharing ONE places row (deduped by mapbox_id)
+    assert len(c.db["places"]) == places_before + 1

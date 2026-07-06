@@ -118,6 +118,17 @@ async def test_fetch_legs_raises_sanitized_on_http_error():
         with pytest.raises(RuntimeError) as exc:
             await fetch_directions_legs([(35.66, 139.75), (35.67, 139.76)], client=client)
     assert "access_token" not in str(exc.value) and "mapbox.com" not in str(exc.value).lower()
+
+
+@pytest.mark.asyncio
+async def test_fetch_legs_sanitizes_network_error():
+    # a ConnectError/timeout str() carries the request URL (with the token) — must be sanitized
+    def handler(request):
+        raise httpx.ConnectError("connect boom", request=request)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(RuntimeError) as exc:
+            await fetch_directions_legs([(35.66, 139.75), (35.67, 139.76)], client=client)
+    assert "access_token" not in str(exc.value) and "139.75" not in str(exc.value)
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -159,6 +170,8 @@ import httpx
 
 _BASE = "https://api.mapbox.com/directions/v5/mapbox"
 _PROFILE_TO_MODE = {"walking": "walk", "driving": "drive", "driving-traffic": "drive", "cycling": "cycle"}
+# The exact profile strings the transport_legs.routing_profile CHECK allows.
+VALID_PROFILES = frozenset(_PROFILE_TO_MODE)
 
 
 def profile_to_mode(profile: str) -> str:
@@ -182,6 +195,10 @@ async def fetch_directions_legs(coords, *, profile: str = "walking",
     http = client or httpx.AsyncClient(timeout=30)
     try:
         resp = await http.get(url, params={"access_token": token, "overview": "false"})
+    except httpx.RequestError as exc:
+        # A ConnectError/timeout str() includes the request URL (which carries the token) —
+        # re-raise sanitized, dropping the original context (mirror geocode/mapbox_forward.py).
+        raise RuntimeError(f"Mapbox Directions request failed: {type(exc).__name__}") from None
     finally:
         if owns:
             await http.aclose()
@@ -207,7 +224,7 @@ async def fetch_directions_legs(coords, *, profile: str = "walking",
 - [ ] **Step 4: Run to verify they pass**
 
 Run: `cd backend && uv run pytest genagents/test_transport.py -v`
-Expected: PASS (7 passed).
+Expected: PASS (8 passed).
 
 - [ ] **Step 5: Keyless import + eval untouched**
 
@@ -312,18 +329,22 @@ Expected: FAIL — `persist_transport` undefined (and `_Table` has no `.in_()`).
 
 - [ ] **Step 3: Add `.in_()` to the fake, then implement**
 
-In `pipeline/test_persist.py`'s fake `_Table`, add an `in_` filter alongside `eq`:
+The persist fake `_Table` filters via a `self._f` dict (eq) + `self._range` (gte/lte) applied in `_match()` — it has NO `.in_()`. Add it to match that structure (do NOT use a `self._filters` list — that's the *runner* fake's shape, not this one):
 ```python
-    def in_(self, col, values):
-        self._filters.append(("in", col, list(values)))
+    # in __init__, alongside `self._f = {}; self._range = {}`:
+    #   self._in = {}
+    def in_(self, c, values):
+        self._in[c] = list(values)
         return self
+    # in _match(self, r), right after the self._f (eq) check:
+    #   if not all(r.get(k) in vs for k, vs in self._in.items()):
+    #       return False
 ```
-and in `execute()` where filters are applied, handle the `"in"` op (row[col] in values). (Mirror the existing `eq` handling.)
 
 ```python
 # backend/pipeline/persist.py  (add; import at top)
 from collections import defaultdict
-from genagents.transport import profile_to_mode   # keyless import (no network at module scope)
+from genagents.transport import VALID_PROFILES, profile_to_mode   # keyless import (no network at module scope)
 
 
 async def persist_transport(client, trip_id: str, *, profile: str = "walking", fetch_legs=None) -> int:
@@ -333,6 +354,11 @@ async def persist_transport(client, trip_id: str, *, profile: str = "walking", f
     fetch_legs is injectable (defaults to the real Mapbox call)."""
     if fetch_legs is None:
         from genagents.transport import fetch_directions_legs as fetch_legs
+
+    # Retry-safe: delete this trip's legs FIRST — before any early return — so a re-run that
+    # now yields zero legs (e.g. all places dropped) still clears stale rows. (trip_days delete
+    # only SET NULLs trip_day_id, it does NOT cascade-delete transport_legs.)
+    await client.table("transport_legs").delete().eq("trip_id", trip_id).execute()
 
     tps = (await client.table("trip_places").select("place_id,day_number,sort_order")
            .eq("trip_id", trip_id).execute()).data
@@ -348,16 +374,18 @@ async def persist_transport(client, trip_id: str, *, profile: str = "walking", f
     for tp in tps:
         by_day[tp["day_number"]].append(tp)
 
-    await client.table("transport_legs").delete().eq("trip_id", trip_id).execute()   # retry-safe
     mode = profile_to_mode(profile)
+    # routing_profile has a CHECK (walking|driving|driving-traffic|cycling) — null out anything else.
+    valid_profile = profile if profile in VALID_PROFILES else None
     written = 0
     for day_number, rows in by_day.items():
-        rows = sorted(rows, key=lambda r: (r["sort_order"] if r["sort_order"] is not None else 0))
+        # Filter to coord-bearing rows FIRST, then use the SAME filtered list for both the
+        # Mapbox coords AND the from/to place_ids — so legs[i] aligns with rows[i]/rows[i+1].
+        rows = [r for r in sorted(rows, key=lambda r: (r["sort_order"] if r["sort_order"] is not None else 0))
+                if r["place_id"] in coord]
         if len(rows) < 2:
             continue
-        coords = [coord[r["place_id"]] for r in rows if r["place_id"] in coord]
-        if len(coords) < 2:
-            continue
+        coords = [coord[r["place_id"]] for r in rows]
         legs = await fetch_legs(coords, profile=profile)
         for i, leg in enumerate(legs):
             await client.table("transport_legs").insert({
@@ -368,7 +396,7 @@ async def persist_transport(client, trip_id: str, *, profile: str = "walking", f
                 "leg_order": i,
                 "transport_mode": mode,
                 "routing_provider": "mapbox",
-                "routing_profile": profile,
+                "routing_profile": valid_profile,
                 "status": "ok" if leg.get("code") == "Ok" else "no_route",
                 "duration_seconds": leg.get("duration_s"),
                 "distance_meters": leg.get("distance_m"),
@@ -433,9 +461,34 @@ async def test_runner_transport_failure_is_non_critical():
     assert any(e["event_type"] == "warning" and e["stage"] == "transport" for e in c.events)
     assert c.trip_updates[-1]["status"] == "complete"       # transport failure does NOT degrade/fail
     assert c.db["jobs"][0]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_runner_transport_missing_token_is_non_critical(monkeypatch):
+    # transport NOT injected -> the REAL fetch_directions_legs runs and reads
+    # os.environ["MAPBOX_SECRET_TOKEN"] -> KeyError (before any network) -> absorbed -> warning + complete.
+    monkeypatch.delenv("MAPBOX_SECRET_TOKEN", raising=False)
+    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    async def scrape(url): return _reel(url)
+    async def extract(reel): return [_place("A", lat=35.60, lng=139.70), _place("B", lat=35.62, lng=139.72)]
+    out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+                                      job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                      weather=_no_weather)   # transport intentionally NOT injected
+    assert out["itinerary"]["days"]
+    assert any(e["event_type"] == "warning" and e["stage"] == "transport" for e in c.events)
+    assert c.trip_updates[-1]["status"] == "complete"
+    assert c.db["jobs"][0]["status"] == "succeeded"
 ```
 
-NOTE: `_place(...)` may need `lat=`/`lng=` kwargs — check the helper; if it hardcodes coords, extend it minimally or build the `PlaceResult` inline as the other tests do.
+REQUIRED helper change (the tests above will `TypeError` otherwise): the existing `_place(name)` in `test_runner.py` hardcodes `lat=35.6586, lng=139.7454` and takes ONLY `name`. Extend its signature to be backward-compatible so distinct coords can be passed:
+```python
+def _place(name, lat=35.6586, lng=139.7454):
+    return PlaceResult(name=name, name_local=None, category="attraction",
+                       source_type="reel_extracted", lat=lat, lng=lng,
+                       confidence=0.9, evidence_quote="📍Tokyo Tower",
+                       source_url="https://example.org/a", formatted_address=None)
+```
+Every existing `_place("X")` call keeps working (defaults unchanged); the new transport tests pass distinct `lat=`/`lng=`.
 
 - [ ] **Step 2: Run to verify they fail**
 
@@ -490,22 +543,33 @@ git commit -m "feat(pipeline): Phase-3 transport stage — persist per-day route
 
 - [ ] **Step 1: Add transport to the integration test**
 
+The integration test's `extract` currently returns ONE place ("Tokyo Tower") → 0 legs → an `all(...)` assertion would pass vacuously. To prove legs actually land, make `extract` return TWO coord-bearing places on the single day, inject a fake `transport`, and assert the legs are NON-empty and well-shaped:
 ```python
-# backend/test_main_integration.py — inject a fake transport (extract already yields 1 place/reel,
-# so ensure the fake extract used here yields >=2 same-day places, or assert 0 legs when <2/day).
+# backend/test_main_integration.py
+    async def extract(reel):
+        return [
+            PlaceResult(name="Tokyo Tower", name_local=None, category="attraction",
+                        source_type="reel_extracted", lat=35.6586, lng=139.7454, confidence=0.9,
+                        evidence_quote="📍Tokyo Tower", source_url="https://example.org/a", formatted_address=None),
+            PlaceResult(name="Senso-ji", name_local=None, category="attraction",
+                        source_type="reel_extracted", lat=35.7148, lng=139.7967, confidence=0.9,
+                        evidence_quote="📍Senso-ji", source_url="https://example.org/b", formatted_address=None),
+        ]
+
     async def transport(coords, *, profile="walking"):
         return [{"duration_s": 300, "distance_m": 400, "code": "Ok"} for _ in range(len(coords) - 1)]
 
     async def run(trip_id, uid, urls, sd, ed, **kw):
         return await runner.run_generation(trip_id, uid, urls, sd, ed, job_id=kw.get("job_id"),
                                            scrape=scrape, extract=extract, weather=weather, transport=transport)
-    # ... after the trip_days assertion, if the fake extract yields >=2 places on a day:
-        legs = (await client.table("transport_legs").select("status,duration_seconds,leg_order")
+    # ... after the trip_days assertion (two same-day places -> exactly one leg):
+        legs = (await client.table("transport_legs").select("status,duration_seconds,transport_mode,routing_profile")
                 .eq("trip_id", trip_id).execute()).data
-        # extract yields >=2 same-day places → expect legs; assert the table is reachable + shaped
+        assert legs, "expected at least one transport_leg for the 2-place day"
         assert all(l["status"] in ("ok", "no_route") for l in legs)
+        assert all(l["transport_mode"] == "walk" and l["routing_profile"] == "walking" for l in legs)
 ```
-If the integration test's `extract` yields only 1 place (→ 0 legs), either extend it to yield 2 coord-bearing places on day 1, or assert `legs == []` explicitly (still proves the path runs without error). Prefer yielding 2 places so a real leg lands.
+(Two coord-bearing places on one day → exactly one leg; the trip_places/places assertions elsewhere in the test already expect ≥1 place, so returning 2 keeps them green.)
 
 - [ ] **Step 2: Run the live gate**
 
@@ -535,4 +599,6 @@ Then a real end-to-end check (spends credits): `uv run --env-file .env python -m
 2. **Token leak** — `raise_for_status()` is banned; the sanitized-error test asserts no token/url in the message.
 3. **code != Ok on HTTP 200** — NoRoute/NoSegment must become `status='no_route'`, not a crash; covered by a test.
 4. **Existing runner tests hitting real Mapbox** — every `run_generation` call must inject `transport=_no_transport` (mirror `_no_weather`).
-5. **Fake `.in_()`** — persist_transport reads `places` with `.in_()`; the test fake must support it (added in Task 2 Step 3).
+5. **Fake `.in_()`** — persist_transport reads `places` with `.in_()`; the test fake must support it (added in Task 2 Step 3, matching the fake's `self._f`/`_match` structure — NOT a `self._filters` list).
+6. **>25 coords/day** — Mapbox Directions caps at 25 coordinates/request. Astrail trips are ≤8 places total (PRD v1 beta cap), so a single day can never exceed 25 stops — no chunking/splitting needed. Accepted as bounded by the PRD cap; if that cap ever rises above 25, revisit (chunk with 1-coord overlap).
+7. **`routing_profile` CHECK** — only `walking|driving|driving-traffic|cycling` are allowed; `persist_transport` nulls out any other `profile` value (via `VALID_PROFILES`) so a future/typo'd profile can't violate the CHECK.

@@ -12,7 +12,9 @@ reused when it matches by name/alias AND haversine < 500m (the same two-gate
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 
+from genagents.transport import VALID_PROFILES, profile_to_mode   # keyless import (no network at module scope)
 from models.enrichment import WeatherReport
 from models.place import CanonicalPlace
 from pipeline.dedup import DEFAULT_DISTANCE_M, normalize_name
@@ -158,3 +160,61 @@ async def persist_weather(client, trip_id: str, reports: list[WeatherReport]) ->
             "weather_source": "open_meteo",
             "weather_payload": r.model_dump(),
         }).eq("trip_id", trip_id).eq("day_date", r.date).execute()
+
+
+async def persist_transport(client, trip_id: str, *, profile: str = "walking", fetch_legs=None) -> int:
+    """Additive: compute per-day route legs (Mapbox Directions) between consecutive persisted
+    trip_places and INSERT them into transport_legs. MUST run AFTER persist_itinerary created
+    trip_places/trip_days. Retry-safe (deletes this trip's legs first). Returns legs written.
+    fetch_legs is injectable (defaults to the real Mapbox call)."""
+    if fetch_legs is None:
+        from genagents.transport import fetch_directions_legs as fetch_legs
+
+    # Retry-safe: delete this trip's legs FIRST — before any early return — so a re-run that
+    # now yields zero legs (e.g. all places dropped) still clears stale rows. (trip_days delete
+    # only SET NULLs trip_day_id, it does NOT cascade-delete transport_legs.)
+    await client.table("transport_legs").delete().eq("trip_id", trip_id).execute()
+
+    tps = (await client.table("trip_places").select("place_id,day_number,sort_order")
+           .eq("trip_id", trip_id).execute()).data
+    if not tps:
+        return 0
+    tds = (await client.table("trip_days").select("id,day_number").eq("trip_id", trip_id).execute()).data
+    day_to_id = {d["day_number"]: d["id"] for d in tds}
+    pids = list({tp["place_id"] for tp in tps})
+    places = (await client.table("places").select("id,lat,lng").in_("id", pids).execute()).data
+    coord = {p["id"]: (p["lat"], p["lng"]) for p in places}
+
+    by_day: dict[int, list] = defaultdict(list)
+    for tp in tps:
+        by_day[tp["day_number"]].append(tp)
+
+    mode = profile_to_mode(profile)
+    # routing_profile has a CHECK (walking|driving|driving-traffic|cycling) — null out anything else.
+    valid_profile = profile if profile in VALID_PROFILES else None
+    written = 0
+    for day_number, rows in by_day.items():
+        # Filter to coord-bearing rows FIRST, then use the SAME filtered list for both the
+        # Mapbox coords AND the from/to place_ids — so legs[i] aligns with rows[i]/rows[i+1].
+        rows = [r for r in sorted(rows, key=lambda r: (r["sort_order"] if r["sort_order"] is not None else 0))
+                if r["place_id"] in coord]
+        if len(rows) < 2:
+            continue
+        coords = [coord[r["place_id"]] for r in rows]
+        legs = await fetch_legs(coords, profile=profile)
+        for i, leg in enumerate(legs):
+            await client.table("transport_legs").insert({
+                "trip_id": trip_id,
+                "trip_day_id": day_to_id.get(day_number),
+                "from_place_id": rows[i]["place_id"],
+                "to_place_id": rows[i + 1]["place_id"],
+                "leg_order": i,
+                "transport_mode": mode,
+                "routing_provider": "mapbox",
+                "routing_profile": valid_profile,
+                "status": "ok" if leg.get("code") == "Ok" else "no_route",
+                "duration_seconds": leg.get("duration_s"),
+                "distance_meters": leg.get("distance_m"),
+            }).execute()
+            written += 1
+    return written

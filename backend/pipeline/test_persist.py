@@ -537,3 +537,73 @@ async def test_persist_narration_owner_check_blocks_foreign_user():
     await persist.persist_narration(c, "trip-1", "not-the-owner", narrate=narrate)
     trip = next(t for t in c.db["trips"] if t["id"] == "trip-1")
     assert trip.get("title") is None and trip["summary"] == "old"   # foreign user_id blocked the trips write
+
+
+# --- persist_hotels ---------------------------------------------------------
+@pytest.mark.asyncio
+async def test_persist_hotels_writes_rows_from_trip_and_city():
+    c = _Client({"trips": [{"id": "trip-1", "user_id": "u1", "start_date": "2026-08-01",
+                            "end_date": "2026-08-03", "adult_count": 2, "room_count": 1,
+                            "destination_hint": "Japan"}]})
+    await _seed_two_places_one_day(c)   # places carry city="Tokyo" (from _cp)
+    seen = {}
+
+    async def fetch(location, check_in, check_out, rooms):
+        seen.update(location=location, check_in=check_in, check_out=check_out, rooms=rooms)
+        return "sess-1", [{"name": "Park Hyatt Tokyo", "star": 5, "pricePerNight": 900,
+                           "totalPrice": 900, "currency": "USD", "hotelId": 13278,
+                           "packageId": "pkg-a", "headline": "In Tokyo (Shinjuku)"}]
+
+    written = await persist.persist_hotels(c, "trip-1", fetch=fetch)
+    assert written == 1
+    assert seen["location"] == "Tokyo"                 # derived from places.city, NOT "Japan"
+    assert seen["check_in"] == "2026-08-01" and seen["check_out"] == "2026-08-03"
+    assert seen["rooms"] == ["2"]
+    h = c.db["hotel_suggestions"][0]
+    assert h["name"] == "Park Hyatt Tokyo" and h["star_rating"] == 5.0
+    assert h["source"] == "travala" and h["status"] == "suggested" and h["base_place_id"] is None
+    assert h["travala_hotel_id"] == "13278" and h["travala_session_id"] == "sess-1"
+    assert h["price_snapshot"]["currency"] == "USD" and h["travala_result_json"]["name"] == "Park Hyatt Tokyo"
+
+
+@pytest.mark.asyncio
+async def test_persist_hotels_single_day_forces_one_night():
+    c = _Client({"trips": [{"id": "trip-1", "user_id": "u1", "start_date": "2026-08-01",
+                            "end_date": "2026-08-01", "adult_count": 1, "room_count": 1}]})
+    await _seed_two_places_one_day(c)
+    seen = {}
+
+    async def fetch(location, check_in, check_out, rooms):
+        seen["check_out"] = check_out
+        return None, []
+
+    await persist.persist_hotels(c, "trip-1", fetch=fetch)
+    assert seen["check_out"] == "2026-08-02"            # 0-night -> forced to >=1 night
+
+
+@pytest.mark.asyncio
+async def test_persist_hotels_skips_when_no_location_or_dates():
+    c = _Client({"trips": [{"id": "trip-1", "user_id": "u1", "start_date": None, "end_date": None}]})
+
+    async def fetch(*a, **k):
+        raise AssertionError("fetch must not run when dates/location are missing")
+
+    assert await persist.persist_hotels(c, "trip-1", fetch=fetch) == 0
+
+
+@pytest.mark.asyncio
+async def test_persist_hotels_retry_safe_and_star_nullsafe():
+    c = _Client({"trips": [{"id": "trip-1", "user_id": "u1", "start_date": "2026-08-01",
+                            "end_date": "2026-08-03", "adult_count": 1, "room_count": 1}],
+                 "hotel_suggestions": [{"id": "stale", "trip_id": "trip-1", "name": "old"}]})
+    await _seed_two_places_one_day(c)
+
+    async def fetch(location, check_in, check_out, rooms):
+        return "s", [{"name": "No Star Inn", "star": 9, "pricePerNight": 50, "currency": "USD"},
+                     {"star": 3, "pricePerNight": 40}]   # 2nd has NO name -> skipped
+
+    written = await persist.persist_hotels(c, "trip-1", fetch=fetch)
+    assert written == 1                                  # stale cleared; no-name row skipped
+    rows = c.db["hotel_suggestions"]
+    assert len(rows) == 1 and rows[0]["name"] == "No Star Inn"
+    assert rows[0]["star_rating"] is None                # star=9 out of [0,5] -> NULL (CHECK-safe)

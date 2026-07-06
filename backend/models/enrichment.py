@@ -50,4 +50,22 @@ class RestaurantCandidate(BaseModel):
     distance_m: float | None = None
 
 
+class DayNarration(BaseModel):
+    """Per-day narration the LLM writes for ONE trip_day, anchored by day_number (like the restaurant
+    poi_index — the LLM cannot narrate a day that isn't in the trip). No min_length on the strings:
+    a length constraint on an output_type can 400 the strict Responses schema (and the gpt-4o fallback
+    hits the same 400); keep_valid_narration enforces non-empty instead."""
+    day_number: int
+    title: str
+    summary: str
+
+
+class NarrationResult(BaseModel):
+    """Narrator output_type wrapper (NEVER a bare list). trip_title/trip_summary are the read-only
+    trip-level overview (-> trips.title/summary)."""
+    days: list[DayNarration] = Field(default_factory=list)
+    trip_title: str | None = None
+    trip_summary: str = ""
+
+
 # HotelSuggestion — added with its agent.

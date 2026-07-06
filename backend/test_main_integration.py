@@ -99,11 +99,18 @@ async def test_generate_trip_end_to_end(monkeypatch):
                                     summary="Tonkotsu near Tokyo Tower", lat=35.6587, lng=139.7455,
                                     address="Tokyo", mapbox_id="poi.int", categories=["レストラン"], distance_m=20)]
 
+    async def narrator_fn(days, *, city=None):
+        from models.enrichment import NarrationResult, DayNarration
+        # Deterministic fake (real OpenAI needs a key/network) — proves persist -> trip_days + trips prose.
+        return NarrationResult(days=[DayNarration(day_number=1, title="Day 1: Tokyo Icons",
+                                                  summary="Tokyo Tower, then Senso-ji.")],
+                               trip_title="Tokyo in a Day", trip_summary="A compact highlights run.")
+
     async def run(trip_id, uid, urls, sd, ed, **kw):
         return await runner.run_generation(
             trip_id, uid, urls, sd, ed, job_id=kw.get("job_id"),
             scrape=scrape, extract=extract, weather=weather, transport=transport_fn,
-            restaurant=restaurant_fn,
+            restaurant=restaurant_fn, narrator=narrator_fn,
         )
 
     monkeypatch.setattr(main, "run_generation", run)
@@ -162,6 +169,12 @@ async def test_generate_trip_end_to_end(monkeypatch):
                  .select("summary,restaurant_place_id,near_place_id").eq("trip_id", trip_id).execute()).data
         assert rests, "expected at least one restaurant_suggestion"
         assert all(r["summary"] and r["restaurant_place_id"] and r["near_place_id"] for r in rests)
+        # Narration landed additively (Phase-3): per-day on trip_days, trip-level on trips.
+        ntd = (await client.table("trip_days").select("day_number,title,summary")
+               .eq("trip_id", trip_id).execute()).data
+        assert any(d.get("title") and d.get("summary") for d in ntd), "expected per-day narration"
+        trip_row = (await client.table("trips").select("title,summary").eq("id", trip_id).execute()).data
+        assert trip_row and trip_row[0].get("summary"), "expected trip-level orchestrator summary"
     finally:
         # Cascade: deleting the trip cleans up its jobs / generation_events / trip_places /
         # trip_days / transport_legs (all FK ON DELETE CASCADE). The global `places` rows are

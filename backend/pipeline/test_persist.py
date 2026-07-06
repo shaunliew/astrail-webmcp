@@ -473,3 +473,67 @@ async def test_persist_restaurants_same_mapbox_id_reuses_place():
     rest_ids = {r["restaurant_place_id"] for r in c.db["restaurant_suggestions"]}
     assert len(rest_ids) == 1                          # ...sharing ONE places row (deduped by mapbox_id)
     assert len(c.db["places"]) == places_before + 1
+
+
+# --- persist_narration ------------------------------------------------------
+from models.enrichment import DayNarration, NarrationResult
+
+
+@pytest.mark.asyncio
+async def test_persist_narration_writes_day_and_trip_prose():
+    c = _Client({"trips": [{"id": "trip-1", "user_id": "u1"}]})
+    await _seed_two_places_one_day(c)   # 2 places, day 1, one trip_days row
+
+    async def narrate(days, *, city=None):
+        assert days and days[0]["day_number"] == 1 and days[0]["places"]   # structured-only input
+        return NarrationResult(days=[DayNarration(day_number=1, title="Day 1: Icons",
+                                                  summary="Tokyo Tower, then Senso-ji.")],
+                               trip_title="Tokyo Highlights", trip_summary="A compact one-day run.")
+
+    written = await persist.persist_narration(c, "trip-1", "u1", narrate=narrate)
+    assert written == 1
+    td = next(d for d in c.db["trip_days"] if d["day_number"] == 1)
+    assert td["title"] == "Day 1: Icons" and td["summary"] == "Tokyo Tower, then Senso-ji."
+    trip = next(t for t in c.db["trips"] if t["id"] == "trip-1")
+    assert trip["title"] == "Tokyo Highlights" and trip["summary"] == "A compact one-day run."
+
+
+@pytest.mark.asyncio
+async def test_persist_narration_no_trip_places_returns_zero():
+    c = _Client({"trips": [{"id": "trip-1", "user_id": "u1"}]})
+
+    async def narrate(days, *, city=None):
+        raise AssertionError("narrate must not be called with no trip_places")
+
+    assert await persist.persist_narration(c, "trip-1", "u1", narrate=narrate) == 0
+
+
+@pytest.mark.asyncio
+async def test_persist_narration_blank_trip_summary_does_not_write_trip():
+    c = _Client({"trips": [{"id": "trip-1", "user_id": "u1", "summary": "old"}]})
+    await _seed_two_places_one_day(c)
+
+    async def narrate(days, *, city=None):
+        return NarrationResult(days=[DayNarration(day_number=1, title="t", summary="s")],
+                               trip_title=None, trip_summary="")
+
+    await persist.persist_narration(c, "trip-1", "u1", narrate=narrate)
+    trip = next(t for t in c.db["trips"] if t["id"] == "trip-1")
+    assert trip["summary"] == "old"   # a blank narrator trip_summary never nulls a prior value
+
+
+@pytest.mark.asyncio
+async def test_persist_narration_owner_check_blocks_foreign_user():
+    # Guardrail #6 regression net: the trips UPDATE filters on id AND user_id (service_role bypasses
+    # RLS). A foreign user_id must NOT overwrite the owner's trips.title/summary — the sole direct
+    # trips write in the persist layer. Without the .eq("user_id", ...) this test would fail.
+    c = _Client({"trips": [{"id": "trip-1", "user_id": "u1", "summary": "old"}]})
+    await _seed_two_places_one_day(c)
+
+    async def narrate(days, *, city=None):
+        return NarrationResult(days=[DayNarration(day_number=1, title="t", summary="s")],
+                               trip_title="Hijacked", trip_summary="Should not persist.")
+
+    await persist.persist_narration(c, "trip-1", "not-the-owner", narrate=narrate)
+    trip = next(t for t in c.db["trips"] if t["id"] == "trip-1")
+    assert trip.get("title") is None and trip["summary"] == "old"   # foreign user_id blocked the trips write

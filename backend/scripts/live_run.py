@@ -42,7 +42,7 @@ def _default_dates() -> tuple[str, str]:
 async def _inspect(client, trip_id: str) -> None:
     """Print the persisted trip exactly as the frontend would read it: day -> place -> weather."""
     trip = (
-        await client.table("trips").select("id,status,destination_hint,start_date,end_date")
+        await client.table("trips").select("id,status,destination_hint,start_date,end_date,title,summary")
         .eq("id", trip_id).maybe_single().execute()
     ).data
     if trip is None:
@@ -53,7 +53,7 @@ async def _inspect(client, trip_id: str) -> None:
         .eq("trip_id", trip_id).execute()
     ).data
     tds = (
-        await client.table("trip_days").select("day_number,day_date,weather_source,weather_summary")
+        await client.table("trip_days").select("day_number,day_date,weather_source,weather_summary,title")
         .eq("trip_id", trip_id).execute()
     ).data
     pids = [t["place_id"] for t in tps]
@@ -65,6 +65,8 @@ async def _inspect(client, trip_id: str) -> None:
     print(f"\n=== TRIP {trip['id']}")
     print(f"    status={trip['status']} dest={trip['destination_hint']} "
           f"{trip['start_date']}..{trip['end_date']}")
+    print(f"    trip_title={trip.get('title')!r}")
+    print(f"    trip_summary={trip.get('summary')!r}")
     print(f"=== trip_places: {len(tps)} | places: {len(places)} | trip_days: {len(tds)}")
     for tp in sorted(tps, key=lambda x: (x["day_number"] or 0, x["sort_order"] or 0)):
         p = by_id.get(tp["place_id"], {})
@@ -72,7 +74,8 @@ async def _inspect(client, trip_id: str) -> None:
               f"[{p.get('place_type', '?')}] ({round(p.get('lat', 0), 4)},{round(p.get('lng', 0), 4)})")
     print("=== trip_days weather:")
     for d in sorted(tds, key=lambda x: x["day_number"]):
-        print(f"    day {d['day_number']} {d['day_date']}  {d.get('weather_source')}: {d.get('weather_summary')}")
+        print(f"    day {d['day_number']} {d['day_date']}  {d.get('weather_source')}: {d.get('weather_summary')} "
+              f"{d.get('title') or ''}")
     legs = (
         await client.table("transport_legs")
         .select("from_place_id,to_place_id,leg_order,transport_mode,status,duration_seconds,distance_meters,warning")

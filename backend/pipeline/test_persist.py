@@ -261,3 +261,54 @@ async def test_persist_transport_retry_safe_deletes_first():
         return [{"duration_s": 1, "distance_m": 1, "code": "Ok"}]
     written = await persist.persist_transport(c, "trip-1", fetch_legs=fake_legs)
     assert written == 1 and len(c.db["transport_legs"]) == 1   # stale leg deleted, not appended
+
+
+@pytest.mark.asyncio
+async def test_persist_transport_deletes_stale_legs_when_trip_places_empty():
+    # A pre-existing stale transport_legs row from an earlier run, but THIS run's trip_places
+    # now resolves to zero rows (e.g. every place got dropped on a re-run) — the early return
+    # on empty tps must still hit the delete-first path, not leave the stale legs behind.
+    c = _Client({
+        "transport_legs": [{"trip_id": "trip-1", "leg_order": 0, "from_place_id": "x", "to_place_id": "y"}],
+    })
+    async def fake_legs(coords, *, profile="walking"):
+        return [{"duration_s": 1, "distance_m": 1, "code": "Ok"}]
+    written = await persist.persist_transport(c, "trip-1", fetch_legs=fake_legs)
+    assert written == 0
+    assert c.db["transport_legs"] == []
+
+
+@pytest.mark.asyncio
+async def test_persist_transport_isolates_per_day_failure():
+    # Day 1's fetch succeeds; day 2's fetch raises. Day 1's real legs, day 2's `failed` rows,
+    # and (implicitly) any later day's real legs must ALL persist — no silent partial drop.
+    c = _Client({
+        "trip_places": [
+            {"trip_id": "trip-1", "place_id": "pa", "day_number": 1, "sort_order": 0},
+            {"trip_id": "trip-1", "place_id": "pb", "day_number": 1, "sort_order": 1},
+            {"trip_id": "trip-1", "place_id": "pc", "day_number": 2, "sort_order": 0},
+            {"trip_id": "trip-1", "place_id": "pd", "day_number": 2, "sort_order": 1},
+        ],
+        "trip_days": [
+            {"id": "d1", "trip_id": "trip-1", "day_number": 1},
+            {"id": "d2", "trip_id": "trip-1", "day_number": 2},
+        ],
+        "places": [
+            {"id": "pa", "lat": 35.60, "lng": 139.70}, {"id": "pb", "lat": 35.61, "lng": 139.71},
+            {"id": "pc", "lat": 35.62, "lng": 139.72}, {"id": "pd", "lat": 35.63, "lng": 139.73},
+        ],
+    })
+
+    async def fake_legs(coords, *, profile="walking"):
+        if coords[0] == (35.62, 139.72):   # day 2's first coord — simulate a Mapbox blip
+            raise RuntimeError("Mapbox Directions request failed: ConnectError")
+        return [{"duration_s": 600, "distance_m": 800, "code": "Ok"} for _ in range(len(coords) - 1)]
+
+    written = await persist.persist_transport(c, "trip-1", fetch_legs=fake_legs)
+    legs = c.db["transport_legs"]
+    day1_legs = [leg for leg in legs if leg["trip_day_id"] == "d1"]
+    day2_legs = [leg for leg in legs if leg["trip_day_id"] == "d2"]
+    assert day1_legs and all(leg["status"] == "ok" for leg in day1_legs)
+    assert day2_legs and all(leg["status"] == "failed" for leg in day2_legs)
+    assert all(leg["duration_seconds"] is None and leg["distance_meters"] is None for leg in day2_legs)
+    assert written == len(day1_legs) + len(day2_legs)

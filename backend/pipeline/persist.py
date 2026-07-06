@@ -162,11 +162,39 @@ async def persist_weather(client, trip_id: str, reports: list[WeatherReport]) ->
         }).eq("trip_id", trip_id).eq("day_date", r.date).execute()
 
 
+async def _insert_leg(client, *, trip_id: str, trip_day_id, from_id: str, to_id: str, leg_order: int,
+                       mode: str, profile: str, status: str,
+                       duration: int | None = None, distance: int | None = None) -> None:
+    await client.table("transport_legs").insert({
+        "trip_id": trip_id,
+        "trip_day_id": trip_day_id,
+        "from_place_id": from_id,
+        "to_place_id": to_id,
+        "leg_order": leg_order,
+        "transport_mode": mode,
+        "routing_provider": "mapbox",
+        "routing_profile": profile,
+        "status": status,
+        "duration_seconds": duration,
+        "distance_meters": distance,
+    }).execute()
+
+
 async def persist_transport(client, trip_id: str, *, profile: str = "walking", fetch_legs=None) -> int:
     """Additive: compute per-day route legs (Mapbox Directions) between consecutive persisted
     trip_places and INSERT them into transport_legs. MUST run AFTER persist_itinerary created
     trip_places/trip_days. Retry-safe (deletes this trip's legs first). Returns legs written.
-    fetch_legs is injectable (defaults to the real Mapbox call)."""
+    fetch_legs is injectable (defaults to the real Mapbox call).
+
+    Per-day failure isolation: a raise from `fetch_legs` for ONE day inserts `status="failed"`
+    rows for that day's consecutive pairs and continues to the next day — a transient Mapbox
+    blip on day 2 must not silently drop day 3+'s real legs (or abort day 1's already-fetched
+    legs)."""
+    # Normalize once, early: an invalid `profile` would otherwise flow both into the Mapbox
+    # Directions URL (fetch_directions_legs) AND fail the routing_profile CHECK — validate
+    # here so both consumers get the same safe, always-valid value.
+    profile = profile if profile in VALID_PROFILES else "walking"
+
     if fetch_legs is None:
         from genagents.transport import fetch_directions_legs as fetch_legs
 
@@ -190,8 +218,6 @@ async def persist_transport(client, trip_id: str, *, profile: str = "walking", f
         by_day[tp["day_number"]].append(tp)
 
     mode = profile_to_mode(profile)
-    # routing_profile has a CHECK (walking|driving|driving-traffic|cycling) — null out anything else.
-    valid_profile = profile if profile in VALID_PROFILES else None
     written = 0
     for day_number, rows in by_day.items():
         # Filter to coord-bearing rows FIRST, then use the SAME filtered list for both the
@@ -201,20 +227,23 @@ async def persist_transport(client, trip_id: str, *, profile: str = "walking", f
         if len(rows) < 2:
             continue
         coords = [coord[r["place_id"]] for r in rows]
-        legs = await fetch_legs(coords, profile=profile)
+        trip_day_id = day_to_id.get(day_number)
+        try:
+            legs = await fetch_legs(coords, profile=profile)
+        except Exception:
+            # This day's fetch failed — record a failed row per consecutive pair and move on
+            # to the NEXT day, instead of aborting the whole function (silent partial state).
+            for i in range(len(rows) - 1):
+                await _insert_leg(client, trip_id=trip_id, trip_day_id=trip_day_id,
+                                   from_id=rows[i]["place_id"], to_id=rows[i + 1]["place_id"],
+                                   leg_order=i, mode=mode, profile=profile, status="failed")
+                written += 1
+            continue
         for i, leg in enumerate(legs):
-            await client.table("transport_legs").insert({
-                "trip_id": trip_id,
-                "trip_day_id": day_to_id.get(day_number),
-                "from_place_id": rows[i]["place_id"],
-                "to_place_id": rows[i + 1]["place_id"],
-                "leg_order": i,
-                "transport_mode": mode,
-                "routing_provider": "mapbox",
-                "routing_profile": valid_profile,
-                "status": "ok" if leg.get("code") == "Ok" else "no_route",
-                "duration_seconds": leg.get("duration_s"),
-                "distance_meters": leg.get("distance_m"),
-            }).execute()
+            await _insert_leg(client, trip_id=trip_id, trip_day_id=trip_day_id,
+                               from_id=rows[i]["place_id"], to_id=rows[i + 1]["place_id"], leg_order=i,
+                               mode=mode, profile=profile,
+                               status="ok" if leg.get("code") == "Ok" else "no_route",
+                               duration=leg.get("duration_s"), distance=leg.get("distance_m"))
             written += 1
     return written

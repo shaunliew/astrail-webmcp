@@ -13,18 +13,4 @@ class WeatherReport(BaseModel):
     summary: str             # human line, e.g. "Partly cloudy, 24-31°C"
 
 
-class TransportLeg(BaseModel):
-    day_number: int
-    leg_order: int
-    from_place_id: str
-    to_place_id: str
-    transport_mode: str                    # walk|drive|cycle|transit_hint|unknown
-    routing_provider: str = "mapbox"
-    routing_profile: str | None = None     # walking|driving|driving-traffic|cycling
-    status: str = "ok"                     # pending|ok|no_route|failed|skipped
-    duration_seconds: int | None = None
-    distance_meters: int | None = None
-    route_geometry: dict | None = None     # deferred — null in v1
-    warning: str | None = None
-
 # RestaurantSuggestion, HotelSuggestion — added with their agents.

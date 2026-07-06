@@ -84,3 +84,7 @@ async def test_fetch_legs_sanitizes_network_error():
         with pytest.raises(RuntimeError) as exc:
             await fetch_directions_legs([(35.66, 139.75), (35.67, 139.76)], client=client)
     assert "access_token" not in str(exc.value) and "139.75" not in str(exc.value)
+    # Positive assertion the sanitize path actually fired — httpx.ConnectError("connect boom")
+    # str()s to just "connect boom" (no URL), so the absence checks above would pass even if
+    # the code leaked; this proves the RuntimeError carries the exception TYPE name instead.
+    assert "ConnectError" in str(exc.value)

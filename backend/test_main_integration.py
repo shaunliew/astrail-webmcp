@@ -151,6 +151,6 @@ async def test_generate_trip_end_to_end(monkeypatch):
         assert all(l["transport_mode"] == "walk" and l["routing_profile"] == "walking" for l in legs)
     finally:
         # Cascade: deleting the trip cleans up its jobs / generation_events / trip_places /
-        # trip_days (all FK ON DELETE CASCADE). The global `places` rows are intentionally
-        # left — they are cross-trip flywheel rows, reused (deduped) by the next run.
+        # trip_days / transport_legs (all FK ON DELETE CASCADE). The global `places` rows are
+        # intentionally left — they are cross-trip flywheel rows, reused (deduped) by the next run.
         await client.table("trips").delete().eq("id", trip_id).eq("user_id", user_id).execute()

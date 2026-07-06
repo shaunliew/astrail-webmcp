@@ -12,4 +12,5 @@ class WeatherReport(BaseModel):
     weather_code: int        # raw WMO code (payload fidelity)
     summary: str             # human line, e.g. "Partly cloudy, 24-31°C"
 
-# RestaurantSuggestion, TransportLeg, HotelSuggestion — added with their agents.
+
+# RestaurantSuggestion, HotelSuggestion — added with their agents.

@@ -71,10 +71,15 @@ async def test_generate_trip_end_to_end(monkeypatch):
                         short_code="x", capture_status="CAPTURED", transcript=None)
 
     async def extract(reel):
-        return [PlaceResult(name="Tokyo Tower", name_local=None, category="attraction",
-                            source_type="reel_extracted", lat=35.6586, lng=139.7454,
-                            confidence=0.9, evidence_quote="📍Tokyo Tower",
-                            source_url="https://example.org/a", formatted_address=None)]
+        # Two coord-bearing places on the single day -> exactly one transport leg.
+        return [
+            PlaceResult(name="Tokyo Tower", name_local=None, category="attraction",
+                        source_type="reel_extracted", lat=35.6586, lng=139.7454, confidence=0.9,
+                        evidence_quote="📍Tokyo Tower", source_url="https://example.org/a", formatted_address=None),
+            PlaceResult(name="Senso-ji", name_local=None, category="attraction",
+                        source_type="reel_extracted", lat=35.7148, lng=139.7967, confidence=0.9,
+                        evidence_quote="📍Senso-ji", source_url="https://example.org/b", formatted_address=None),
+        ]
 
     async def weather(lat, lng, dates):
         from models.enrichment import WeatherReport
@@ -83,10 +88,14 @@ async def test_generate_trip_end_to_end(monkeypatch):
         return [WeatherReport(date=d, temp_min_c=24.0, temp_max_c=31.0, precipitation_mm=0.0,
                               weather_code=2, summary="Partly cloudy, 24-31°C") for d in dates]
 
+    async def transport_fn(coords, *, profile="walking"):
+        # Deterministic fake (real Mapbox needs a token/network) — proves persist → transport_legs.
+        return [{"duration_s": 300, "distance_m": 400, "code": "Ok"} for _ in range(len(coords) - 1)]
+
     async def run(trip_id, uid, urls, sd, ed, **kw):
         return await runner.run_generation(
             trip_id, uid, urls, sd, ed, job_id=kw.get("job_id"),
-            scrape=scrape, extract=extract, weather=weather,
+            scrape=scrape, extract=extract, weather=weather, transport=transport_fn,
         )
 
     monkeypatch.setattr(main, "run_generation", run)
@@ -134,8 +143,14 @@ async def test_generate_trip_end_to_end(monkeypatch):
         assert trip_days, "expected trip_days rows for the generated trip"
         # Weather landed additively on trip_days (Phase-3 enrich).
         assert any(d["weather_source"] == "open_meteo" and d["weather_summary"] for d in trip_days)
+        # Transport legs landed (two same-day places -> exactly one leg).
+        legs = (await client.table("transport_legs").select("status,transport_mode,routing_profile,duration_seconds")
+                .eq("trip_id", trip_id).execute()).data
+        assert legs, "expected at least one transport_leg for the 2-place day"
+        assert all(l["status"] in ("ok", "no_route") for l in legs)
+        assert all(l["transport_mode"] == "walk" and l["routing_profile"] == "walking" for l in legs)
     finally:
         # Cascade: deleting the trip cleans up its jobs / generation_events / trip_places /
-        # trip_days (all FK ON DELETE CASCADE). The global `places` rows are intentionally
-        # left — they are cross-trip flywheel rows, reused (deduped) by the next run.
+        # trip_days / transport_legs (all FK ON DELETE CASCADE). The global `places` rows are
+        # intentionally left — they are cross-trip flywheel rows, reused (deduped) by the next run.
         await client.table("trips").delete().eq("id", trip_id).eq("user_id", user_id).execute()

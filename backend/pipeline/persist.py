@@ -384,3 +384,59 @@ async def persist_restaurants(client, trip_id: str, *, suggest=None) -> int:
             }).execute()
             written += 1
     return written
+
+
+async def persist_narration(client, trip_id: str, user_id: str, *, narrate=None) -> int:
+    """Additive: narrate the enriched trip (per-day title/summary + trip title/summary) and UPDATE the
+    persisted rows. MUST run AFTER persist_itinerary (+ ideally weather/transport/restaurant so it can
+    narrate them). Idempotent UPDATE-in-place (a re-run overwrites; no delete-first). Returns the
+    count of days narrated. `narrate` is injectable (defaults to the real LLM call).
+
+    Structured-only (guardrail #11): the agent sees only persisted place names/types + weather, never
+    raw reel text. Additive prose ONLY — it never re-clusters or reorders days/places."""
+    if narrate is None:
+        from genagents.narrator import narrate_trip as narrate
+
+    tps = (await client.table("trip_places").select("place_id,day_number,sort_order")
+           .eq("trip_id", trip_id).execute()).data
+    if not tps:
+        return 0
+    tds = (await client.table("trip_days").select("id,day_number,day_date,weather_summary")
+           .eq("trip_id", trip_id).execute()).data
+    pids = list({tp["place_id"] for tp in tps})
+    places = (await client.table("places").select("id,name,place_type,city").in_("id", pids).execute()).data
+    by_id = {p["id"]: p for p in places}
+
+    by_day: dict[int, list] = defaultdict(list)
+    for tp in tps:
+        by_day[tp["day_number"]].append(tp)
+    day_meta = {d["day_number"]: d for d in tds}
+    city = next((p.get("city") for p in places if p.get("city")), None)
+
+    days_input: list[dict] = []
+    for day_number in sorted(day_meta):
+        rows = sorted(by_day.get(day_number, []),
+                      key=lambda r: r["sort_order"] if r["sort_order"] is not None else 0)
+        stops = [{"name": by_id[r["place_id"]]["name"], "place_type": by_id[r["place_id"]].get("place_type")}
+                 for r in rows if r["place_id"] in by_id]
+        meta = day_meta[day_number]
+        days_input.append({"day_number": day_number, "day_date": meta.get("day_date"),
+                           "weather_summary": meta.get("weather_summary"), "places": stops})
+
+    result = await narrate(days_input, city=city)
+
+    written = 0
+    for d in result.days:
+        await client.table("trip_days").update({"title": d.title, "summary": d.summary}) \
+            .eq("trip_id", trip_id).eq("day_number", d.day_number).execute()
+        written += 1
+    trip_patch: dict = {}
+    if result.trip_title:
+        trip_patch["title"] = result.trip_title
+    if result.trip_summary:
+        trip_patch["summary"] = result.trip_summary
+    if trip_patch:
+        # Owner check (guardrail #6): service_role bypasses RLS, so filter on id AND user_id — this is
+        # the persist layer's only direct trips write; mirrors runner._set_status.
+        await client.table("trips").update(trip_patch).eq("id", trip_id).eq("user_id", user_id).execute()
+    return written

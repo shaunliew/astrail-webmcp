@@ -75,7 +75,7 @@ async def _inspect(client, trip_id: str) -> None:
         print(f"    day {d['day_number']} {d['day_date']}  {d.get('weather_source')}: {d.get('weather_summary')}")
     legs = (
         await client.table("transport_legs")
-        .select("from_place_id,to_place_id,leg_order,transport_mode,status,duration_seconds,distance_meters")
+        .select("from_place_id,to_place_id,leg_order,transport_mode,status,duration_seconds,distance_meters,warning")
         .eq("trip_id", trip_id).execute()
     ).data
     print(f"=== transport_legs: {len(legs)}")
@@ -86,8 +86,9 @@ async def _inspect(client, trip_id: str) -> None:
         dist = lg.get("distance_meters")
         mins = f"{round(dur / 60)}min" if dur else "-"
         dist_s = f"{dist}m" if dist is not None else "-"
+        warn = f"  ⚠ {lg['warning']}" if lg.get("warning") else ""
         print(f"    #{lg['leg_order']} {lg.get('transport_mode')}/{lg.get('status')}  "
-              f"{frm} -> {to}  {mins} {dist_s}")
+              f"{frm} -> {to}  {mins} {dist_s}{warn}")
 
 
 async def _run(args: argparse.Namespace) -> None:

@@ -162,9 +162,28 @@ async def persist_weather(client, trip_id: str, reports: list[WeatherReport]) ->
         }).eq("trip_id", trip_id).eq("day_date", r.date).execute()
 
 
+# A WALKING leg longer than this (metres) is likely too far to walk — the transport agent
+# re-tags it as a `transit_hint` (the schema's transport_mode value) with an explanatory
+# warning, instead of presenting a multi-hour walk as the plan. The leg's distance/duration
+# stay the REAL Mapbox walking figures (routing_profile="walking" discloses that); only the
+# mode + warning change. A real transit ROUTE (line/time) waits for a grounded transit source.
+_TRANSIT_HINT_M = 2000.0
+
+
+def _leg_mode_and_warning(distance_m, base_mode: str) -> tuple[str, str | None]:
+    """Classify one leg: a walking leg past the transit-hint threshold becomes a `transit_hint`
+    with a warning; every other case (short walk, non-walking profile, unknown distance) passes
+    the base mode through unchanged with no warning."""
+    if base_mode == "walk" and distance_m is not None and distance_m > _TRANSIT_HINT_M:
+        km = round(distance_m / 1000, 1)
+        return "transit_hint", f"~{km} km — likely too far to walk; consider public transit"
+    return base_mode, None
+
+
 async def _insert_leg(client, *, trip_id: str, trip_day_id, from_id: str, to_id: str, leg_order: int,
                        mode: str, profile: str, status: str,
-                       duration: int | None = None, distance: int | None = None) -> None:
+                       duration: int | None = None, distance: int | None = None,
+                       warning: str | None = None) -> None:
     await client.table("transport_legs").insert({
         "trip_id": trip_id,
         "trip_day_id": trip_day_id,
@@ -177,6 +196,7 @@ async def _insert_leg(client, *, trip_id: str, trip_day_id, from_id: str, to_id:
         "status": status,
         "duration_seconds": duration,
         "distance_meters": distance,
+        "warning": warning,
     }).execute()
 
 
@@ -240,10 +260,14 @@ async def persist_transport(client, trip_id: str, *, profile: str = "walking", f
                 written += 1
             continue
         for i, leg in enumerate(legs):
+            # Per-leg mode: a long walking leg is re-tagged transit_hint (the per-leg-mode seam
+            # that a future real transit provider will also use, rather than a day-level constant).
+            leg_mode, warning = _leg_mode_and_warning(leg.get("distance_m"), mode)
             await _insert_leg(client, trip_id=trip_id, trip_day_id=trip_day_id,
                                from_id=rows[i]["place_id"], to_id=rows[i + 1]["place_id"], leg_order=i,
-                               mode=mode, profile=profile,
+                               mode=leg_mode, profile=profile,
                                status="ok" if leg.get("code") == "Ok" else "no_route",
-                               duration=leg.get("duration_s"), distance=leg.get("distance_m"))
+                               duration=leg.get("duration_s"), distance=leg.get("distance_m"),
+                               warning=warning)
             written += 1
     return written

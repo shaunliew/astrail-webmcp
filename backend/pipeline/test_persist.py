@@ -312,3 +312,49 @@ async def test_persist_transport_isolates_per_day_failure():
     assert day2_legs and all(leg["status"] == "failed" for leg in day2_legs)
     assert all(leg["duration_seconds"] is None and leg["distance_meters"] is None for leg in day2_legs)
     assert written == len(day1_legs) + len(day2_legs)
+
+
+@pytest.mark.asyncio
+async def test_persist_transport_long_walk_becomes_transit_hint():
+    # day 1: leg0 short (walk), leg1 >2km (transit_hint with a warning; walking numbers retained).
+    c = _Client({
+        "trip_places": [
+            {"trip_id": "trip-1", "place_id": "pa", "day_number": 1, "sort_order": 0},
+            {"trip_id": "trip-1", "place_id": "pb", "day_number": 1, "sort_order": 1},
+            {"trip_id": "trip-1", "place_id": "pc", "day_number": 1, "sort_order": 2},
+        ],
+        "trip_days": [{"id": "d1", "trip_id": "trip-1", "day_number": 1}],
+        "places": [
+            {"id": "pa", "lat": 35.60, "lng": 139.70}, {"id": "pb", "lat": 35.61, "lng": 139.71},
+            {"id": "pc", "lat": 35.70, "lng": 139.80},
+        ],
+    })
+    async def fake_legs(coords, *, profile="walking"):
+        return [{"duration_s": 300, "distance_m": 500, "code": "Ok"},        # short -> walk
+                {"duration_s": 5640, "distance_m": 10054, "code": "Ok"}]     # 10km -> transit_hint
+    written = await persist.persist_transport(c, "trip-1", fetch_legs=fake_legs)
+    assert written == 2
+    legs = {leg["leg_order"]: leg for leg in c.db["transport_legs"]}
+    assert legs[0]["transport_mode"] == "walk" and legs[0]["warning"] is None
+    assert legs[1]["transport_mode"] == "transit_hint"
+    assert legs[1]["warning"] and "transit" in legs[1]["warning"]
+    assert legs[1]["routing_profile"] == "walking"       # numbers are still the real walking route
+    assert legs[1]["distance_meters"] == 10054
+
+
+@pytest.mark.asyncio
+async def test_persist_transport_driving_profile_never_transit_hints():
+    # a long leg on a non-walking profile is NOT a transit hint (driving a long leg is normal).
+    c = _Client({
+        "trip_places": [
+            {"trip_id": "trip-1", "place_id": "pa", "day_number": 1, "sort_order": 0},
+            {"trip_id": "trip-1", "place_id": "pb", "day_number": 1, "sort_order": 1},
+        ],
+        "trip_days": [{"id": "d1", "trip_id": "trip-1", "day_number": 1}],
+        "places": [{"id": "pa", "lat": 35.6, "lng": 139.7}, {"id": "pb", "lat": 35.7, "lng": 139.8}],
+    })
+    async def fake_legs(coords, *, profile="walking"):
+        return [{"duration_s": 900, "distance_m": 10054, "code": "Ok"}]
+    await persist.persist_transport(c, "trip-1", profile="driving", fetch_legs=fake_legs)
+    leg = c.db["transport_legs"][0]
+    assert leg["transport_mode"] == "drive" and leg["warning"] is None

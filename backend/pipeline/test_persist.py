@@ -358,3 +358,75 @@ async def test_persist_transport_driving_profile_never_transit_hints():
     await persist.persist_transport(c, "trip-1", profile="driving", fetch_legs=fake_legs)
     leg = c.db["transport_legs"][0]
     assert leg["transport_mode"] == "drive" and leg["warning"] is None
+
+
+# --- persist_restaurants ----------------------------------------------------
+from models.enrichment import RestaurantCandidate
+
+
+def _rcand(name, lat, lng, *, name_local="ラーメン", summary="tasty"):
+    return RestaurantCandidate(name=name, name_local=name_local, cuisine="ramen", summary=summary,
+                               lat=lat, lng=lng, address="Tokyo", mapbox_id="poi.1",
+                               categories=["レストラン"], distance_m=25)
+
+
+async def _seed_two_places_one_day(c):
+    canonical = [_cp("Tokyo Tower", 35.6586, 139.7454), _cp("Senso-ji", 35.7148, 139.7967)]
+    await persist.persist_itinerary(c, "trip-1", canonical, ["2026-08-01"])
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_writes_row_place_and_near_id():
+    c = _Client()
+    await _seed_two_places_one_day(c)
+    tower_id = next(p["id"] for p in c.db["places"] if p["name"] == "Tokyo Tower")
+
+    async def suggest(places, *, city=None):
+        return [_rcand("Ramen Near Tower", 35.6587, 139.7455)]   # right next to Tokyo Tower
+
+    written = await persist.persist_restaurants(c, "trip-1", suggest=suggest)
+    assert written == 1
+    rs = c.db["restaurant_suggestions"][0]
+    assert rs["summary"] == "tasty" and rs["cuisine"] == "ramen"
+    assert rs["near_place_id"] == tower_id                        # nearest day place
+    assert rs["restaurant_place_id"]                              # a places row was created/reused
+    assert rs["preference_match_json"] == {}
+    assert rs["evidence_json"]["mapbox_id"] == "poi.1"
+    rest_place = next(p for p in c.db["places"] if p["id"] == rs["restaurant_place_id"])
+    assert rest_place["name"] == "Ramen Near Tower" and rest_place["place_type"] == "restaurant"
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_passes_city_from_places():
+    c = _Client()
+    await _seed_two_places_one_day(c)                             # _cp sets city_or_region_guess="Tokyo"
+    seen = {}
+
+    async def suggest(places, *, city=None):
+        seen["city"] = city
+        return []
+
+    await persist.persist_restaurants(c, "trip-1", suggest=suggest)
+    assert seen["city"] == "Tokyo"
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_retry_safe_deletes_first():
+    c = _Client({"restaurant_suggestions": [{"id": "stale", "trip_id": "trip-1", "summary": "old"}]})
+    await _seed_two_places_one_day(c)
+
+    async def suggest(places, *, city=None):
+        return []                                                # a re-run that now yields nothing
+
+    written = await persist.persist_restaurants(c, "trip-1", suggest=suggest)
+    assert written == 0 and c.db["restaurant_suggestions"] == []  # stale row cleared
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_no_trip_places_returns_zero():
+    c = _Client()
+
+    async def suggest(places, *, city=None):
+        raise AssertionError("suggest must not be called with no trip_places")
+
+    assert await persist.persist_restaurants(c, "trip-1", suggest=suggest) == 0

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from types import SimpleNamespace
 
 from genagents.transport import VALID_PROFILES, profile_to_mode   # keyless import (no network at module scope)
 from models.enrichment import WeatherReport
@@ -269,5 +270,87 @@ async def persist_transport(client, trip_id: str, *, profile: str = "walking", f
                                status="ok" if leg.get("code") == "Ok" else "no_route",
                                duration=leg.get("duration_s"), distance=leg.get("distance_m"),
                                warning=warning)
+            written += 1
+    return written
+
+
+def _nearest_place_id(lat: float, lng: float, anchors: list[tuple[str, float, float]]) -> str | None:
+    """The place_id of the anchor closest to (lat,lng) by haversine — the place a restaurant
+    suggestion is 'near'. `anchors` are (place_id, lat, lng)."""
+    best_id, best_d = None, None
+    for pid, plat, plng in anchors:
+        d = haversine_m(lat, lng, plat, plng)
+        if best_d is None or d < best_d:
+            best_id, best_d = pid, d
+    return best_id
+
+
+async def persist_restaurants(client, trip_id: str, *, suggest=None) -> int:
+    """Additive: for each day, get grounded restaurant suggestions (Mapbox + LLM) near the day's
+    places and INSERT them into restaurant_suggestions. MUST run AFTER persist_itinerary created
+    trip_places/trip_days. Retry-safe (deletes this trip's rows first). Returns rows written.
+    `suggest` is injectable (defaults to the real hybrid call).
+
+    Each grounded restaurant becomes a first-class places row via _find_or_create_place (its coords
+    are real Mapbox POIs), so restaurant_place_id is populated (name + map pin). near_place_id is the
+    day's place nearest the suggestion; preference_match_json stays {} until prefs are wired (Step 9).
+
+    No per-day failure isolation: restaurant_suggestions has no status column to record a failed day,
+    so a `suggest` failure PROPAGATES and the runner turns it into one clean best-effort warning
+    (guardrail #3). Rows written for earlier days are cleared by the delete-first on the next
+    idempotent run."""
+    if suggest is None:
+        from genagents.restaurant import suggest_restaurants as suggest
+
+    # Retry-safe: delete this trip's rows FIRST — before any early return. (trip_days delete only
+    # SET-NULLs trip_day_id via the composite FK; it does NOT cascade-delete restaurant_suggestions.)
+    await client.table("restaurant_suggestions").delete().eq("trip_id", trip_id).execute()
+
+    tps = (await client.table("trip_places").select("place_id,day_number,sort_order")
+           .eq("trip_id", trip_id).execute()).data
+    if not tps:
+        return 0
+    tds = (await client.table("trip_days").select("id,day_number").eq("trip_id", trip_id).execute()).data
+    day_to_id = {d["day_number"]: d["id"] for d in tds}
+    pids = list({tp["place_id"] for tp in tps})
+    places = (await client.table("places").select("id,name,lat,lng,city").in_("id", pids).execute()).data
+    by_id = {p["id"]: p for p in places}
+
+    by_day: dict[int, list] = defaultdict(list)
+    for tp in tps:
+        by_day[tp["day_number"]].append(tp)
+
+    written = 0
+    for day_number, rows in by_day.items():
+        entries = [by_id[r["place_id"]] for r in rows if r["place_id"] in by_id]
+        entries = [p for p in entries if p.get("lat") is not None and p.get("lng") is not None]
+        if not entries:
+            continue
+        trip_day_id = day_to_id.get(day_number)
+        day_places = [(p["name"], p["lat"], p["lng"]) for p in entries]
+        anchors = [(p["id"], p["lat"], p["lng"]) for p in entries]
+        city = next((p.get("city") for p in entries if p.get("city")), None)
+        candidates = await suggest(day_places, city=city)   # a failure here propagates -> runner warns
+        for cand in candidates:
+            rest_place = SimpleNamespace(
+                name=cand.name, name_local=cand.name_local, category="restaurant",
+                lat=cand.lat, lng=cand.lng, city_or_region_guess=city,
+                aliases=[a for a in (cand.name, cand.name_local) if a],
+                formatted_address=cand.address,
+            )
+            restaurant_place_id = await _find_or_create_place(client, rest_place)
+            await client.table("restaurant_suggestions").insert({
+                "trip_id": trip_id,
+                "trip_day_id": trip_day_id,
+                "restaurant_place_id": restaurant_place_id,
+                "near_place_id": _nearest_place_id(cand.lat, cand.lng, anchors),
+                "cuisine": cand.cuisine,
+                "summary": cand.summary,
+                "source_url": None,                          # Mapbox POIs have no review URL
+                "evidence_json": {"source": "mapbox_searchbox", "mapbox_id": cand.mapbox_id,
+                                  "categories": cand.categories, "distance_m": cand.distance_m,
+                                  "address": cand.address},
+                "preference_match_json": {},
+            }).execute()
             written += 1
     return written

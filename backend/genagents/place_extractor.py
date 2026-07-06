@@ -24,6 +24,10 @@ from models.reel import ReelData
 DEFAULT_MODEL = "gpt-5.5-2026-04-23"
 FALLBACK_MODEL = "gpt-4o"
 
+# Bump this on ANY change to the extractor (instructions, model, keep_valid_places, or the
+# PlaceResult schema) — the extraction cache keys on it, so a bump auto-invalidates stale entries.
+EXTRACTOR_VERSION = "2026-07-06.1"
+
 PLACE_EXTRACTOR_INSTRUCTIONS = """\
 You are a travel place-extraction agent. You receive an Instagram reel caption and an \
 optional Instagram location tag.

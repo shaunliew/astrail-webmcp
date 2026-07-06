@@ -519,6 +519,29 @@ async def test_runner_narration_failure_is_non_critical():
 
 
 @pytest.mark.asyncio
+async def test_runner_uses_extraction_cache_skips_scrape_and_extract():
+    # A cached reel (real reel URL + a seeded reel_cache row at the current EXTRACTOR_VERSION) is a
+    # HIT: scrape+extract are NEVER called, a `cache_hit` event fires, and the cached place is used.
+    from genagents.place_extractor import EXTRACTOR_VERSION
+    reel_url = "https://www.instagram.com/reel/ABC123/"
+    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c.db["reel_cache"] = [{"id": "rc-1", "normalized_url": "https://www.instagram.com/reel/ABC123",
+                           "extractor_version": EXTRACTOR_VERSION,
+                           "extracted_places": [_place("Tokyo Tower").model_dump()]}]
+
+    async def scrape(url): raise AssertionError("scrape must not run on a cache hit")
+    async def extract(reel): raise AssertionError("extract must not run on a cache hit")
+
+    await runner.run_generation("trip-1", "user-1", [reel_url], "2026-08-01", "2026-08-01",
+                                job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant,
+                                narrator=_no_narrator, hotel=_no_hotel)
+    assert any(e["stage"] == "cache_hit" for e in c.events)
+    assert c.db.get("places") and c.db["places"][0]["name"] == "Tokyo Tower"   # cached place persisted
+    assert c.trip_updates[-1]["status"] == "complete"
+
+
+@pytest.mark.asyncio
 async def test_runner_persists_hotel_suggestions():
     c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     # persist_hotels READS the trips row (dates/occupancy) — the runner only UPDATEs trips, never

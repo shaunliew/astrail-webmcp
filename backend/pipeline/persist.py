@@ -14,6 +14,7 @@ but not a POI id, so the name+geo gate would wrongly merge them.
 """
 from __future__ import annotations
 
+import datetime as _dt
 import math
 from collections import defaultdict
 
@@ -439,4 +440,90 @@ async def persist_narration(client, trip_id: str, user_id: str, *, narrate=None)
         # Owner check (guardrail #6): service_role bypasses RLS, so filter on id AND user_id — this is
         # the persist layer's only direct trips write; mirrors runner._set_status.
         await client.table("trips").update(trip_patch).eq("id", trip_id).eq("user_id", user_id).execute()
+    return written
+
+
+def _hotel_rooms(adult_count, room_count) -> list[str]:
+    """Occupancy -> Travala `rooms` param (adults-only v1; child ages aren't stored). Split adults
+    across rooms, clamp to Travala's 8-room max. Defaults (1 adult/1 room) -> ["1"]."""
+    adults = max(1, adult_count or 1)
+    n = max(1, min(room_count or 1, 8))
+    per = max(1, round(adults / n))
+    return [str(per)] * n
+
+
+def _hotel_star(star) -> float | None:
+    """star_rating CHECK is `null OR 0..5`. Coerce to float; out-of-range/unparseable -> None
+    (star=0 is legal / unrated)."""
+    try:
+        s = float(star)
+    except (TypeError, ValueError):
+        return None
+    return s if 0 <= s <= 5 else None
+
+
+async def persist_hotels(client, trip_id: str, *, fetch=None) -> int:
+    """Additive: search Travala for hotels for THIS trip (destination + dates + occupancy) and INSERT
+    into hotel_suggestions. Per-TRIP (one search), NOT per-day. Retry-safe (delete-first). Returns
+    rows written. `fetch` is injectable (defaults to the real keyless Travala call).
+
+    Reads the trip row for dates/occupancy and derives the search city from the persisted places'
+    city ("Tokyo"), falling back to destination_hint. Skip-on-missing (PRD/DECISIONS LOG): if location
+    or dates are missing, return 0 WITHOUT searching — hotel search must never block trip generation.
+    base_place_id stays NULL (Travala returns no coords; place-linking deferred). No LLM, no reel
+    content. A `fetch` failure propagates -> the runner turns it into one clean warning."""
+    if fetch is None:
+        from genagents.hotel import search_hotels as fetch
+
+    # Retry-safe: clear this trip's rows FIRST (trip_days delete only SET-NULLs trip_day_id).
+    await client.table("hotel_suggestions").delete().eq("trip_id", trip_id).execute()
+
+    trip_rows = (await client.table("trips")
+                 .select("start_date,end_date,adult_count,room_count,destination_hint")
+                 .eq("id", trip_id).execute()).data
+    trip = trip_rows[0] if trip_rows else None   # not .maybe_single() — the offline test fake lacks it
+    if not trip:
+        return 0
+    start_date, end_date = trip.get("start_date"), trip.get("end_date")
+
+    # Location: prefer a persisted place's city ("Tokyo"), fall back to destination_hint ("Japan").
+    tps = (await client.table("trip_places").select("place_id").eq("trip_id", trip_id).execute()).data
+    location = None
+    if tps:
+        pids = list({tp["place_id"] for tp in tps})
+        places = (await client.table("places").select("city").in_("id", pids).execute()).data
+        location = next((p.get("city") for p in places if p.get("city")), None)
+    location = location or trip.get("destination_hint")
+
+    if not location or not start_date or not end_date:
+        return 0   # skip gracefully — never block trip generation
+
+    check_out = end_date
+    if end_date <= start_date:   # single-day trip -> force >=1 night (Travala rejects 0 nights)
+        check_out = (_dt.date.fromisoformat(start_date) + _dt.timedelta(days=1)).isoformat()
+    rooms = _hotel_rooms(trip.get("adult_count"), trip.get("room_count"))
+
+    session_id, hotels = await fetch(location, start_date, check_out, rooms)   # failure -> runner warns
+
+    written = 0
+    for h in hotels:
+        name = h.get("name")
+        if not name:
+            continue   # hotel_suggestions.name is NOT NULL
+        await client.table("hotel_suggestions").insert({
+            "trip_id": trip_id,
+            "base_place_id": None,            # Travala gives no coords; place-linking deferred
+            "name": name,
+            "area": h.get("headline") or h.get("address") or h.get("location"),
+            "star_rating": _hotel_star(h.get("star")),
+            "price_snapshot": {"pricePerNight": h.get("pricePerNight"),
+                               "totalPrice": h.get("totalPrice"), "currency": h.get("currency")},
+            "travala_hotel_id": str(h["hotelId"]) if h.get("hotelId") is not None else None,
+            "travala_session_id": session_id,
+            "travala_package_id": h.get("packageId"),
+            "travala_result_json": h,
+            "source": "travala",
+            "status": "suggested",
+        }).execute()
+        written += 1
     return written

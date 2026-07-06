@@ -91,33 +91,61 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
         await _set_status(client, trip_id, user_id, "generating")
         degraded = False
 
-        # PHASE 1: SCRAPE (parallel, partial-failure isolated)
-        await record_event(client, trip_id, event_type="stage", stage="scrape",
-                            message=f"scraping {len(reel_urls)} reel(s)")
-        scraped = await asyncio.gather(*[scrape(u) for u in reel_urls], return_exceptions=True)
-        reels = []
-        for url, res in zip(reel_urls, scraped):
-            if isinstance(res, Exception):
-                degraded = True
-                await record_event(client, trip_id, event_type="warning", stage="scrape",
-                                    message=f"reel skipped: {url}")
-            else:
-                reels.append(res)
-        if not reels:
-            return await _fail(client, trip_id, user_id, job_id, "scrape", "no reels could be scraped")
+        # PHASE 1+2: SCRAPE + EXTRACT, with a per-reel EXTRACTION CACHE. A repeat reel (same
+        # normalized URL + EXTRACTOR_VERSION) skips BOTH scrape and extract. Non-reel URLs are
+        # uncacheable → normal scrape+extract. Cache writes are best-effort (never fail the trip).
+        from genagents.place_extractor import EXTRACTOR_VERSION
+        from pipeline.cache import cache_places, get_cached_places
 
-        # PHASE 2: EXTRACT (parallel, partial-failure isolated) + DEDUP
-        await record_event(client, trip_id, event_type="stage", stage="extract",
-                            message=f"extracting places from {len(reels)} reel(s)")
-        per_reel = await asyncio.gather(*[extract(r) for r in reels], return_exceptions=True)
         places: list[PlaceResult] = []
-        for res in per_reel:
-            if isinstance(res, Exception):
-                degraded = True
-                await record_event(client, trip_id, event_type="warning", stage="extract",
-                                    message="extraction failed for one reel")
+        miss_urls: list[str] = []
+        n_hit = 0
+        for url in reel_urls:
+            try:
+                cached = await get_cached_places(client, url, EXTRACTOR_VERSION)
+            except Exception:
+                cached = None   # cache READ is a pure optimization — a Supabase blip / model_validate
+                                # drift = MISS (scrape+extract), NEVER fail the trip (guardrail #3).
+            if cached is not None:
+                places.extend(cached)
+                n_hit += 1
             else:
-                places.extend(res)
+                miss_urls.append(url)
+        if n_hit:
+            await record_event(client, trip_id, event_type="stage", stage="cache_hit",
+                               message=f"{n_hit} reel(s) from cache (skipped scrape+extract)")
+
+        if miss_urls:
+            # SCRAPE (misses only, parallel, partial-failure isolated)
+            await record_event(client, trip_id, event_type="stage", stage="scrape",
+                               message=f"scraping {len(miss_urls)} reel(s)")
+            scraped = await asyncio.gather(*[scrape(u) for u in miss_urls], return_exceptions=True)
+            miss_reels: list[tuple[str, object]] = []
+            for url, res in zip(miss_urls, scraped):
+                if isinstance(res, Exception):
+                    degraded = True
+                    await record_event(client, trip_id, event_type="warning", stage="scrape",
+                                       message=f"reel skipped: {url}")
+                else:
+                    miss_reels.append((url, res))
+            # EXTRACT (misses only) + write-through cache each successful extraction
+            if miss_reels:
+                await record_event(client, trip_id, event_type="stage", stage="extract",
+                                   message=f"extracting places from {len(miss_reels)} reel(s)")
+                extracted = await asyncio.gather(*[extract(r) for _u, r in miss_reels],
+                                                 return_exceptions=True)
+                for (url, reel), res in zip(miss_reels, extracted):
+                    if isinstance(res, Exception):
+                        degraded = True
+                        await record_event(client, trip_id, event_type="warning", stage="extract",
+                                           message="extraction failed for one reel")
+                    else:
+                        places.extend(res)
+                        try:
+                            await cache_places(client, url, reel, res, EXTRACTOR_VERSION)
+                        except Exception:
+                            pass   # cache write is best-effort — never fail the trip on it
+
         if not places:
             return await _fail(client, trip_id, user_id, job_id, "extract",
                                 "no verified places after extraction")

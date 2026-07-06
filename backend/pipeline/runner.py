@@ -2,10 +2,12 @@
 streamed as generation_events and persisted progressively. Owns the durable job
 lifecycle via an atomic CAS claim guard. Reuses the pure offline helpers; NEVER
 imports or mutates offline_harness.run_offline_pipeline (the frozen #16 eval
-anchor). Weather, transport, restaurants, hotels, and narration (Phase-3)
-are live: each runs as its own self-contained, best-effort enrich stage (sequential,
-not asyncio.gather fan-out — no enrich failure ever fails the trip). Narration is the
-LLM prose layer over the deterministic `narrate` assembly.
+anchor). Weather, transport, restaurants, hotels, and narration (Phase-3) are live:
+each is a self-contained, best-effort enrich stage — weather persists sequentially
+(narration reads its trip_days.weather_summary), then transport/restaurants/hotels/
+narration fan out via asyncio.gather(return_exceptions=True) to cut enrich latency; no
+enrich failure ever fails the trip. Narration is the LLM prose layer over the
+deterministic `narrate` assembly.
 
 Guardrails: #3 (partial pipeline failure degrades, never hangs), #6 (owner check
 on every trips write), #12 (durable job = restart-with-cache-reuse). Every
@@ -171,54 +173,70 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                                            message="weather persist failed")
                     except Exception:
                         pass   # best-effort — weather persist failure is non-critical
-            try:
-                await record_event(client, trip_id, event_type="stage", stage="transport",
-                                   message="computing routes")
-                await persist_transport(client, trip_id, fetch_legs=transport)
-                # persist_transport now isolates per-day fetch failures internally (it inserts
-                # status="failed" rows and never raises for them) — surface that as the same
-                # non-critical warning by checking for any failed rows post-write.
-                failed_legs = (await client.table("transport_legs").select("id")
-                               .eq("trip_id", trip_id).eq("status", "failed").execute()).data
-                if failed_legs:
-                    await record_event(client, trip_id, event_type="warning", stage="transport",
-                                       message="transport legs unavailable")
-            except Exception:
+            # Enrich stages are INDEPENDENT (disjoint write tables) and best-effort (guardrail #3),
+            # so run them CONCURRENTLY instead of sequentially (~halves the enrich block latency).
+            # Weather is persisted ABOVE, sequentially, because narration reads
+            # trip_days.weather_summary. Each coroutine is fully self-contained: it swallows its own
+            # errors (a failure can't fail the trip), and return_exceptions=True additionally
+            # guarantees one stage's raise never cancels its siblings.
+            async def _stage_transport():
                 try:
-                    await record_event(client, trip_id, event_type="warning", stage="transport",
-                                       message="transport legs unavailable")
+                    await record_event(client, trip_id, event_type="stage", stage="transport",
+                                       message="computing routes")
+                    await persist_transport(client, trip_id, fetch_legs=transport)
+                    # persist_transport isolates per-day fetch failures internally (status="failed"
+                    # rows, never raises) — surface that as the same non-critical warning.
+                    failed_legs = (await client.table("transport_legs").select("id")
+                                   .eq("trip_id", trip_id).eq("status", "failed").execute()).data
+                    if failed_legs:
+                        await record_event(client, trip_id, event_type="warning", stage="transport",
+                                           message="transport legs unavailable")
                 except Exception:
-                    pass   # best-effort — transport failure is non-critical, never fails the trip
-            try:
-                await record_event(client, trip_id, event_type="stage", stage="restaurants",
-                                   message="suggesting restaurants")
-                await persist_restaurants(client, trip_id, suggest=restaurant)
-            except Exception:
+                    try:
+                        await record_event(client, trip_id, event_type="warning", stage="transport",
+                                           message="transport legs unavailable")
+                    except Exception:
+                        pass   # best-effort — transport failure is non-critical
+
+            async def _stage_restaurants():
                 try:
-                    await record_event(client, trip_id, event_type="warning", stage="restaurants",
-                                       message="restaurant suggestions unavailable")
+                    await record_event(client, trip_id, event_type="stage", stage="restaurants",
+                                       message="suggesting restaurants")
+                    await persist_restaurants(client, trip_id, suggest=restaurant)
                 except Exception:
-                    pass   # best-effort — restaurant failure is non-critical, never fails the trip
-            try:
-                await record_event(client, trip_id, event_type="stage", stage="hotels",
-                                   message="searching hotels")
-                await persist_hotels(client, trip_id, fetch=hotel)
-            except Exception:
+                    try:
+                        await record_event(client, trip_id, event_type="warning", stage="restaurants",
+                                           message="restaurant suggestions unavailable")
+                    except Exception:
+                        pass   # best-effort — restaurant failure is non-critical
+
+            async def _stage_hotels():
                 try:
-                    await record_event(client, trip_id, event_type="warning", stage="hotels",
-                                       message="hotel suggestions unavailable")
+                    await record_event(client, trip_id, event_type="stage", stage="hotels",
+                                       message="searching hotels")
+                    await persist_hotels(client, trip_id, fetch=hotel)
                 except Exception:
-                    pass   # best-effort — hotel failure is non-critical, never fails the trip
-            try:
-                await record_event(client, trip_id, event_type="stage", stage="summarize",
-                                   message="narrating the trip")
-                await persist_narration(client, trip_id, user_id, narrate=narrator)
-            except Exception:
+                    try:
+                        await record_event(client, trip_id, event_type="warning", stage="hotels",
+                                           message="hotel suggestions unavailable")
+                    except Exception:
+                        pass   # best-effort — hotel failure is non-critical
+
+            async def _stage_narration():
+                # MUST run after persist_weather (above): reads trip_days.weather_summary.
                 try:
-                    await record_event(client, trip_id, event_type="warning", stage="summarize",
-                                       message="narration unavailable")
+                    await record_event(client, trip_id, event_type="stage", stage="summarize",
+                                       message="narrating the trip")
+                    await persist_narration(client, trip_id, user_id, narrate=narrator)
                 except Exception:
-                    pass   # best-effort — narration failure is non-critical, never fails the trip
+                    try:
+                        await record_event(client, trip_id, event_type="warning", stage="summarize",
+                                           message="narration unavailable")
+                    except Exception:
+                        pass   # best-effort — narration failure is non-critical
+
+            await asyncio.gather(_stage_transport(), _stage_restaurants(),
+                                 _stage_hotels(), _stage_narration(), return_exceptions=True)
         except Exception:
             status = "saved_with_gaps"
             await record_event(client, trip_id, event_type="warning", stage="save",

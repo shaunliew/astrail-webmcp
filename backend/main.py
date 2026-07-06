@@ -44,6 +44,11 @@ async def lifespan(app: FastAPI):
             task = asyncio.create_task(_redispatch(client, job))
             _RECOVERY_TASKS.add(task)                     # retain ref so it isn't GC'd mid-flight
             task.add_done_callback(_RECOVERY_TASKS.discard)
+        try:
+            from mem0_client import get_mem0_client
+            await get_mem0_client()   # warm once so the first trip skips the blocking ping
+        except Exception:
+            pass   # memory is best-effort; a warm failure must never down the app
     except Exception:
         pass   # boot-time DB blip must not down the app; the next restart's sweep will re-pick pending jobs
     yield

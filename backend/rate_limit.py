@@ -49,3 +49,38 @@ async def get_current_user_id_stashed(
     user_id = await get_current_user_id(authorization)
     request.state.user_id = user_id
     return user_id
+
+
+async def check_and_increment_daily_quota(client, user_id: str, limit: int) -> bool:
+    """Atomically increment today's trip count for user_id if below `limit`.
+    Returns True if allowed (and incremented), False if already at/over quota.
+
+    Deploy-order safety net (Codex HIGH #4): if the RPC is missing from the live DB
+    (a migration that lagged the code deploy — autoDeploy:true), PostgREST returns
+    PGRST202. Fail CLOSED with a clean 503 (protects Apify/OpenAI spend — deliberately
+    NOT fail-open) instead of an opaque 500. Any other APIError propagates (-> 500),
+    matching jobs.py's RPC/DB error posture.
+    """
+    from fastapi import HTTPException
+    from postgrest.exceptions import APIError
+
+    try:
+        resp = await client.rpc(
+            "increment_daily_trip_usage", {"p_user_id": user_id, "p_limit": limit}
+        ).execute()
+    except APIError as exc:
+        # Implementer: confirm the missing-function code is "PGRST202" against the
+        # installed postgrest (it is the documented "function not found in schema
+        # cache" code); the fail-injection test below asserts the 503 path.
+        if getattr(exc, "code", None) == "PGRST202":
+            raise HTTPException(
+                status_code=503, detail="Trip generation temporarily unavailable"
+            ) from None
+        raise
+    return resp.data is not None
+
+
+async def refund_daily_quota(client, user_id: str) -> None:
+    """Decrement today's count (floored at 0). Used when a counted request did not
+    result in a new generation (enqueue failure, or lost idempotency-key race)."""
+    await client.rpc("decrement_daily_trip_usage", {"p_user_id": user_id}).execute()

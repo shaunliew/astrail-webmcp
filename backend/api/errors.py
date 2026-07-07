@@ -12,6 +12,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 logger = logging.getLogger("astrail.errors")
 
@@ -58,6 +59,13 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 
 def register_error_handlers(app: FastAPI) -> None:
-    app.add_exception_handler(HTTPException, http_exception_handler)
+    # Registered on Starlette's base HTTPException, not fastapi.HTTPException:
+    # Starlette's routing layer raises the BASE class for framework 404/405
+    # (unmatched route / wrong method), and handler lookup walks the raised
+    # exception's MRO. Registering on fastapi.HTTPException alone misses those
+    # framework errors, leaving them un-enveloped. This registration is a
+    # strict superset — it also catches app-raised fastapi.HTTPException since
+    # that class subclasses StarletteHTTPException.
+    app.add_exception_handler(StarletteHTTPException, http_exception_handler)
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
     app.add_exception_handler(Exception, unhandled_exception_handler)

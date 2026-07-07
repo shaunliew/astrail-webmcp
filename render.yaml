@@ -30,3 +30,9 @@ services:
         sync: false
       - key: SENTRY_DSN
         sync: false
+      - key: ALLOWED_ORIGINS
+        value: https://astrail.xyz,https://www.astrail.xyz
+      - key: DAILY_TRIP_QUOTA
+        value: "5"
+      - key: BURST_LIMIT
+        value: 3/minute

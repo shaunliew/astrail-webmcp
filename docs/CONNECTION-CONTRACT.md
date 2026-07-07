@@ -22,8 +22,10 @@
 - Daily: 5 trips/user/day (durable). Both return `{"error": {"code": "rate_limited", "message": "..."}}`.
 - Both 429s share the same `code: "rate_limited"` — the frontend must distinguish them by
   **headers/message, not code**:
-  - **Burst 429** carries a `Retry-After: 60` header plus `X-RateLimit-*` headers
-    (slowapi-injected via `headers_enabled=True`).
+  - **Burst 429** carries a `Retry-After: <n>` header plus `X-RateLimit-*` headers
+    (slowapi-injected via `headers_enabled=True`). `<n>` is the seconds remaining until the
+    1-minute burst window resets — a countdown in the range `1..60`, **not** a fixed `60`.
+    Drive any retry/backoff timer off this value, don't hardcode 60.
   - **Daily-cap 429** carries no `Retry-After` header; its message is exactly
     `"Daily trip limit reached. Try again tomorrow."`.
   - FE UX: check for the `Retry-After` header first — present means "slow down" (burst),

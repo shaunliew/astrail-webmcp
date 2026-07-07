@@ -92,7 +92,7 @@ A brand-new beta user can, end-to-end on localhost (deploy-ready config included
 
 ## Risks
 
-- **Supabase built-in email rate limit** (~few/hour) can stall OTP testing — mitigate by testing with 1–2 addresses, move to custom SMTP when inviting users.
+- **Custom SMTP is required immediately, not deferrable** (corrected 2026-07-07, discovered live in the dashboard): Supabase locks email template editing behind custom SMTP — the code template can't be written at all on the built-in mailer, not just rate-limited. Resend's free tier unblocks this in ~5 min.
 - **OTP template change** is a manual dashboard step; if missed, users get a link instead of a code — plan includes a verification step.
 - **Cold Apify runs** cost real money and minutes — acceptance run is scripted once, not per-iteration.
 - **Preference merge** touches pipeline input text — must not violate guardrail #11 (profile text is user-authored, but still goes through the same guardrailed input path as captions).

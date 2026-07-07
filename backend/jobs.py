@@ -28,7 +28,7 @@ def compute_idempotency_key(user_id: str, reel_urls: list[str], start_date: str,
     every output-affecting field (A4): same reels+dates but CHANGED preferences/pace/
     destination_hint must produce a NEW trip, not replay the old one."""
     material = "|".join([user_id, ",".join(sorted(reel_urls)), start_date, end_date,
-                         (preferences or ""), pace, (destination_hint or "")])
+                         (preferences or ""), (pace or "balanced"), (destination_hint or "")])
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 

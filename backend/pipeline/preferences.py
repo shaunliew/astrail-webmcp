@@ -94,7 +94,8 @@ async def build_preference_context(mem0, user_id: str, *, explicit_text: str | N
             res = await asyncio.wait_for(
                 mem0.search(_PREFERENCE_QUERY, filters={"user_id": user_id}, top_k=10),
                 timeout=4)
-            facts = [m.get("memory") for m in (res.get("results") or []) if m.get("memory")]
+            facts = [m["memory"] for m in (res.get("results") or [])
+                     if isinstance(m.get("memory"), str) and m["memory"].strip()]
         except Exception:
             facts = []   # best-effort: a mem0 blip or timeout → inferred defaults, never fail the trip
     return merge_preferences(explicit_text=explicit_text, pace=pace, memory_facts=facts)

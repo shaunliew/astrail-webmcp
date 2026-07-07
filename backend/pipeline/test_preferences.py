@@ -96,6 +96,18 @@ def test_build_context_mem0_none_or_error_infers_default():
     assert b.source == "inferred_default"   # a mem0 blip degrades, never raises
 
 
+def test_build_context_drops_non_string_memory_values():
+    # M1 (guardrail #3): a shape-drifted mem0 result (memory as a dict instead of a
+    # string) must NOT propagate an AttributeError out of build_preference_context —
+    # the bad entry is dropped, valid string entries are kept.
+    from pipeline.preferences import build_preference_context
+    mem = _FakeMem0(results=[{"memory": {"nested": "x"}}, {"memory": "likes ramen"}])
+    ctx = asyncio.run(build_preference_context(mem, "user-1", explicit_text="",
+                                               pace="balanced", destination_hint="Tokyo"))
+    assert ctx.source == "memory"
+    assert ctx.memory_facts == ["likes ramen"]
+
+
 def test_build_context_timeout_degrades_to_default(monkeypatch):
     # A2: the search MUST be wrapped in asyncio.wait_for(..., timeout=4) — the read runs
     # BEFORE scrape, so an unbounded hang would stall EVERY generation. Pin the exact

@@ -118,7 +118,7 @@ async def test_generate_trip_end_to_end(monkeypatch):
     async def run(trip_id, uid, urls, sd, ed, **kw):
         return await runner.run_generation(
             trip_id, uid, urls, sd, ed, job_id=kw.get("job_id"),
-            scrape=scrape, extract=extract, weather=weather, transport=transport_fn,
+            scrape=scrape, extract=extract, mem0=None, weather=weather, transport=transport_fn,
             restaurant=restaurant_fn, narrator=narrator_fn, hotel=hotel_fn,
         )
 

@@ -26,6 +26,7 @@ Travel MCP is **search/suggestions only** — no booking, no payments in v1.
 | **Build/implement ANY backend feature** (plan or code; or the user says "build X" / "implement X") | `.claude/docs/BUILD-LOOP.md` (the MANDATORY end-to-end feature workflow — always follow it) |
 | Add/remove/substitute ANY dependency, service, or tool | `.claude/docs/STACK.md` (locked stack, banned list, v2 triggers) |
 | Touch backend pipeline, SSE, API endpoints, or create new files | `.claude/docs/ARCHITECTURE.md` (tree, 4-phase pipeline, SSE contract, endpoints, build order) |
+| Write/review backend endpoint, rate-limit, auth, or infra code | `.claude/docs/BACKEND-PRINCIPLES.md` (SOLID · async/streaming · idempotency · caching · security/JWT/OAuth · design patterns — all applied feasible-first) |
 | Touch `.env.example`, `render.yaml`, Vercel config, or env-reading code | `.claude/docs/ENV.md` |
 | Touch `backend/genagents/` or OpenAI Agents SDK code | `.claude/docs/LESSONS-HACKATHON.md` |
 | Start sprint work | EMDEE: `astrail/SPRINTS.md` → your `astrail/team/<name>/SPRINT-N.md` → `astrail/PRD.md` |

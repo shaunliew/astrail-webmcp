@@ -26,6 +26,11 @@ from pipeline.persist import persist_hotels, persist_itinerary, persist_narratio
 from jobs import mark_job_done, mark_job_running
 from supabase_client import get_supabase_client
 
+# A3: mem0=_UNSET (not None) means "not injected -> resolve the real singleton". Explicit
+# mem0=None then unambiguously means "memory disabled" (tests pass None or a fake), so a
+# CI run with MEM0_API_KEY set never constructs the real client / hits the network.
+_UNSET = object()
+
 
 async def record_event(client, trip_id, *, event_type, stage, message, payload=None) -> None:
     """Insert one generation_events row (progressive persistence + SSE source)."""
@@ -66,7 +71,8 @@ async def _fail(client, trip_id, user_id, job_id, stage, message) -> dict:
 
 
 async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
-                          *, job_id=None, pace="balanced", client=None, scrape=None, extract=None,
+                          *, job_id=None, pace="balanced", preferences=None, destination_hint=None,
+                          client=None, scrape=None, extract=None, mem0=_UNSET,
                           weather=None, transport=None, restaurant=None, narrator=None, hotel=None) -> dict:
     """Run the deterministic spine; own the job lifecycle; always write a terminal result."""
     try:
@@ -90,6 +96,22 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
 
         await _set_status(client, trip_id, user_id, "generating")
         degraded = False
+
+        # PREFERENCES: retrieve-once memory read → one immutable PreferenceContext.
+        # Best-effort (guardrail #3): a mem0 miss/outage/timeout degrades to inferred
+        # defaults. Injected `mem0` (tests) overrides the singleton; None disables
+        # memory unambiguously (A3 sentinel) — never construct/hit the real client
+        # unless the caller left `mem0` un-injected.
+        from pipeline.preferences import build_preference_context
+        if mem0 is _UNSET:
+            from mem0_client import get_mem0_client
+            mem0 = await get_mem0_client()
+        pref_ctx = await build_preference_context(
+            mem0, user_id, explicit_text=preferences, pace=pace,
+            destination_hint=destination_hint)
+        await record_event(client, trip_id, event_type="stage", stage="preferences",
+                           message=pref_ctx.summary,
+                           payload={"preference_source": pref_ctx.source})
 
         # PHASE 1+2: SCRAPE + EXTRACT, with a per-reel EXTRACTION CACHE. A repeat reel (same
         # normalized URL + EXTRACTOR_VERSION) skips BOTH scrape and extract. Non-reel URLs are
@@ -194,6 +216,14 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
         await record_event(client, trip_id, event_type="stage", stage="save", message="saving trip")
         try:
             dropped = await persist_itinerary(client, trip_id, canonical, dates)
+            try:
+                # Owner-checked (guardrail #6) + best-effort: never fail the trip on this write.
+                await client.table("trips").update(
+                    {"preference_summary": pref_ctx.summary,
+                     "preference_sources": [pref_ctx.source]}
+                ).eq("id", trip_id).eq("user_id", user_id).execute()
+            except Exception:
+                pass   # best-effort trip metadata; never fail the trip on it
             if dropped:
                 status = "saved_with_gaps"
                 await record_event(client, trip_id, event_type="warning", stage="save",
@@ -208,6 +238,18 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                                            message="weather persist failed")
                     except Exception:
                         pass   # best-effort — weather persist failure is non-critical
+
+            # Compute the soft-guidance preference block ONCE, before the enrich gather — restaurant
+            # and narrator are the only two stages that personalize toward it (Task 4). Self-contained
+            # (guardrail #3): a failure here must degrade to no-injection, not skip the entire
+            # enrich gather (transport/hotel/narration don't even use pref_block).
+            try:
+                from pipeline.preferences import preference_block
+                pref_block = preference_block(pref_ctx)
+            except Exception:
+                pref_block = None   # memory personalization is best-effort (guardrail #3): a hiccup
+                                    # here must not disable the transport/hotel/narration stages
+
             # Enrich stages are INDEPENDENT (disjoint write tables) and best-effort (guardrail #3),
             # so run them CONCURRENTLY instead of sequentially (~halves the enrich block latency).
             # Weather is persisted ABOVE, sequentially, because narration reads
@@ -237,7 +279,7 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                 try:
                     await record_event(client, trip_id, event_type="stage", stage="restaurants",
                                        message="suggesting restaurants")
-                    await persist_restaurants(client, trip_id, suggest=restaurant)
+                    await persist_restaurants(client, trip_id, suggest=restaurant, preference_block=pref_block)
                 except Exception:
                     try:
                         await record_event(client, trip_id, event_type="warning", stage="restaurants",
@@ -262,7 +304,7 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                 try:
                     await record_event(client, trip_id, event_type="stage", stage="summarize",
                                        message="narrating the trip")
-                    await persist_narration(client, trip_id, user_id, narrate=narrator)
+                    await persist_narration(client, trip_id, user_id, narrate=narrator, preference_block=pref_block)
                 except Exception:
                     try:
                         await record_event(client, trip_id, event_type="warning", stage="summarize",
@@ -281,7 +323,35 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
         await record_event(client, trip_id, event_type="result", stage="save",
                             message="generation complete", payload=payload)
         if job_id:
-            await mark_job_done(client, job_id, status="succeeded")
+            try:
+                await mark_job_done(client, job_id, status="succeeded")
+            except Exception:
+                try:
+                    await record_event(client, trip_id, event_type="warning", stage="save",
+                                       message="job completion mark failed; recovery may re-sweep")
+                except Exception:
+                    pass   # post-terminal-result: a failure here must never re-enter _fail / flip the trip
+
+        # WRITE-BACK — AFTER the terminal `result` (stream already ended → invisible),
+        # AWAITED (not create_task → no GC risk). Wrapped in its OWN try/except: memory
+        # write-back is best-effort past the point of no return — a raise here must
+        # never emit a second result or flip an already-succeeded trip (guardrail #3).
+        # persist_trip_memory already swallows its own mem0/DB errors; this outer guard
+        # covers trip_synopsis / destination derivation raising too.
+        try:
+            from pipeline.preferences import persist_trip_memory, trip_synopsis
+            destination = (next((getattr(p, "city_or_region_guess", None) for p in canonical
+                                if getattr(p, "city_or_region_guess", None)), None)
+                or destination_hint or "your destination")[:80]
+            await persist_trip_memory(client, mem0, user_id=user_id, trip_id=trip_id,
+                                      ctx=pref_ctx,
+                                      synopsis=trip_synopsis(itinerary, pace, destination))
+        except Exception:
+            try:
+                await record_event(client, trip_id, event_type="warning", stage="save",
+                                   message="memory write-back unavailable")
+            except Exception:
+                pass   # best-effort: even the warning-write must not fail the (already-saved) trip
         return payload
     except Exception:
         # Any unexpected error → terminal result, failed status, failed job (never hang the stream).

@@ -42,7 +42,9 @@ def _default_dates() -> tuple[str, str]:
 async def _inspect(client, trip_id: str) -> None:
     """Print the persisted trip exactly as the frontend would read it: day -> place -> weather."""
     trip = (
-        await client.table("trips").select("id,status,destination_hint,start_date,end_date,title,summary")
+        await client.table("trips")
+        .select("id,status,destination_hint,start_date,end_date,title,summary,"
+                "preference_summary,preference_sources")
         .eq("id", trip_id).maybe_single().execute()
     ).data
     if trip is None:
@@ -67,6 +69,25 @@ async def _inspect(client, trip_id: str) -> None:
           f"{trip['start_date']}..{trip['end_date']}")
     print(f"    trip_title={trip.get('title')!r}")
     print(f"    trip_summary={trip.get('summary')!r}")
+    print(f"    trips.preference_summary={trip.get('preference_summary')!r} "
+          f"preference_sources={trip.get('preference_sources')!r}")
+    pref_stage_events = (
+        await client.table("generation_events").select("message,payload")
+        .eq("trip_id", trip_id).eq("stage", "preferences").execute()
+    ).data
+    print("=== preferences stage event:")
+    for ev in pref_stage_events:
+        source = (ev.get("payload") or {}).get("preference_source")
+        print(f"    preference_source={source!r}  message={ev.get('message')!r}")
+    # PERSISTED memory receipt (there is NO memory_preference SSE event — the receipt is
+    # persisted to memory_events, not streamed; read it from the DB, not a stage event).
+    mem_events = (
+        await client.table("memory_events").select("event_type,learned_facts_json,created_at")
+        .eq("trip_id", trip_id).execute()
+    ).data
+    print(f"=== memory_events (persisted receipt): {len(mem_events)}")
+    for me in mem_events:
+        print(f"    event_type={me.get('event_type')!r}  learned_facts_json={me.get('learned_facts_json')!r}")
     print(f"=== trip_places: {len(tps)} | places: {len(places)} | trip_days: {len(tds)}")
     for tp in sorted(tps, key=lambda x: (x["day_number"] or 0, x["sort_order"] or 0)):
         p = by_id.get(tp["place_id"], {})
@@ -138,7 +159,10 @@ async def _run(args: argparse.Namespace) -> None:
     start, end = (args.start, args.end) if (args.start and args.end) else _default_dates()
 
     # Idempotent: a same-key run already exists -> inspect it instead of double-generating.
-    idem = compute_idempotency_key(user_id, reels, start, end)
+    # Pass the output-affecting fields (matches main.py): changed preferences -> a new trip.
+    idem = compute_idempotency_key(user_id, reels, start, end,
+                                   preferences=args.preferences, pace=args.pace,
+                                   destination_hint=args.dest)
     existing = (
         await client.table("jobs").select("trip_id").eq("idempotency_key", idem).maybe_single().execute()
     )
@@ -158,7 +182,8 @@ async def _run(args: argparse.Namespace) -> None:
     trip_id = trip["id"]
     await record_event(
         client, trip_id, event_type="stage", stage="create_trip", message="trip created",
-        payload={"reel_urls": reels, "start_date": start, "end_date": end, "pace": args.pace},
+        payload={"reel_urls": reels, "start_date": start, "end_date": end, "pace": args.pace,
+                 "preferences": args.preferences, "destination_hint": args.dest},
     )
     job_id, winning = await enqueue_job(trip_id, user_id, idem)
     if winning != trip_id:
@@ -167,9 +192,11 @@ async def _run(args: argparse.Namespace) -> None:
         await _inspect(client, winning)
         return
 
-    print(f"[created] trip={trip_id} job={job_id} reels={len(reels)} {start}..{end} pace={args.pace}")
+    print(f"[created] trip={trip_id} job={job_id} reels={len(reels)} {start}..{end} pace={args.pace} "
+          f"preferences={args.preferences!r}")
     print("[running] REAL pipeline: Apify -> OpenAI -> Mapbox -> dedup/route -> Open-Meteo -> persist ...")
-    await run_generation(trip_id, user_id, reels, start, end, job_id=job_id, pace=args.pace, client=client)
+    await run_generation(trip_id, user_id, reels, start, end, job_id=job_id, pace=args.pace,
+                         preferences=args.preferences, destination_hint=args.dest, client=client)
     await _inspect(client, trip_id)
 
     if args.cleanup:
@@ -190,6 +217,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--dest", default="Japan", help="destination hint (default: Japan)")
     p.add_argument("--pace", default="balanced", choices=["relaxed", "balanced", "packed"],
                    help="itinerary pace (default: balanced)")
+    p.add_argument("--preferences", default=None,
+                   help="free-text preferences; non-blank -> source=explicit + writes to mem0. "
+                        "Omit on a later trip (same user) to see source=memory recall.")
     p.add_argument("--user", help="user_id (default: ASTRAIL_TEST_USER_ID env)")
     p.add_argument("--cleanup", action="store_true", help="delete the generated trip after (hermetic smoke)")
     p.add_argument("--inspect", metavar="TRIP_ID", help="re-print an existing trip and exit (no run, no cost)")

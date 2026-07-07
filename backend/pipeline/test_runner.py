@@ -141,6 +141,26 @@ async def _no_hotel(*_a, **_k):
     return (None, [])
 
 
+def _event_stages(c):
+    return [e["stage"] for e in c.events]
+
+
+class _RaisingMem0:
+    async def search(self, *_a, **_k):
+        raise RuntimeError("mem0 down")
+
+
+class _AddRaisingMem0:
+    """search succeeds (explicit input skips it anyway); add always raises — exercises
+    the awaited write-back's best-effort failure path (Task 5)."""
+
+    async def search(self, *_a, **_k):
+        return {"results": []}
+
+    async def add(self, *_a, **_k):
+        raise RuntimeError("mem0 add failed")
+
+
 @pytest.mark.asyncio
 async def test_happy_path_completes_marks_job_and_emits_result():
     c = _Client(jobs=[{"id": "job-1", "status": "pending"}])
@@ -153,10 +173,10 @@ async def test_happy_path_completes_marks_job_and_emits_result():
 
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01",
                                        "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract,
-                                       weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
+                                       mem0=None, weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
     assert out["itinerary"]["days"][0]["place_names"] == ["Tokyo Tower"]
     stages = [e["stage"] for e in c.events]
-    assert stages[:4] == ["scrape", "extract", "dedup", "narrate"]
+    assert stages[:5] == ["preferences", "scrape", "extract", "dedup", "narrate"]
     assert [e for e in c.events if e["event_type"] == "result"]
     assert c.db["jobs"][0]["status"] == "succeeded"
     assert c.trip_updates[-1]["status"] == "complete"
@@ -176,7 +196,7 @@ async def test_one_reel_fails_saves_with_gaps():
 
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/ok", "https://ig/bad"],
                                        "2026-08-01", "2026-08-01", job_id="job-1", client=c,
-                                       scrape=scrape, extract=extract, weather=_no_weather,
+                                       scrape=scrape, extract=extract, mem0=None, weather=_no_weather,
                                        transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
     assert out["itinerary"]["days"]
     assert any(e["event_type"] == "warning" for e in c.events)
@@ -196,7 +216,7 @@ async def test_all_reels_fail_is_critical_failure():
 
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/bad"], "2026-08-01",
                                        "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract,
-                                       weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
+                                       mem0=None, weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
     assert "error" in out
     assert [e for e in c.events if e["event_type"] == "result"][0]["payload"]["error"]
     assert c.db["jobs"][0]["status"] == "failed"
@@ -215,7 +235,7 @@ async def test_unexpected_exception_still_writes_terminal_result():
 
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01",
                                        "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=boom,
-                                       weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
+                                       mem0=None, weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
     assert "error" in out
     assert [e for e in c.events if e["event_type"] == "result"]  # never a hanging stream
     assert c.db["jobs"][0]["status"] == "failed"
@@ -233,7 +253,7 @@ async def test_blank_day_reports_saved_with_gaps():
 
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01",
                                        "2026-08-03", job_id="job-1", client=c, scrape=scrape, extract=extract,
-                                       weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
+                                       mem0=None, weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
     assert len(out["itinerary"]["days"]) == 3
     assert out["itinerary"]["days"][1]["place_names"] == []
     assert out["itinerary"]["days"][2]["place_names"] == []
@@ -253,7 +273,7 @@ async def test_runner_persists_normalized_rows_on_success():
 
     await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01",
                                  "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract,
-                                 weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
+                                 mem0=None, weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
     assert c.db.get("places") and c.db["places"][0]["name"] == "Tokyo Tower"
     trip_places = c.db.get("trip_places")
     assert trip_places and all(tp["trip_id"] == "trip-1" for tp in trip_places)
@@ -277,7 +297,7 @@ async def test_runner_degrades_to_saved_with_gaps_when_persist_fails(monkeypatch
     monkeypatch.setattr(runner, "persist_itinerary", _boom)
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01",
                                        "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract,
-                                       weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
+                                       mem0=None, weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
     assert out["itinerary"]["days"]                       # itinerary still produced + returned
     assert any(e["event_type"] == "warning" for e in c.events)
     assert c.trip_updates[-1]["status"] == "saved_with_gaps"
@@ -300,7 +320,7 @@ async def test_runner_degrades_when_persist_drops_a_place():
 
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01",
                                        "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract,
-                                       weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
+                                       mem0=None, weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
     assert out["itinerary"]["days"]                       # itinerary still shows both places
     assert any(e["event_type"] == "warning" and "not saved" in e["message"] for e in c.events)
     assert c.trip_updates[-1]["status"] == "saved_with_gaps"
@@ -319,7 +339,7 @@ async def test_cas_abort_skips_when_job_already_claimed():
 
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01",
                                        "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract,
-                                       weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
+                                       mem0=None, weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
     assert out == {"skipped": "job already claimed by another run"}
     assert c.events == []
     assert c.trip_updates == []
@@ -341,7 +361,7 @@ async def test_runner_persists_weather_on_trip_days():
                               weather_code=2, summary="Partly cloudy, 24-31°C") for d in dates]
 
     await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
-                                job_id="job-1", client=c, scrape=scrape, extract=extract, weather=weather,
+                                job_id="job-1", client=c, scrape=scrape, extract=extract, mem0=None, weather=weather,
                                 transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
     td = c.db["trip_days"]
     assert td and td[0].get("weather_source") == "open_meteo"
@@ -367,7 +387,7 @@ async def test_runner_skips_weather_when_all_places_lack_coords():
         raise AssertionError("weather must not be called when centroid is None")
 
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
-                                      job_id="job-1", client=c, scrape=scrape, extract=extract, weather=weather,
+                                      job_id="job-1", client=c, scrape=scrape, extract=extract, mem0=None, weather=weather,
                                       transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
     assert out["itinerary"]["days"]                            # itinerary still produced
     assert not any(e["stage"] == "weather" for e in c.events)  # centroid is None → weather skipped entirely
@@ -389,7 +409,7 @@ async def test_runner_weather_failure_is_non_critical():
         raise RuntimeError("open-meteo down")
 
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
-                                      job_id="job-1", client=c, scrape=scrape, extract=extract, weather=weather,
+                                      job_id="job-1", client=c, scrape=scrape, extract=extract, mem0=None, weather=weather,
                                       transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
     assert out["itinerary"]["days"]                        # trip still produced
     assert any(e["event_type"] == "warning" and e["stage"] == "weather" for e in c.events)
@@ -406,7 +426,7 @@ async def test_runner_persists_transport_legs():
         return [{"duration_s": 300, "distance_m": 400, "code": "Ok"} for _ in range(len(coords) - 1)]
     await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
                                 job_id="job-1", client=c, scrape=scrape, extract=extract,
-                                weather=_no_weather, transport=transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
+                                mem0=None, weather=_no_weather, transport=transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
     assert c.db["transport_legs"], "expected transport_legs written"
     assert any(e["stage"] == "transport" for e in c.events)
     assert c.trip_updates[-1]["status"] == "complete"   # transport success does not degrade
@@ -420,7 +440,7 @@ async def test_runner_transport_failure_is_non_critical():
     async def transport(coords, *, profile="walking"): raise RuntimeError("mapbox down")
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
                                       job_id="job-1", client=c, scrape=scrape, extract=extract,
-                                      weather=_no_weather, transport=transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
+                                      mem0=None, weather=_no_weather, transport=transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
     assert out["itinerary"]["days"]
     assert any(e["event_type"] == "warning" and e["stage"] == "transport" for e in c.events)
     assert c.trip_updates[-1]["status"] == "complete"       # transport failure does NOT degrade/fail
@@ -437,7 +457,7 @@ async def test_runner_transport_missing_token_is_non_critical(monkeypatch):
     async def extract(reel): return [_place("A", lat=35.60, lng=139.70), _place("B", lat=35.62, lng=139.72)]
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
                                       job_id="job-1", client=c, scrape=scrape, extract=extract,
-                                      weather=_no_weather,   # transport intentionally NOT injected
+                                      mem0=None, weather=_no_weather,   # transport intentionally NOT injected
                                       restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
     assert out["itinerary"]["days"]
     assert any(e["event_type"] == "warning" and e["stage"] == "transport" for e in c.events)
@@ -450,14 +470,14 @@ async def test_runner_persists_restaurant_suggestions():
     c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     async def scrape(url): return _reel(url)
     async def extract(reel): return [_place("A", lat=35.60, lng=139.70), _place("B", lat=35.62, lng=139.72)]
-    async def restaurant(places, *, city=None):
+    async def restaurant(places, *, city=None, preference_block=None):
         from models.enrichment import RestaurantCandidate
         return [RestaurantCandidate(name="Ramen X", name_local="ラーメンX", cuisine="ramen",
                                     summary="Great tonkotsu near A", lat=35.601, lng=139.701,
                                     address="Tokyo", mapbox_id="poi.1", categories=["レストラン"], distance_m=20)]
     await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
                                 job_id="job-1", client=c, scrape=scrape, extract=extract,
-                                weather=_no_weather, transport=_no_transport, restaurant=restaurant, narrator=_no_narrator, hotel=_no_hotel)
+                                mem0=None, weather=_no_weather, transport=_no_transport, restaurant=restaurant, narrator=_no_narrator, hotel=_no_hotel)
     rs = c.db.get("restaurant_suggestions")
     assert rs and rs[0]["summary"] == "Great tonkotsu near A"
     assert rs[0]["restaurant_place_id"] and rs[0]["near_place_id"]
@@ -471,10 +491,10 @@ async def test_runner_restaurant_failure_is_non_critical():
     c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     async def scrape(url): return _reel(url)
     async def extract(reel): return [_place("A", lat=35.60, lng=139.70), _place("B", lat=35.62, lng=139.72)]
-    async def restaurant(places, *, city=None): raise RuntimeError("mapbox/openai down")
+    async def restaurant(places, *, city=None, preference_block=None): raise RuntimeError("mapbox/openai down")
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
                                       job_id="job-1", client=c, scrape=scrape, extract=extract,
-                                      weather=_no_weather, transport=_no_transport, restaurant=restaurant, narrator=_no_narrator, hotel=_no_hotel)
+                                      mem0=None, weather=_no_weather, transport=_no_transport, restaurant=restaurant, narrator=_no_narrator, hotel=_no_hotel)
     assert out["itinerary"]["days"]
     assert any(e["event_type"] == "warning" and e["stage"] == "restaurants" for e in c.events)
     assert c.trip_updates[-1]["status"] == "complete"      # restaurant failure does NOT degrade/fail
@@ -486,14 +506,14 @@ async def test_runner_persists_narration():
     c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     async def scrape(url): return _reel(url)
     async def extract(reel): return [_place("Tokyo Tower")]
-    async def narrator(days, *, city=None):
+    async def narrator(days, *, city=None, preference_block=None):
         from models.enrichment import NarrationResult, DayNarration
         return NarrationResult(days=[DayNarration(day_number=1, title="Day 1: Icons",
                                                   summary="Tokyo Tower first.")],
                                trip_title="Tokyo in a Day", trip_summary="A compact highlights run.")
     await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
                                 job_id="job-1", client=c, scrape=scrape, extract=extract,
-                                weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant,
+                                mem0=None, weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant,
                                 narrator=narrator, hotel=_no_hotel)
     td = c.db["trip_days"]
     assert td and td[0].get("title") == "Day 1: Icons" and td[0].get("summary")
@@ -507,10 +527,10 @@ async def test_runner_narration_failure_is_non_critical():
     c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     async def scrape(url): return _reel(url)
     async def extract(reel): return [_place("Tokyo Tower")]
-    async def narrator(days, *, city=None): raise RuntimeError("openai down")
+    async def narrator(days, *, city=None, preference_block=None): raise RuntimeError("openai down")
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
                                       job_id="job-1", client=c, scrape=scrape, extract=extract,
-                                      weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant,
+                                      mem0=None, weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant,
                                       narrator=narrator, hotel=_no_hotel)
     assert out["itinerary"]["days"]
     assert any(e["event_type"] == "warning" and e["stage"] == "summarize" for e in c.events)
@@ -534,7 +554,7 @@ async def test_runner_uses_extraction_cache_skips_scrape_and_extract():
 
     await runner.run_generation("trip-1", "user-1", [reel_url], "2026-08-01", "2026-08-01",
                                 job_id="job-1", client=c, scrape=scrape, extract=extract,
-                                weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant,
+                                mem0=None, weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant,
                                 narrator=_no_narrator, hotel=_no_hotel)
     assert any(e["stage"] == "cache_hit" for e in c.events)
     assert c.db.get("places") and c.db["places"][0]["name"] == "Tokyo Tower"   # cached place persisted
@@ -556,7 +576,7 @@ async def test_runner_persists_hotel_suggestions():
                            "currency": "USD", "hotelId": 13278, "packageId": "pkg-a"}]
     await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
                                 job_id="job-1", client=c, scrape=scrape, extract=extract,
-                                weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant,
+                                mem0=None, weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant,
                                 narrator=_no_narrator, hotel=hotel)
     hs = c.db.get("hotel_suggestions")
     assert hs and hs[0]["name"] == "Park Hyatt Tokyo" and hs[0]["source"] == "travala"
@@ -575,9 +595,168 @@ async def test_runner_hotel_failure_is_non_critical():
     async def hotel(location, check_in, check_out, rooms): raise RuntimeError("travala down")
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
                                       job_id="job-1", client=c, scrape=scrape, extract=extract,
-                                      weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant,
+                                      mem0=None, weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant,
                                       narrator=_no_narrator, hotel=hotel)
     assert out["itinerary"]["days"]
     assert any(e["event_type"] == "warning" and e["stage"] == "hotels" for e in c.events)
     assert c.trip_updates[-1]["status"] == "complete"   # hotel failure does NOT degrade/fail
     assert c.db["jobs"][0]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_runner_records_preferences_stage_and_mem0_failure_is_non_critical():
+    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+
+    async def scrape(url): return _reel(url)
+    async def extract(reel): return [_place("Tokyo Tower")]
+
+    out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+                                      job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                      mem0=_RaisingMem0(), preferences="",
+                                      weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant,
+                                      narrator=_no_narrator, hotel=_no_hotel)
+    assert out["itinerary"]["days"]
+    assert "preferences" in _event_stages(c)
+    assert c.trip_updates[-1]["status"] in ("complete", "saved_with_gaps")  # never failed for a memory reason
+    assert c.db["jobs"][0]["status"] == "succeeded"
+    # Owner-checked (guardrail #6) trip-level write landed despite the mem0 blip
+    # (it degrades to inferred_default rather than raising).
+    assert any(u.get("preference_summary") for u in c.trip_updates)
+    assert any(u.get("preference_sources") == ["inferred_default"] for u in c.trip_updates)
+
+
+@pytest.mark.asyncio
+async def test_runner_forwards_preference_block_to_restaurant_and_narrator():
+    # Regression for the forwarding value itself (not just that the kwarg is accepted):
+    # capture what persist_restaurants/persist_narration actually pass down to the
+    # restaurant/narrator fakes. If `preference_block=pref_block` were ever dropped from
+    # either runner._stage_* call, the fake would receive the kwarg's default (None) and
+    # this test would fail on the `is not None` assertion below.
+    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    captured: dict[str, str | None] = {}
+
+    async def scrape(url): return _reel(url)
+    async def extract(reel): return [_place("Tokyo Tower")]
+
+    async def restaurant(places, *, city=None, preference_block=None):
+        captured["restaurant"] = preference_block
+        return []
+
+    async def narrator(days, *, city=None, preference_block=None):
+        from models.enrichment import NarrationResult
+        captured["narrator"] = preference_block
+        return NarrationResult(days=[], trip_title=None, trip_summary="")
+
+    out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+                                      job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                      mem0=None, preferences="ramen",
+                                      weather=_no_weather, transport=_no_transport,
+                                      restaurant=restaurant, narrator=narrator, hotel=_no_hotel)
+    assert out["itinerary"]["days"]
+    assert captured["restaurant"] is not None and "ramen" in captured["restaurant"]
+    assert captured["narrator"] is not None and "ramen" in captured["narrator"]
+
+
+@pytest.mark.asyncio
+async def test_runner_write_back_failure_is_non_critical():
+    # The write-back (Task 5) is awaited AFTER the terminal result — a hung/erroring
+    # mem0.add must not fail the already-saved trip, and a memory_events "failed" row
+    # is the observability receipt (persist_trip_memory swallows the error internally;
+    # test_write_back_swallows_add_error in test_preferences.py covers the unit itself).
+    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+
+    async def scrape(url): return _reel(url)
+    async def extract(reel): return [_place("Tokyo Tower")]
+
+    out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+                                      job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                      mem0=_AddRaisingMem0(), preferences="loves ramen",
+                                      weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant,
+                                      narrator=_no_narrator, hotel=_no_hotel)
+    assert out["itinerary"]["days"]
+    assert c.trip_updates[-1]["status"] != "failed"
+    assert [e for e in c.events if e["event_type"] == "result"]
+    assert c.db["jobs"][0]["status"] == "succeeded"
+    memory_events = c.db.get("memory_events")
+    assert memory_events and memory_events[-1]["event_type"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_runner_write_back_raise_does_not_double_result_or_flip_status(monkeypatch):
+    # Finding 1: the write-back sits AFTER _set_status/result/mark_job_done inside
+    # run_generation's outermost try. If trip_synopsis (or persist_trip_memory) raises
+    # uncaught, the outer `except Exception: _fail(...)` would emit a SECOND `result`
+    # event and flip the already-`succeeded` trip/job to `failed`. The runner tail must
+    # wrap the write-back in its own try/except so a raise here is fully absorbed.
+    from pipeline import preferences as prefs_mod
+
+    def _boom_synopsis(*_a, **_k):
+        raise RuntimeError("synopsis boom")
+
+    monkeypatch.setattr(prefs_mod, "trip_synopsis", _boom_synopsis)
+
+    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+
+    async def scrape(url): return _reel(url)
+    async def extract(reel): return [_place("Tokyo Tower")]
+
+    out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+                                      job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                      mem0=_AddRaisingMem0(), preferences="loves ramen",
+                                      weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant,
+                                      narrator=_no_narrator, hotel=_no_hotel)
+    assert out["itinerary"]["days"]
+    result_events = [e for e in c.events if e["event_type"] == "result"]
+    assert len(result_events) == 1   # never a second (error) result event
+    assert result_events[0]["message"] == "generation complete"
+    assert c.trip_updates[-1]["status"] != "failed"
+    assert c.db["jobs"][0]["status"] == "succeeded"   # never flipped to failed
+    # Finding (Important, re-review): the write-back guard must not be a silent
+    # `except: pass` — it must emit the same warning-event observability convention
+    # as every other best-effort stage in this function.
+    warning_events = [e for e in c.events if e["event_type"] == "warning" and e["stage"] == "save"]
+    assert any(e["message"] == "memory write-back unavailable" for e in warning_events)
+
+
+class _JobDoneBoomTable(_Table):
+    """Raises only on the mark_job_done update (completed_at set to a real value); the
+    earlier mark_job_running update (completed_at explicitly None) must still succeed."""
+
+    async def execute(self):
+        if self.name == "jobs" and self._op[0] == "update" and self._op[1].get("completed_at") is not None:
+            raise RuntimeError("db blip marking job done")
+        return await super().execute()
+
+
+class _JobDoneBoomClient(_Client):
+    def table(self, name):
+        return _JobDoneBoomTable(name, self.db)
+
+
+@pytest.mark.asyncio
+async def test_runner_mark_job_done_raise_does_not_double_result_or_flip_status():
+    # gstack /review cross-model finding (High): the success-tail `mark_job_done` call
+    # sits AFTER the terminal `result` event but is INSIDE run_generation's outermost
+    # try. If it raises (a DB blip), the outer `except Exception: _fail(...)` would emit
+    # a SECOND `result` event and flip the already-succeeded trip/job to `failed`. It
+    # must be independently guarded like the write-back is.
+    c = _JobDoneBoomClient(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+
+    async def scrape(url):
+        return _reel(url)
+
+    async def extract(reel):
+        return [_place("Tokyo Tower")]
+
+    out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+                                      job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                      mem0=None, weather=_no_weather, transport=_no_transport,
+                                      restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
+    assert out["itinerary"]["days"]
+    result_events = [e for e in c.events if e["event_type"] == "result"]
+    assert len(result_events) == 1   # never a second (error) result event
+    assert result_events[0]["message"] == "generation complete"
+    assert c.trip_updates[-1]["status"] != "failed"
+    assert c.db["jobs"][0]["status"] == "running"   # never flipped to failed; left for recovery sweep
+    warning_events = [e for e in c.events if e["event_type"] == "warning" and e["stage"] == "save"]
+    assert any(e["message"] == "job completion mark failed; recovery may re-sweep" for e in warning_events)

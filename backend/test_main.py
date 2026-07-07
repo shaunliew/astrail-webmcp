@@ -425,3 +425,28 @@ async def test_redispatch_threads_preferences_and_destination_hint(monkeypatch):
     _args, kwargs = calls[0]
     assert kwargs["preferences"] == "ramen"
     assert kwargs["destination_hint"] == "Tokyo"
+
+
+async def test_cors_allows_astrail_origin():
+    async with _async_client() as ac:
+        r = await ac.options(
+            "/generate-trip",
+            headers={
+                "Origin": "https://astrail.xyz",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+    assert r.headers.get("access-control-allow-origin") == "https://astrail.xyz"
+
+
+async def test_cors_rejects_unknown_origin():
+    async with _async_client() as ac:
+        r = await ac.options(
+            "/generate-trip",
+            headers={
+                "Origin": "https://evil.example.com",
+                "Access-Control-Request-Method": "POST",
+            },
+        )
+    # Starlette does not echo a disallowed origin.
+    assert r.headers.get("access-control-allow-origin") != "https://evil.example.com"

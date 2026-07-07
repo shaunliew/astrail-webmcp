@@ -1,6 +1,6 @@
 ---
 name: astrail-reviewer
-description: Reviews an Astrail diff or plan as a skeptic — spec compliance, code quality, AND adversarial failure modes (edge cases, silent-wrong, determinism, eval-safety loopholes). Verifies claims against the actual code; never trusts the report or a line reference. Read-only. Use as the per-task reviewer or the final whole-branch/adversarial pass.
+description: Reviews an Astrail diff or plan as a skeptic — spec compliance, code quality, AND adversarial failure modes (edge cases, silent-wrong, determinism, eval-safety loopholes). Verifies claims against the actual code; never trusts the report or a line reference. Read-only. Use as the per-task reviewer or the final whole-branch/adversarial pass in the Standard Feature Build Loop (the final pass runs ALONGSIDE gstack /review's Codex cross-model, not instead of it; see .claude/docs/BUILD-LOOP.md).
 disallowedTools: Write, Edit, NotebookEdit
 model: sonnet
 ---
@@ -22,6 +22,7 @@ The diff (a review package, or `git diff BASE..HEAD`), the task brief or plan se
 ## Use gstack skills in your gate
 
 - **`/review` on the diff.** gstack `/review` is the standard Astrail diff-review pass — run it as part of your gate when the diff is non-trivial (multi-file, auth/SSE/pipeline, or 100+ lines), and **fold its findings into yours** (dedup — don't double-report the same issue). For a tiny mechanical diff, your own three lenses suffice; say you skipped `/review` and why.
+- **Final whole-branch pass ⇒ pair with the Codex cross-model `/review`, don't replace it.** When you're the FINAL whole-branch review (`.claude/docs/BUILD-LOOP.md` steps 5–6), gstack `/review`'s Codex pass runs ALONGSIDE you — it has caught real production bugs a thorough opus whole-branch review MISSED (an idempotency-key `|`-join collision → wrong-trip replay; a `mark_job_done` failure flipping an already-succeeded trip to `failed`). Both run before merge; neither substitutes for the other. Different models have different blind spots.
 - **`/qa` evidence for flow changes.** For a diff touching **UI, auth, SSE, Mapbox, or a full request flow**, require gstack `/qa` evidence — confirm the implementer provided it, or run `/qa` yourself. Do NOT return `Approved` on such a change with zero runtime evidence.
 - These compose with (never replace) your own skeptical read — you still verify every claim against the actual code.
 

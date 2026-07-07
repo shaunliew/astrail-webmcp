@@ -9,7 +9,9 @@ description: Use when planning Astrail implementation work, reviewing an impleme
 
 Act as planner and reviewer. Do not implement code by default.
 
-Use this skill to turn an Astrail issue or request into an executable markdown plan, critique plans before implementation, and review final diffs after Codex has executed the plan.
+Use this skill to turn an Astrail issue or request into an executable markdown plan, critique plans before implementation, and review final diffs.
+
+**This skill is the research → plan → plan-review front of the [Standard Feature Build Loop](../../docs/BUILD-LOOP.md)** — the mandatory end-to-end workflow for building ANY backend feature. Once the plan passes `/plan-eng-review` + Codex here, hand off to `superpowers:subagent-driven-development` (`astrail-developer` implements task-by-task, `astrail-reviewer` gates each), then a final `astrail-reviewer` opus whole-branch pass **AND** a gstack `/review` Codex cross-model pass (run both — they catch different bugs), live-verify, and PR. Don't stop at the plan — carry it through the loop.
 
 ## Core Engineering Rule (Astrail): feasible-first, minimal, maintainable
 

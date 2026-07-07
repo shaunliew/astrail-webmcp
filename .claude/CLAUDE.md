@@ -23,6 +23,7 @@ Travel MCP is **search/suggestions only** — no booking, no payments in v1.
 
 | Before you… | Read first |
 |---|---|
+| **Build/implement ANY backend feature** (plan or code; or the user says "build X" / "implement X") | `.claude/docs/BUILD-LOOP.md` (the MANDATORY end-to-end feature workflow — always follow it) |
 | Add/remove/substitute ANY dependency, service, or tool | `.claude/docs/STACK.md` (locked stack, banned list, v2 triggers) |
 | Touch backend pipeline, SSE, API endpoints, or create new files | `.claude/docs/ARCHITECTURE.md` (tree, 4-phase pipeline, SSE contract, endpoints, build order) |
 | Touch `.env.example`, `render.yaml`, Vercel config, or env-reading code | `.claude/docs/ENV.md` |
@@ -86,10 +87,15 @@ than chaining into another. A wrapper skill plus the sub-skills it documents (e.
 `playbook/ORCHESTRATION.md` for when/how to delegate to subagents. Repo-local subagents:
 `astrail-developer`, `astrail-researcher`, `astrail-reviewer` (see `.claude/agents/`;
 dispatch by `subagent_type`, `model: opus` for the hard adversarial/final review).
-**Standard backend loop:** plan (`astrail-plan-and-review`) → review the plan
-(`/plan-eng-review` + Codex) → implement task-by-task via subagent-driven-development
-(`astrail-developer` + `astrail-reviewer`) → final gstack `/review` or an
-`astrail-reviewer` adversarial pass.
+**Standard Feature Build Loop (MANDATORY — full detail in `.claude/docs/BUILD-LOOP.md`;
+read it before building any feature):** research (`astrail-researcher`, if an unfamiliar
+API/algorithm) → plan (`astrail-plan-and-review`) → review the plan (`/plan-eng-review` +
+Codex) → implement task-by-task via subagent-driven-development (`astrail-developer` +
+`astrail-reviewer`; reviewers fault-inject to prove guards are load-bearing) → final
+`astrail-reviewer` opus whole-branch pass **AND** gstack `/review` Codex cross-model (run
+BOTH — Codex has caught real bugs the Claude reviews missed) → live-verify smoke (`/qa` for
+flow changes) → PR/merge/sync → update `.claude/docs/` + EMDEE (shared vault) + memory.
+Do not shortcut it.
 
 ## gstack (required per machine)
 

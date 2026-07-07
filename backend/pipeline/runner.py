@@ -333,14 +333,18 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
         # covers trip_synopsis / destination derivation raising too.
         try:
             from pipeline.preferences import persist_trip_memory, trip_synopsis
-            destination = next((getattr(p, "city_or_region_guess", None) for p in canonical
-                                if getattr(p, "city_or_region_guess", None)), None) \
-                or destination_hint or "your destination"
+            destination = (next((getattr(p, "city_or_region_guess", None) for p in canonical
+                                if getattr(p, "city_or_region_guess", None)), None)
+                or destination_hint or "your destination")[:80]
             await persist_trip_memory(client, mem0, user_id=user_id, trip_id=trip_id,
                                       ctx=pref_ctx,
                                       synopsis=trip_synopsis(itinerary, pace, destination))
         except Exception:
-            pass   # best-effort: never let the write-back corrupt an already-succeeded trip
+            try:
+                await record_event(client, trip_id, event_type="warning", stage="save",
+                                   message="memory write-back unavailable")
+            except Exception:
+                pass   # best-effort: even the warning-write must not fail the (already-saved) trip
         return payload
     except Exception:
         # Any unexpected error → terminal result, failed status, failed job (never hang the stream).

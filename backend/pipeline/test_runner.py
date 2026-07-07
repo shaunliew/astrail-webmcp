@@ -711,3 +711,8 @@ async def test_runner_write_back_raise_does_not_double_result_or_flip_status(mon
     assert result_events[0]["message"] == "generation complete"
     assert c.trip_updates[-1]["status"] != "failed"
     assert c.db["jobs"][0]["status"] == "succeeded"   # never flipped to failed
+    # Finding (Important, re-review): the write-back guard must not be a silent
+    # `except: pass` — it must emit the same warning-event observability convention
+    # as every other best-effort stage in this function.
+    warning_events = [e for e in c.events if e["event_type"] == "warning" and e["stage"] == "save"]
+    assert any(e["message"] == "memory write-back unavailable" for e in warning_events)

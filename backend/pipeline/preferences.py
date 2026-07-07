@@ -128,15 +128,14 @@ async def persist_trip_memory(client, mem0, *, user_id: str, trip_id: str,
                           # trips.preference_summary (Task 3)
 
     event_type = "learned"
-    if mem0 is not None:
-        try:
-            # Timeout-bounded (Codex): a hung hosted add must not wedge the task.
-            await asyncio.wait_for(
-                mem0.add([{"role": "user", "content": text}], user_id=user_id,
-                         metadata={"source": "generation", "trip_id": trip_id}),
-                timeout=5)
-        except Exception:
-            event_type = "failed"   # add error OR TimeoutError → record for observability
+    try:
+        # Timeout-bounded (Codex): a hung hosted add must not wedge the task.
+        await asyncio.wait_for(
+            mem0.add([{"role": "user", "content": text}], user_id=user_id,
+                     metadata={"source": "generation", "trip_id": trip_id}),
+            timeout=5)
+    except Exception:
+        event_type = "failed"   # add error OR TimeoutError → record for observability
 
     try:
         await client.table("memory_events").insert({

@@ -21,7 +21,12 @@ os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "service-role-key")
 
 import main  # noqa: E402
-from auth import get_current_user_id  # noqa: E402
+import rate_limit  # noqa: E402
+from fastapi import Request  # noqa: E402
+from rate_limit import get_current_user_id_stashed  # noqa: E402
+
+# Sentinel: configure a fake RPC to raise on .execute() (refund-failure paths).
+_RAISE = object()
 
 
 class _Result:
@@ -32,12 +37,13 @@ class _Result:
 class _Table:
     """Async fake of a supabase-py postgrest filter builder over a shared in-memory db."""
 
-    def __init__(self, name, db):
+    def __init__(self, name, db, fail_ops=None):
         self.name = name
         self.db = db
         self._op = None
         self._filters: dict = {}
         self._single = False
+        self._fail_ops = fail_ops if fail_ops is not None else set()
 
     def insert(self, row):
         self._op = ("insert", row)
@@ -68,6 +74,8 @@ class _Table:
 
     async def execute(self):
         op, arg = self._op
+        if (self.name, op) in self._fail_ops:
+            raise RuntimeError(f"forced {op} failure on {self.name}")
         rows = self.db.setdefault(self.name, [])
         if op == "insert":
             row = {"id": f"{self.name}-{len(rows) + 1}", **arg}
@@ -88,12 +96,38 @@ class _Table:
         return _Result(matched)
 
 
+class _Rpc:
+    """Async fake of supabase-py's rpc() builder: records the call on the client and
+    returns a configurable .data from .execute() (or raises)."""
+
+    def __init__(self, client, name):
+        self._client = client
+        self._name = name
+
+    async def execute(self):
+        if self._name in self._client.rpc_results:
+            result = self._client.rpc_results[self._name]
+        else:
+            # Sensible defaults: increment allows (a positive count), decrement returns 0.
+            result = 0 if self._name.startswith("decrement") else 1
+        if result is _RAISE:
+            raise RuntimeError(f"forced rpc failure: {self._name}")
+        return _Result(result)
+
+
 class _Client:
     def __init__(self, db):
         self.db = db
+        self.rpc_calls: list = []      # [(name, params), ...] — assert (non-)consumption of quota
+        self.rpc_results: dict = {}    # name -> canned .data value, or _RAISE to raise on execute
+        self.fail_ops: set = set()     # {(table_name, op)} whose .execute() raises
 
     def table(self, name):
-        return _Table(name, self.db)
+        return _Table(name, self.db, self.fail_ops)
+
+    def rpc(self, name, params):
+        self.rpc_calls.append((name, params))
+        return _Rpc(self, name)
 
 
 def _async_client() -> httpx.AsyncClient:
@@ -129,17 +163,33 @@ async def ctx(monkeypatch):
 
     monkeypatch.setattr(main, "run_generation", _run_generation)
 
-    main.app.dependency_overrides[get_current_user_id] = lambda: "user-1"
+    # The route now depends on get_current_user_id_stashed (which calls get_current_user_id
+    # DIRECTLY, not via Depends), so overriding get_current_user_id would no longer intercept.
+    # Override the stashed dep, and stash request.state.user_id so slowapi's burst key_func
+    # keys on the authenticated user id (not the shared test-client IP).
+    async def _stashed(request: Request):
+        request.state.user_id = "user-1"
+        return "user-1"
+
+    main.app.dependency_overrides[get_current_user_id_stashed] = _stashed
     async with _async_client() as ac:
-        yield ac, db, calls
+        yield ac, db, calls, client
     main.app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _reset_limiter():
+    """slowapi's in-memory burst counts are process-global — reset between tests so one
+    test's burst exhaustion doesn't leak into the next."""
+    rate_limit.limiter.reset()
+    yield
 
 
 _PAYLOAD = {"reel_urls": ["https://ig/r1"], "start_date": "2026-08-01", "end_date": "2026-08-02"}
 
 
 async def test_generate_trip_creates_trip_and_persists_create_trip_event(ctx):
-    ac, db, calls = ctx
+    ac, db, calls, client = ctx
     r = await ac.post("/generate-trip", json=_PAYLOAD)
     assert r.status_code == 200
     trip_id = r.json()["trip_id"]
@@ -153,7 +203,7 @@ async def test_generate_trip_creates_trip_and_persists_create_trip_event(ctx):
 
 
 async def test_generate_trip_replays_same_trip_for_same_idempotency_key(ctx):
-    ac, db, calls = ctx
+    ac, db, calls, client = ctx
     first = await ac.post("/generate-trip", json=_PAYLOAD)
     second = await ac.post("/generate-trip", json=_PAYLOAD)
     assert first.status_code == 200 and second.status_code == 200
@@ -167,7 +217,7 @@ async def test_generate_trip_marks_trip_failed_when_create_trip_event_fails(ctx,
     must not leave the trip stuck `generating` with no job to recover it — Fix 3."""
     from postgrest.exceptions import APIError
 
-    ac, db, calls = ctx
+    ac, db, calls, client = ctx
 
     async def _failing_record_event(*_args, **_kwargs):
         raise APIError({"message": "boom", "code": "500", "details": None, "hint": None})
@@ -183,7 +233,7 @@ async def test_generate_trip_marks_trip_failed_when_create_trip_event_fails(ctx,
 
 
 async def test_generate_trip_idempotency_race_deletes_orphan_and_redirects(ctx, monkeypatch):
-    ac, db, calls = ctx
+    ac, db, calls, client = ctx
 
     async def _racing_enqueue(_trip_id, _user_id, _key, **_kw):
         return "job-winner", "winner-trip-id"  # a concurrent POST already won the race
@@ -202,6 +252,125 @@ async def test_generate_trip_requires_auth():
     async with _async_client() as ac:
         r = await ac.post("/generate-trip", json=_PAYLOAD)
     assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Two-layer rate limiting (Task 4): burst (slowapi) + durable daily quota + refunds.
+# ---------------------------------------------------------------------------
+
+
+async def test_burst_limit_returns_enveloped_429(ctx):
+    """Layer 2 (burst): BURST_LIMIT is 3/minute. One real create + two idempotent
+    replays consume the window; the 4th call trips the burst limit BEFORE the handler
+    body (the @limiter.limit decorator fires ahead of the replay logic)."""
+    ac, db, calls, client = ctx
+    for _ in range(3):
+        r = await ac.post("/generate-trip", json=_PAYLOAD)
+        assert r.status_code == 200
+    r = await ac.post("/generate-trip", json=_PAYLOAD)
+    assert r.status_code == 429
+    assert r.json()["error"]["code"] == "rate_limited"
+
+
+async def test_daily_quota_full_returns_429_before_insert(ctx):
+    """Layer 1 (durable quota): increment_daily_trip_usage returns None (at/over quota)
+    -> the gate rejects with 429 BEFORE any trip insert or dispatch."""
+    ac, db, calls, client = ctx
+    client.rpc_results["increment_daily_trip_usage"] = None
+    r = await ac.post("/generate-trip", json=_PAYLOAD)
+    assert r.status_code == 429
+    assert r.json()["error"]["code"] == "rate_limited"
+    assert db.get("trips", []) == []   # rejected before the insert
+    assert calls == []                 # never dispatched
+
+
+async def test_idempotent_replay_does_not_consume_quota(ctx):
+    """A retried POST (existing job for the idempotency key) replays the trip WITHOUT
+    calling increment_daily_trip_usage — the quota gate sits after the replay short-circuit."""
+    ac, db, calls, client = ctx
+    first = await ac.post("/generate-trip", json=_PAYLOAD)
+    assert first.status_code == 200
+    client.rpc_calls.clear()   # ignore the first call's (legitimate) increment
+    second = await ac.post("/generate-trip", json=_PAYLOAD)
+    assert second.status_code == 200
+    assert first.json()["trip_id"] == second.json()["trip_id"]
+    assert "increment_daily_trip_usage" not in [c[0] for c in client.rpc_calls]
+
+
+async def test_burst_limit_is_per_user_not_shared(monkeypatch):
+    """F4 (review fold): keying on request.state.user_id (not the IP) means user A
+    exhausting the 3/min burst must NOT rate-limit user B on the same test-client IP."""
+    db: dict = {}
+    client = _Client(db)
+
+    async def _get_client():
+        return client
+
+    async def _enqueue(trip_id, user_id, key, **_kw):
+        db.setdefault("jobs", []).append(
+            {"id": "job-1", "trip_id": trip_id, "user_id": user_id, "idempotency_key": key}
+        )
+        return "job-1", trip_id
+
+    async def _run_generation(*_args, **_kwargs):
+        return {"itinerary": {"days": []}}
+
+    monkeypatch.setattr(main, "get_supabase_client", _get_client)
+    monkeypatch.setattr(main, "enqueue_job", _enqueue)
+    monkeypatch.setattr(main, "run_generation", _run_generation)
+
+    current = {"uid": "user-A"}
+
+    async def _stashed(request: Request):
+        request.state.user_id = current["uid"]
+        return current["uid"]
+
+    main.app.dependency_overrides[get_current_user_id_stashed] = _stashed
+    try:
+        async with _async_client() as ac:
+            for _ in range(3):
+                await ac.post("/generate-trip", json=_PAYLOAD)
+            assert (await ac.post("/generate-trip", json=_PAYLOAD)).status_code == 429  # A exhausted
+            current["uid"] = "user-B"
+            assert (await ac.post("/generate-trip", json=_PAYLOAD)).status_code != 429  # B fresh bucket
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+async def test_insert_failure_refunds_quota_without_stranding(ctx):
+    """Codex HIGH #2 fold: trips.insert raises AFTER the quota increment. Expect a 500
+    envelope, a best-effort refund (decrement called), and NO orphan trip left
+    'generating' (none was created -> trip_id stayed None -> fail-mark correctly skipped)."""
+    ac, db, calls, client = ctx
+    client.fail_ops.add(("trips", "insert"))
+    r = await ac.post("/generate-trip", json=_PAYLOAD)
+    assert r.status_code == 500
+    assert r.json()["error"]["code"] == "internal_error"
+    rpc_names = [c[0] for c in client.rpc_calls]
+    assert "increment_daily_trip_usage" in rpc_names   # quota was consumed
+    assert "decrement_daily_trip_usage" in rpc_names   # then best-effort refunded
+    assert db.get("trips", []) == []                   # no orphan trip created
+    assert calls == []                                 # never dispatched
+
+
+async def test_refund_exception_after_creation_still_marks_trip_failed(ctx, monkeypatch):
+    """Codex HIGH #3 PROOF: the trip IS created, then enqueue_job raises AND the refund
+    RPC then raises. The fail-mark runs BEFORE the swallowed refund, so the trip must STILL
+    end 'failed' — a refund error must never strand a trip in 'generating'."""
+    ac, db, calls, client = ctx
+
+    async def _boom_enqueue(*_args, **_kwargs):
+        raise RuntimeError("enqueue boom")
+
+    monkeypatch.setattr(main, "enqueue_job", _boom_enqueue)
+    client.rpc_results["decrement_daily_trip_usage"] = _RAISE  # refund itself raises
+
+    r = await ac.post("/generate-trip", json=_PAYLOAD)
+    assert r.status_code == 500
+    assert r.json()["error"]["code"] == "internal_error"
+    assert len(db["trips"]) == 1
+    assert db["trips"][0]["status"] == "failed"   # fail-marked before the swallowed refund
+    assert calls == []                            # never dispatched
 
 
 async def test_boot_time_recovery_failure_does_not_down_the_app(monkeypatch):

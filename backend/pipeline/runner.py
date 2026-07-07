@@ -323,7 +323,14 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
         await record_event(client, trip_id, event_type="result", stage="save",
                             message="generation complete", payload=payload)
         if job_id:
-            await mark_job_done(client, job_id, status="succeeded")
+            try:
+                await mark_job_done(client, job_id, status="succeeded")
+            except Exception:
+                try:
+                    await record_event(client, trip_id, event_type="warning", stage="save",
+                                       message="job completion mark failed; recovery may re-sweep")
+                except Exception:
+                    pass   # post-terminal-result: a failure here must never re-enter _fail / flip the trip
 
         # WRITE-BACK — AFTER the terminal `result` (stream already ended → invisible),
         # AWAITED (not create_task → no GC risk). Wrapped in its OWN try/except: memory

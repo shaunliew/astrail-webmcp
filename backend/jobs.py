@@ -8,6 +8,7 @@ POST never double-runs. See CLAUDE.md guardrail #12.
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime, timedelta, timezone
 
 from postgrest.exceptions import APIError
@@ -26,9 +27,18 @@ def compute_idempotency_key(user_id: str, reel_urls: list[str], start_date: str,
                             destination_hint: str | None = None) -> str:
     """Deterministic key from the REQUEST (not the trip id) so retries dedupe. Folds in
     every output-affecting field (A4): same reels+dates but CHANGED preferences/pace/
-    destination_hint must produce a NEW trip, not replay the old one."""
-    material = "|".join([user_id, ",".join(sorted(reel_urls)), start_date, end_date,
-                         (preferences or ""), (pace or "balanced"), (destination_hint or "")])
+    destination_hint must produce a NEW trip, not replay the old one.
+
+    JSON-encoded (not raw `|`/`,`-joined): free-text `preferences`/`destination_hint` can
+    contain "|" and reel URLs can contain ",", so a naive delimiter-join lets two DIFFERENT
+    requests produce the SAME material (a collision -- an idempotent replay would then
+    return the WRONG trip). JSON's quoting/escaping makes each field boundary unambiguous.
+    `preferences` is stripped to match the runtime's `merge_preferences`, so a
+    whitespace-only difference doesn't spawn a duplicate trip."""
+    material = json.dumps(
+        [user_id, sorted(reel_urls), start_date, end_date,
+         (preferences or "").strip(), (pace or "balanced"), (destination_hint or "")],
+        separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 

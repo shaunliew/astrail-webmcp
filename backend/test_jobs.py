@@ -31,6 +31,30 @@ def test_idempotency_key_changes_with_preferences_pace_or_destination_hint():
     assert base != diff_dest
 
 
+def test_idempotency_key_no_collision_across_field_boundary():
+    # gstack /review cross-model finding (Medium): the old encoding joined fields with a
+    # raw "|" (reels with ","). Free-text `preferences`/`destination_hint` can contain
+    # "|", so two DIFFERENT requests could produce the SAME join material -- e.g. shifting
+    # a "|" across the end_date/preferences boundary. On the old `|`-join code these two
+    # keys were EQUAL (a real collision -- an idempotent replay would return the WRONG
+    # trip); this assertion would fail to distinguish them there. The JSON-encoded
+    # material quotes/escapes each field, so the boundary is unambiguous and the keys
+    # differ.
+    a = jobs.compute_idempotency_key("u1", ["https://ig/a"], "2026-08-01", "e|p", preferences="q")
+    b = jobs.compute_idempotency_key("u1", ["https://ig/a"], "2026-08-01", "e", preferences="p|q")
+    assert a != b
+
+
+def test_idempotency_key_strips_whitespace_only_preferences_difference():
+    # merge_preferences (runtime) strips `preferences`, so a whitespace-only difference
+    # must not spawn a duplicate trip on replay.
+    a = jobs.compute_idempotency_key("u1", ["https://ig/a"], "2026-08-01", "2026-08-02",
+                                     preferences="ramen")
+    b = jobs.compute_idempotency_key("u1", ["https://ig/a"], "2026-08-01", "2026-08-02",
+                                     preferences="  ramen  ")
+    assert a == b
+
+
 class _Result:
     def __init__(self, data):
         self.data = data

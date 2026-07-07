@@ -159,7 +159,10 @@ async def _run(args: argparse.Namespace) -> None:
     start, end = (args.start, args.end) if (args.start and args.end) else _default_dates()
 
     # Idempotent: a same-key run already exists -> inspect it instead of double-generating.
-    idem = compute_idempotency_key(user_id, reels, start, end)
+    # Pass the output-affecting fields (matches main.py): changed preferences -> a new trip.
+    idem = compute_idempotency_key(user_id, reels, start, end,
+                                   preferences=args.preferences, pace=args.pace,
+                                   destination_hint=args.dest)
     existing = (
         await client.table("jobs").select("trip_id").eq("idempotency_key", idem).maybe_single().execute()
     )
@@ -179,7 +182,8 @@ async def _run(args: argparse.Namespace) -> None:
     trip_id = trip["id"]
     await record_event(
         client, trip_id, event_type="stage", stage="create_trip", message="trip created",
-        payload={"reel_urls": reels, "start_date": start, "end_date": end, "pace": args.pace},
+        payload={"reel_urls": reels, "start_date": start, "end_date": end, "pace": args.pace,
+                 "preferences": args.preferences, "destination_hint": args.dest},
     )
     job_id, winning = await enqueue_job(trip_id, user_id, idem)
     if winning != trip_id:
@@ -188,9 +192,11 @@ async def _run(args: argparse.Namespace) -> None:
         await _inspect(client, winning)
         return
 
-    print(f"[created] trip={trip_id} job={job_id} reels={len(reels)} {start}..{end} pace={args.pace}")
+    print(f"[created] trip={trip_id} job={job_id} reels={len(reels)} {start}..{end} pace={args.pace} "
+          f"preferences={args.preferences!r}")
     print("[running] REAL pipeline: Apify -> OpenAI -> Mapbox -> dedup/route -> Open-Meteo -> persist ...")
-    await run_generation(trip_id, user_id, reels, start, end, job_id=job_id, pace=args.pace, client=client)
+    await run_generation(trip_id, user_id, reels, start, end, job_id=job_id, pace=args.pace,
+                         preferences=args.preferences, destination_hint=args.dest, client=client)
     await _inspect(client, trip_id)
 
     if args.cleanup:
@@ -211,6 +217,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--dest", default="Japan", help="destination hint (default: Japan)")
     p.add_argument("--pace", default="balanced", choices=["relaxed", "balanced", "packed"],
                    help="itinerary pace (default: balanced)")
+    p.add_argument("--preferences", default=None,
+                   help="free-text preferences; non-blank -> source=explicit + writes to mem0. "
+                        "Omit on a later trip (same user) to see source=memory recall.")
     p.add_argument("--user", help="user_id (default: ASTRAIL_TEST_USER_ID env)")
     p.add_argument("--cleanup", action="store_true", help="delete the generated trip after (hermetic smoke)")
     p.add_argument("--inspect", metavar="TRIP_ID", help="re-print an existing trip and exit (no run, no cost)")

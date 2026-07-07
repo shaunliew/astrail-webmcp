@@ -21,9 +21,14 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def compute_idempotency_key(user_id: str, reel_urls: list[str], start_date: str, end_date: str) -> str:
-    """Deterministic key from the REQUEST (not the trip id) so retries dedupe."""
-    material = "|".join([user_id, ",".join(sorted(reel_urls)), start_date, end_date])
+def compute_idempotency_key(user_id: str, reel_urls: list[str], start_date: str, end_date: str,
+                            *, preferences: str | None = None, pace: str = "balanced",
+                            destination_hint: str | None = None) -> str:
+    """Deterministic key from the REQUEST (not the trip id) so retries dedupe. Folds in
+    every output-affecting field (A4): same reels+dates but CHANGED preferences/pace/
+    destination_hint must produce a NEW trip, not replay the old one."""
+    material = "|".join([user_id, ",".join(sorted(reel_urls)), start_date, end_date,
+                         (preferences or ""), pace, (destination_hint or "")])
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 

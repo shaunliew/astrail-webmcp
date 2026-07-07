@@ -77,7 +77,9 @@ async def generate_trip(
     user_id: str = Depends(get_current_user_id),
 ) -> GenerateTripResponse:
     client = await get_supabase_client()
-    idem = compute_idempotency_key(user_id, req.reel_urls, req.start_date, req.end_date)
+    idem = compute_idempotency_key(user_id, req.reel_urls, req.start_date, req.end_date,
+                                   preferences=req.preferences, pace=req.pace,
+                                   destination_hint=req.destination_hint)
 
     # Idempotent replay: a retried POST (same request-derived key) returns the
     # SAME trip instead of creating a duplicate.
@@ -110,6 +112,8 @@ async def generate_trip(
                 "start_date": req.start_date,
                 "end_date": req.end_date,
                 "pace": req.pace,
+                "preferences": req.preferences,
+                "destination_hint": req.destination_hint,
             },
         )
         job_id, winning_trip_id = await enqueue_job(trip_id, user_id, idem)
@@ -132,7 +136,8 @@ async def generate_trip(
 
     background.add_task(
         run_generation, trip_id, user_id, req.reel_urls, req.start_date, req.end_date,
-        job_id=job_id, pace=req.pace,
+        job_id=job_id, pace=req.pace, preferences=req.preferences,
+        destination_hint=req.destination_hint,
     )
     return GenerateTripResponse(trip_id=trip_id)
 
@@ -167,4 +172,5 @@ async def _redispatch(client, job: dict) -> None:
         await run_generation(
             job["trip_id"], job["user_id"], payload["reel_urls"], payload["start_date"],
             payload["end_date"], job_id=job["id"], pace=payload.get("pace", "balanced"),
+            preferences=payload.get("preferences"), destination_hint=payload.get("destination_hint"),
         )

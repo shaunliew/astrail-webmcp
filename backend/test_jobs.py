@@ -13,6 +13,24 @@ def test_idempotency_key_is_request_derived_and_stable():
     assert "trip" not in a  # never derived from a trip id
 
 
+def test_idempotency_key_changes_with_preferences_pace_or_destination_hint():
+    # A4: same reels+dates but CHANGED preferences/pace/destination_hint must NOT replay
+    # the old trip — otherwise "explicit input wins" silently fails on a re-submit.
+    base = jobs.compute_idempotency_key("u1", ["https://ig/a"], "2026-08-01", "2026-08-02")
+    same = jobs.compute_idempotency_key("u1", ["https://ig/a"], "2026-08-01", "2026-08-02",
+                                        preferences=None, pace="balanced", destination_hint=None)
+    diff_prefs = jobs.compute_idempotency_key("u1", ["https://ig/a"], "2026-08-01", "2026-08-02",
+                                              preferences="ramen")
+    diff_pace = jobs.compute_idempotency_key("u1", ["https://ig/a"], "2026-08-01", "2026-08-02",
+                                             pace="relaxed")
+    diff_dest = jobs.compute_idempotency_key("u1", ["https://ig/a"], "2026-08-01", "2026-08-02",
+                                             destination_hint="Tokyo")
+    assert base == same          # explicit defaults are stable/backward-compatible
+    assert base != diff_prefs
+    assert base != diff_pace
+    assert base != diff_dest
+
+
 class _Result:
     def __init__(self, data):
         self.data = data

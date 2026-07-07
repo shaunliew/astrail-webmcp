@@ -21,7 +21,13 @@ toward it.
 """
 from __future__ import annotations
 
+import asyncio
+
 from models.prefs import PreferenceContext
+
+# GENERIC on purpose (Non-goals "Destination-scoped recall"): mem0 memories are global
+# taste, not per-destination, so destination_hint never gets interpolated in here.
+_PREFERENCE_QUERY = "travel preferences for a trip"
 
 
 def merge_preferences(*, explicit_text: str | None, pace: str | None,
@@ -70,3 +76,25 @@ def distill_memory_text(ctx: PreferenceContext, *, synopsis: str) -> str | None:
     if ctx.source != "explicit" or not ctx.explicit_text:
         return None
     return f"Travel preferences: {ctx.explicit_text}. {synopsis}"
+
+
+async def build_preference_context(mem0, user_id: str, *, explicit_text: str | None,
+                                   pace: str | None, destination_hint: str | None
+                                   ) -> PreferenceContext:
+    """Retrieve-once. Only spends a mem0.search when memory would actually be USED —
+    i.e. the user left preferences blank (explicit wins → skip the call + quota).
+    A None client, a search error, OR a timeout all degrade to inferred defaults
+    (guardrail #3): this read runs BEFORE scrape, so an unbounded hang would
+    otherwise stall EVERY generation — asyncio.wait_for bounds it."""
+    facts: list[str] = []
+    if mem0 is not None and not (explicit_text or "").strip():
+        # destination_hint accepted for a future destination-scoped switch; v1 query stays
+        # generic (plan Non-goals "Destination-scoped recall")
+        try:
+            res = await asyncio.wait_for(
+                mem0.search(_PREFERENCE_QUERY, filters={"user_id": user_id}, top_k=10),
+                timeout=4)
+            facts = [m.get("memory") for m in (res.get("results") or []) if m.get("memory")]
+        except Exception:
+            facts = []   # best-effort: a mem0 blip or timeout → inferred defaults, never fail the trip
+    return merge_preferences(explicit_text=explicit_text, pace=pace, memory_facts=facts)

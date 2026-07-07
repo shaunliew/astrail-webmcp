@@ -10,6 +10,8 @@ class GenerateTripRequest(BaseModel):
     end_date: str
     destination_hint: str | None = None
     pace: str = "balanced"
+    # Free-text goes verbatim to mem0's cloud; bounded (A5).
+    preferences: str | None = Field(default=None, max_length=2000)
 
 
 class GenerateTripResponse(BaseModel):

@@ -225,3 +225,34 @@ async def test_boot_time_recovery_failure_does_not_down_the_app(monkeypatch):
     async with _async_client() as ac:
         r = await ac.get("/health")
     assert r.status_code == 200
+
+
+async def test_redispatch_threads_preferences_and_destination_hint(monkeypatch):
+    """Finding 1 / guardrail #12: a crash-reclaimed run MUST replay preferences and
+    destination_hint from the create_trip payload, or a Render restart mid-run
+    silently re-personalizes the trip (source flips explicit -> memory/inferred_default)."""
+    db: dict = {
+        "generation_events": [
+            {"trip_id": "trip-1", "stage": "create_trip",
+             "payload": {"reel_urls": ["https://ig/r1"], "start_date": "2026-08-01",
+                        "end_date": "2026-08-02", "pace": "relaxed",
+                        "preferences": "ramen", "destination_hint": "Tokyo"}},
+        ],
+    }
+    client = _Client(db)
+
+    calls: list = []
+
+    async def _fake_run_generation(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"itinerary": {"days": []}}
+
+    monkeypatch.setattr(main, "run_generation", _fake_run_generation)
+
+    job = {"id": "job-1", "trip_id": "trip-1", "user_id": "user-1"}
+    await main._redispatch(client, job)
+
+    assert len(calls) == 1
+    _args, kwargs = calls[0]
+    assert kwargs["preferences"] == "ramen"
+    assert kwargs["destination_hint"] == "Tokyo"

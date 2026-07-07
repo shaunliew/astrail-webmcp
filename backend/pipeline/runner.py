@@ -26,6 +26,11 @@ from pipeline.persist import persist_hotels, persist_itinerary, persist_narratio
 from jobs import mark_job_done, mark_job_running
 from supabase_client import get_supabase_client
 
+# A3: mem0=_UNSET (not None) means "not injected -> resolve the real singleton". Explicit
+# mem0=None then unambiguously means "memory disabled" (tests pass None or a fake), so a
+# CI run with MEM0_API_KEY set never constructs the real client / hits the network.
+_UNSET = object()
+
 
 async def record_event(client, trip_id, *, event_type, stage, message, payload=None) -> None:
     """Insert one generation_events row (progressive persistence + SSE source)."""
@@ -66,7 +71,8 @@ async def _fail(client, trip_id, user_id, job_id, stage, message) -> dict:
 
 
 async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
-                          *, job_id=None, pace="balanced", client=None, scrape=None, extract=None,
+                          *, job_id=None, pace="balanced", preferences=None, destination_hint=None,
+                          client=None, scrape=None, extract=None, mem0=_UNSET,
                           weather=None, transport=None, restaurant=None, narrator=None, hotel=None) -> dict:
     """Run the deterministic spine; own the job lifecycle; always write a terminal result."""
     try:
@@ -90,6 +96,22 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
 
         await _set_status(client, trip_id, user_id, "generating")
         degraded = False
+
+        # PREFERENCES: retrieve-once memory read → one immutable PreferenceContext.
+        # Best-effort (guardrail #3): a mem0 miss/outage/timeout degrades to inferred
+        # defaults. Injected `mem0` (tests) overrides the singleton; None disables
+        # memory unambiguously (A3 sentinel) — never construct/hit the real client
+        # unless the caller left `mem0` un-injected.
+        from pipeline.preferences import build_preference_context
+        if mem0 is _UNSET:
+            from mem0_client import get_mem0_client
+            mem0 = await get_mem0_client()
+        pref_ctx = await build_preference_context(
+            mem0, user_id, explicit_text=preferences, pace=pace,
+            destination_hint=destination_hint)
+        await record_event(client, trip_id, event_type="stage", stage="preferences",
+                           message=pref_ctx.summary,
+                           payload={"preference_source": pref_ctx.source})
 
         # PHASE 1+2: SCRAPE + EXTRACT, with a per-reel EXTRACTION CACHE. A repeat reel (same
         # normalized URL + EXTRACTOR_VERSION) skips BOTH scrape and extract. Non-reel URLs are
@@ -194,6 +216,14 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
         await record_event(client, trip_id, event_type="stage", stage="save", message="saving trip")
         try:
             dropped = await persist_itinerary(client, trip_id, canonical, dates)
+            try:
+                # Owner-checked (guardrail #6) + best-effort: never fail the trip on this write.
+                await client.table("trips").update(
+                    {"preference_summary": pref_ctx.summary,
+                     "preference_sources": [pref_ctx.source]}
+                ).eq("id", trip_id).eq("user_id", user_id).execute()
+            except Exception:
+                pass   # best-effort trip metadata; never fail the trip on it
             if dropped:
                 status = "saved_with_gaps"
                 await record_event(client, trip_id, event_type="warning", stage="save",

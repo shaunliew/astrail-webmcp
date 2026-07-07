@@ -222,3 +222,11 @@ export type GenerateTripRequest = {
   preferences: string | null
 }
 export type GenerateTripResponse = { trip_id: string }
+
+/** Mirror of backend api/errors.py ErrorResponse. Every API error returns this shape. */
+export interface ErrorResponse {
+  error: {
+    code: string;
+    message: string;
+  };
+}

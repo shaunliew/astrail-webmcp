@@ -409,9 +409,11 @@ Replace `frontend/app/sign-in/page.tsx` entirely with:
 ```tsx
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+
+const RESEND_COOLDOWN_S = 60 // Supabase rate-limits OTP sends (~1/min) — surface it, don't let users hit the raw error
 
 export default function SignInPage() {
   const router = useRouter()
@@ -421,6 +423,15 @@ export default function SignInPage() {
   const [pending, setPending] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [cooldown, setCooldown] = useState(0)
+  const codeRef = useRef<HTMLInputElement>(null)
+
+  // Resend cooldown ticker
+  useEffect(() => {
+    if (cooldown <= 0) return
+    const t = setTimeout(() => setCooldown((c) => c - 1), 1000)
+    return () => clearTimeout(t)
+  }, [cooldown])
 
   async function sendCode() {
     setPending(true); setError(null); setNotice(null)
@@ -432,6 +443,7 @@ export default function SignInPage() {
     setPending(false)
     if (error) { setError(error.message); return }
     setStep('code')
+    setCooldown(RESEND_COOLDOWN_S)
     setNotice(`We sent a 6-digit code to ${email.trim()}.`)
   }
 
@@ -444,7 +456,12 @@ export default function SignInPage() {
       type: 'email',
     })
     setPending(false)
-    if (error) { setError('That code is invalid or expired. Check the digits or resend.'); return }
+    if (error) {
+      setError('That code is invalid or expired. Check the digits or resend.')
+      codeRef.current?.focus()
+      codeRef.current?.select()
+      return
+    }
     router.push('/app') // middleware routes new users on to /app/onboarding
   }
 
@@ -496,6 +513,8 @@ export default function SignInPage() {
             </label>
             <input
               id="otp"
+              ref={codeRef}
+              autoFocus
               inputMode="numeric"
               autoComplete="one-time-code"
               maxLength={6}
@@ -515,10 +534,10 @@ export default function SignInPage() {
             <button
               type="button"
               onClick={() => void sendCode()}
-              disabled={pending}
+              disabled={pending || cooldown > 0}
               className="type-label text-[11px] uppercase tracking-wide text-[var(--muted)] underline-offset-2 hover:underline disabled:opacity-40"
             >
-              Resend code
+              {cooldown > 0 ? `Resend code (${cooldown}s)` : 'Resend code'}
             </button>
             <button
               type="button"
@@ -729,6 +748,8 @@ git commit -m "feat(onboarding): persist wizard to traveler_profiles (RLS upsert
 - Create: `frontend/lib/supabase/session.ts`
 - Modify: `frontend/lib/trip/api.ts` (add `streamGeneration`)
 - Modify: `frontend/components/create/CreateTripFlow.tsx` (swap mock-api → real api)
+- Modify: `frontend/lib/trip/backend-types.ts` (extend `StreamEvent` with the notice variant)
+- Modify: `frontend/components/create/GenerationProgress.tsx` (render warning/error/decision events)
 
 **Interfaces:**
 - Consumes: `generateTrip(req, accessToken)` and `streamTrip(tripId, accessToken)` from `api.ts` (existing, unchanged); `canGenerate(items, brief)` from Task 2.
@@ -886,6 +907,37 @@ describe('streamGeneration', () => {
 Run: `cd frontend && npm run test -- api-stream`
 Expected: FAIL before Step 2's implementation exists, PASS after.
 
+- [ ] **Step 2c: Surface pipeline warnings during generation (design decision 1A)**
+
+The real backend emits `warning`/`error`/`decision` events the mock never produced ("reel skipped", "weather unavailable" — `backend/pipeline/runner.py` record_event calls). Show them.
+
+In `frontend/lib/trip/backend-types.ts`, extend the SSE union (below `ResultEvent`):
+
+```typescript
+export type NoticeEvent = {
+  type: 'warning' | 'error' | 'decision'
+  stage: GenerationStage
+  msg: string
+}
+export type StreamEvent = StageEvent | HeartbeatEvent | ResultEvent | NoticeEvent
+```
+
+In `frontend/components/create/GenerationProgress.tsx`, add a branch AFTER the `result` branch and BEFORE the stage-card fallthrough (so warnings don't render as normal stage cards):
+
+```tsx
+            if (event.type === 'warning' || event.type === 'error' || event.type === 'decision') {
+              return (
+                <li key={i} className="type-body flex items-start gap-2 pl-4 text-sm text-[var(--muted)]">
+                  <span aria-hidden>{event.type === 'decision' ? '·' : '⚠'}</span>
+                  <span>{event.msg}</span>
+                </li>
+              )
+            }
+```
+
+Run: `cd frontend && npm run typecheck`
+Expected: PASS (the fallthrough stage-card branch now only ever receives `StageEvent`).
+
 - [ ] **Step 3: Swap CreateTripFlow to the real API**
 
 In `frontend/components/create/CreateTripFlow.tsx`:
@@ -959,7 +1011,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add frontend/lib/supabase/session.ts frontend/lib/trip/api.ts frontend/lib/trip/__tests__/api-stream.test.ts frontend/components/create/CreateTripFlow.tsx
+git add frontend/lib/supabase/session.ts frontend/lib/trip/api.ts frontend/lib/trip/__tests__/api-stream.test.ts frontend/components/create/CreateTripFlow.tsx frontend/lib/trip/backend-types.ts frontend/components/create/GenerationProgress.tsx
 git commit -m "feat(create): wire real generate-trip POST + live SSE stage events (mock-api retired from flow)"
 ```
 
@@ -1115,7 +1167,17 @@ export default function TripsList() {
         <p className="type-label text-xs uppercase tracking-wide text-[var(--muted)]">Loading…</p>
       ) : null}
       {trips !== null && trips.length === 0 ? (
-        <p className="type-body text-sm text-[var(--muted)]">No trips yet — paste some Reels and generate your first one.</p>
+        <div className="surface flex flex-col items-start gap-3 rounded-xl p-6">
+          <p className="type-body text-sm text-[var(--muted)]">
+            No trips yet. Paste the Reels that inspired you and Astrail maps the route you actually take.
+          </p>
+          <Link
+            href="/app"
+            className="type-label rounded-lg border border-[var(--brass)] bg-[var(--brass-soft)] px-4 py-2 text-xs uppercase tracking-wide text-[var(--starlight)]"
+          >
+            Plan your first trip
+          </Link>
+        </div>
       ) : null}
 
       <ul className="flex flex-col gap-3">
@@ -1302,7 +1364,7 @@ cd frontend && npm run dev
 
 - [ ] **Step 6: Failure path (criterion 6)**
 
-1. Temporarily set `APIFY_TOKEN=invalid` in backend env, restart backend, generate with a NEW (uncached) reel → stage events appear, then terminal failed result; browser lands on the trip page showing the "Generation failed" state (no hang; stream ended with `[DONE]` — verify in devtools Network tab).
+1. Temporarily set `APIFY_TOKEN=invalid` in backend env, restart backend, generate with a NEW (uncached) reel → stage events appear **and the ⚠ "reel skipped" warning renders inline in the progress feed**, then terminal failed result; browser lands on the trip page showing the "Generation failed" state (no hang; stream ended with `[DONE]` — verify in devtools Network tab). Also verify on `/sign-in`: the code input auto-focuses, and Resend shows a 60s countdown after sending.
 2. Restore the real `APIFY_TOKEN`.
 3. Dead-backend check: start a generation with an uncached reel, then kill the backend process mid-stream → within ~30s the browser leaves the generating screen for `/app/trip/[id]` (onerror escape hatch) showing the generating/failed state — never a frozen spinner. Restart the backend; its recovery sweep re-picks the job.
 
@@ -1323,10 +1385,10 @@ Append a `## QA evidence — YYYY-MM-DD` section to this plan file listing each 
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
 | Codex Review | `/codex review` | Independent 2nd opinion | 1 | ISSUES_ABSORBED (claude subagent — Codex CLI not installed) | 1 material + 3 minor; material folded into Task 2, docstring fixed, 1 refuted with code evidence |
 | Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR (PLAN) | 5 issues, 0 critical gaps open — all folded: 1A gate kept, 2A onerror hatch, 3A endpoint tests, 4A literal test edits, iron-rule regression test |
-| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| Design Review | `/plan-design-review` | UI/UX gaps | 1 | CLEAR (FULL) | score: 8/10 → 10/10, 4 decisions folded: OTP focus management + resend cooldown (Task 3), trips-list empty-state CTA (Task 6), inline pipeline warnings 1A (Task 5 Step 2c) |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
 
 - **CROSS-MODEL:** Outside voice (Claude subagent fallback) confirmed the plan's file:line grounding, added the Task 2 test-collision finding (accepted, 4A), and one refuted concern (invalid APIFY_TOKEN hang — disproved at `backend/pipeline/runner.py:126-158`, scrape failures degrade to a terminal failed result).
-- **VERDICT:** ENG CLEARED — ready to implement (scope locked full 8 tasks at commit 342998b; failure-mode analysis flagged 1 critical gap — dead-backend frozen spinner — resolved in-plan via 2A).
+- **VERDICT:** ENG + DESIGN CLEARED — ready to implement (scope locked full 8 tasks; failure-mode analysis flagged 1 critical gap — dead-backend frozen spinner — resolved in-plan via 2A; design review ran with mockups skipped by user choice, token-locked wiring UI).
 
 NO UNRESOLVED DECISIONS

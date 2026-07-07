@@ -237,12 +237,26 @@ async def test_live_mem0_v3_contract_add_then_search():
             [{"role": "user", "content": "Travel preferences: loves ramen and quiet, walkable days."}],
             user_id=user_id, metadata={"source": "contract_test"},
         )
-        res = await mem0.search("travel preferences for a trip", filters={"user_id": user_id}, top_k=10)
-        assert isinstance(res, dict)
-        results = res.get("results")
-        assert isinstance(results, list)
-        assert results, "expected the just-added fact to come back on search"
-        assert all(isinstance(m, dict) and isinstance(m.get("memory"), str) for m in results)
+        # v3 add() is asynchronous (returns PENDING, processes in the background — mem0's
+        # own docs say to wait 2-3s before searching), so poll instead of asserting on the
+        # first search: every poll checks SHAPE immediately (catches real v3 drift
+        # regardless of timing), then only after the loop do we require non-empty results
+        # (now that propagation has had time), keeping "shape drift" separate from "lag".
+        results = []
+        for _ in range(8):
+            res = await mem0.search("travel preferences for a trip",
+                                    filters={"user_id": user_id}, top_k=10)
+            assert isinstance(res, dict), \
+                f"mem0 v3 shape drift: search returned {type(res).__name__}, not dict"
+            results = res.get("results")
+            assert isinstance(results, list), "mem0 v3 shape drift: 'results' is not a list"
+            if results:
+                break
+            await asyncio.sleep(1)  # v3 add() is async (PENDING) — allow background processing
+        assert results, "expected the just-added fact to come back within ~8s (v3 async propagation)"
+        for m in results:
+            assert isinstance(m, dict) and isinstance(m.get("memory"), str), \
+                "mem0 v3 shape drift: result entry missing a string 'memory'"
     finally:
         try:
             await mem0.delete_all(user_id=user_id)   # best-effort cleanup of the throwaway user

@@ -69,6 +69,9 @@ class _Table:
         self._single = True
         return self
 
+    def limit(self, *_args, **_kwargs):
+        return self
+
     def _matches(self, row):
         return all(row.get(k) == v for k, v in self._filters.items())
 
@@ -450,3 +453,35 @@ async def test_cors_rejects_unknown_origin():
         )
     # Starlette does not echo a disallowed origin.
     assert r.headers.get("access-control-allow-origin") != "https://evil.example.com"
+
+
+# ---------------------------------------------------------------------------
+# GET /readiness (Task 6): deep DB probe, separate from the dumb /health liveness.
+# ---------------------------------------------------------------------------
+
+
+async def test_readiness_ok_when_db_reachable(monkeypatch):
+    db: dict = {}
+    client = _Client(db)
+
+    async def _get_client():
+        return client
+
+    monkeypatch.setattr(main, "get_supabase_client", _get_client)
+
+    async with _async_client() as ac:
+        r = await ac.get("/readiness")
+    assert r.status_code == 200
+    assert r.json() == {"ready": True}
+
+
+async def test_readiness_503_when_db_unreachable(monkeypatch):
+    async def _get_client():
+        raise RuntimeError("db unreachable")
+
+    monkeypatch.setattr(main, "get_supabase_client", _get_client)
+
+    async with _async_client() as ac:
+        r = await ac.get("/readiness")
+    assert r.status_code == 503
+    assert r.json()["ready"] is False

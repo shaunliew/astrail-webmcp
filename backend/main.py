@@ -100,6 +100,18 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/readiness")
+async def readiness():
+    """Deep readiness probe: confirms Supabase is reachable. NOT the deploy gate
+    (that is /health) — a DB blip should not fail a rolling deploy."""
+    try:
+        client = await get_supabase_client()
+        await client.table("users").select("id").limit(1).execute()
+        return {"ready": True}
+    except Exception:
+        return JSONResponse(status_code=503, content={"ready": False})
+
+
 @app.post("/generate-trip", response_model=GenerateTripResponse)
 @limiter.limit(BURST_LIMIT)
 async def generate_trip(

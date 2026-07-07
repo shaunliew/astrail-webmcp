@@ -52,9 +52,9 @@ A brand-new beta user can, end-to-end on localhost (deploy-ready config included
 - Onboarding writes only the profile row for now. `user_preference_facts` write-path is deferred (trigger: memory feature goes active).
 
 ### 3. Backend — schema parity + preference merge
-- `GenerateTripRequest` (backend/api/schemas.py) gains `requested_places: list[str] = []`, `budget_level: str | None`, `origin_city: str | None`, `preferences: str | None`; `start_date`/`end_date` become nullable. TS mirror already has these — all sides ship in the same PR (guardrail #4).
-- `POST /generate-trip` persists budget_level, origin_city, preference_summary to the trips row.
-- At generation time the backend fetches the user's `traveler_profiles` row and composes profile prefs + per-trip notes into the preference text the agents already consume. Plain string composition — no new agent, no new tables.
+- `GenerateTripRequest` (backend/api/schemas.py) gains `requested_places: list[str] = []`, `budget_level: str | None`, `origin_city: str | None`, `preferences: str | None`. **Correction (2026-07-07, from code):** `start_date`/`end_date` stay REQUIRED — the pipeline's date-range assembly needs real dates; the frontend requires both before enabling Generate, and the TS mirror tightens the two date fields to `string`. All sides ship in the same PR (guardrail #4).
+- `POST /generate-trip` persists budget_level, origin_city (with profile fallback), preference_summary, and preference_sources to the trips row.
+- At trip creation the backend fetches the user's `traveler_profiles` row and composes profile prefs + per-trip notes into `trips.preference_summary`. **Correction (2026-07-07, from code):** no agent consumes preference text yet — that is the codebase's own deferred "Step 9" (`pipeline/persist.py` preference_match_json note), which also keeps guardrail #11 untouched. The merge is persist-only for the beta; agent consumption keeps its deferral trigger (below).
 - Idempotency key: confirm whether preference changes should produce a new key; default is keep the current key (reels + dates) and document it.
 
 ### 4. Create flow — real API
@@ -84,6 +84,8 @@ A brand-new beta user can, end-to-end on localhost (deploy-ready config included
 - Google OAuth (post-beta), password auth (never for beta), password reset (n/a).
 - Supabase Realtime subscriptions (trigger: live post-generation editing exists).
 - `user_preference_facts` writes from onboarding/generation/feedback (trigger: memory feature active).
+- Feeding preference_summary into the restaurant/hotel/narration agents — the codebase's "Step 9" (trigger: preference-aware suggestions become a sprint goal; must go through the Agents SDK guardrails per #11).
+- `requested_places` resolution into the pipeline (accepted + recorded in the create_trip event, but not yet resolved to pins; trigger: user-requested-place resolution is a sprint goal).
 - Preference editing in Settings; trip deletion; `GET /trips*` backend endpoints (frontend reads RLS-direct by design).
 - Custom SMTP setup itself (documented, executed before inviting external users).
 - Per-stage pipeline checkpointing (per guardrail #12, restart-with-cache-reuse stands).

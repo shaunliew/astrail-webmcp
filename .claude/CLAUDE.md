@@ -12,8 +12,9 @@ sessions (quick questions, harness/docs work), skip the EMDEE read and the confi
 
 AI-native travel planner. User pastes 1-5 Instagram Reel URLs + dates + budget + origin +
 free-text preferences → a parallel agent pipeline (scrape → extract/dedup → enrich →
-narrate/summarize) produces an evidence-backed itinerary on a Mapbox 3D map with agent
-reasoning panels. Every recommendation surfaces its evidence (source Reel, caption quote,
+narrate/summarize), personalized by the returning user's remembered travel taste (mem0
+preference memory, live — Phase 1.3), produces an evidence-backed itinerary on a Mapbox 3D
+map with agent reasoning panels. Every recommendation surfaces its evidence (source Reel, caption quote,
 research URL, Travala hotel search result where applicable). Hotel search via Travala
 Travel MCP is **search/suggestions only** — no booking, no payments in v1.
 **Pitch:** "Astrail turns scattered travel inspiration into the route you actually take."

@@ -1107,6 +1107,8 @@ Both must agree on frozen API/types before frontend-backend integration.
 
 ## 27. Milestones
 
+> **Implementation status (2026-07-07 — backend shipped + live-verified on `dev`).** The core backend agent pipeline is done: the #16 offline eval baseline (`mean_intra_day_travel_m = 6229.0`), the durable runtime spine (jobs + SSE + auth + startup recovery), normalized trip persistence, and the enrich agents — weather, transport + `transit_hint`, restaurants, hotels (Travala search), narrator + orchestrator summary — plus latency work (enrich parallelization + reel extraction cache) and, most recently, **mem0 preference memory (Phase 1.3, PR #31)**: read-once → inject into restaurant/narrator prompts → best-effort write-back, with a persisted memory receipt (`memory_events`). Deferred to fast-follows: **Settings memory clear** (§10) and per-fact `user_preference_facts` writes (ship with the settings UI); the frontend (Weeks 7-8), observability (Week 10), hardening (Week 11), and launch remain open. Task state: GitHub Project #1.
+
 ### Weeks 1-2: Contracts And Foundation
 
 Deliver:

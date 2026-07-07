@@ -150,6 +150,17 @@ class _RaisingMem0:
         raise RuntimeError("mem0 down")
 
 
+class _AddRaisingMem0:
+    """search succeeds (explicit input skips it anyway); add always raises — exercises
+    the awaited write-back's best-effort failure path (Task 5)."""
+
+    async def search(self, *_a, **_k):
+        return {"results": []}
+
+    async def add(self, *_a, **_k):
+        raise RuntimeError("mem0 add failed")
+
+
 @pytest.mark.asyncio
 async def test_happy_path_completes_marks_job_and_emits_result():
     c = _Client(jobs=[{"id": "job-1", "status": "pending"}])
@@ -644,3 +655,27 @@ async def test_runner_forwards_preference_block_to_restaurant_and_narrator():
     assert out["itinerary"]["days"]
     assert captured["restaurant"] is not None and "ramen" in captured["restaurant"]
     assert captured["narrator"] is not None and "ramen" in captured["narrator"]
+
+
+@pytest.mark.asyncio
+async def test_runner_write_back_failure_is_non_critical():
+    # The write-back (Task 5) is awaited AFTER the terminal result — a hung/erroring
+    # mem0.add must not fail the already-saved trip, and a memory_events "failed" row
+    # is the observability receipt (persist_trip_memory swallows the error internally;
+    # test_write_back_swallows_add_error in test_preferences.py covers the unit itself).
+    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+
+    async def scrape(url): return _reel(url)
+    async def extract(reel): return [_place("Tokyo Tower")]
+
+    out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+                                      job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                      mem0=_AddRaisingMem0(), preferences="loves ramen",
+                                      weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant,
+                                      narrator=_no_narrator, hotel=_no_hotel)
+    assert out["itinerary"]["days"]
+    assert c.trip_updates[-1]["status"] != "failed"
+    assert [e for e in c.events if e["event_type"] == "result"]
+    assert c.db["jobs"][0]["status"] == "succeeded"
+    memory_events = c.db.get("memory_events")
+    assert memory_events and memory_events[-1]["event_type"] == "failed"

@@ -124,3 +124,62 @@ def test_build_context_timeout_degrades_to_default(monkeypatch):
     ctx = asyncio.run(prefs_mod.build_preference_context(
         mem, "user-1", explicit_text="", pace="balanced", destination_hint="Tokyo"))
     assert ctx.source == "inferred_default"
+
+
+class _FakeMem0Add(_FakeMem0):
+    def __init__(self, add_raises=False):
+        super().__init__()
+        self.added = []
+        self._add_raises = add_raises
+
+    async def add(self, messages, *, user_id=None, metadata=None):
+        if self._add_raises:
+            raise RuntimeError("mem0 add failed")
+        self.added.append((messages, user_id, metadata))
+        return {"status": "PENDING", "event_id": "evt-1"}
+
+
+class _FakeTable:
+    def __init__(self, sink): self.sink = sink; self._row = None
+    def insert(self, row): self._row = row; return self
+    async def execute(self):
+        self.sink.append(self._row); return type("R", (), {"data": [self._row]})()
+
+
+class _FakeClient:
+    def __init__(self): self.events = []
+    def table(self, name):
+        assert name == "memory_events"
+        return _FakeTable(self.events)
+
+
+def test_write_back_writes_event_and_adds_on_explicit():
+    from pipeline.preferences import merge_preferences, persist_trip_memory
+    ctx = merge_preferences(explicit_text="loves ramen", pace="relaxed", memory_facts=[])
+    mem, client = _FakeMem0Add(), _FakeClient()
+    learned = asyncio.run(persist_trip_memory(
+        client, mem, user_id="u1", trip_id="t1", ctx=ctx,
+        synopsis="Planned a 3-day Tokyo trip (relaxed pace)."))
+    assert learned == ["loves ramen"]
+    assert client.events and client.events[0]["event_type"] == "learned"
+    assert client.events[0]["trip_id"] == "t1"
+    assert mem.added and mem.added[0][1] == "u1"
+
+
+def test_write_back_swallows_add_error():
+    from pipeline.preferences import merge_preferences, persist_trip_memory
+    ctx = merge_preferences(explicit_text="quiet trip", pace="relaxed", memory_facts=[])
+    mem, client = _FakeMem0Add(add_raises=True), _FakeClient()
+    # must NOT raise — write-back is best-effort
+    asyncio.run(persist_trip_memory(client, mem, user_id="u1", trip_id="t1",
+                                    ctx=ctx, synopsis="x"))
+    assert client.events and client.events[-1]["event_type"] == "failed"
+
+
+def test_write_back_noop_when_nothing_learned():
+    from pipeline.preferences import merge_preferences, persist_trip_memory
+    ctx = merge_preferences(explicit_text="", pace="balanced", memory_facts=["likes ramen"])
+    mem, client = _FakeMem0Add(), _FakeClient()
+    learned = asyncio.run(persist_trip_memory(client, mem, user_id="u1", trip_id="t1",
+                                              ctx=ctx, synopsis="x"))
+    assert learned == [] and mem.added == []   # memory-only trip: nothing new to store

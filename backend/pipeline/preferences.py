@@ -99,3 +99,56 @@ async def build_preference_context(mem0, user_id: str, *, explicit_text: str | N
         except Exception:
             facts = []   # best-effort: a mem0 blip or timeout → inferred defaults, never fail the trip
     return merge_preferences(explicit_text=explicit_text, pace=pace, memory_facts=facts)
+
+
+def trip_synopsis(itinerary, pace: str) -> str:
+    """A templated one-line trip summary for the mem0.add payload — NO LLM, NO raw
+    reel text. Derived only from the assembled itinerary's shape."""
+    days = getattr(itinerary, "days", []) or []
+    n = len(days)
+    city = None
+    for d in days:
+        for p in (getattr(d, "places", None) or []):
+            city = getattr(p, "city", None) or city
+            if city:
+                break
+        if city:
+            break
+    where = city or "the destination"
+    return f"Planned a {n}-day {where} trip ({pace} pace)."
+
+
+async def persist_trip_memory(client, mem0, *, user_id: str, trip_id: str,
+                              ctx: PreferenceContext, synopsis: str) -> list[str]:
+    """Write-once, awaited AFTER the terminal `result` event so it's invisible to the
+    stream yet can't be GC'd. Records a memory_events audit row and pushes mem0.add —
+    BOTH best-effort (guardrail #3): a mem0 error OR TIMEOUT can't fail the (already
+    saved) trip. Only writes when the user stated something NEW this trip
+    (distill_memory_text is None otherwise). mem0_memory_id is left NULL — v3 add() is
+    queued and returns no synchronous id (reconciliation deferred)."""
+    text = distill_memory_text(ctx, synopsis=synopsis)
+    learned = [ctx.explicit_text] if text else []
+    if not text:
+        return learned   # memory-only / inferred trip: nothing new to store or audit
+
+    event_type = "learned"
+    if mem0 is not None:
+        try:
+            # Timeout-bounded (Codex): a hung hosted add must not wedge the task.
+            await asyncio.wait_for(
+                mem0.add([{"role": "user", "content": text}], user_id=user_id,
+                         metadata={"source": "generation", "trip_id": trip_id}),
+                timeout=5)
+        except Exception:
+            event_type = "failed"   # add error OR TimeoutError → record for observability
+
+    try:
+        await client.table("memory_events").insert({
+            "user_id": user_id, "trip_id": trip_id, "event_type": event_type,
+            # Object shape to match the existing convention (supabase/tests/001_…:34-37).
+            "learned_facts_json": [{"fact": f} for f in learned],
+        }).execute()
+    except Exception:
+        pass   # audit is best-effort too
+
+    return learned

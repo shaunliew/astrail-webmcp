@@ -109,7 +109,7 @@ Frontend breaks on `data: [DONE]`. Error paths also terminate with `[DONE]`.
 
 Stage events (additive — frontend tolerates unknown types):
 ```
-{"type": "stage", "stage": "scrape"|"cache_hit"|"extract"|"enrich"|"weather"|"restaurants"|"transport"|"narrate"|"summarize", "msg": "..."}
+{"type": "stage", "stage": "create_trip"|"scrape"|"cache_hit"|"extract"|"preferences"|"dedup"|"enrich"|"weather"|"save"|"restaurants"|"hotels"|"transport"|"narrate"|"summarize", "msg": "..."}
 {"type": "heartbeat", "elapsed_s": 23.4}
 ```
 
@@ -162,6 +162,8 @@ async def run_generation_pipeline(trip_id, reel_urls, preferences, event_emitter
 ```
 
 **Key invariants:** phases are sequential; within each phase, operations run in parallel. The orchestrator is strictly read-only — it summarizes, never overrides.
+
+**Preference memory (mem0, LIVE — Phase 1.3, merged to `dev` PR #31):** a returning user's remembered travel taste is read once at generation start (`mem0.search` → a typed `PreferenceContext`; explicit current input wins), emitted as a `preferences` SSE stage event, and injected as a soft-guidance block into the **restaurant + narrator** prompts (never per-agent memory tools). After a successful trip, an **awaited** best-effort write-back (`mem0.add` + a `memory_events` audit row) runs *after* the terminal `result` event. Every mem0 call (search/add/construct) is `try/except` + `asyncio.wait_for` bounded — memory never fails or stalls a trip, and the whole feature no-ops when `MEM0_API_KEY` is unset. Personalization reaches the trip **only through the LLM prompts**, so the deterministic dedup/assembly (the frozen `mean_intra_day_travel_m = 6229.0` eval anchor) is untouched. Read/inject/write-back detail: `docs/superpowers/plans/2026-07-06-mem0-preference-memory.md`.
 
 When caption + `locationName` from a reel yield too few places, the scraper re-runs that reel with `includeTranscript` and the extractor uses the Apify `transcript` field as an extra signal — opt-in, never always-on (protects perceived latency + Apify transcription cost).
 

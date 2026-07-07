@@ -29,6 +29,9 @@ dev-dependencies = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# tmpastrail-*: permission-locked temp dirs left by sandboxed agent runs on Windows —
+# undeletable (container-SID deny ACLs) and break collection with PermissionError if scanned.
+norecursedirs = [".*", "build", "dist", "node_modules", ".venv", ".pytest-tmp", "tmpastrail-*"]
 markers = [
     "live: makes real OpenAI/Apify calls; skipped unless --run-live",
     "integration: hits the live dev Supabase DB; skipped unless RUN_DB_INTEGRATION=1",

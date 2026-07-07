@@ -25,6 +25,7 @@ from api.streaming import stream_trip_events
 from auth import get_current_user_id, get_user_id_from_query_or_header
 from jobs import compute_idempotency_key, enqueue_job, recover_inflight_jobs
 from pipeline.runner import record_event, run_generation
+from preferences import compose_preference_summary, fetch_traveler_profile
 from supabase_client import get_supabase_client
 
 _RECOVERY_TASKS: set = set()
@@ -82,6 +83,10 @@ async def generate_trip(
     if existing is not None and existing.data is not None:
         return GenerateTripResponse(trip_id=existing.data["trip_id"])
 
+    profile = await fetch_traveler_profile(client, user_id)
+    preference_summary, preference_sources = compose_preference_summary(profile, req.preferences)
+    origin_city = req.origin_city or (profile.get("origin_city") if profile else None)
+
     # Create the trip FIRST (jobs composite FK needs it), persist the run
     # inputs as a create_trip event (recovery replays from this payload), then
     # enqueue the durable job.
@@ -93,6 +98,10 @@ async def generate_trip(
             "destination_hint": req.destination_hint,
             "start_date": req.start_date,
             "end_date": req.end_date,
+            "budget_level": req.budget_level,
+            "origin_city": origin_city,
+            "preference_summary": preference_summary,
+            "preference_sources": preference_sources,
         })
         .execute()
     ).data[0]
@@ -105,6 +114,7 @@ async def generate_trip(
                 "start_date": req.start_date,
                 "end_date": req.end_date,
                 "pace": req.pace,
+                "requested_places": req.requested_places,
             },
         )
         job_id, winning_trip_id = await enqueue_job(trip_id, user_id, idem)

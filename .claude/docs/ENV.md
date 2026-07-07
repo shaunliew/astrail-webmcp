@@ -32,7 +32,10 @@ PLACE_LATLNG_DISTANCE_M=500
 MAX_PLACES_PER_TRIP=8
 MAX_REELS_PER_REQUEST=5
 REEL_CACHE_TTL_DAYS=30
-MAX_TRIPS_PER_USER_PER_DAY=5     # hard per-user quota (the real abuse cap)
+DAILY_TRIP_QUOTA=5               # live per-user daily trip cap (rate_limit.py) — the durable free-tier hard cap
+BURST_LIMIT=3/minute             # per-user burst throttle on POST /generate-trip (slowapi, in-memory)
+ALLOWED_ORIGINS=https://astrail.xyz,https://www.astrail.xyz   # CORS allowlist (comma-separated); add Vercel preview origins at deploy
+# MAX_TRIPS_PER_USER_PER_DAY — SUPERSEDED / never wired; the live cap is DAILY_TRIP_QUOTA above
 ```
 
 ## Frontend

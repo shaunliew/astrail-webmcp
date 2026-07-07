@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { saveProfile } from '@/lib/trip/mock-api'
+import { saveProfile } from '@/lib/trip/supabase-api'
 import {
   EMPTY_DRAFT, STEPS, TRAVEL_STYLE_OPTIONS, INTEREST_OPTIONS,
   toggleTag, toProfileInput, canFinish, type OnboardingDraft,
@@ -23,6 +23,7 @@ export default function OnboardingWizard() {
   const [draft, setDraft] = useState<OnboardingDraft>(EMPTY_DRAFT)
   const [stepIndex, setStepIndex] = useState(0)
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const activeRef = useRef(true)
 
   // Mounted-guard: saveProfile is async. Do not navigate on an unmounted component.
@@ -38,7 +39,16 @@ export default function OnboardingWizard() {
 
   async function finish() {
     setSaving(true)
-    await saveProfile(toProfileInput(draft))
+    setSaveError(null)
+    try {
+      await saveProfile(toProfileInput(draft))
+    } catch (err) {
+      if (activeRef.current) {
+        setSaving(false)
+        setSaveError(err instanceof Error ? err.message : 'Could not save your preferences.')
+      }
+      return
+    }
     if (!activeRef.current) return
     router.push('/app')
   }
@@ -125,6 +135,10 @@ export default function OnboardingWizard() {
           </dl>
         ) : null}
       </section>
+
+      {saveError ? (
+        <p className="type-body text-xs text-red-400" role="alert">{saveError}</p>
+      ) : null}
 
       <div className="mt-auto flex items-center justify-between gap-3">
         <button

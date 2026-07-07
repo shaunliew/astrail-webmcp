@@ -66,6 +66,17 @@ def test_build_label_input_indexes_pois_and_names_stops_no_reel_text():
     assert "[0]" in s and "ガスト" in s and "Shibuya Crossing" in s and "Tokyo" in s
 
 
+def test_build_label_input_preference_block_present_and_absent():
+    pois = [{"name": "ガスト", "categories": ["レストラン"], "address": "東京都渋谷区道玄坂"}]
+    baseline = build_label_input(pois, ["Shibuya Crossing"], city="Tokyo")
+    with_pref = build_label_input(pois, ["Shibuya Crossing"], city="Tokyo",
+                                  preference_block="Stated preferences: ramen")
+    assert "Traveller preferences" in with_pref and "ramen" in with_pref
+    assert "Traveller preferences" not in baseline
+    # Omitting preference_block (or passing None) must leave the prompt BYTE-FOR-BYTE unchanged.
+    assert build_label_input(pois, ["Shibuya Crossing"], city="Tokyo", preference_block=None) == baseline
+
+
 def test_keep_grounded_uses_real_poi_coords_and_drops_bad_index():
     pois = [{"name": "ガスト", "lat": 35.6593, "lng": 139.7004, "address": "A",
              "mapbox_id": "poi.1", "categories": ["レストラン"], "distance_m": 25}]

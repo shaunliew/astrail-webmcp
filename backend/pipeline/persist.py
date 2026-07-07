@@ -320,11 +320,13 @@ async def _find_or_create_restaurant_place(client, cand, city) -> str:
     return inserted[0]["id"]
 
 
-async def persist_restaurants(client, trip_id: str, *, suggest=None) -> int:
+async def persist_restaurants(client, trip_id: str, *, suggest=None,
+                              preference_block: str | None = None) -> int:
     """Additive: for each day, get grounded restaurant suggestions (Mapbox + LLM) near the day's
     places and INSERT them into restaurant_suggestions. MUST run AFTER persist_itinerary created
     trip_places/trip_days. Retry-safe (deletes this trip's rows first). Returns rows written.
-    `suggest` is injectable (defaults to the real hybrid call).
+    `suggest` is injectable (defaults to the real hybrid call). `preference_block` is optional soft
+    ranking guidance forwarded to `suggest` (see genagents.restaurant.build_label_input).
 
     Each grounded restaurant becomes a first-class places row via _find_or_create_restaurant_place,
     deduped by the Mapbox POI's stable mapbox_id (NOT the itinerary flywheel's name+geo, which would
@@ -367,7 +369,7 @@ async def persist_restaurants(client, trip_id: str, *, suggest=None) -> int:
         day_places = [(p["name"], p["lat"], p["lng"]) for p in entries]
         anchors = [(p["id"], p["lat"], p["lng"]) for p in entries]
         city = next((p.get("city") for p in entries if p.get("city")), None)
-        candidates = await suggest(day_places, city=city)   # a failure here propagates -> runner warns
+        candidates = await suggest(day_places, city=city, preference_block=preference_block)   # a failure here propagates -> runner warns
         for cand in candidates:
             restaurant_place_id = await _find_or_create_restaurant_place(client, cand, city)
             await client.table("restaurant_suggestions").insert({
@@ -387,11 +389,14 @@ async def persist_restaurants(client, trip_id: str, *, suggest=None) -> int:
     return written
 
 
-async def persist_narration(client, trip_id: str, user_id: str, *, narrate=None) -> int:
+async def persist_narration(client, trip_id: str, user_id: str, *, narrate=None,
+                            preference_block: str | None = None) -> int:
     """Additive: narrate the enriched trip (per-day title/summary + trip title/summary) and UPDATE the
     persisted rows. MUST run AFTER persist_itinerary (+ ideally weather/transport/restaurant so it can
     narrate them). Idempotent UPDATE-in-place (a re-run overwrites; no delete-first). Returns the
     count of days narrated. `narrate` is injectable (defaults to the real LLM call).
+    `preference_block` is optional prose-only tone guidance forwarded to `narrate` (see
+    genagents.narrator.build_narrator_input).
 
     Structured-only (guardrail #11): the agent sees only persisted place names/types + weather, never
     raw reel text. Additive prose ONLY — it never re-clusters or reorders days/places."""
@@ -424,7 +429,7 @@ async def persist_narration(client, trip_id: str, user_id: str, *, narrate=None)
         days_input.append({"day_number": day_number, "day_date": meta.get("day_date"),
                            "weather_summary": meta.get("weather_summary"), "places": stops})
 
-    result = await narrate(days_input, city=city)
+    result = await narrate(days_input, city=city, preference_block=preference_block)
 
     written = 0
     for d in result.days:

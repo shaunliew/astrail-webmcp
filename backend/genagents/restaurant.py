@@ -51,6 +51,9 @@ the stops). For EACH selected restaurant return:
     "okonomiyaki", "seafood", "family restaurant"), or null
   - summary: ONE concise English sentence (<= 160 characters) on why it fits this stop
 
+If traveller preferences are provided, prefer cuisines that match them and de-prioritize avoided \
+types — but ONLY from the provided list; never add, invent, or web-search.
+
 Rules:
   - Choose ONLY from the provided list. Do not add, invent, or web-search restaurants.
   - Never repeat a poi_index.
@@ -111,17 +114,24 @@ async def fetch_restaurant_pois(lat: float, lng: float, *, limit: int = 15, coun
     return pois
 
 
-def build_label_input(pois: list[dict], place_names: list[str], *, city: str | None = None) -> str:
+def build_label_input(pois: list[dict], place_names: list[str], *, city: str | None = None,
+                      preference_block: str | None = None) -> str:
     """The labeling agent's user message: the day's stops + a NUMBERED Mapbox POI list. Structured-
-    only — no raw reel caption/transcript ever appears here (guardrail #11)."""
+    only — no raw reel caption/transcript ever appears here (guardrail #11). `preference_block` is
+    SOFT ranking guidance (guardrail #1 stays structural — the LLM still returns a poi_index into
+    THIS fixed list); omitted/None leaves the prompt byte-for-byte identical to before."""
     where = city or "the area"
     stops = ", ".join(place_names) or "(unnamed stops)"
     lines = []
     for i, p in enumerate(pois):
         cats = ", ".join(p.get("categories") or []) or "restaurant"
         lines.append(f"[{i}] {p.get('name')} — {cats} — {p.get('address') or ''}")
-    return (f"City: {where}\nToday's stops: {stops}\n"
-            f"Restaurants near these stops (choose from THIS list only):\n" + "\n".join(lines))
+    header = (f"City: {where}\nToday's stops: {stops}\n")
+    if preference_block:
+        header += (f"Traveller preferences (soft ranking guidance — still choose ONLY "
+                   f"from the list below): {preference_block}\n")
+    return (header + "Restaurants near these stops (choose from THIS list only):\n"
+            + "\n".join(lines))
 
 
 def keep_grounded_restaurants(labels: list[RestaurantLabel], pois: list[dict]) -> list[RestaurantCandidate]:
@@ -180,11 +190,12 @@ async def _default_runner(agent, user_input: str):
 
 async def suggest_restaurants(day_places: list[tuple[str, float, float]], *, city: str | None = None,
                               limit: int = 15, client=None, model: str | None = None,
-                              runner=None) -> list[RestaurantCandidate]:
+                              runner=None, preference_block: str | None = None) -> list[RestaurantCandidate]:
     """Hybrid: Mapbox category search near the day's centroid → grounded POIs → light LLM pass to
     romanize/label/summarize the FIXED set. Returns grounded RestaurantCandidates (live unless
     `client`/`runner` injected). Falls back model→gpt-4o on a typed model error. Prints a one-line
-    stderr diagnostic (auditable without the Traces dashboard)."""
+    stderr diagnostic (auditable without the Traces dashboard). `preference_block` is optional soft
+    ranking guidance (guardrail #1 stays structural — see build_label_input)."""
     if not day_places:
         return []
     lat = sum(p[1] for p in day_places) / len(day_places)   # day centroid
@@ -196,7 +207,8 @@ async def suggest_restaurants(day_places: list[tuple[str, float, float]], *, cit
 
     model = model or os.environ.get("ASTRAIL_RESTAURANT_MODEL", DEFAULT_MODEL)
     run = runner or _default_runner
-    user_input = build_label_input(pois, [p[0] for p in day_places], city=city)
+    user_input = build_label_input(pois, [p[0] for p in day_places], city=city,
+                                   preference_block=preference_block)
     try:
         result = await run(build_label_agent(model), user_input)
     except _model_errors():

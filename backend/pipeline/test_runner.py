@@ -459,7 +459,7 @@ async def test_runner_persists_restaurant_suggestions():
     c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     async def scrape(url): return _reel(url)
     async def extract(reel): return [_place("A", lat=35.60, lng=139.70), _place("B", lat=35.62, lng=139.72)]
-    async def restaurant(places, *, city=None):
+    async def restaurant(places, *, city=None, preference_block=None):
         from models.enrichment import RestaurantCandidate
         return [RestaurantCandidate(name="Ramen X", name_local="ラーメンX", cuisine="ramen",
                                     summary="Great tonkotsu near A", lat=35.601, lng=139.701,
@@ -480,7 +480,7 @@ async def test_runner_restaurant_failure_is_non_critical():
     c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     async def scrape(url): return _reel(url)
     async def extract(reel): return [_place("A", lat=35.60, lng=139.70), _place("B", lat=35.62, lng=139.72)]
-    async def restaurant(places, *, city=None): raise RuntimeError("mapbox/openai down")
+    async def restaurant(places, *, city=None, preference_block=None): raise RuntimeError("mapbox/openai down")
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
                                       job_id="job-1", client=c, scrape=scrape, extract=extract,
                                       mem0=None, weather=_no_weather, transport=_no_transport, restaurant=restaurant, narrator=_no_narrator, hotel=_no_hotel)
@@ -495,7 +495,7 @@ async def test_runner_persists_narration():
     c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     async def scrape(url): return _reel(url)
     async def extract(reel): return [_place("Tokyo Tower")]
-    async def narrator(days, *, city=None):
+    async def narrator(days, *, city=None, preference_block=None):
         from models.enrichment import NarrationResult, DayNarration
         return NarrationResult(days=[DayNarration(day_number=1, title="Day 1: Icons",
                                                   summary="Tokyo Tower first.")],
@@ -516,7 +516,7 @@ async def test_runner_narration_failure_is_non_critical():
     c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     async def scrape(url): return _reel(url)
     async def extract(reel): return [_place("Tokyo Tower")]
-    async def narrator(days, *, city=None): raise RuntimeError("openai down")
+    async def narrator(days, *, city=None, preference_block=None): raise RuntimeError("openai down")
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
                                       job_id="job-1", client=c, scrape=scrape, extract=extract,
                                       mem0=None, weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant,

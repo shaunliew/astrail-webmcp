@@ -381,7 +381,7 @@ async def test_persist_restaurants_writes_row_place_and_near_id():
     await _seed_two_places_one_day(c)
     tower_id = next(p["id"] for p in c.db["places"] if p["name"] == "Tokyo Tower")
 
-    async def suggest(places, *, city=None):
+    async def suggest(places, *, city=None, preference_block=None):
         return [_rcand("Ramen Near Tower", 35.6587, 139.7455)]   # right next to Tokyo Tower
 
     written = await persist.persist_restaurants(c, "trip-1", suggest=suggest)
@@ -402,7 +402,7 @@ async def test_persist_restaurants_passes_city_from_places():
     await _seed_two_places_one_day(c)                             # _cp sets city_or_region_guess="Tokyo"
     seen = {}
 
-    async def suggest(places, *, city=None):
+    async def suggest(places, *, city=None, preference_block=None):
         seen["city"] = city
         return []
 
@@ -415,7 +415,7 @@ async def test_persist_restaurants_retry_safe_deletes_first():
     c = _Client({"restaurant_suggestions": [{"id": "stale", "trip_id": "trip-1", "summary": "old"}]})
     await _seed_two_places_one_day(c)
 
-    async def suggest(places, *, city=None):
+    async def suggest(places, *, city=None, preference_block=None):
         return []                                                # a re-run that now yields nothing
 
     written = await persist.persist_restaurants(c, "trip-1", suggest=suggest)
@@ -426,7 +426,7 @@ async def test_persist_restaurants_retry_safe_deletes_first():
 async def test_persist_restaurants_no_trip_places_returns_zero():
     c = _Client()
 
-    async def suggest(places, *, city=None):
+    async def suggest(places, *, city=None, preference_block=None):
         raise AssertionError("suggest must not be called with no trip_places")
 
     assert await persist.persist_restaurants(c, "trip-1", suggest=suggest) == 0
@@ -446,7 +446,7 @@ async def test_persist_restaurants_distinct_mapbox_ids_not_merged():
                              summary="branch two", lat=35.6588, lng=139.7456, address="B",
                              mapbox_id="poi.b", categories=["レストラン"], distance_m=30)
 
-    async def suggest(places, *, city=None):
+    async def suggest(places, *, city=None, preference_block=None):
         return [b1, b2]
 
     written = await persist.persist_restaurants(c, "trip-1", suggest=suggest)
@@ -465,7 +465,7 @@ async def test_persist_restaurants_same_mapbox_id_reuses_place():
     places_before = len(c.db["places"])
     cand = _rcand("Ramen X", 35.70, 139.75)          # mapbox_id="poi.1" (default)
 
-    async def suggest(places, *, city=None):
+    async def suggest(places, *, city=None, preference_block=None):
         return [cand, cand]
 
     written = await persist.persist_restaurants(c, "trip-1", suggest=suggest)
@@ -473,6 +473,21 @@ async def test_persist_restaurants_same_mapbox_id_reuses_place():
     rest_ids = {r["restaurant_place_id"] for r in c.db["restaurant_suggestions"]}
     assert len(rest_ids) == 1                          # ...sharing ONE places row (deduped by mapbox_id)
     assert len(c.db["places"]) == places_before + 1
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_forwards_preference_block():
+    c = _Client()
+    await _seed_two_places_one_day(c)
+    seen = {}
+
+    async def suggest(places, *, city=None, preference_block=None):
+        seen["preference_block"] = preference_block
+        return []
+
+    await persist.persist_restaurants(c, "trip-1", suggest=suggest,
+                                      preference_block="Stated preferences: ramen")
+    assert seen["preference_block"] == "Stated preferences: ramen"
 
 
 # --- persist_narration ------------------------------------------------------
@@ -484,7 +499,7 @@ async def test_persist_narration_writes_day_and_trip_prose():
     c = _Client({"trips": [{"id": "trip-1", "user_id": "u1"}]})
     await _seed_two_places_one_day(c)   # 2 places, day 1, one trip_days row
 
-    async def narrate(days, *, city=None):
+    async def narrate(days, *, city=None, preference_block=None):
         assert days and days[0]["day_number"] == 1 and days[0]["places"]   # structured-only input
         return NarrationResult(days=[DayNarration(day_number=1, title="Day 1: Icons",
                                                   summary="Tokyo Tower, then Senso-ji.")],
@@ -502,7 +517,7 @@ async def test_persist_narration_writes_day_and_trip_prose():
 async def test_persist_narration_no_trip_places_returns_zero():
     c = _Client({"trips": [{"id": "trip-1", "user_id": "u1"}]})
 
-    async def narrate(days, *, city=None):
+    async def narrate(days, *, city=None, preference_block=None):
         raise AssertionError("narrate must not be called with no trip_places")
 
     assert await persist.persist_narration(c, "trip-1", "u1", narrate=narrate) == 0
@@ -513,7 +528,7 @@ async def test_persist_narration_blank_trip_summary_does_not_write_trip():
     c = _Client({"trips": [{"id": "trip-1", "user_id": "u1", "summary": "old"}]})
     await _seed_two_places_one_day(c)
 
-    async def narrate(days, *, city=None):
+    async def narrate(days, *, city=None, preference_block=None):
         return NarrationResult(days=[DayNarration(day_number=1, title="t", summary="s")],
                                trip_title=None, trip_summary="")
 
@@ -530,13 +545,28 @@ async def test_persist_narration_owner_check_blocks_foreign_user():
     c = _Client({"trips": [{"id": "trip-1", "user_id": "u1", "summary": "old"}]})
     await _seed_two_places_one_day(c)
 
-    async def narrate(days, *, city=None):
+    async def narrate(days, *, city=None, preference_block=None):
         return NarrationResult(days=[DayNarration(day_number=1, title="t", summary="s")],
                                trip_title="Hijacked", trip_summary="Should not persist.")
 
     await persist.persist_narration(c, "trip-1", "not-the-owner", narrate=narrate)
     trip = next(t for t in c.db["trips"] if t["id"] == "trip-1")
     assert trip.get("title") is None and trip["summary"] == "old"   # foreign user_id blocked the trips write
+
+
+@pytest.mark.asyncio
+async def test_persist_narration_forwards_preference_block():
+    c = _Client({"trips": [{"id": "trip-1", "user_id": "u1"}]})
+    await _seed_two_places_one_day(c)
+    seen = {}
+
+    async def narrate(days, *, city=None, preference_block=None):
+        seen["preference_block"] = preference_block
+        return NarrationResult(days=[], trip_title=None, trip_summary="")
+
+    await persist.persist_narration(c, "trip-1", "u1", narrate=narrate,
+                                    preference_block="Preferred pace: relaxed")
+    assert seen["preference_block"] == "Preferred pace: relaxed"
 
 
 # --- persist_hotels ---------------------------------------------------------

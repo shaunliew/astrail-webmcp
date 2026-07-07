@@ -238,6 +238,12 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                                            message="weather persist failed")
                     except Exception:
                         pass   # best-effort — weather persist failure is non-critical
+
+            # Compute the soft-guidance preference block ONCE, before the enrich gather — restaurant
+            # and narrator are the only two stages that personalize toward it (Task 4).
+            from pipeline.preferences import preference_block
+            pref_block = preference_block(pref_ctx)
+
             # Enrich stages are INDEPENDENT (disjoint write tables) and best-effort (guardrail #3),
             # so run them CONCURRENTLY instead of sequentially (~halves the enrich block latency).
             # Weather is persisted ABOVE, sequentially, because narration reads
@@ -267,7 +273,7 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                 try:
                     await record_event(client, trip_id, event_type="stage", stage="restaurants",
                                        message="suggesting restaurants")
-                    await persist_restaurants(client, trip_id, suggest=restaurant)
+                    await persist_restaurants(client, trip_id, suggest=restaurant, preference_block=pref_block)
                 except Exception:
                     try:
                         await record_event(client, trip_id, event_type="warning", stage="restaurants",
@@ -292,7 +298,7 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                 try:
                     await record_event(client, trip_id, event_type="stage", stage="summarize",
                                        message="narrating the trip")
-                    await persist_narration(client, trip_id, user_id, narrate=narrator)
+                    await persist_narration(client, trip_id, user_id, narrate=narrator, preference_block=pref_block)
                 except Exception:
                     try:
                         await record_event(client, trip_id, event_type="warning", stage="summarize",

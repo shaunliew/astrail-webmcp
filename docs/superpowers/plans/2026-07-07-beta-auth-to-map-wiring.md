@@ -120,8 +120,11 @@ def compose_preference_summary(
 ) -> tuple[str | None, list[str]]:
     """Merge profile prefs + per-trip notes into one summary string.
 
-    Returns (summary, preference_sources) where sources uses the trips table's
-    CHECK vocabulary: 'memory' (from stored profile) and 'explicit' (per-trip input).
+    Returns (summary, preference_sources). Sources vocabulary is an app-level
+    convention mirrored in backend-types.ts PreferenceSource — 'memory' (stored
+    profile) and 'explicit' (per-trip input). NOTE: trips.preference_sources is
+    plain jsonb with NO DB CHECK constraint; nothing at the DB layer catches a
+    typo'd source string.
     """
     parts: list[str] = []
     sources: list[str] = []
@@ -206,15 +209,65 @@ In the `record_event(... stage="create_trip" ...)` payload, add one key so recov
                 "requested_places": req.requested_places,
 ```
 
-- [ ] **Step 7: Run the full backend test suite**
+- [ ] **Step 7: Add endpoint tests for the new persistence (uses the existing `ctx` fixture/fake-supabase harness in `test_main.py`)**
+
+Append to `backend/test_main.py`:
+
+```python
+async def test_generate_trip_persists_preference_fields(ctx):
+    ac, db, _calls = ctx
+    db["traveler_profiles"] = [{
+        "id": "user-1", "origin_city": "Kuala Lumpur",
+        "travel_style_tags": ["food-led"], "preference_tags": ["ramen"],
+        "preference_notes": "no early mornings",
+    }]
+    payload = {**_PAYLOAD, "budget_level": "mid_range", "origin_city": "Penang",
+               "preferences": "vegetarian this trip", "requested_places": ["Tokyo Tower"]}
+    r = await ac.post("/generate-trip", json=payload)
+    assert r.status_code == 200
+    trip = db["trips"][0]
+    assert trip["budget_level"] == "mid_range"
+    assert trip["origin_city"] == "Penang"  # explicit request wins over profile
+    assert "Travel style: food-led." in trip["preference_summary"]
+    assert "This trip: vegetarian this trip" in trip["preference_summary"]
+    assert trip["preference_sources"] == ["memory", "explicit"]
+    create_trip_events = [e for e in db["generation_events"] if e["stage"] == "create_trip"]
+    assert create_trip_events[0]["payload"]["requested_places"] == ["Tokyo Tower"]
+
+
+async def test_generate_trip_origin_city_falls_back_to_profile(ctx):
+    ac, db, _calls = ctx
+    db["traveler_profiles"] = [{
+        "id": "user-1", "origin_city": "Kuala Lumpur",
+        "travel_style_tags": [], "preference_tags": [], "preference_notes": None,
+    }]
+    r = await ac.post("/generate-trip", json=_PAYLOAD)
+    assert r.status_code == 200
+    assert db["trips"][0]["origin_city"] == "Kuala Lumpur"
+
+
+async def test_generate_trip_old_shape_payload_still_succeeds(ctx):
+    """CRITICAL REGRESSION TEST: the pre-parity minimal body (reel_urls + dates only,
+    no traveler_profiles row) must keep working — all new fields are optional."""
+    ac, db, _calls = ctx
+    r = await ac.post("/generate-trip", json=_PAYLOAD)
+    assert r.status_code == 200
+    trip = db["trips"][0]
+    assert trip["budget_level"] is None
+    assert trip["origin_city"] is None
+    assert trip["preference_summary"] is None
+    assert trip["preference_sources"] == []
+```
+
+- [ ] **Step 8: Run the full backend test suite**
 
 Run: `cd backend && uv run pytest -q`
-Expected: all existing tests still pass (the new fields are optional; existing POST tests send the old shape and must not break). If any main.py test asserts the exact insert dict, update it to include the four new keys with `None`/`[]` values.
+Expected: all tests pass, including the three new ones. The new request fields are optional, so pre-existing POST tests (old-shape `_PAYLOAD`) must not break; if any test asserts the exact insert dict, update it to include the four new keys with `None`/`[]` values.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add backend/api/schemas.py backend/preferences.py backend/test_preferences.py backend/main.py
+git add backend/api/schemas.py backend/preferences.py backend/test_preferences.py backend/main.py backend/test_main.py
 git commit -m "feat(api): request schema parity + profile/per-trip preference merge on trip creation"
 ```
 
@@ -249,29 +302,41 @@ export type GenerateTripRequest = {
 }
 ```
 
-- [ ] **Step 2: Write the failing tests**
+- [ ] **Step 2: Rewrite the affected tests (failing first)**
 
-In `frontend/lib/trip/__tests__/parse-inspiration.test.ts`, add (keep existing tests; update any that call `canGenerate(items)` with one argument or assert `start_date: null`):
+In `frontend/lib/trip/__tests__/parse-inspiration.test.ts`, make these EXACT edits (the signature change is a compile error for the old one-arg calls — do not leave them in place):
+
+(a) Add near the top of the file (after the existing imports; add `BriefInput` to the type import from `@/lib/trip/parse-inspiration` if not already imported):
 
 ```typescript
 const FULL_BRIEF: BriefInput = {
   destination_hint: '', start_date: '2026-08-01', end_date: '2026-08-04',
   origin_city: '', budget_level: '', preferences: '',
 }
+```
 
-describe('canGenerate with brief dates', () => {
-  const reel: DraftInspirationItem = {
-    key: 'https://www.instagram.com/reel/abc/', item_type: 'reel_url', source: 'manual_paste',
-    normalized_reel_url: 'https://www.instagram.com/reel/abc/', requested_place_text: null, status: 'valid',
-  }
-  it('requires at least one item AND both dates', () => {
-    expect(canGenerate([reel], FULL_BRIEF)).toBe(true)
+(b) REPLACE the entire existing `describe('canGenerate', ...)` block (currently lines 83-89, one-arg calls) with:
+
+```typescript
+describe('canGenerate', () => {
+  it('is true with at least one reel or place AND both dates', () => {
     expect(canGenerate([], FULL_BRIEF)).toBe(false)
-    expect(canGenerate([reel], { ...FULL_BRIEF, start_date: '' })).toBe(false)
-    expect(canGenerate([reel], { ...FULL_BRIEF, end_date: '  ' })).toBe(false)
+    expect(canGenerate([makeRequestedPlace('Kyoto', [])!], FULL_BRIEF)).toBe(true)
+    expect(canGenerate(buildReelItems('https://www.instagram.com/reel/AAA/', []).items, FULL_BRIEF)).toBe(true)
+  })
+  it('is false when either date is missing', () => {
+    const items = [makeRequestedPlace('Kyoto', [])!]
+    expect(canGenerate(items, { ...FULL_BRIEF, start_date: '' })).toBe(false)
+    expect(canGenerate(items, { ...FULL_BRIEF, end_date: '  ' })).toBe(false)
   })
 })
+```
 
+(c) In the existing `describe('toGenerateRequest', ...)` block: change the brief argument on the `toGenerateRequest(items, { ...EMPTY_BRIEF, destination_hint: 'Tokyo', budget_level: 'mid_range' })` line to spread `FULL_BRIEF` dates in — `{ ...EMPTY_BRIEF, destination_hint: 'Tokyo', budget_level: 'mid_range', start_date: '2026-08-01', end_date: '2026-08-04' }` — and REPLACE the assertion `expect(req.start_date).toBeNull()` with `expect(req.start_date).toBe('2026-08-01')`.
+
+(d) Add a new trimming test after that block:
+
+```typescript
 describe('toGenerateRequest dates', () => {
   it('emits trimmed non-null dates', () => {
     const req = toGenerateRequest([], { ...FULL_BRIEF, start_date: ' 2026-08-01 ' })
@@ -280,6 +345,8 @@ describe('toGenerateRequest dates', () => {
   })
 })
 ```
+
+(e) In `frontend/lib/trip/__tests__/mock-api.test.ts`, the three `createTrip({...})` payloads (currently lines ~54-76) each contain `start_date: null, end_date: null` — replace with `start_date: '2026-08-01', end_date: '2026-08-04'` in ALL THREE (the shared `GenerateTripRequest` type no longer admits null dates). If `harness.test.ts` constructs a `GenerateTripRequest` with null dates, apply the same substitution there.
 
 - [ ] **Step 3: Run tests to verify they fail**
 
@@ -665,7 +732,7 @@ git commit -m "feat(onboarding): persist wizard to traveler_profiles (RLS upsert
 
 **Interfaces:**
 - Consumes: `generateTrip(req, accessToken)` and `streamTrip(tripId, accessToken)` from `api.ts` (existing, unchanged); `canGenerate(items, brief)` from Task 2.
-- Produces: `getAccessToken(): Promise<string>`; `streamGeneration(tripId: string, accessToken: string, onEvent: (e: StreamEvent) => void, onReset?: () => void): { cancel: () => void }` — same `{ cancel }` handle shape the component already uses.
+- Produces: `getAccessToken(): Promise<string>`; `streamGeneration(tripId: string, accessToken: string, onEvent: (e: StreamEvent) => void, onReset?: () => void, onFail?: () => void): { cancel: () => void }` — same `{ cancel }` handle shape the component already uses; `onFail` fires after 5 consecutive connection errors (dead backend).
 
 - [ ] **Step 1: Session token helper**
 
@@ -693,14 +760,29 @@ import type { StreamEvent } from './backend-types'
 // The backend replays ALL events on each (re)connection (per-connection seen-set),
 // so onReset fires on every open — callers clear their event list there to
 // avoid duplicates after an auto-reconnect.
+// onFail is the dead-backend escape hatch: EventSource auto-reconnects forever,
+// so after 5 consecutive failed (re)connections we close and hand control back
+// to the caller — otherwise a downed backend means an eternal "generating" screen.
 export function streamGeneration(
   tripId: string,
   accessToken: string,
   onEvent: (e: StreamEvent) => void,
   onReset?: () => void,
+  onFail?: () => void,
 ): { cancel: () => void } {
   const es = streamTrip(tripId, accessToken)
-  es.onopen = () => onReset?.()
+  let consecutiveErrors = 0
+  es.onopen = () => {
+    consecutiveErrors = 0
+    onReset?.()
+  }
+  es.onerror = () => {
+    consecutiveErrors += 1
+    if (consecutiveErrors >= 5) {
+      es.close()
+      onFail?.()
+    }
+  }
   es.onmessage = (msg) => {
     if (msg.data === '[DONE]') {
       es.close()
@@ -717,6 +799,92 @@ export function streamGeneration(
 ```
 
 (`import type` lines merge with the existing one at the top of the file — end state has a single `import type { GenerateTripRequest, GenerateTripResponse, StreamEvent } from './backend-types'`.)
+
+- [ ] **Step 2b: Unit-test the wrapper with a stubbed EventSource (write first, watch it fail, then implement Step 2)**
+
+Create `frontend/lib/trip/__tests__/api-stream.test.ts`:
+
+```typescript
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { streamGeneration } from '@/lib/trip/api'
+
+class FakeEventSource {
+  static last: FakeEventSource | null = null
+  url: string
+  closed = false
+  onopen: (() => void) | null = null
+  onerror: (() => void) | null = null
+  onmessage: ((e: { data: string }) => void) | null = null
+  constructor(url: string) {
+    this.url = url
+    FakeEventSource.last = this
+  }
+  close() {
+    this.closed = true
+  }
+}
+
+function start() {
+  vi.stubGlobal('EventSource', FakeEventSource as unknown as typeof EventSource)
+  const onEvent = vi.fn()
+  const onReset = vi.fn()
+  const onFail = vi.fn()
+  const handle = streamGeneration('trip-1', 'token', onEvent, onReset, onFail)
+  return { handle, es: FakeEventSource.last!, onEvent, onReset, onFail }
+}
+
+describe('streamGeneration', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    FakeEventSource.last = null
+  })
+
+  it('parses events and closes on [DONE]', () => {
+    const { es, onEvent } = start()
+    es.onmessage!({ data: '{"type":"stage","stage":"scrape","msg":"scraping 2 reel(s)"}' })
+    es.onmessage!({ data: '[DONE]' })
+    expect(onEvent).toHaveBeenCalledWith({ type: 'stage', stage: 'scrape', msg: 'scraping 2 reel(s)' })
+    expect(es.closed).toBe(true)
+  })
+
+  it('fires onReset on every open (reconnect replays all events)', () => {
+    const { es, onReset } = start()
+    es.onopen!()
+    es.onopen!()
+    expect(onReset).toHaveBeenCalledTimes(2)
+  })
+
+  it('closes and fires onFail after 5 consecutive errors (dead backend)', () => {
+    const { es, onFail } = start()
+    for (let i = 0; i < 5; i += 1) es.onerror!()
+    expect(es.closed).toBe(true)
+    expect(onFail).toHaveBeenCalledTimes(1)
+  })
+
+  it('a successful open resets the consecutive-error counter', () => {
+    const { es, onFail } = start()
+    for (let i = 0; i < 4; i += 1) es.onerror!()
+    es.onopen!()
+    for (let i = 0; i < 4; i += 1) es.onerror!()
+    expect(onFail).not.toHaveBeenCalled()
+  })
+
+  it('skips malformed lines without throwing', () => {
+    const { es, onEvent } = start()
+    es.onmessage!({ data: 'not-json' })
+    expect(onEvent).not.toHaveBeenCalled()
+  })
+
+  it('cancel closes the stream', () => {
+    const { handle, es } = start()
+    handle.cancel()
+    expect(es.closed).toBe(true)
+  })
+})
+```
+
+Run: `cd frontend && npm run test -- api-stream`
+Expected: FAIL before Step 2's implementation exists, PASS after.
 
 - [ ] **Step 3: Swap CreateTripFlow to the real API**
 
@@ -758,6 +926,12 @@ Replace `handleGenerate()`:
           }
         },
         () => { if (activeRef.current) setEvents([]) },
+        () => {
+          // Dead-backend escape hatch (5 failed reconnects): the job is durable
+          // server-side, so hand off to the trip page's generating/failed states
+          // instead of spinning forever.
+          if (activeRef.current) router.push(`/app/trip/${trip_id}`)
+        },
       )
     } catch (err) {
       if (!activeRef.current) return
@@ -785,7 +959,7 @@ Expected: PASS.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add frontend/lib/supabase/session.ts frontend/lib/trip/api.ts frontend/components/create/CreateTripFlow.tsx
+git add frontend/lib/supabase/session.ts frontend/lib/trip/api.ts frontend/lib/trip/__tests__/api-stream.test.ts frontend/components/create/CreateTripFlow.tsx
 git commit -m "feat(create): wire real generate-trip POST + live SSE stage events (mock-api retired from flow)"
 ```
 
@@ -1130,6 +1304,7 @@ cd frontend && npm run dev
 
 1. Temporarily set `APIFY_TOKEN=invalid` in backend env, restart backend, generate with a NEW (uncached) reel → stage events appear, then terminal failed result; browser lands on the trip page showing the "Generation failed" state (no hang; stream ended with `[DONE]` — verify in devtools Network tab).
 2. Restore the real `APIFY_TOKEN`.
+3. Dead-backend check: start a generation with an uncached reel, then kill the backend process mid-stream → within ~30s the browser leaves the generating screen for `/app/trip/[id]` (onerror escape hatch) showing the generating/failed state — never a frozen spinner. Restart the backend; its recovery sweep re-picks the job.
 
 - [ ] **Step 7: Warm-path sanity (dev iteration mode)**
 
@@ -1138,3 +1313,20 @@ Re-run generation with the SAME reels from Step 4 → `cache_hit` stage event ap
 - [ ] **Step 8: Record results**
 
 Append a `## QA evidence — YYYY-MM-DD` section to this plan file listing each step PASS/FAIL with notes; screenshots of the map view and the stage-event feed. Fix-forward any failures before final review.
+
+---
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Codex Review | `/codex review` | Independent 2nd opinion | 1 | ISSUES_ABSORBED (claude subagent — Codex CLI not installed) | 1 material + 3 minor; material folded into Task 2, docstring fixed, 1 refuted with code evidence |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR (PLAN) | 5 issues, 0 critical gaps open — all folded: 1A gate kept, 2A onerror hatch, 3A endpoint tests, 4A literal test edits, iron-rule regression test |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+- **CROSS-MODEL:** Outside voice (Claude subagent fallback) confirmed the plan's file:line grounding, added the Task 2 test-collision finding (accepted, 4A), and one refuted concern (invalid APIFY_TOKEN hang — disproved at `backend/pipeline/runner.py:126-158`, scrape failures degrade to a terminal failed result).
+- **VERDICT:** ENG CLEARED — ready to implement (scope locked full 8 tasks at commit 342998b; failure-mode analysis flagged 1 critical gap — dead-backend frozen spinner — resolved in-plan via 2A).
+
+NO UNRESOLVED DECISIONS

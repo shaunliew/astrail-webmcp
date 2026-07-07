@@ -326,11 +326,21 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
             await mark_job_done(client, job_id, status="succeeded")
 
         # WRITE-BACK — AFTER the terminal `result` (stream already ended → invisible),
-        # AWAITED (not create_task → no GC risk); timeout-guarded + error-swallowing inside
-        # persist_trip_memory, so a mem0 outage/hang can't fail the already-saved trip (#3).
-        from pipeline.preferences import persist_trip_memory, trip_synopsis
-        await persist_trip_memory(client, mem0, user_id=user_id, trip_id=trip_id,
-                                  ctx=pref_ctx, synopsis=trip_synopsis(itinerary, pace))
+        # AWAITED (not create_task → no GC risk). Wrapped in its OWN try/except: memory
+        # write-back is best-effort past the point of no return — a raise here must
+        # never emit a second result or flip an already-succeeded trip (guardrail #3).
+        # persist_trip_memory already swallows its own mem0/DB errors; this outer guard
+        # covers trip_synopsis / destination derivation raising too.
+        try:
+            from pipeline.preferences import persist_trip_memory, trip_synopsis
+            destination = next((getattr(p, "city_or_region_guess", None) for p in canonical
+                                if getattr(p, "city_or_region_guess", None)), None) \
+                or destination_hint or "your destination"
+            await persist_trip_memory(client, mem0, user_id=user_id, trip_id=trip_id,
+                                      ctx=pref_ctx,
+                                      synopsis=trip_synopsis(itinerary, pace, destination))
+        except Exception:
+            pass   # best-effort: never let the write-back corrupt an already-succeeded trip
         return payload
     except Exception:
         # Any unexpected error → terminal result, failed status, failed job (never hang the stream).

@@ -183,3 +183,32 @@ def test_write_back_noop_when_nothing_learned():
     learned = asyncio.run(persist_trip_memory(client, mem, user_id="u1", trip_id="t1",
                                               ctx=ctx, synopsis="x"))
     assert learned == [] and mem.added == []   # memory-only trip: nothing new to store
+
+
+def test_write_back_disabled_memory_writes_no_event():
+    # Finding 3: mem0=None (MEM0_API_KEY unset in prod) must NOT write a memory_events
+    # row claiming a fact was "learned" — nothing was ever sent to mem0. The
+    # preferences are already recorded in trips.preference_summary (Task 3).
+    from pipeline.preferences import merge_preferences, persist_trip_memory
+    ctx = merge_preferences(explicit_text="loves ramen", pace="relaxed", memory_facts=[])
+    client = _FakeClient()
+    learned = asyncio.run(persist_trip_memory(client, None, user_id="u1", trip_id="t1",
+                                              ctx=ctx, synopsis="x"))
+    assert learned == ["loves ramen"]
+    assert client.events == []   # no audit row when memory is disabled
+
+
+def test_trip_synopsis_uses_real_itinerary_shape_and_destination():
+    # Finding 2: ItineraryDay has no `.places`/`.city` — trip_synopsis must derive the
+    # day count from the real ItineraryOutput shape and take destination from the caller.
+    from models.trip import ItineraryDay, ItineraryOutput
+    from pipeline.preferences import trip_synopsis
+    itinerary = ItineraryOutput(
+        title="Tokyo trip", source="reels", source_places=["Tokyo Tower"],
+        days=[
+            ItineraryDay(day_number=1, date="2026-08-01", place_names=["Tokyo Tower"]),
+            ItineraryDay(day_number=2, date="2026-08-02", place_names=["Senso-ji"]),
+        ])
+    result = trip_synopsis(itinerary, "relaxed", "Tokyo")
+    assert result == "Planned a 2-day Tokyo trip (relaxed pace)."
+    assert "the destination" not in result

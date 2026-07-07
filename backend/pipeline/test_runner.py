@@ -679,3 +679,35 @@ async def test_runner_write_back_failure_is_non_critical():
     assert c.db["jobs"][0]["status"] == "succeeded"
     memory_events = c.db.get("memory_events")
     assert memory_events and memory_events[-1]["event_type"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_runner_write_back_raise_does_not_double_result_or_flip_status(monkeypatch):
+    # Finding 1: the write-back sits AFTER _set_status/result/mark_job_done inside
+    # run_generation's outermost try. If trip_synopsis (or persist_trip_memory) raises
+    # uncaught, the outer `except Exception: _fail(...)` would emit a SECOND `result`
+    # event and flip the already-`succeeded` trip/job to `failed`. The runner tail must
+    # wrap the write-back in its own try/except so a raise here is fully absorbed.
+    from pipeline import preferences as prefs_mod
+
+    def _boom_synopsis(*_a, **_k):
+        raise RuntimeError("synopsis boom")
+
+    monkeypatch.setattr(prefs_mod, "trip_synopsis", _boom_synopsis)
+
+    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+
+    async def scrape(url): return _reel(url)
+    async def extract(reel): return [_place("Tokyo Tower")]
+
+    out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+                                      job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                      mem0=_AddRaisingMem0(), preferences="loves ramen",
+                                      weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant,
+                                      narrator=_no_narrator, hotel=_no_hotel)
+    assert out["itinerary"]["days"]
+    result_events = [e for e in c.events if e["event_type"] == "result"]
+    assert len(result_events) == 1   # never a second (error) result event
+    assert result_events[0]["message"] == "generation complete"
+    assert c.trip_updates[-1]["status"] != "failed"
+    assert c.db["jobs"][0]["status"] == "succeeded"   # never flipped to failed

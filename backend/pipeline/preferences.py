@@ -101,21 +101,14 @@ async def build_preference_context(mem0, user_id: str, *, explicit_text: str | N
     return merge_preferences(explicit_text=explicit_text, pace=pace, memory_facts=facts)
 
 
-def trip_synopsis(itinerary, pace: str) -> str:
+def trip_synopsis(itinerary, pace: str, destination: str) -> str:
     """A templated one-line trip summary for the mem0.add payload — NO LLM, NO raw
-    reel text. Derived only from the assembled itinerary's shape."""
+    reel text. Derived only from the assembled itinerary's shape + a caller-supplied
+    destination (ItineraryDay has no per-place city; the caller derives it from the
+    canonical places / destination_hint)."""
     days = getattr(itinerary, "days", []) or []
     n = len(days)
-    city = None
-    for d in days:
-        for p in (getattr(d, "places", None) or []):
-            city = getattr(p, "city", None) or city
-            if city:
-                break
-        if city:
-            break
-    where = city or "the destination"
-    return f"Planned a {n}-day {where} trip ({pace} pace)."
+    return f"Planned a {n}-day {destination} trip ({pace} pace)."
 
 
 async def persist_trip_memory(client, mem0, *, user_id: str, trip_id: str,
@@ -124,12 +117,15 @@ async def persist_trip_memory(client, mem0, *, user_id: str, trip_id: str,
     stream yet can't be GC'd. Records a memory_events audit row and pushes mem0.add —
     BOTH best-effort (guardrail #3): a mem0 error OR TIMEOUT can't fail the (already
     saved) trip. Only writes when the user stated something NEW this trip
-    (distill_memory_text is None otherwise). mem0_memory_id is left NULL — v3 add() is
-    queued and returns no synchronous id (reconciliation deferred)."""
+    (distill_memory_text is None otherwise)."""
     text = distill_memory_text(ctx, synopsis=synopsis)
     learned = [ctx.explicit_text] if text else []
     if not text:
         return learned   # memory-only / inferred trip: nothing new to store or audit
+    if mem0 is None:
+        return learned   # memory disabled: nothing was actually sent to mem0, so no
+                          # memory_events row either — preferences already live in
+                          # trips.preference_summary (Task 3)
 
     event_type = "learned"
     if mem0 is not None:

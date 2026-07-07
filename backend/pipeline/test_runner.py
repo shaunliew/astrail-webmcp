@@ -612,3 +612,35 @@ async def test_runner_records_preferences_stage_and_mem0_failure_is_non_critical
     # (it degrades to inferred_default rather than raising).
     assert any(u.get("preference_summary") for u in c.trip_updates)
     assert any(u.get("preference_sources") == ["inferred_default"] for u in c.trip_updates)
+
+
+@pytest.mark.asyncio
+async def test_runner_forwards_preference_block_to_restaurant_and_narrator():
+    # Regression for the forwarding value itself (not just that the kwarg is accepted):
+    # capture what persist_restaurants/persist_narration actually pass down to the
+    # restaurant/narrator fakes. If `preference_block=pref_block` were ever dropped from
+    # either runner._stage_* call, the fake would receive the kwarg's default (None) and
+    # this test would fail on the `is not None` assertion below.
+    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    captured: dict[str, str | None] = {}
+
+    async def scrape(url): return _reel(url)
+    async def extract(reel): return [_place("Tokyo Tower")]
+
+    async def restaurant(places, *, city=None, preference_block=None):
+        captured["restaurant"] = preference_block
+        return []
+
+    async def narrator(days, *, city=None, preference_block=None):
+        from models.enrichment import NarrationResult
+        captured["narrator"] = preference_block
+        return NarrationResult(days=[], trip_title=None, trip_summary="")
+
+    out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+                                      job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                      mem0=None, preferences="ramen",
+                                      weather=_no_weather, transport=_no_transport,
+                                      restaurant=restaurant, narrator=narrator, hotel=_no_hotel)
+    assert out["itinerary"]["days"]
+    assert captured["restaurant"] is not None and "ramen" in captured["restaurant"]
+    assert captured["narrator"] is not None and "ramen" in captured["narrator"]

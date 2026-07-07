@@ -240,9 +240,15 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                         pass   # best-effort — weather persist failure is non-critical
 
             # Compute the soft-guidance preference block ONCE, before the enrich gather — restaurant
-            # and narrator are the only two stages that personalize toward it (Task 4).
-            from pipeline.preferences import preference_block
-            pref_block = preference_block(pref_ctx)
+            # and narrator are the only two stages that personalize toward it (Task 4). Self-contained
+            # (guardrail #3): a failure here must degrade to no-injection, not skip the entire
+            # enrich gather (transport/hotel/narration don't even use pref_block).
+            try:
+                from pipeline.preferences import preference_block
+                pref_block = preference_block(pref_ctx)
+            except Exception:
+                pref_block = None   # memory personalization is best-effort (guardrail #3): a hiccup
+                                    # here must not disable the transport/hotel/narration stages
 
             # Enrich stages are INDEPENDENT (disjoint write tables) and best-effort (guardrail #3),
             # so run them CONCURRENTLY instead of sequentially (~halves the enrich block latency).

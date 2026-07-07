@@ -1,48 +1,148 @@
 'use client'
 
+import { useEffect, useRef, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 
+const RESEND_COOLDOWN_S = 60 // Supabase rate-limits OTP sends (~1/min) — surface it, don't let users hit the raw error
+
 export default function SignInPage() {
-  async function signInWithGoogle() {
+  const router = useRouter()
+  const [step, setStep] = useState<'email' | 'code'>('email')
+  const [email, setEmail] = useState('')
+  const [code, setCode] = useState('')
+  const [pending, setPending] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [cooldown, setCooldown] = useState(0)
+  const codeRef = useRef<HTMLInputElement>(null)
+
+  // Resend cooldown ticker
+  useEffect(() => {
+    if (cooldown <= 0) return
+    const t = setTimeout(() => setCooldown((c) => c - 1), 1000)
+    return () => clearTimeout(t)
+  }, [cooldown])
+
+  async function sendCode() {
+    setPending(true); setError(null); setNotice(null)
     const supabase = createClient()
-    await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
-      },
+    const { error } = await supabase.auth.signInWithOtp({
+      email: email.trim(),
+      options: { shouldCreateUser: true }, // signup and sign-in are the same flow
     })
+    setPending(false)
+    if (error) { setError(error.message); return }
+    setStep('code')
+    setCooldown(RESEND_COOLDOWN_S)
+    setNotice(`We sent a 6-digit code to ${email.trim()}.`)
+  }
+
+  async function verifyCode() {
+    setPending(true); setError(null)
+    const supabase = createClient()
+    const { error } = await supabase.auth.verifyOtp({
+      email: email.trim(),
+      token: code.trim(),
+      type: 'email',
+    })
+    setPending(false)
+    if (error) {
+      setError('That code is invalid or expired. Check the digits or resend.')
+      codeRef.current?.focus()
+      codeRef.current?.select()
+      return
+    }
+    router.push('/app') // middleware routes new users on to /app/onboarding
   }
 
   return (
     <main className="min-h-[100dvh] flex items-center justify-center bg-[color:var(--void)]">
-      <div className="flex flex-col items-center gap-8">
+      <div className="flex w-full max-w-sm flex-col items-center gap-8 p-6">
         <div className="flex flex-col items-center gap-2">
           <h1 className="text-3xl font-[family-name:var(--font-instrument-serif)] text-[color:var(--starlight)] italic">
             Astrail
           </h1>
           <p className="text-sm text-[color:var(--starlight)]/50 font-[family-name:var(--font-geist)]">
-            Turn travel Reels into a route you'll actually take.
+            Turn travel Reels into a route you&apos;ll actually take.
           </p>
         </div>
-        <button
-          onClick={signInWithGoogle}
-          className="flex items-center gap-3 px-6 py-3 bg-white text-black rounded-lg text-sm font-medium hover:bg-gray-100 transition-colors"
-        >
-          <GoogleIcon />
-          Continue with Google
-        </button>
+
+        {step === 'email' ? (
+          <form
+            className="flex w-full flex-col gap-3"
+            onSubmit={(e) => { e.preventDefault(); void sendCode() }}
+          >
+            <label htmlFor="email" className="type-label text-[11px] uppercase tracking-wide text-[var(--muted)]">
+              Email
+            </label>
+            <input
+              id="email"
+              type="email"
+              required
+              autoComplete="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+              className="surface type-body rounded-lg p-2.5 text-sm text-[var(--starlight)] placeholder:text-[var(--faint)]"
+            />
+            <button
+              type="submit"
+              disabled={pending || !email.trim()}
+              className="type-label rounded-xl border border-[var(--brass)] bg-[var(--brass-soft)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] disabled:opacity-40"
+            >
+              {pending ? 'Sending…' : 'Email me a code'}
+            </button>
+          </form>
+        ) : (
+          <form
+            className="flex w-full flex-col gap-3"
+            onSubmit={(e) => { e.preventDefault(); void verifyCode() }}
+          >
+            <label htmlFor="otp" className="type-label text-[11px] uppercase tracking-wide text-[var(--muted)]">
+              6-digit code
+            </label>
+            <input
+              id="otp"
+              ref={codeRef}
+              autoFocus
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              maxLength={6}
+              required
+              value={code}
+              onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+              placeholder="123456"
+              className="surface type-body rounded-lg p-2.5 text-center text-lg tracking-[0.4em] text-[var(--starlight)] placeholder:text-[var(--faint)]"
+            />
+            <button
+              type="submit"
+              disabled={pending || code.trim().length !== 6}
+              className="type-label rounded-xl border border-[var(--brass)] bg-[var(--brass-soft)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] disabled:opacity-40"
+            >
+              {pending ? 'Verifying…' : 'Sign in'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void sendCode()}
+              disabled={pending || cooldown > 0}
+              className="type-label text-[11px] uppercase tracking-wide text-[var(--muted)] underline-offset-2 hover:underline disabled:opacity-40"
+            >
+              {cooldown > 0 ? `Resend code (${cooldown}s)` : 'Resend code'}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setStep('email'); setCode(''); setError(null); setNotice(null) }}
+              className="type-label text-[11px] uppercase tracking-wide text-[var(--faint)] underline-offset-2 hover:underline"
+            >
+              Use a different email
+            </button>
+          </form>
+        )}
+
+        {notice ? <p className="type-body text-xs text-[var(--muted)]">{notice}</p> : null}
+        {error ? <p className="type-body text-xs text-red-400" role="alert">{error}</p> : null}
       </div>
     </main>
-  )
-}
-
-function GoogleIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
-      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" />
-      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
-    </svg>
   )
 }

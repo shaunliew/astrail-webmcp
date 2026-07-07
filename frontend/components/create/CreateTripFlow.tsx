@@ -2,12 +2,14 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { createTrip, streamGeneration } from '@/lib/trip/mock-api'
 import {
   canGenerate, toGenerateRequest,
   type DraftInspirationItem, type BriefInput,
 } from '@/lib/trip/parse-inspiration'
 import type { StreamEvent } from '@/lib/trip/backend-types'
+import SignOutButton from '@/components/auth/SignOutButton'
 import InspirationTray from './InspirationTray'
 import TripBriefForm from './TripBriefForm'
 import GenerationProgress from './GenerationProgress'
@@ -69,7 +71,18 @@ export default function CreateTripFlow() {
   return (
     <main className="mx-auto flex min-h-[100dvh] w-full max-w-2xl flex-col gap-8 bg-[var(--void)] p-6">
       <header className="flex flex-col gap-1">
-        <h1 className="type-display text-3xl text-[var(--starlight)]">Plan a new trip</h1>
+        <div className="flex items-center justify-between">
+          <h1 className="type-display text-3xl text-[var(--starlight)]">Plan a new trip</h1>
+          <div className="flex items-center gap-4">
+            <Link
+              href="/app/trips"
+              className="type-label text-[11px] uppercase tracking-wide text-[var(--muted)] underline-offset-2 hover:underline"
+            >
+              My trips
+            </Link>
+            <SignOutButton />
+          </div>
+        </div>
         <p className="type-body text-sm text-[var(--muted)]">
           Paste the Reels that inspired you, add any must-visit places, and Astrail maps the route you actually take.
         </p>

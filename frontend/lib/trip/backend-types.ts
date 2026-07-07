@@ -215,8 +215,8 @@ export type GenerateTripRequest = {
   reel_urls: string[]
   requested_places: string[]
   destination_hint: string | null
-  start_date: string | null
-  end_date: string | null
+  start_date: string   // required — pipeline date-range needs real dates
+  end_date: string     // required — pipeline date-range needs real dates
   budget_level: BudgetLevel | null
   origin_city: string | null
   preferences: string | null

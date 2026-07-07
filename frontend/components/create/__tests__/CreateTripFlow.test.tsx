@@ -33,6 +33,8 @@ describe('CreateTripFlow', () => {
       target: { value: 'https://www.instagram.com/reel/AAA/' },
     })
     fireEvent.click(screen.getByRole('button', { name: /add links/i }))
+    fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
+    fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
 
     fireEvent.click(screen.getByRole('button', { name: /generate/i }))
 
@@ -51,6 +53,8 @@ describe('CreateTripFlow', () => {
       target: { value: 'https://www.instagram.com/reel/AAA/' },
     })
     fireEvent.click(screen.getByRole('button', { name: /add links/i }))
+    fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
+    fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
     fireEvent.click(screen.getByRole('button', { name: /generate/i }))
 
     await waitFor(() => expect(createTrip).toHaveBeenCalledTimes(1))

@@ -5,6 +5,11 @@ import {
   type DraftInspirationItem, type BriefInput,
 } from '@/lib/trip/parse-inspiration'
 
+const FULL_BRIEF: BriefInput = {
+  destination_hint: '', start_date: '2026-08-01', end_date: '2026-08-04',
+  origin_city: '', budget_level: '', preferences: '',
+}
+
 const EMPTY_BRIEF: BriefInput = {
   destination_hint: '', start_date: '', end_date: '',
   origin_city: '', budget_level: '', preferences: '',
@@ -81,10 +86,15 @@ describe('makeRequestedPlace', () => {
 })
 
 describe('canGenerate', () => {
-  it('is true with at least one reel or one place, false when empty', () => {
-    expect(canGenerate([])).toBe(false)
-    expect(canGenerate([makeRequestedPlace('Kyoto', [])!])).toBe(true)
-    expect(canGenerate(buildReelItems('https://www.instagram.com/reel/AAA/', []).items)).toBe(true)
+  it('is true with at least one reel or place AND both dates', () => {
+    expect(canGenerate([], FULL_BRIEF)).toBe(false)
+    expect(canGenerate([makeRequestedPlace('Kyoto', [])!], FULL_BRIEF)).toBe(true)
+    expect(canGenerate(buildReelItems('https://www.instagram.com/reel/AAA/', []).items, FULL_BRIEF)).toBe(true)
+  })
+  it('is false when either date is missing', () => {
+    const items = [makeRequestedPlace('Kyoto', [])!]
+    expect(canGenerate(items, { ...FULL_BRIEF, start_date: '' })).toBe(false)
+    expect(canGenerate(items, { ...FULL_BRIEF, end_date: '  ' })).toBe(false)
   })
 })
 
@@ -94,13 +104,21 @@ describe('toGenerateRequest', () => {
       ...buildReelItems('https://www.instagram.com/reel/AAA/', []).items,
       makeRequestedPlace('Tokyo Disneyland', [])!,
     ]
-    const req = toGenerateRequest(items, { ...EMPTY_BRIEF, destination_hint: 'Tokyo', budget_level: 'mid_range' })
+    const req = toGenerateRequest(items, { ...EMPTY_BRIEF, destination_hint: 'Tokyo', budget_level: 'mid_range', start_date: '2026-08-01', end_date: '2026-08-04' })
     expect(req.reel_urls).toEqual(['https://www.instagram.com/reel/AAA/'])
     expect(req.requested_places).toEqual(['Tokyo Disneyland'])
     expect(req.destination_hint).toBe('Tokyo')
     expect(req.budget_level).toBe('mid_range')
-    expect(req.start_date).toBeNull()
+    expect(req.start_date).toBe('2026-08-01')
     expect(req.origin_city).toBeNull()
     expect(req.preferences).toBeNull()
+  })
+})
+
+describe('toGenerateRequest dates', () => {
+  it('emits trimmed non-null dates', () => {
+    const req = toGenerateRequest([], { ...FULL_BRIEF, start_date: ' 2026-08-01 ' })
+    expect(req.start_date).toBe('2026-08-01')
+    expect(req.end_date).toBe('2026-08-04')
   })
 })

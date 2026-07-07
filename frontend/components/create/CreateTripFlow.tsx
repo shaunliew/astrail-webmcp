@@ -81,7 +81,7 @@ export default function CreateTripFlow() {
       <button
         type="button"
         onClick={handleGenerate}
-        disabled={!canGenerate(items)}
+        disabled={!canGenerate(items, brief)}
         className="type-label rounded-xl border border-[var(--brass)] bg-[var(--brass-soft)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
       >
         Generate my trip

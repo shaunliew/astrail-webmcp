@@ -81,8 +81,9 @@ export function makeRequestedPlace(
   }
 }
 
-export function canGenerate(items: DraftInspirationItem[]): boolean {
-  return items.length > 0 // any reel OR any requested place satisfies the PRD §9 minimum
+export function canGenerate(items: DraftInspirationItem[], brief: BriefInput): boolean {
+  // PRD §9 minimum (any reel or requested place) AND the pipeline's required date range.
+  return items.length > 0 && brief.start_date.trim().length > 0 && brief.end_date.trim().length > 0
 }
 
 export function toGenerateRequest(items: DraftInspirationItem[], brief: BriefInput): GenerateTripRequest {
@@ -94,8 +95,8 @@ export function toGenerateRequest(items: DraftInspirationItem[], brief: BriefInp
     reel_urls: items.filter((i) => i.item_type === 'reel_url' && i.normalized_reel_url).map((i) => i.normalized_reel_url as string),
     requested_places: items.filter((i) => i.item_type === 'requested_place' && i.requested_place_text).map((i) => i.requested_place_text as string),
     destination_hint: clean(brief.destination_hint),
-    start_date: clean(brief.start_date),
-    end_date: clean(brief.end_date),
+    start_date: brief.start_date.trim(),
+    end_date: brief.end_date.trim(),
     budget_level: brief.budget_level || null,
     origin_city: clean(brief.origin_city),
     preferences: clean(brief.preferences),

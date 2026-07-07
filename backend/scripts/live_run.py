@@ -42,7 +42,9 @@ def _default_dates() -> tuple[str, str]:
 async def _inspect(client, trip_id: str) -> None:
     """Print the persisted trip exactly as the frontend would read it: day -> place -> weather."""
     trip = (
-        await client.table("trips").select("id,status,destination_hint,start_date,end_date,title,summary")
+        await client.table("trips")
+        .select("id,status,destination_hint,start_date,end_date,title,summary,"
+                "preference_summary,preference_sources")
         .eq("id", trip_id).maybe_single().execute()
     ).data
     if trip is None:
@@ -67,6 +69,25 @@ async def _inspect(client, trip_id: str) -> None:
           f"{trip['start_date']}..{trip['end_date']}")
     print(f"    trip_title={trip.get('title')!r}")
     print(f"    trip_summary={trip.get('summary')!r}")
+    print(f"    trips.preference_summary={trip.get('preference_summary')!r} "
+          f"preference_sources={trip.get('preference_sources')!r}")
+    pref_stage_events = (
+        await client.table("generation_events").select("message,payload")
+        .eq("trip_id", trip_id).eq("stage", "preferences").execute()
+    ).data
+    print("=== preferences stage event:")
+    for ev in pref_stage_events:
+        source = (ev.get("payload") or {}).get("preference_source")
+        print(f"    preference_source={source!r}  message={ev.get('message')!r}")
+    # PERSISTED memory receipt (there is NO memory_preference SSE event — the receipt is
+    # persisted to memory_events, not streamed; read it from the DB, not a stage event).
+    mem_events = (
+        await client.table("memory_events").select("event_type,learned_facts_json,created_at")
+        .eq("trip_id", trip_id).execute()
+    ).data
+    print(f"=== memory_events (persisted receipt): {len(mem_events)}")
+    for me in mem_events:
+        print(f"    event_type={me.get('event_type')!r}  learned_facts_json={me.get('learned_facts_json')!r}")
     print(f"=== trip_places: {len(tps)} | places: {len(places)} | trip_days: {len(tds)}")
     for tp in sorted(tps, key=lambda x: (x["day_number"] or 0, x["sort_order"] or 0)):
         p = by_id.get(tp["place_id"], {})

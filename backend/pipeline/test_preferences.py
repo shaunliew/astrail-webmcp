@@ -1,5 +1,8 @@
 """Pure, offline tests for preference merge/render/distill (no mem0, no network)."""
 import asyncio
+import uuid
+
+import pytest
 
 from pipeline.preferences import (distill_memory_text, merge_preferences,
                                   preference_block)
@@ -212,3 +215,36 @@ def test_trip_synopsis_uses_real_itinerary_shape_and_destination():
     result = trip_synopsis(itinerary, "relaxed", "Tokyo")
     assert result == "Planned a 2-day Tokyo trip (relaxed pace)."
     assert "the destination" not in result
+
+
+@pytest.mark.live
+async def test_live_mem0_v3_contract_add_then_search():
+    """A7 (Codex C8): every other test here fakes mem0's response as {"results": [...]}.
+    This is the ONE real round-trip against the hosted mem0 Platform API, so a v3 response
+    shape drift is caught here instead of silently degrading recall to `inferred_default`
+    in production (build_preference_context swallows ANY shape mismatch as a best-effort
+    miss — guardrail #3 — so a break here would otherwise be invisible).
+
+    Skipped by default (needs --run-live + a real MEM0_API_KEY); never runs in the
+    keyless offline suite.
+    """
+    from mem0 import AsyncMemoryClient
+
+    user_id = f"astrail-contract-test-{uuid.uuid4()}"
+    mem0 = AsyncMemoryClient()
+    try:
+        await mem0.add(
+            [{"role": "user", "content": "Travel preferences: loves ramen and quiet, walkable days."}],
+            user_id=user_id, metadata={"source": "contract_test"},
+        )
+        res = await mem0.search("travel preferences for a trip", filters={"user_id": user_id}, top_k=10)
+        assert isinstance(res, dict)
+        results = res.get("results")
+        assert isinstance(results, list)
+        assert results, "expected the just-added fact to come back on search"
+        assert all(isinstance(m, dict) and isinstance(m.get("memory"), str) for m in results)
+    finally:
+        try:
+            await mem0.delete_all(user_id=user_id)   # best-effort cleanup of the throwaway user
+        except Exception:
+            pass

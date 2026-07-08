@@ -1393,6 +1393,34 @@ Append a `## QA evidence — YYYY-MM-DD` section to this plan file listing each 
 
 ---
 
+## QA evidence — 2026-07-08 (automated portion)
+
+Non-interactive checks run by the orchestrator after Task 7 (`9542b1f`), both dev
+servers live (uvicorn :8000 via `--env-file .env`, next dev :3000):
+
+| Check | Result |
+|---|---|
+| `GET /health` | PASS — 200 |
+| Tokenless `POST /generate-trip` | PASS — 401 "Missing or malformed Authorization header" |
+| `GET /generate-trip/stream/<uuid>` without token | PASS — 401 |
+| Signed-out `/app` visit | PASS — redirected to `/sign-in` (real middleware; `NEXT_PUBLIC_MOCK_AUTH` flipped to `false`) |
+| OTP sign-in page renders | PASS — email field + "Email me a code", button disabled until input, no Google button, zero console errors (screenshot in session log) |
+| Backend suite | PASS — 373 passed, 5 skipped |
+| Frontend suite + typecheck | PASS — 32 files / 123 tests, tsc clean |
+
+Environment fixes made during QA: `SUPABASE_URL` copied into `backend/.env` from the
+frontend env; `NEXT_PUBLIC_MOCK_AUTH` set to `false` in `frontend/.env.local`.
+
+**BLOCKER for the remaining manual QA:** `backend/.env` is missing
+`SUPABASE_SERVICE_ROLE_KEY` (Supabase dashboard → Project Settings → API → service_role).
+Without it the backend cannot write trips/jobs — the cold acceptance run will 500.
+
+Manual steps remaining (human-only): real OTP email round-trip (wrong code, resend
+cooldown), onboarding gate first-run + skip-on-return, cold acceptance run with the two
+reserved reels → live stages → itinerary on the Mapbox map, trips-row preference merge
+check, refresh reload, `/app/trips` listing, second-account RLS check, sign-out,
+kill-backend-mid-run spinner escape.
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |

@@ -1,0 +1,26 @@
+name: RLS pgTAP Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+jobs:
+  rls-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      # DB-only start: Postgres + auto-applied migrations from supabase/migrations/.
+      # Faster than full `supabase start` — GoTrue/Studio/etc. aren't needed for
+      # pgTAP tests that set request.jwt.claims via GUC directly.
+      - name: Start local Supabase database
+        run: supabase db start
+
+      - name: Run pgTAP RLS + quota tests
+        run: supabase test db

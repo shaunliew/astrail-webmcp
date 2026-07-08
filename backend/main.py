@@ -14,17 +14,28 @@ trip ownership (guardrail #6), and streams generation_events as SSE.
 from __future__ import annotations
 
 import asyncio
+import os
 from contextlib import asynccontextmanager
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from slowapi.errors import RateLimitExceeded
 
+from api.errors import build_error_response, register_error_handlers
 from api.schemas import GenerateTripRequest, GenerateTripResponse
 from api.streaming import stream_trip_events
-from auth import get_current_user_id, get_user_id_from_query_or_header
+from auth import get_user_id_from_query_or_header
 from jobs import compute_idempotency_key, enqueue_job, recover_inflight_jobs
 from pipeline.runner import record_event, run_generation
+from rate_limit import (
+    BURST_LIMIT,
+    DAILY_TRIP_QUOTA,
+    check_and_increment_daily_quota,
+    get_current_user_id_stashed,
+    limiter,
+    refund_daily_quota,
+)
 from supabase_client import get_supabase_client
 
 _RECOVERY_TASKS: set = set()
@@ -56,9 +67,28 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Astrail Backend", lifespan=lifespan)
 
+app.state.limiter = limiter
+
+
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    # Reuse the shared envelope builder (DRY — F3), then inject Retry-After /
+    # X-RateLimit-* (the Limiter was created with headers_enabled=True).
+    response = build_error_response(429, f"Too many requests: {exc.detail}", code="rate_limited")
+    return request.app.state.limiter._inject_headers(response, request.state.view_rate_limit)
+
+
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
+register_error_handlers(app)
+
+_allowed_origins = [
+    o.strip()
+    for o in os.environ.get("ALLOWED_ORIGINS", "https://astrail.xyz,https://www.astrail.xyz").split(",")
+    if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -70,41 +100,65 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/readiness")
+async def readiness():
+    """Deep readiness probe: confirms Supabase is reachable. NOT the deploy gate
+    (that is /health) — a DB blip should not fail a rolling deploy."""
+    try:
+        client = await get_supabase_client()
+        await client.table("users").select("id").limit(1).execute()
+        return {"ready": True}
+    except Exception:
+        return JSONResponse(status_code=503, content={"ready": False})
+
+
 @app.post("/generate-trip", response_model=GenerateTripResponse)
+@limiter.limit(BURST_LIMIT)
 async def generate_trip(
-    req: GenerateTripRequest,
-    background: BackgroundTasks,
-    user_id: str = Depends(get_current_user_id),
-) -> GenerateTripResponse:
+    request: Request,                                     # required by slowapi; must be named `request`
+    response: Response,                                   # REQUIRED with headers_enabled=True: slowapi
+    req: GenerateTripRequest,                             #   injects X-RateLimit-*/Retry-After into it on
+    background: BackgroundTasks,                          #   the success path — without a `response` kwarg
+    user_id: str = Depends(get_current_user_id_stashed),  #   _inject_headers(None, ...) breaks every call.
+) -> GenerateTripResponse:                               # (the dep stashes request.state.user_id for key_func)
     client = await get_supabase_client()
     idem = compute_idempotency_key(user_id, req.reel_urls, req.start_date, req.end_date,
                                    preferences=req.preferences, pace=req.pace,
                                    destination_hint=req.destination_hint)
 
     # Idempotent replay: a retried POST (same request-derived key) returns the
-    # SAME trip instead of creating a duplicate.
+    # SAME trip instead of creating a duplicate — WITHOUT consuming daily quota.
     existing = await (
         client.table("jobs").select("trip_id").eq("idempotency_key", idem).maybe_single().execute()
     )
     if existing is not None and existing.data is not None:
         return GenerateTripResponse(trip_id=existing.data["trip_id"])
 
-    # Create the trip FIRST (jobs composite FK needs it), persist the run
-    # inputs as a create_trip event (recovery replays from this payload), then
-    # enqueue the durable job.
-    trip = (
-        await client.table("trips")
-        .insert({
-            "user_id": user_id,
-            "status": "generating",
-            "destination_hint": req.destination_hint,
-            "start_date": req.start_date,
-            "end_date": req.end_date,
-        })
-        .execute()
-    ).data[0]
-    trip_id = trip["id"]
+    # Layer 1 — durable daily quota. AFTER the replay short-circuit (a retried POST
+    # must not consume quota) and BEFORE the trip insert.
+    if not await check_and_increment_daily_quota(client, user_id, DAILY_TRIP_QUOTA):
+        raise HTTPException(status_code=429, detail="Daily trip limit reached. Try again tomorrow.")
+
+    # Quota is now consumed. ANY failure before a durable job exists must (a) preserve
+    # the existing invariant — never leave an orphan trip stuck `generating` with no job
+    # to recover it (mark it failed FIRST) — and (b) best-effort refund the quota. The
+    # trip insert is INSIDE this try so its own failure refunds too (Codex HIGH #2). The
+    # refund runs AFTER the fail-mark and is swallowed, so a refund error can't strand the
+    # trip in `generating` (Codex HIGH #3).
+    trip_id: str | None = None
     try:
+        trip = (
+            await client.table("trips")
+            .insert({
+                "user_id": user_id,
+                "status": "generating",
+                "destination_hint": req.destination_hint,
+                "start_date": req.start_date,
+                "end_date": req.end_date,
+            })
+            .execute()
+        ).data[0]
+        trip_id = trip["id"]
         await record_event(
             client, trip_id, event_type="stage", stage="create_trip", message="trip created",
             payload={
@@ -118,19 +172,29 @@ async def generate_trip(
         )
         job_id, winning_trip_id = await enqueue_job(trip_id, user_id, idem)
     except Exception:
-        # Never leave an orphan trip with no durable job: ANY failure between the
-        # trip insert and the enqueue (not just APIError — a transient httpx
-        # ConnectError/ReadTimeout counts too) must not leave the trip stuck
-        # `generating` with nothing to recover it (recovery only scans `jobs`).
-        await client.table("trips").update({"status": "failed"}).eq("id", trip_id).eq(
-            "user_id", user_id
-        ).execute()
+        # Invariant FIRST (load-bearing): a created-but-jobless trip must be marked failed
+        # (recovery only scans `jobs`; a transient httpx ConnectError/ReadTimeout counts too).
+        if trip_id is not None:
+            try:
+                await client.table("trips").update({"status": "failed"}).eq("id", trip_id).eq(
+                    "user_id", user_id
+                ).execute()
+            except Exception:
+                pass  # best-effort — a fail-mark failure must NOT skip the quota refund below
+        try:
+            await refund_daily_quota(client, user_id)   # best-effort; never masks the 500 / fail-mark
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail="Could not enqueue generation job")
 
     if winning_trip_id != trip_id:
-        # Lost an idempotency-key race to a concurrent POST — the winner is
-        # canonical. Delete OUR orphan trip (owner-filtered) and redirect;
-        # do NOT dispatch a second run_generation.
+        # Lost an idempotency-key race to a concurrent POST — the winner is canonical (and
+        # counted its own quota). Best-effort refund ours, then delete OUR orphan trip
+        # (owner-filtered) and redirect; do NOT dispatch a second run_generation.
+        try:
+            await refund_daily_quota(client, user_id)
+        except Exception:
+            pass
         await client.table("trips").delete().eq("id", trip_id).eq("user_id", user_id).execute()
         return GenerateTripResponse(trip_id=winning_trip_id)
 

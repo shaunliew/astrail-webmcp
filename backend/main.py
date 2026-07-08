@@ -14,6 +14,7 @@ trip ownership (guardrail #6), and streams generation_events as SSE.
 from __future__ import annotations
 
 import asyncio
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
@@ -52,9 +53,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Astrail Backend", lifespan=lifespan)
 
+# CORS: comma-separated origins; default "*" keeps local dev friction-free.
+# Deploy sets ALLOWED_ORIGINS=https://<vercel-domain> (see docs/SUPABASE-SETUP.md).
+_allowed_origins = [
+    o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

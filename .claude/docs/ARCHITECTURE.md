@@ -117,16 +117,19 @@ Stage events (additive — frontend tolerates unknown types):
 
 ## API Endpoints
 
-Public:
-- `GET /health`
+Infra (unauthenticated by design):
+- `GET /health` — dumb liveness; the Render `healthCheckPath` deploy gate (never touches the DB, so a DB blip can't fail a deploy).
+- `GET /readiness` — deep probe (confirms Supabase reachable); monitoring only, NOT the deploy gate. `200 {"ready":true}` / `503 {"ready":false}`.
 
-Authenticated (Supabase JWT required):
-- `POST /generate-trip` — accepts preferences + reelUrls, creates a Supabase trip row + enqueues a durable job, returns `{trip_id}` (snake_case, per the shipped `GenerateTripResponse`)
-- `GET /generate-trip/stream/:tripId` — SSE stream
-- `GET /trips/:tripId`
-- `DELETE /trips/:tripId`
+Authenticated (Supabase JWT, ES256/JWKS):
+- `POST /generate-trip` — accepts `reel_urls` (1–5) + `start_date`/`end_date` + optional `destination_hint`/`pace`/`preferences`; creates a Supabase trip row + enqueues a durable job; returns `{trip_id}` (snake_case, per the shipped `GenerateTripResponse`). **Two-layer per-user rate limit:** slowapi in-memory burst (`3/minute`, keyed on `request.state.user_id`) + a durable daily quota (`5/day` via an atomic `security definer` RPC on `user_daily_usage`) → `429` on either (burst 429 carries `Retry-After`; daily-cap 429 does not).
+- `GET /generate-trip/stream/:tripId` — SSE stream (query-param `?token=` auth for EventSource, header fallback; owner-checked).
 
-Most read operations go directly to Supabase from the frontend (Supabase JS client — RLS-protected queries + Realtime subscriptions). FastAPI exists for the agent pipeline (long-running SSE) and external API calls requiring the Python SDK.
+**No backend trip-read endpoints.** Finished-trip reads (list + detail) go **Supabase-direct under RLS** from the frontend (Supabase JS client — RLS is the sole read-authz control, gated in CI by `.github/workflows/rls-tests.yml`). FastAPI owns **writes / orchestration / streaming** only, plus external API calls requiring the Python SDK.
+
+**Error envelope:** every non-2xx response is one JSON shape `{"error":{"code","message"}}` — registered on the Starlette base `HTTPException`, so framework 404/405 and pre-stream auth failures are enveloped too. TS mirror: `frontend/lib/trip/backend-types.ts` → `ErrorResponse`.
+
+**Deployment:** live on Render as `astrail-backend` (Docker, Starter, `region: singapore`, Blueprint-managed via `render.yaml`, `autoDeploy` on its tracked branch). Launches `cd backend && uvicorn main:app` (bare imports need `backend/` as cwd). Env keys in `render.yaml` / `.claude/docs/ENV.md`.
 
 ## The 4-Phase Pipeline
 

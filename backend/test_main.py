@@ -376,6 +376,25 @@ async def test_refund_exception_after_creation_still_marks_trip_failed(ctx, monk
     assert calls == []                            # never dispatched
 
 
+async def test_fail_mark_failure_still_refunds_quota(ctx, monkeypatch):
+    """Codex MEDIUM fold: enqueue_job raises AND the fail-mark trips.update ITSELF
+    raises (a second, independent DB error). The fail-mark failure must not skip the
+    quota refund below it — both side effects are now individually best-effort."""
+    ac, db, calls, client = ctx
+
+    async def _boom_enqueue(*_args, **_kwargs):
+        raise RuntimeError("enqueue boom")
+
+    monkeypatch.setattr(main, "enqueue_job", _boom_enqueue)
+    client.fail_ops.add(("trips", "update"))  # the fail-mark update itself raises
+
+    r = await ac.post("/generate-trip", json=_PAYLOAD)
+    assert r.status_code == 500
+    rpc_names = [c[0] for c in client.rpc_calls]
+    assert "decrement_daily_trip_usage" in rpc_names   # refund still runs despite fail-mark failure
+    assert calls == []                                 # never dispatched
+
+
 async def test_boot_time_recovery_failure_does_not_down_the_app(monkeypatch):
     """A DB blip during the startup recovery sweep must DEGRADE, not crash the app —
     the lifespan must not raise, and /health must still serve (Fix 2)."""

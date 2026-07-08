@@ -175,9 +175,12 @@ async def generate_trip(
         # Invariant FIRST (load-bearing): a created-but-jobless trip must be marked failed
         # (recovery only scans `jobs`; a transient httpx ConnectError/ReadTimeout counts too).
         if trip_id is not None:
-            await client.table("trips").update({"status": "failed"}).eq("id", trip_id).eq(
-                "user_id", user_id
-            ).execute()
+            try:
+                await client.table("trips").update({"status": "failed"}).eq("id", trip_id).eq(
+                    "user_id", user_id
+                ).execute()
+            except Exception:
+                pass  # best-effort — a fail-mark failure must NOT skip the quota refund below
         try:
             await refund_daily_quota(client, user_id)   # best-effort; never masks the 500 / fail-mark
         except Exception:

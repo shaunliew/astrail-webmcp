@@ -395,6 +395,56 @@ async def test_fail_mark_failure_still_refunds_quota(ctx, monkeypatch):
     assert calls == []                                 # never dispatched
 
 
+# ---------------------------------------------------------------------------
+# Request schema parity + profile/per-trip preference merge (beta wiring plan Task 1).
+# ---------------------------------------------------------------------------
+
+
+async def test_generate_trip_persists_preference_fields(ctx):
+    ac, db, _calls, _client = ctx
+    db["traveler_profiles"] = [{
+        "id": "user-1", "origin_city": "Kuala Lumpur",
+        "travel_style_tags": ["food-led"], "preference_tags": ["ramen"],
+        "preference_notes": "no early mornings",
+    }]
+    payload = {**_PAYLOAD, "budget_level": "mid_range", "origin_city": "Penang",
+               "preferences": "vegetarian this trip", "requested_places": ["Tokyo Tower"]}
+    r = await ac.post("/generate-trip", json=payload)
+    assert r.status_code == 200
+    trip = db["trips"][0]
+    assert trip["budget_level"] == "mid_range"
+    assert trip["origin_city"] == "Penang"  # explicit request wins over profile
+    assert "Travel style: food-led." in trip["preference_summary"]
+    assert "This trip: vegetarian this trip" in trip["preference_summary"]
+    assert trip["preference_sources"] == ["memory", "explicit"]
+    create_trip_events = [e for e in db["generation_events"] if e["stage"] == "create_trip"]
+    assert create_trip_events[0]["payload"]["requested_places"] == ["Tokyo Tower"]
+
+
+async def test_generate_trip_origin_city_falls_back_to_profile(ctx):
+    ac, db, _calls, _client = ctx
+    db["traveler_profiles"] = [{
+        "id": "user-1", "origin_city": "Kuala Lumpur",
+        "travel_style_tags": [], "preference_tags": [], "preference_notes": None,
+    }]
+    r = await ac.post("/generate-trip", json=_PAYLOAD)
+    assert r.status_code == 200
+    assert db["trips"][0]["origin_city"] == "Kuala Lumpur"
+
+
+async def test_generate_trip_old_shape_payload_still_succeeds(ctx):
+    """CRITICAL REGRESSION TEST: the pre-parity minimal body (reel_urls + dates only,
+    no traveler_profiles row) must keep working — all new fields are optional."""
+    ac, db, _calls, _client = ctx
+    r = await ac.post("/generate-trip", json=_PAYLOAD)
+    assert r.status_code == 200
+    trip = db["trips"][0]
+    assert trip["budget_level"] is None
+    assert trip["origin_city"] is None
+    assert trip["preference_summary"] is None
+    assert trip["preference_sources"] == []
+
+
 async def test_boot_time_recovery_failure_does_not_down_the_app(monkeypatch):
     """A DB blip during the startup recovery sweep must DEGRADE, not crash the app —
     the lifespan must not raise, and /health must still serve (Fix 2)."""

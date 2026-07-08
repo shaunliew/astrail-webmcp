@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import dynamic from 'next/dynamic'
 import type { TripBundle } from '@/lib/trip/backend-types'
-import { getTrip } from '@/lib/trip/mock-api'
+import { getTrip } from '@/lib/trip/supabase-api'
 import {
   orderedDays, placesForDay, legsForDay, restaurantsForDay,
   tripHotels, buildPlaceIndex, findTripPlace,
@@ -67,6 +67,35 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
     return (
       <main className="flex h-[100dvh] items-center justify-center bg-[var(--void)]">
         <p className="type-body text-sm text-[var(--muted)]">Trip not found.</p>
+      </main>
+    )
+  }
+  if (bundle.trip.status === 'failed') {
+    return (
+      <main className="flex h-[100dvh] flex-col items-center justify-center gap-3 bg-[var(--void)] p-6">
+        <p className="type-display text-xl text-[var(--starlight)]">Generation failed</p>
+        <p className="type-body max-w-md text-center text-sm text-[var(--muted)]">
+          Astrail couldn&apos;t build this trip. Start a new one — repeat Reels are cached, so retrying is fast.
+        </p>
+        <a href="/app" className="type-label text-xs uppercase tracking-wide text-[var(--brass)] underline-offset-2 hover:underline">
+          Plan a new trip
+        </a>
+      </main>
+    )
+  }
+  if (bundle.trip.status === 'generating' || bundle.trip.status === 'draft') {
+    return (
+      <main className="flex h-[100dvh] flex-col items-center justify-center gap-3 bg-[var(--void)] p-6">
+        <p className="type-label text-xs uppercase tracking-wide text-[var(--muted)]">
+          Still generating — refresh in a moment.
+        </p>
+        <button
+          type="button"
+          onClick={() => window.location.reload()}
+          className="type-label text-xs uppercase tracking-wide text-[var(--brass)] underline-offset-2 hover:underline"
+        >
+          Refresh
+        </button>
       </main>
     )
   }

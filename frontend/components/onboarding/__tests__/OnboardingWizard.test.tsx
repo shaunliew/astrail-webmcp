@@ -6,7 +6,7 @@ const { push, saveProfile } = vi.hoisted(() => ({
   saveProfile: vi.fn(async (input: unknown) => ({ id: 'demo-user', ...(input as object), onboarding_completed: true })),
 }))
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push }) }))
-vi.mock('@/lib/trip/mock-api', () => ({ saveProfile }))
+vi.mock('@/lib/trip/supabase-api', () => ({ saveProfile }))
 
 import OnboardingWizard from '@/components/onboarding/OnboardingWizard'
 

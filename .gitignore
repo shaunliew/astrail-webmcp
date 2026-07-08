@@ -42,3 +42,7 @@ Thumbs.db
 
 # Local live-capture output for inspection (never committed; refresh real fixtures with --out-dir evals/fixtures)
 backend/captures/
+
+# pytest basetemp redirect (default %TEMP%/pytest-of-* is permission-locked on this machine)
+backend/.pytest-tmp/
+.uv-cache/

@@ -53,7 +53,7 @@ describe('createTrip', () => {
   it('returns the demo trip id for a request with at least one reel', async () => {
     const res = await createTrip({
       reel_urls: ['https://www.instagram.com/reel/AAA/'], requested_places: [],
-      destination_hint: null, start_date: null, end_date: null,
+      destination_hint: null, start_date: '2026-08-01', end_date: '2026-08-04',
       budget_level: null, origin_city: null, preferences: null,
     })
     expect(res.trip_id).toBe(TOKYO_TRIP.trip.id)
@@ -62,7 +62,7 @@ describe('createTrip', () => {
   it('accepts a request with only a requested place', async () => {
     const res = await createTrip({
       reel_urls: [], requested_places: ['Tokyo Disneyland'],
-      destination_hint: null, start_date: null, end_date: null,
+      destination_hint: null, start_date: '2026-08-01', end_date: '2026-08-04',
       budget_level: null, origin_city: null, preferences: null,
     })
     expect(res.trip_id).toBe(TOKYO_TRIP.trip.id)
@@ -71,7 +71,7 @@ describe('createTrip', () => {
   it('rejects a request with no reels and no requested places', async () => {
     await expect(createTrip({
       reel_urls: [], requested_places: [],
-      destination_hint: null, start_date: null, end_date: null,
+      destination_hint: null, start_date: '2026-08-01', end_date: '2026-08-04',
       budget_level: null, origin_city: null, preferences: null,
     })).rejects.toThrow(/at least one/i)
   })

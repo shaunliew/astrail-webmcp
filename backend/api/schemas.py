@@ -15,6 +15,12 @@ class GenerateTripRequest(BaseModel):
     pace: str = Field(default="balanced", max_length=32)
     # Free-text goes verbatim to mem0's cloud; bounded (A5).
     preferences: str | None = Field(default=None, max_length=2000)
+    # Parity with frontend GenerateTripRequest (backend-types.ts, guardrail #4). The
+    # frontend sends these three every request; requested_places is recorded on the
+    # create_trip event but not yet resolved into the pipeline (deferred).
+    requested_places: list[str] = Field(default_factory=list)
+    budget_level: str | None = None
+    origin_city: str | None = None
 
 
 class GenerateTripResponse(BaseModel):

@@ -47,6 +47,14 @@ export default function GenerationProgress({ events }: { events: StreamEvent[] }
                 </li>
               )
             }
+            if (event.type === 'warning' || event.type === 'error' || event.type === 'decision') {
+              return (
+                <li key={i} className="type-body flex items-start gap-2 pl-4 text-sm text-[var(--muted)]">
+                  <span aria-hidden>{event.type === 'decision' ? '·' : '⚠'}</span>
+                  <span>{event.msg}</span>
+                </li>
+              )
+            }
             const mapped = event.stage === 'dedup'
             return (
               <li key={i} className="surface flex flex-col gap-0.5 rounded-lg p-3">

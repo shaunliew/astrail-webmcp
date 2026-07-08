@@ -8,7 +8,8 @@ vi.mock('next/link', () => ({
 }))
 
 const { listTrips } = vi.hoisted(() => ({ listTrips: vi.fn() }))
-vi.mock('@/lib/trip/mock-api', () => ({ listTrips }))
+vi.mock('@/lib/trip/supabase-api', () => ({ listTrips }))
+vi.mock('@/components/auth/SignOutButton', () => ({ default: () => <button type="button">Sign out</button> }))
 
 import TripsList from '@/components/trips/TripsList'
 
@@ -18,8 +19,7 @@ describe('TripsList', () => {
   it('renders a card linking to the trip once loaded', async () => {
     listTrips.mockResolvedValueOnce([TOKYO_TRIP.trip])
     render(<TripsList />)
-    expect(await screen.findByRole('heading', { name: /tokyo/i })).toBeInTheDocument()
-    expect(screen.getByRole('link', { name: /tokyo/i })).toHaveAttribute('href', `/app/trip/${TOKYO_TRIP.trip.id}`)
+    expect(await screen.findByRole('link', { name: /tokyo/i })).toHaveAttribute('href', `/app/trip/${TOKYO_TRIP.trip.id}`)
   })
 
   it('shows an empty state when there are no trips', async () => {

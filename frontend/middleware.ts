@@ -39,6 +39,21 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
+  // Onboarding gate: authenticated users must finish the wizard once before /app/*.
+  // Missing profile row counts as not onboarded (no auto-create trigger for traveler_profiles).
+  if (user && !request.nextUrl.pathname.startsWith('/app/onboarding')) {
+    const { data: profile } = await supabase
+      .from('traveler_profiles')
+      .select('onboarding_completed')
+      .eq('id', user.id)
+      .maybeSingle()
+    if (!profile?.onboarding_completed) {
+      const url = request.nextUrl.clone()
+      url.pathname = '/app/onboarding'
+      return NextResponse.redirect(url)
+    }
+  }
+
   return supabaseResponse
 }
 

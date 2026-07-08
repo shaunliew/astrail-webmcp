@@ -28,6 +28,7 @@ from api.streaming import stream_trip_events
 from auth import get_user_id_from_query_or_header
 from jobs import compute_idempotency_key, enqueue_job, recover_inflight_jobs
 from pipeline.runner import record_event, run_generation
+from preferences import compose_preference_summary, fetch_traveler_profile
 from rate_limit import (
     BURST_LIMIT,
     DAILY_TRIP_QUOTA,
@@ -147,6 +148,10 @@ async def generate_trip(
     # trip in `generating` (Codex HIGH #3).
     trip_id: str | None = None
     try:
+        profile = await fetch_traveler_profile(client, user_id)
+        preference_summary, preference_sources = compose_preference_summary(profile, req.preferences)
+        origin_city = req.origin_city or (profile.get("origin_city") if profile else None)
+
         trip = (
             await client.table("trips")
             .insert({
@@ -155,6 +160,10 @@ async def generate_trip(
                 "destination_hint": req.destination_hint,
                 "start_date": req.start_date,
                 "end_date": req.end_date,
+                "budget_level": req.budget_level,
+                "origin_city": origin_city,
+                "preference_summary": preference_summary,
+                "preference_sources": preference_sources,
             })
             .execute()
         ).data[0]
@@ -166,8 +175,11 @@ async def generate_trip(
                 "start_date": req.start_date,
                 "end_date": req.end_date,
                 "pace": req.pace,
+                # preferences + destination_hint are replayed by _redispatch on recovery;
+                # requested_places is recorded for audit (not yet resolved into the pipeline).
                 "preferences": req.preferences,
                 "destination_hint": req.destination_hint,
+                "requested_places": req.requested_places,
             },
         )
         job_id, winning_trip_id = await enqueue_job(trip_id, user_id, idem)

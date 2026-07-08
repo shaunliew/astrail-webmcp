@@ -1,5 +1,10 @@
 import type { NextConfig } from "next";
 
+// Backend origin for POST /generate-trip and the SSE stream (connect-src also
+// governs EventSource). Dev defaults to localhost:8000; deploys set
+// NEXT_PUBLIC_BACKEND_URL to the Render URL (see .env.example).
+const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+
 const scriptSrc = [
   "'self'",
   "'unsafe-inline'",
@@ -15,7 +20,7 @@ const contentSecurityPolicy = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https://img.youtube.com https://i.ytimg.com",
   "font-src 'self' data:",
-  "connect-src 'self' https://tally.so https://*.supabase.co https://api.mapbox.com https://events.mapbox.com https://us.i.posthog.com",
+  `connect-src 'self' ${backendUrl} https://tally.so https://*.supabase.co https://api.mapbox.com https://events.mapbox.com https://us.i.posthog.com`,
   "frame-src https://tally.so https://www.youtube.com https://www.youtube-nocookie.com",
   "worker-src 'self' blob:",
   "media-src 'self' blob:",

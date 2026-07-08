@@ -5,32 +5,49 @@ Proves the backend's own service-role PostgREST `.rpc()` path (the exact call
 the newly-applied `increment_daily_trip_usage` / `decrement_daily_trip_usage` functions
 on the live DB — i.e. no PGRST202, correct scalar/NULL semantics.
 
-NON-DESTRUCTIVE: one increment then one decrement => net-zero on the given user's TODAY
+NON-DESTRUCTIVE: one increment then one decrement => net-zero on the target user's TODAY
 row, whatever its starting count. Spends ZERO pipeline credits (no Apify/OpenAI, no trip).
 
-Run:
-    cd backend && uv run --env-file .env python -m scripts.smoke_quota_rpc <live_user_id>
+Reads SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY from the process env; if absent it loads
+backend/.env itself (so it runs as a plain `uv run python -m scripts.smoke_quota_rpc`,
+not `--env-file`). If no user id is given it auto-picks one from live public.users.
 
-<live_user_id> must be a UUID that already exists in public.users on the live project
-(FK: public.user_daily_usage.user_id -> public.users.id). Grab any real user's UID from
-the Supabase dashboard (Authentication -> Users) or use your own account's id.
+Run:
+    cd backend && uv run python -m scripts.smoke_quota_rpc [live_user_id]
 """
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 
-from supabase_client import get_supabase_client
+
+def _ensure_env() -> None:
+    if not os.environ.get("SUPABASE_URL") or not os.environ.get("SUPABASE_SERVICE_ROLE_KEY"):
+        from dotenv import find_dotenv, load_dotenv
+
+        load_dotenv(find_dotenv(usecwd=True))
 
 
 async def _rpc(client, name: str, params: dict):
     return (await client.rpc(name, params).execute()).data
 
 
-async def main(user_id: str) -> int:
-    client = await get_supabase_client()
-    HIGH = 10_000  # far above any real daily count -> the first increment always succeeds
+async def main(user_id: str | None) -> int:
+    _ensure_env()
+    from supabase_client import get_supabase_client
 
+    client = await get_supabase_client()
+
+    if user_id is None:
+        rows = (await client.table("users").select("id").limit(1).execute()).data
+        if not rows:
+            print("RESULT: FAIL ❌  no rows in public.users to smoke against; pass a user id explicitly.")
+            return 1
+        user_id = rows[0]["id"]
+        print(f"(auto-picked live user {user_id})")
+
+    HIGH = 10_000  # far above any real daily count -> the first increment always succeeds
     try:
         inc = await _rpc(client, "increment_daily_trip_usage", {"p_user_id": user_id, "p_limit": HIGH})
         print(f"increment(limit={HIGH})  -> {inc!r}   (expect an int >= 1)")
@@ -43,7 +60,8 @@ async def main(user_id: str) -> int:
         # Restore: only ONE real increment happened (the cap call did not change the count),
         # so a single decrement returns the row to its starting value. Net-zero.
         dec = await _rpc(client, "decrement_daily_trip_usage", {"p_user_id": user_id})
-        print(f"decrement()          -> {dec!r}   (expect {inc - 1 if isinstance(inc, int) else '?'}: restored)")
+        exp = inc - 1 if isinstance(inc, int) else "?"
+        print(f"decrement()          -> {dec!r}   (expect {exp}: restored)")
     except Exception as exc:  # noqa: BLE001 - smoke wants the raw failure surfaced
         print(f"\nRESULT: FAIL ❌  RPC call raised: {type(exc).__name__}: {exc}")
         print("If this is PGRST202 'function not found', the migration is not applied to THIS project.")
@@ -56,7 +74,5 @@ async def main(user_id: str) -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("usage: python -m scripts.smoke_quota_rpc <live_user_id>", file=sys.stderr)
-        raise SystemExit(2)
-    raise SystemExit(asyncio.run(main(sys.argv[1])))
+    arg = sys.argv[1] if len(sys.argv) > 1 else None
+    raise SystemExit(asyncio.run(main(arg)))

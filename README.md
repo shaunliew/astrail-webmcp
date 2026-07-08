@@ -94,6 +94,8 @@ Auth: **required** (Bearer). Idempotent: the same request replays the same `trip
 ```
 Then open the SSE stream below with that `trip_id`.
 
+**Multiple reels:** pass 1–5 URLs in `reel_urls`; each is scraped + extracted independently, then places are **deduped and combined into one multi-day itinerary** (day assignment is geo-based). *Verified live: `[DWtlEw5D9zs, demo]` → "Come On" (Itabashi) + "Tokyo Dream Park" (Ariake) on separate days, each with real coords + evidence.* A reel that yields no verifiable place is skipped; if **no** reel yields one, the run ends with an error result (no hallucinated stops — guardrail #1).
+
 **Errors:** `401` (missing/invalid token), `422` (bad body), `429` (burst or daily cap — see above), `500` (`{"error":{"code":"internal_error", ...}}`; quota is auto-refunded on failure).
 
 ---

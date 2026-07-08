@@ -20,4 +20,6 @@ ENV PATH="/app/.venv/bin:$PATH" \
 USER appuser
 EXPOSE 8000
 # Render injects $PORT; `exec` makes uvicorn PID 1 so it receives SIGTERM directly.
-CMD ["sh", "-c", "exec uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Run from backend/ so the app's bare imports (api.*, auth, jobs, pipeline.*) resolve —
+# same working dir the tests/smoke use. `exec` keeps uvicorn as PID 1 for SIGTERM.
+CMD ["sh", "-c", "cd backend && exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]

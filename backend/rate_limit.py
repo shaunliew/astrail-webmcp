@@ -5,8 +5,14 @@ Two layers gate POST /generate-trip:
   - Layer 1 (durable): a per-user daily trip quota in public.user_daily_usage,
     enforced via an atomic Postgres RPC (survives restarts; the real free-tier cap).
   - Layer 2 (burst): slowapi in-memory, keyed on the authenticated user id
-    (request.state.user_id, stashed by get_current_user_id_stashed) with an IP
-    fallback for unauthenticated callers.
+    (request.state.user_id, stashed by get_current_user_id_stashed). It targets
+    AUTHENTICATED per-user abuse. FastAPI resolves the auth dependency BEFORE the
+    slowapi-wrapped route body runs, so an unauthenticated POST is rejected 401 before
+    the limiter executes — the IP fallback in rate_limit_key is therefore unreachable
+    on /generate-trip and exists only as defensive behavior for any future route that
+    runs the limiter pre-auth. Anonymous / volumetric flood protection is delegated to
+    the edge (Cloudflare in front of Render) per the locked Phase-2 decision, NOT to
+    this in-process limiter (which, behind the proxy, would see Render's IP anyway).
 
 Pure HTTP-entry gate — never touches the runner, dedupe, or the #16 eval anchor.
 In-memory storage is correct for a single Render instance; switch storage_uri to
@@ -28,7 +34,12 @@ DAILY_TRIP_QUOTA: int = int(os.environ.get("DAILY_TRIP_QUOTA", "5"))
 
 def rate_limit_key(request: Request) -> str:
     """slowapi key: the authenticated user id if an auth dependency stashed it,
-    else the client IP. Sync (slowapi requires a sync key_func)."""
+    else the client IP. Sync (slowapi requires a sync key_func).
+
+    On /generate-trip the stashed user_id is always set (auth resolves before the
+    limiter runs), so the IP-fallback branch is only reachable on a route that runs
+    the limiter WITHOUT prior auth — none today. See the module docstring: anonymous
+    floods are the edge's job, not this limiter's."""
     user_id = getattr(request.state, "user_id", None)
     return user_id if user_id else get_remote_address(request)
 

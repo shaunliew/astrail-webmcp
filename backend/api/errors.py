@@ -53,7 +53,12 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    # Log the real error server-side; return a generic message so nothing leaks.
+    # Client gets a generic message (no leak). Server-side we log method + PATH ONLY
+    # (request.url.path excludes the query string, so the SSE ?token= is never logged)
+    # plus the traceback — intentional per security.md ("log detailed error context
+    # server-side") for debuggability. In-request calls here are Supabase/postgrest
+    # (error text carries no service-role key); the token-bearing external calls
+    # (Mapbox/OpenAI/Apify) run in the background task, outside this handler.
     logger.exception("Unhandled error on %s %s", request.method, request.url.path)
     return build_error_response(500, "Internal server error", code="internal_error")
 

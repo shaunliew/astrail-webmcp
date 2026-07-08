@@ -20,6 +20,16 @@ def test_build_input_is_structured_only():
     assert "no stops planned" in s  # day 2 empty
 
 
+def test_build_narrator_input_preference_block_present_and_absent():
+    baseline = build_narrator_input(_days(), city="Tokyo")
+    with_pref = build_narrator_input(_days(), city="Tokyo",
+                                     preference_block="Preferred pace: relaxed")
+    assert "Traveller preferences" in with_pref and "relaxed" in with_pref
+    assert "Traveller preferences" not in baseline
+    # Omitting preference_block (or passing None) must leave the prompt BYTE-FOR-BYTE unchanged.
+    assert build_narrator_input(_days(), city="Tokyo", preference_block=None) == baseline
+
+
 def test_keep_valid_narration_drops_unknown_day_and_blanks():
     r = NarrationResult(days=[
         DayNarration(day_number=1, title="Day 1", summary="Good."),

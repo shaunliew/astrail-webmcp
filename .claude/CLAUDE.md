@@ -12,8 +12,9 @@ sessions (quick questions, harness/docs work), skip the EMDEE read and the confi
 
 AI-native travel planner. User pastes 1-5 Instagram Reel URLs + dates + budget + origin +
 free-text preferences → a parallel agent pipeline (scrape → extract/dedup → enrich →
-narrate/summarize) produces an evidence-backed itinerary on a Mapbox 3D map with agent
-reasoning panels. Every recommendation surfaces its evidence (source Reel, caption quote,
+narrate/summarize), personalized by the returning user's remembered travel taste (mem0
+preference memory, live — Phase 1.3), produces an evidence-backed itinerary on a Mapbox 3D
+map with agent reasoning panels. Every recommendation surfaces its evidence (source Reel, caption quote,
 research URL, Travala hotel search result where applicable). Hotel search via Travala
 Travel MCP is **search/suggestions only** — no booking, no payments in v1.
 **Pitch:** "Astrail turns scattered travel inspiration into the route you actually take."
@@ -22,8 +23,10 @@ Travel MCP is **search/suggestions only** — no booking, no payments in v1.
 
 | Before you… | Read first |
 |---|---|
+| **Build/implement ANY backend feature** (plan or code; or the user says "build X" / "implement X") | `.claude/docs/BUILD-LOOP.md` (the MANDATORY end-to-end feature workflow — always follow it) |
 | Add/remove/substitute ANY dependency, service, or tool | `.claude/docs/STACK.md` (locked stack, banned list, v2 triggers) |
 | Touch backend pipeline, SSE, API endpoints, or create new files | `.claude/docs/ARCHITECTURE.md` (tree, 4-phase pipeline, SSE contract, endpoints, build order) |
+| Write/review backend endpoint, rate-limit, auth, or infra code | `.claude/docs/BACKEND-PRINCIPLES.md` (SOLID · async/streaming · idempotency · caching · security/JWT/OAuth · design patterns — all applied feasible-first) |
 | Touch `.env.example`, `render.yaml`, Vercel config, or env-reading code | `.claude/docs/ENV.md` |
 | Touch `backend/genagents/` or OpenAI Agents SDK code | `.claude/docs/LESSONS-HACKATHON.md` |
 | Start sprint work | EMDEE: `astrail/SPRINTS.md` → your `astrail/team/<name>/SPRINT-N.md` → `astrail/PRD.md` |
@@ -85,10 +88,15 @@ than chaining into another. A wrapper skill plus the sub-skills it documents (e.
 `playbook/ORCHESTRATION.md` for when/how to delegate to subagents. Repo-local subagents:
 `astrail-developer`, `astrail-researcher`, `astrail-reviewer` (see `.claude/agents/`;
 dispatch by `subagent_type`, `model: opus` for the hard adversarial/final review).
-**Standard backend loop:** plan (`astrail-plan-and-review`) → review the plan
-(`/plan-eng-review` + Codex) → implement task-by-task via subagent-driven-development
-(`astrail-developer` + `astrail-reviewer`) → final gstack `/review` or an
-`astrail-reviewer` adversarial pass.
+**Standard Feature Build Loop (MANDATORY — full detail in `.claude/docs/BUILD-LOOP.md`;
+read it before building any feature):** research (`astrail-researcher`, if an unfamiliar
+API/algorithm) → plan (`astrail-plan-and-review`) → review the plan (`/plan-eng-review` +
+Codex) → implement task-by-task via subagent-driven-development (`astrail-developer` +
+`astrail-reviewer`; reviewers fault-inject to prove guards are load-bearing) → final
+`astrail-reviewer` opus whole-branch pass **AND** gstack `/review` Codex cross-model (run
+BOTH — Codex has caught real bugs the Claude reviews missed) → live-verify smoke (`/qa` for
+flow changes) → PR/merge/sync → update `.claude/docs/` + EMDEE (shared vault) + memory.
+Do not shortcut it.
 
 ## gstack (required per machine)
 

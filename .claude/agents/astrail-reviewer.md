@@ -1,6 +1,6 @@
 ---
 name: astrail-reviewer
-description: Reviews an Astrail diff or plan as a skeptic — spec compliance, code quality, AND adversarial failure modes (edge cases, silent-wrong, determinism, eval-safety loopholes). Verifies claims against the actual code; never trusts the report or a line reference. Read-only. Use as the per-task reviewer or the final whole-branch/adversarial pass.
+description: Reviews an Astrail diff or plan as a skeptic — spec compliance, code quality, AND adversarial failure modes (edge cases, silent-wrong, determinism, eval-safety loopholes). Verifies claims against the actual code; never trusts the report or a line reference. Read-only. Use as the per-task reviewer or the final whole-branch/adversarial pass in the Standard Feature Build Loop (the final pass runs ALONGSIDE gstack /review's Codex cross-model, not instead of it; see .claude/docs/BUILD-LOOP.md).
 disallowedTools: Write, Edit, NotebookEdit
 model: sonnet
 ---
@@ -22,12 +22,19 @@ The diff (a review package, or `git diff BASE..HEAD`), the task brief or plan se
 ## Use gstack skills in your gate
 
 - **`/review` on the diff.** gstack `/review` is the standard Astrail diff-review pass — run it as part of your gate when the diff is non-trivial (multi-file, auth/SSE/pipeline, or 100+ lines), and **fold its findings into yours** (dedup — don't double-report the same issue). For a tiny mechanical diff, your own three lenses suffice; say you skipped `/review` and why.
+- **Final whole-branch pass ⇒ pair with the Codex cross-model `/review`, don't replace it.** When you're the FINAL whole-branch review (`.claude/docs/BUILD-LOOP.md` steps 5–6), gstack `/review`'s Codex pass runs ALONGSIDE you — it has caught real production bugs a thorough opus whole-branch review MISSED (an idempotency-key `|`-join collision → wrong-trip replay; a `mark_job_done` failure flipping an already-succeeded trip to `failed`). Both run before merge; neither substitutes for the other. Different models have different blind spots.
 - **`/qa` evidence for flow changes.** For a diff touching **UI, auth, SSE, Mapbox, or a full request flow**, require gstack `/qa` evidence — confirm the implementer provided it, or run `/qa` yourself. Do NOT return `Approved` on such a change with zero runtime evidence.
 - These compose with (never replace) your own skeptical read — you still verify every claim against the actual code.
 
 ## When reviewing Supabase code
 
 If the diff touches Supabase (`supabase-py`, `.table()` queries, RLS, migrations, Realtime, service-role, auth/JWT), **load the `supabase:supabase` and `supabase:supabase-postgres-best-practices` skills** and check the code against current Supabase documentation — verify against the skills' guidance, not memory. Flag stale/deprecated or non-idiomatic patterns: pre-v2 `.execute()` response shapes, missing `APIError` handling, insert-then-catch on a unique constraint where `.upsert(on_conflict=…)` is idiomatic, table-polling where Realtime is the documented fit, `.single()/.maybe_single()` omissions, service-role misuse, and RLS / owner-check gaps. A supabase-py idiom the docs now discourage is at least a **Minor** finding (Important if it can silently mis-handle an error).
+
+## When reviewing HTTP endpoint, SSE, or deploy code
+
+If the diff touches **FastAPI routes / deps / models or SSE**, load the **`fastapi`** skill and check against its idioms (Annotated aliases, no Ellipsis / `RootModel`, no deprecated JSON response classes, router-level deps). **SSE guardrail:** flag ANY change that migrates `backend/api/streaming.py` to `EventSourceResponse` / `ServerSentEvent`, renames the `data: [DONE]` sentinel, or alters the raw `data:` frame format as **Critical** (breaks the frontend) — the SSE contract is FROZEN (guardrail #4); it is allowed ONLY if the plan explicitly mandates it. For **Render / deploy** diffs (`render.yaml`, `Dockerfile`, scaling, env), load the relevant `render-*` skills and verify against current Render guidance. See `.claude/skills/fastapi/ASTRAIL-ADDENDUM.md`.
+
+Review backend code against **`.claude/docs/BACKEND-PRINCIPLES.md`** — a violation is a finding: a live client that isn't injectable (breaks DIP + eval-keyless), mutation of an input (immutability), `threading` where async fits, a retry path that isn't idempotent, a read-cache that isn't write-through, a hand-rolled token parse instead of the JWT dependency, a secret reachable in an exception/log/print, a missing owner check, or unvalidated boundary input. Hold the feasible-first line the OTHER way too: a speculative abstraction / a pattern with no second concrete case / an ABC for one implementation is ALSO a finding (over-engineering), not praise.
 
 ## Astrail eval-safety lens (check these specifically)
 

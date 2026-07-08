@@ -1,0 +1,149 @@
+"""Preference merge + memory read/write — the mem0 wiring (Phase 1.3).
+
+PURE + LIVE split: merge_preferences / preference_block / distill_memory_text are
+pure and offline-testable; build_preference_context (mem0.search) and
+persist_trip_memory (mem0.add + memory_events + trips) are the live best-effort
+edges (Task 3 / Task 5). mem0 is NEVER on the critical path (guardrail #3): a
+miss/error yields inferred defaults on read and a swallowed no-op on write — a
+trip never fails or stalls on memory.
+
+Determinism / eval-safety: nothing here touches dedupe/assemble_itinerary (the
+frozen 6229.0 anchor). Personalization reaches the trip ONLY through the enrich
+agents' prompts (restaurant, narrator) via preference_block().
+
+Untrusted content (guardrail #11): the mem0.add payload is ONLY distilled prefs +
+a templated synopsis — never raw reel caption/transcript, never secrets.
+
+NOTE (design): this is retrieve-once-per-generation / write-once-per-trip — the
+OPPOSITE of the mem0 travel-assistant cookbook's per-turn add(raw_message). The
+per-turn pattern is deliberately rejected (cost/latency/noise); do not "simplify"
+toward it.
+"""
+from __future__ import annotations
+
+import asyncio
+
+from models.prefs import PreferenceContext
+
+# GENERIC on purpose (Non-goals "Destination-scoped recall"): mem0 memories are global
+# taste, not per-destination, so destination_hint never gets interpolated in here.
+_PREFERENCE_QUERY = "travel preferences for a trip"
+
+
+def merge_preferences(*, explicit_text: str | None, pace: str | None,
+                      memory_facts: list[str]) -> PreferenceContext:
+    """PRD §9 priority: explicit current input wins; memory fills only when blank;
+    inferred defaults otherwise. Explicit wins WHOLESALE — memory is not blended in
+    when the user stated preferences this trip."""
+    explicit = (explicit_text or "").strip()
+    facts = [f.strip() for f in (memory_facts or []) if f and f.strip()]
+    pace = (pace or "balanced").strip() or "balanced"
+
+    if explicit:
+        source = "explicit"
+        summary = f"Using your preferences: {explicit}"
+    elif facts:
+        source = "memory"
+        summary = "Using your saved travel preferences: " + "; ".join(facts)
+    else:
+        source = "inferred_default"
+        summary = ("No preferences provided — Astrail will infer a balanced first "
+                   "draft from your Reels.")
+
+    return PreferenceContext(source=source, explicit_text=explicit,
+                             memory_facts=facts, pace=pace, summary=summary)
+
+
+def preference_block(ctx: PreferenceContext) -> str | None:
+    """The compact text injected into the restaurant + narrator prompts. Soft
+    guidance only — the agents still choose from their grounded/assembled data."""
+    parts: list[str] = []
+    if ctx.source == "explicit" and ctx.explicit_text:
+        parts.append(f"Stated preferences: {ctx.explicit_text}")
+    elif ctx.source == "memory" and ctx.memory_facts:
+        parts.append("Remembered preferences (used because none were entered this "
+                     "trip): " + "; ".join(ctx.memory_facts))
+    if ctx.pace and ctx.pace != "balanced":
+        parts.append(f"Preferred pace: {ctx.pace}")
+    return " | ".join(parts) or None
+
+
+def distill_memory_text(ctx: PreferenceContext, *, synopsis: str) -> str | None:
+    """The mem0.add payload — ONLY when the user stated something NEW this trip
+    (source=explicit). A memory-only or inferred trip has nothing new to learn, so
+    we skip the write (saves the API call + the free-tier quota, avoids duplicates).
+    synopsis is a caller-built templated string (never raw reel text)."""
+    if ctx.source != "explicit" or not ctx.explicit_text:
+        return None
+    return f"Travel preferences: {ctx.explicit_text}. {synopsis}"
+
+
+async def build_preference_context(mem0, user_id: str, *, explicit_text: str | None,
+                                   pace: str | None, destination_hint: str | None
+                                   ) -> PreferenceContext:
+    """Retrieve-once. Only spends a mem0.search when memory would actually be USED —
+    i.e. the user left preferences blank (explicit wins → skip the call + quota).
+    A None client, a search error, OR a timeout all degrade to inferred defaults
+    (guardrail #3): this read runs BEFORE scrape, so an unbounded hang would
+    otherwise stall EVERY generation — asyncio.wait_for bounds it."""
+    facts: list[str] = []
+    if mem0 is not None and not (explicit_text or "").strip():
+        # destination_hint accepted for a future destination-scoped switch; v1 query stays
+        # generic (plan Non-goals "Destination-scoped recall")
+        try:
+            res = await asyncio.wait_for(
+                mem0.search(_PREFERENCE_QUERY, filters={"user_id": user_id}, top_k=10),
+                timeout=4)
+            facts = [m["memory"] for m in (res.get("results") or [])
+                     if isinstance(m.get("memory"), str) and m["memory"].strip()]
+        except Exception:
+            facts = []   # best-effort: a mem0 blip or timeout → inferred defaults, never fail the trip
+    return merge_preferences(explicit_text=explicit_text, pace=pace, memory_facts=facts)
+
+
+def trip_synopsis(itinerary, pace: str, destination: str) -> str:
+    """A templated one-line trip summary for the mem0.add payload — NO LLM, NO raw
+    reel text. Derived only from the assembled itinerary's shape + a caller-supplied
+    destination (ItineraryDay has no per-place city; the caller derives it from the
+    canonical places / destination_hint)."""
+    days = getattr(itinerary, "days", []) or []
+    n = len(days)
+    return f"Planned a {n}-day {destination} trip ({pace} pace)."
+
+
+async def persist_trip_memory(client, mem0, *, user_id: str, trip_id: str,
+                              ctx: PreferenceContext, synopsis: str) -> list[str]:
+    """Write-once, awaited AFTER the terminal `result` event so it's invisible to the
+    stream yet can't be GC'd. Records a memory_events audit row and pushes mem0.add —
+    BOTH best-effort (guardrail #3): a mem0 error OR TIMEOUT can't fail the (already
+    saved) trip. Only writes when the user stated something NEW this trip
+    (distill_memory_text is None otherwise)."""
+    text = distill_memory_text(ctx, synopsis=synopsis)
+    learned = [ctx.explicit_text] if text else []
+    if not text:
+        return learned   # memory-only / inferred trip: nothing new to store or audit
+    if mem0 is None:
+        return learned   # memory disabled: nothing was actually sent to mem0, so no
+                          # memory_events row either — preferences already live in
+                          # trips.preference_summary (Task 3)
+
+    event_type = "learned"
+    try:
+        # Timeout-bounded (Codex): a hung hosted add must not wedge the task.
+        await asyncio.wait_for(
+            mem0.add([{"role": "user", "content": text}], user_id=user_id,
+                     metadata={"source": "generation", "trip_id": trip_id}),
+            timeout=5)
+    except Exception:
+        event_type = "failed"   # add error OR TimeoutError → record for observability
+
+    try:
+        await client.table("memory_events").insert({
+            "user_id": user_id, "trip_id": trip_id, "event_type": event_type,
+            # Object shape to match the existing convention (supabase/tests/001_…:34-37).
+            "learned_facts_json": [{"fact": f} for f in learned],
+        }).execute()
+    except Exception:
+        pass   # audit is best-effort too
+
+    return learned

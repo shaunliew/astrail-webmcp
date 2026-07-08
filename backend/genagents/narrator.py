@@ -37,6 +37,9 @@ Write in a warm but concise voice (scannable, NOT essay-like):
   - `trip_summary`: a 2-4 sentence read-only overview — the vibe, the shape of the days, and any
     obvious tradeoff/gap (a long travel leg, an empty day). SUMMARIZE; never override or re-plan.
 
+If traveller preferences are given, let them color the voice (e.g. a relaxed pace reads unhurried) \
+— but never add, drop, or reorder places/days.
+
 Rules:
   - Reference only places/days present in the data. Do not add or rename places.
   - Return exactly one entry per provided day_number.
@@ -44,11 +47,18 @@ Rules:
 """
 
 
-def build_narrator_input(days: list[dict], *, city: str | None = None) -> str:
+def build_narrator_input(days: list[dict], *, city: str | None = None,
+                         preference_block: str | None = None) -> str:
     """The narrator's user message: ordered days with stops + weather. STRUCTURED-ONLY — no raw reel
-    caption/transcript ever appears here (guardrail #11)."""
+    caption/transcript ever appears here (guardrail #11). `preference_block` colors tone/framing
+    ONLY (guardrail #1: never re-plan/reorder); omitted/None leaves the prompt byte-for-byte
+    identical to before."""
     where = city or "the destination"
     lines = [f"Trip destination: {where}", f"Days: {len(days)}", ""]
+    if preference_block:
+        lines.append(f"Traveller preferences (reflect in tone/framing only — NEVER "
+                     f"re-plan or reorder): {preference_block}")
+        lines.append("")
     for d in days:
         lines.append(f"Day {d['day_number']} ({d.get('day_date') or 'date n/a'}):")
         if d.get("weather_summary"):
@@ -100,14 +110,15 @@ async def _default_runner(agent, user_input: str):
 
 
 async def narrate_trip(days: list[dict], *, city: str | None = None, model: str | None = None,
-                       runner=None) -> NarrationResult:
+                       runner=None, preference_block: str | None = None) -> NarrationResult:
     """Narrate the assembled trip (live unless `runner` injected). Falls back model->gpt-4o on a typed
-    model error. Output filtered by keep_valid_narration. Prints a one-line stderr diagnostic."""
+    model error. Output filtered by keep_valid_narration. Prints a one-line stderr diagnostic.
+    `preference_block` is optional prose-only tone guidance (guardrail #1: see build_narrator_input)."""
     if not days:
         return NarrationResult(days=[], trip_title=None, trip_summary="")
     model = model or os.environ.get("ASTRAIL_NARRATOR_MODEL", DEFAULT_MODEL)
     run = runner or _default_runner
-    user_input = build_narrator_input(days, city=city)
+    user_input = build_narrator_input(days, city=city, preference_block=preference_block)
     used = model
     try:
         result = await run(build_narrator_agent(model), user_input)

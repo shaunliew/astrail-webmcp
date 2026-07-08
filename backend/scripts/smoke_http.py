@@ -19,9 +19,14 @@ Authed checks (need a real Supabase access_token). Two ways to supply one:
     - first calls  -> 429 quota  (code rate_limited, message "Daily trip limit...", NO Retry-After)
     - the over-burst call -> 429 burst (code rate_limited, Retry-After header present)
 
-Run:  cd backend && uv run python -m scripts.smoke_http                 # no-JWT only
-      cd backend && SMOKE_PROVISION=1 uv run python -m scripts.smoke_http  # full (self-serve)
-      cd backend && SMOKE_JWT=<token> uv run python -m scripts.smoke_http  # full (your token)
+Target: in-process app by default; set SMOKE_BASE_URL=https://<svc>.onrender.com to hit a
+DEPLOYED service over the real network instead (proves the actual Render deploy).
+
+Run:  cd backend && uv run python -m scripts.smoke_http                 # in-process, no-JWT
+      cd backend && SMOKE_PROVISION=1 uv run python -m scripts.smoke_http  # in-process, full
+      # against the deployed dev service, full self-serve smoke:
+      cd backend && SMOKE_BASE_URL=https://astrail-backend.onrender.com SMOKE_PROVISION=1 \
+          uv run python -m scripts.smoke_http
 """
 from __future__ import annotations
 
@@ -103,14 +108,22 @@ async def main() -> int:
     _ensure_env()
     import httpx
 
-    import main as app_module
     import rate_limit
     from supabase_client import get_supabase_client
 
-    transport = httpx.ASGITransport(app=app_module.app)
     body = {"reel_urls": ["https://instagram.com/reel/smoke"], "start_date": "2026-09-01", "end_date": "2026-09-03"}
+    # SMOKE_BASE_URL set -> hit the DEPLOYED service over the real network;
+    # unset -> drive the in-process app via ASGITransport (no lifespan sweep).
+    base_url = os.environ.get("SMOKE_BASE_URL")
+    if base_url:
+        print(f"(target: DEPLOYED service {base_url})")
+        client = httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=30)
+    else:
+        import main as app_module
+        print("(target: in-process app via ASGITransport)")
+        client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app_module.app), base_url="http://smoke")
 
-    async with httpx.AsyncClient(transport=transport, base_url="http://smoke") as ac:
+    async with client as ac:
         print("\n== No-JWT checks (live, zero-credit) ==")
         r = await ac.get("/health")
         _check("GET /health -> 200 ok", r.status_code == 200 and r.json().get("status") == "ok", f"{r.status_code} {r.text[:80]}")
@@ -157,7 +170,8 @@ async def main() -> int:
                         bumps += 1
                         if bumps > cap + 2:
                             break
-                    rate_limit.limiter.reset()
+                    if not base_url:
+                        rate_limit.limiter.reset()  # only the in-process limiter is resettable; a fresh throwaway user starts at burst-count 0 on the deployed one anyway
                     hdrs = {"Authorization": f"Bearer {token}"}
                     codes, retry_after_flags, msgs = [], [], []
                     for _ in range(4):

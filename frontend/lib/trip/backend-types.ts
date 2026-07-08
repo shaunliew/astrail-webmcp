@@ -208,7 +208,12 @@ export type StageEvent = {
 }
 export type HeartbeatEvent = { type: 'heartbeat'; elapsed_s: number }
 export type ResultEvent = { type: 'result'; content: string }
-export type StreamEvent = StageEvent | HeartbeatEvent | ResultEvent
+export type NoticeEvent = {
+  type: 'warning' | 'error' | 'decision'
+  stage: GenerationStage
+  msg: string
+}
+export type StreamEvent = StageEvent | HeartbeatEvent | ResultEvent | NoticeEvent
 
 // ---- Request/response for the pipeline endpoint ----
 export type GenerateTripRequest = {

@@ -1,25 +1,36 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 
-const { push, createTrip, streamGeneration } = vi.hoisted(() => ({
+const { push, getAccessToken, generateTrip, streamGeneration } = vi.hoisted(() => ({
   push: vi.fn(),
-  createTrip: vi.fn(async () => ({ trip_id: 'trip_tokyo_demo' })),
-  streamGeneration: vi.fn((_id: string, onEvent: (e: unknown) => void) => {
-    onEvent({ type: 'stage', stage: 'scrape', msg: 'Scraping 3 Reels…' })
-    onEvent({ type: 'stage', stage: 'dedup', msg: 'Mapped 4 verified places.' })
-    onEvent({ type: 'result', content: JSON.stringify({ trip_id: 'trip_tokyo_demo' }) })
-    return { cancel: () => {} }
-  }),
+  getAccessToken: vi.fn(async () => 'token'),
+  generateTrip: vi.fn(async () => ({ trip_id: 'trip_tokyo_demo' })),
+  streamGeneration: vi.fn(),
 }))
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push }) }))
-vi.mock('@/lib/trip/mock-api', () => ({ createTrip, streamGeneration }))
+vi.mock('@/lib/supabase/session', () => ({ getAccessToken }))
+vi.mock('@/lib/trip/api', () => ({ generateTrip, streamGeneration }))
 
 import CreateTripFlow from '@/components/create/CreateTripFlow'
 
 describe('CreateTripFlow', () => {
   beforeEach(() => {
-    push.mockClear(); createTrip.mockClear(); streamGeneration.mockClear()
+    push.mockClear()
+    getAccessToken.mockReset()
+    generateTrip.mockReset()
+    streamGeneration.mockReset()
+    getAccessToken.mockResolvedValue('token')
+    generateTrip.mockResolvedValue({ trip_id: 'trip_tokyo_demo' })
+    streamGeneration.mockImplementation(
+      (_id: string, _token: string, onEvent: (e: unknown) => void, onReset?: () => void) => {
+        onReset?.()
+        onEvent({ type: 'stage', stage: 'scrape', msg: 'Scraping 3 Reels...' })
+        onEvent({ type: 'stage', stage: 'dedup', msg: 'Mapped 4 verified places.' })
+        onEvent({ type: 'result', content: JSON.stringify({ trip_id: 'trip_tokyo_demo' }) })
+        return { cancel: () => {} }
+      },
+    )
   })
 
   it('disables Generate until there is at least one item', () => {
@@ -38,15 +49,22 @@ describe('CreateTripFlow', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /generate/i }))
 
-    await waitFor(() => expect(createTrip).toHaveBeenCalledTimes(1))
-    expect(streamGeneration).toHaveBeenCalledWith('trip_tokyo_demo', expect.any(Function))
+    await waitFor(() => expect(generateTrip).toHaveBeenCalledTimes(1))
+    expect(getAccessToken).toHaveBeenCalledTimes(1)
+    expect(streamGeneration).toHaveBeenCalledWith(
+      'trip_tokyo_demo',
+      'token',
+      expect.any(Function),
+      expect.any(Function),
+      expect.any(Function),
+    )
     expect(await screen.findByText('Mapped 4 verified places.')).toBeInTheDocument()
     await waitFor(() => expect(push).toHaveBeenCalledWith('/app/trip/trip_tokyo_demo'))
   })
 
-  it('does not start the stream or navigate if unmounted while createTrip is pending', async () => {
-    let resolveCreate!: (v: { trip_id: string }) => void
-    createTrip.mockImplementationOnce(() => new Promise((res) => { resolveCreate = res }))
+  it('does not start the stream or navigate if unmounted while generateTrip is pending', async () => {
+    let resolveGenerate!: (v: { trip_id: string }) => void
+    generateTrip.mockImplementationOnce(() => new Promise((res) => { resolveGenerate = res }))
 
     const { unmount } = render(<CreateTripFlow />)
     fireEvent.change(screen.getByLabelText(/paste.*reel/i), {
@@ -57,9 +75,9 @@ describe('CreateTripFlow', () => {
     fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
     fireEvent.click(screen.getByRole('button', { name: /generate/i }))
 
-    await waitFor(() => expect(createTrip).toHaveBeenCalledTimes(1))
-    unmount() // unmount BEFORE createTrip resolves
-    resolveCreate({ trip_id: 'trip_tokyo_demo' })
+    await waitFor(() => expect(generateTrip).toHaveBeenCalledTimes(1))
+    unmount() // unmount BEFORE generateTrip resolves
+    resolveGenerate({ trip_id: 'trip_tokyo_demo' })
     await Promise.resolve(); await Promise.resolve() // flush the awaited continuation
 
     expect(streamGeneration).not.toHaveBeenCalled()

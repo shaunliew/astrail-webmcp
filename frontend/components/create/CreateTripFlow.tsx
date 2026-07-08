@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { createTrip, streamGeneration } from '@/lib/trip/mock-api'
+import { generateTrip, streamGeneration } from '@/lib/trip/api'
+import { getAccessToken } from '@/lib/supabase/session'
 import {
   canGenerate, toGenerateRequest,
   type DraftInspirationItem, type BriefInput,
@@ -34,6 +35,7 @@ export default function CreateTripFlow() {
   const [brief, setBrief] = useState<BriefInput>(EMPTY_BRIEF)
   const [phase, setPhase] = useState<'compose' | 'generating'>('compose')
   const [events, setEvents] = useState<StreamEvent[]>([])
+  const [submitError, setSubmitError] = useState<string | null>(null)
   const handleRef = useRef<{ cancel: () => void } | null>(null)
   const activeRef = useRef(true)
 
@@ -53,15 +55,35 @@ export default function CreateTripFlow() {
   async function handleGenerate() {
     setPhase('generating')
     setEvents([])
-    const { trip_id } = await createTrip(toGenerateRequest(items, brief))
-    if (!activeRef.current) return // unmounted during createTrip — do not start the stream
-    handleRef.current = streamGeneration(trip_id, (event) => {
+    setSubmitError(null)
+    try {
+      const token = await getAccessToken()
+      const { trip_id } = await generateTrip(toGenerateRequest(items, brief), token)
+      if (!activeRef.current) return // unmounted during POST — do not start the stream
+      handleRef.current = streamGeneration(
+        trip_id,
+        token,
+        (event) => {
+          if (!activeRef.current) return
+          setEvents((prev) => [...prev, event])
+          if (event.type === 'result') {
+            handleRef.current?.cancel()
+            router.push(`/app/trip/${tripIdFromResult(event.content, trip_id)}`)
+          }
+        },
+        () => { if (activeRef.current) setEvents([]) },
+        () => {
+          // Dead-backend escape hatch (5 failed reconnects): the job is durable
+          // server-side, so hand off to the trip page's generating/failed states
+          // instead of spinning forever.
+          if (activeRef.current) router.push(`/app/trip/${trip_id}`)
+        },
+      )
+    } catch (err) {
       if (!activeRef.current) return
-      setEvents((prev) => [...prev, event])
-      if (event.type === 'result') {
-        router.push(`/app/trip/${tripIdFromResult(event.content, trip_id)}`)
-      }
-    })
+      setPhase('compose')
+      setSubmitError(err instanceof Error ? err.message : 'Could not start generation.')
+    }
   }
 
   if (phase === 'generating') {
@@ -90,6 +112,10 @@ export default function CreateTripFlow() {
 
       <InspirationTray items={items} onChange={setItems} />
       <TripBriefForm brief={brief} onChange={setBrief} />
+
+      {submitError ? (
+        <p className="type-body text-xs text-red-400" role="alert">{submitError}</p>
+      ) : null}
 
       <button
         type="button"

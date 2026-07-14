@@ -4,34 +4,34 @@
 
 **Goal:** Make the backend emit place evidence that conforms to the frozen frontend `TripPlaceEvidence` contract, and add a structured `trips.tradeoffs` contract (deterministic feasibility *notes* + hotel *comparisons*) — so real trips render evidence chips/quotes and tradeoffs instead of blank fixtures.
 
-**Architecture:** Deterministic-first, single-PR schema parity. Rewrite the `evidence_json` writer to compute `evidence_kind` from `source_type`; wire the already-computed-but-dropped `FeasibilityWarning`s into `trips.tradeoffs.notes`; derive `trips.tradeoffs.comparisons` from persisted `hotel_suggestions` rows. No new LLM calls — the deterministic dedup/assembly path and the frozen eval anchor are untouched.
+**Architecture:** Deterministic-first, single-PR schema parity. Rewrite the `evidence_json` writer to emit a typed `TripPlaceEvidence` with a computed `evidence_kind`; wire the already-computed-but-dropped `FeasibilityWarning`s into `trips.tradeoffs.notes`; derive `trips.tradeoffs.comparisons` from persisted `hotel_suggestions` rows. **One post-gather `trips.tradeoffs` write** (no read-modify-write). No new LLM calls — the deterministic dedup/assembly path and the frozen eval anchor are untouched.
 
-**Tech Stack:** Python 3.14 + Pydantic v2 + pytest (backend, `uv`); TypeScript (frontend contract types); Supabase Postgres migration (SQL). FastAPI/SSE runner in `backend/pipeline/runner.py`.
+**Tech Stack:** Python 3.14 + Pydantic v2 + pytest (backend, `uv`); TypeScript (frontend contract types + vitest); Supabase Postgres migration (SQL). FastAPI/SSE runner in `backend/pipeline/runner.py`.
 
 ## Global Constraints
 
-- **Schema parity (guardrail #4):** every Pydantic field has a TypeScript mirror in `frontend/lib/trip/backend-types.ts`; DB schema in `supabase/migrations/*.sql`. All three sides ship in this PR.
+- **Schema parity (guardrail #4):** every Pydantic field has a TypeScript mirror in `frontend/lib/trip/backend-types.ts`; DB schema in `supabase/migrations/*.sql`. All three sides ship in this PR. This includes the containing rows: `tradeoffs` on the `Trip` row type, and a Pydantic `TripPlaceEvidence` mirroring the TS type exactly.
 - **No hallucinated places (guardrail #1):** additive only — never drop/alter a place's identity.
 - **Partial failure is acceptable (guardrail #3):** tradeoff writes are best-effort; a failure must NEVER fail the trip.
-- **Caches/writes are write-through (guardrail #7):** persist before returning.
-- **Owner check (guardrail #6):** every `trips` write is `.eq("id", trip_id).eq("user_id", user_id)` — RLS + app-code.
-- **No new LLM in this feature.** Notes come from `FeasibilityWarning`; comparisons from numeric hotel fields. Eval-safety: the frozen `mean_intra_day_travel_m = 6229.0` anchor and `dedupe`/`assemble_itinerary` are untouched.
-- **No `requirements.txt`** — `uv` only. Run backend tests with `cd backend && uv run pytest`.
-- **Spec:** `docs/superpowers/specs/2026-07-15-evidence-tradeoff-contract-design.md`.
-- **Spec deviation (locked here):** hotels have NO `distance_m`/coords (`persist_hotels` sets `base_place_id=NULL`), so the comparison axis is **`price_vs_rating`** (price_snapshot + star_rating), NOT the spec's `price_vs_location`. Update the spec §4b when this lands.
+- **Writes are write-through (guardrail #7):** persist before the terminal result.
+- **Owner check (guardrail #6):** every `trips` write is `.eq("id", trip_id).eq("user_id", user_id)`.
+- **No new LLM in this feature.** Notes come from `FeasibilityWarning`; comparisons from numeric hotel fields. Eval-safety: the frozen `mean_intra_day_travel_m = 6229.0` anchor and `dedupe`/`assemble_itinerary` are untouched, AND this plan adds an exact-value regression test that freezes `6229.0` (the existing eval only asserts `<=` baseline).
+- **No `requirements.txt`** — `uv` only. Backend tests: `cd backend && uv run pytest`.
+- **Spec:** `docs/superpowers/specs/2026-07-15-evidence-tradeoff-contract-design.md` (amended §4b: hotel comparison axis is `price_vs_rating` from persisted rows — hotels have NO coords/`distance_m`).
+- **One-write invariant:** `trips.tradeoffs` is written ONCE, after the enrich gather, with the full `{notes, comparisons}` object. No read-modify-write (a transient read failure must never erase a sibling field). All other `trips` writes are column-scoped and disjoint.
 
 ---
 
-### Task 1: Tradeoff types (Pydantic + TypeScript)
+### Task 1: Tradeoff types (Pydantic + TypeScript, incl. the `Trip` row field)
 
 **Files:**
 - Create: `backend/models/tradeoff.py`
 - Create: `backend/models/test_tradeoff.py`
-- Modify: `frontend/lib/trip/backend-types.ts` (add tradeoff types; append near the evidence region ~line 55)
+- Modify: `frontend/lib/trip/backend-types.ts` (add tradeoff types after the evidence region ~line 55; add `tradeoffs` to the `Trip` type at ~line 166)
 
 **Interfaces:**
-- Produces (Python): `TripTradeoffNote`, `TradeoffOption`, `TripTradeoffComparison`, `TripTradeoffs` (all `pydantic.BaseModel`).
-- Produces (TS): `TripTradeoffNote`, `TradeoffOption`, `TripTradeoffComparison`, `TripTradeoffs`.
+- Produces (Python): `TripTradeoffNote`, `TradeoffOption`, `TripTradeoffComparison`, `TripTradeoffs` (`pydantic.BaseModel`).
+- Produces (TS): `TripTradeoffNote`, `TradeoffOption`, `TripTradeoffComparison`, `TripTradeoffs`, and `Trip.tradeoffs: TripTradeoffs`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -119,7 +119,7 @@ class TripTradeoffs(BaseModel):
 Run: `cd backend && uv run pytest models/test_tradeoff.py -v`
 Expected: PASS (3 passed)
 
-- [ ] **Step 5: Add the TypeScript mirror**
+- [ ] **Step 5: Add the TypeScript mirror + wire the `Trip` row**
 
 In `frontend/lib/trip/backend-types.ts`, immediately after the `TripPlaceEvidence` block (~line 55), add:
 
@@ -146,36 +146,101 @@ export type TripTradeoffComparison = {
 export type TripTradeoffs = { notes: TripTradeoffNote[]; comparisons: TripTradeoffComparison[] }
 ```
 
+Then add the field to the `Trip` type (after `summary` at ~line 166):
+
+```ts
+  summary: string | null          // read-only orchestrator summary (narrator)
+  tradeoffs: TripTradeoffs         // deterministic notes + hotel comparisons (backend emission)
+  created_at: string
+```
+
 - [ ] **Step 6: Verify TypeScript compiles**
 
 Run: `cd frontend && npx tsc --noEmit`
-Expected: no errors.
+Expected: The new `Trip.tradeoffs` is a required field — any object literal building a `Trip` without it now errors. If `tokyo-trip.ts` (or another fixture) constructs a `Trip`, add `tradeoffs: { notes: [], comparisons: [] }` there. Re-run until clean.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add backend/models/tradeoff.py backend/models/test_tradeoff.py frontend/lib/trip/backend-types.ts
-git commit -m "feat(tradeoff): TripTradeoff Pydantic models + TS mirror"
+git add backend/models/tradeoff.py backend/models/test_tradeoff.py frontend/lib/trip/backend-types.ts frontend/lib/trip/fixtures/tokyo-trip.ts
+git commit -m "feat(tradeoff): TripTradeoff Pydantic models + TS mirror + Trip.tradeoffs"
 ```
 
 ---
 
-### Task 2: Evidence emission reconciliation
+### Task 2: Evidence contract (typed Pydantic model + conformant emission)
 
 **Files:**
-- Modify: `backend/pipeline/persist.py:48-55` (`_evidence_json`; add `_evidence_kind`)
-- Modify: `backend/pipeline/test_persist.py` (add evidence tests)
+- Create: `backend/models/evidence.py`
+- Create: `backend/models/test_evidence.py`
+- Modify: `backend/pipeline/persist.py:48-55` (`_evidence_json`; add `_evidence_kind`; import `TripPlaceEvidence`)
+- Modify: `backend/pipeline/test_persist.py` (evidence tests)
 - Modify: `frontend/lib/trip/backend-types.ts:49-55` (`TripPlaceEvidence` — add `quotes`)
-- Modify: `frontend/lib/trip/fixtures/tokyo-trip.ts` (add `quotes` to each `evidence_json`)
+- Modify: `frontend/lib/trip/fixtures/tokyo-trip.ts` (add `quotes` to the SIX `TripPlace` evidence literals at lines 47–72 ONLY — NOT the restaurant at line 123)
+- Modify: `frontend/components/trip/__tests__/EvidenceChip.test.tsx:6-9` (add `quotes` to the typed `TripPlaceEvidence` literal)
 
 **Interfaces:**
-- Produces (Python): `persist._evidence_kind(source_type: str) -> str`; `persist._evidence_json(place: CanonicalPlace) -> dict` now returns keys `{confidence, source_url, quote, quotes, rationale, evidence_kind}`.
-- Consumes: `CanonicalPlace.source_type` ∈ `{reel_extracted, user_requested, agent_suggested}`; `.evidence_quote` (str), `.evidence_quotes` (list[str]).
+- Produces (Python): `models.evidence.TripPlaceEvidence` (BaseModel, fields `confidence, source_url, quote, quotes, rationale, evidence_kind`); `persist._evidence_kind(source_type: str) -> str`; `persist._evidence_json(place) -> dict` returns `TripPlaceEvidence(...).model_dump()`.
+- Consumes: `CanonicalPlace.source_type` ∈ `{reel_extracted, user_requested, agent_suggested}`; `.evidence_quote` (str), `.evidence_quotes` (list[str]), `.source_url`, `.confidence`.
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing evidence-model test**
+
+```python
+# backend/models/test_evidence.py
+from models.evidence import TripPlaceEvidence
+
+
+def test_evidence_model_fields_match_the_contract():
+    assert set(TripPlaceEvidence.model_fields) == {
+        "confidence", "source_url", "quote", "quotes", "rationale", "evidence_kind"}
+
+
+def test_evidence_model_defaults():
+    ev = TripPlaceEvidence(confidence=0.9, evidence_kind="reel_quote")
+    assert ev.quote is None and ev.quotes == [] and ev.rationale is None and ev.source_url is None
+```
+
+- [ ] **Step 2: Run it (fails), then implement the model**
+
+Run: `cd backend && uv run pytest models/test_evidence.py -v` → FAIL (`No module named 'models.evidence'`).
+
+```python
+# backend/models/evidence.py
+"""Per-trip place evidence contract — mirrors frontend TripPlaceEvidence (guardrail #4).
+
+This is the object stored in trip_places.evidence_json. `quote` is the primary verbatim
+quote; `quotes` preserves the dedup flywheel's merged multi-source quotes.
+"""
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+EvidenceKind = Literal[
+    "reel_quote", "requested_by_you", "research", "mapbox_route", "open_meteo",
+    "travala_hotel_search", "memory_preference", "inferred_default", "suggested_by_astrail",
+]
+
+
+class TripPlaceEvidence(BaseModel):
+    confidence: float
+    source_url: str | None = None
+    quote: str | None = None
+    quotes: list[str] = Field(default_factory=list)
+    rationale: str | None = None
+    evidence_kind: EvidenceKind
+```
+
+Run again → PASS (2 passed).
+
+- [ ] **Step 3: Write the failing persist test**
 
 ```python
 # backend/pipeline/test_persist.py  (append; _cp helper already defined at top)
+import pytest
+
+
 def test_evidence_kind_maps_source_type():
     assert persist._evidence_kind("reel_extracted") == "reel_quote"
     assert persist._evidence_kind("user_requested") == "requested_by_you"
@@ -183,30 +248,40 @@ def test_evidence_kind_maps_source_type():
     assert persist._evidence_kind("nonsense") == "suggested_by_astrail"  # safe fallback
 
 
-def test_evidence_json_conforms_to_TripPlaceEvidence_contract():
-    p = _cp("Senso-ji", 35.71, 139.79, source_type="reel_extracted")
+@pytest.mark.parametrize("src,kind", [
+    ("reel_extracted", "reel_quote"),
+    ("user_requested", "requested_by_you"),
+    ("agent_suggested", "suggested_by_astrail"),
+])
+def test_evidence_json_conforms_to_TripPlaceEvidence(src, kind):
+    p = _cp("Senso-ji", 35.71, 139.79, source_type=src)
     ev = persist._evidence_json(p)
+    # exact contract key set — no legacy keys (evidence_quote/evidence_quotes must be GONE)
     assert set(ev.keys()) == {"confidence", "source_url", "quote", "quotes",
                               "rationale", "evidence_kind"}
-    assert ev["quote"] == "📍Senso-ji"           # primary verbatim quote
-    assert ev["quotes"] == ["📍Senso-ji"]         # multi-source flywheel list
+    assert "evidence_quote" not in ev and "evidence_quotes" not in ev
+    assert ev["quote"] == "📍Senso-ji"
+    assert ev["quotes"] == ["📍Senso-ji"]
     assert ev["rationale"] is None
-    assert ev["evidence_kind"] == "reel_quote"
+    assert ev["evidence_kind"] == kind
     assert ev["confidence"] == 0.9
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 4: Run it (fails), then implement**
 
-Run: `cd backend && uv run pytest pipeline/test_persist.py -k evidence -v`
-Expected: FAIL — `AttributeError: module 'pipeline.persist' has no attribute '_evidence_kind'` and the key-set assertion (current `_evidence_json` emits `evidence_quote`/`evidence_quotes`, not `quote`/`quotes`/`rationale`/`evidence_kind`).
+Run: `cd backend && uv run pytest pipeline/test_persist.py -k evidence -v` → FAIL (`_evidence_kind` missing; key-set mismatch).
 
-- [ ] **Step 3: Write minimal implementation**
+Add the import near the other model imports at the top of `backend/pipeline/persist.py`:
+
+```python
+from models.evidence import TripPlaceEvidence
+```
 
 Replace `_evidence_json` at `backend/pipeline/persist.py:48-55` with:
 
 ```python
 def _evidence_kind(source_type: str) -> str:
-    # trip_places only ever holds these 3 source types (restaurants/hotels have their own tables).
+    # trip_places holds only these 3 source types (restaurants/hotels have their own tables).
     return {
         "reel_extracted": "reel_quote",
         "user_requested": "requested_by_you",
@@ -215,24 +290,20 @@ def _evidence_kind(source_type: str) -> str:
 
 
 def _evidence_json(place: CanonicalPlace) -> dict:
-    # Per-trip evidence — conforms to frontend TripPlaceEvidence (guardrail #4). `quote` is the
-    # primary verbatim quote; `quotes` preserves the dedup flywheel's merged multi-source quotes.
-    return {
-        "confidence": place.confidence,
-        "source_url": place.source_url,
-        "quote": place.evidence_quote,
-        "quotes": list(getattr(place, "evidence_quotes", []) or []),
-        "rationale": None,   # seam: populated when agent_suggested places carry a "why"
-        "evidence_kind": _evidence_kind(place.source_type),
-    }
+    # Per-trip evidence — typed to the frontend TripPlaceEvidence contract (guardrail #4).
+    return TripPlaceEvidence(
+        confidence=place.confidence,
+        source_url=place.source_url,
+        quote=place.evidence_quote,                                   # primary verbatim quote
+        quotes=list(getattr(place, "evidence_quotes", []) or []),     # dedup flywheel
+        rationale=None,                                               # seam for agent_suggested "why"
+        evidence_kind=_evidence_kind(place.source_type),
+    ).model_dump()
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+Run: `cd backend && uv run pytest pipeline/test_persist.py -v` → PASS (all persist tests; existing `test_persist` row-shape assertions still hold — `evidence_json` is still a dict on `trip_places`).
 
-Run: `cd backend && uv run pytest pipeline/test_persist.py -v`
-Expected: PASS (all persist tests, including the two new ones; the existing `test_persist` row-shape assertions still hold — `evidence_json` is still a dict written to `trip_places`).
-
-- [ ] **Step 5: Update the TS contract + fixtures**
+- [ ] **Step 5: Update the TS contract + fixtures (evidence side)**
 
 In `frontend/lib/trip/backend-types.ts`, add one field to `TripPlaceEvidence` (line ~52):
 
@@ -247,18 +318,39 @@ export type TripPlaceEvidence = {
 }
 ```
 
-In `frontend/lib/trip/fixtures/tokyo-trip.ts`, add `quotes: [<the same quote>]` next to every `quote:` in an `evidence_json`/`TripPlaceEvidence` literal (e.g. `quote: 'you HAVE to see Senso-ji at sunrise', quotes: ['you HAVE to see Senso-ji at sunrise'], ...`). For the `evidence_json: { evidence_kind: 'suggested_by_astrail' }` shorthand at `tokyo-trip.ts:123`, expand to the full shape: `{ confidence: 0.8, source_url: 'https://ichiran.com/', quote: null, quotes: [], rationale: 'Ramen near Shibuya Sky…', evidence_kind: 'suggested_by_astrail' }`.
+In `frontend/lib/trip/fixtures/tokyo-trip.ts`, add `quotes` to EACH of the SIX `TripPlace` evidence literals (lines 47–72). The value is `[quote]` when `quote` is a string, `[]` when `quote` is `null`:
+
+```ts
+// tp_senso   (reel):  quote: 'you HAVE to see Senso-ji at sunrise', quotes: ['you HAVE to see Senso-ji at sunrise'], rationale: null, ...
+// tp_teamlab (reel):  quotes: ['teamLab Planets is unreal 🌊']
+// tp_shibuya (reel):  quotes: ['Shibuya Sky at golden hour']
+// tp_ichiran (agent): quote: null, quotes: [], rationale: 'Ramen near Shibuya Sky…', ...
+// tp_disney  (user):  quote: 'Also want to go Tokyo Disneyland', quotes: ['Also want to go Tokyo Disneyland'], ...
+// tp_hotelbase(agent):quote: null, quotes: [], rationale: 'Central Shinjuku base…', ...
+```
+
+DO NOT touch the `restaurants` block (line 118) — `rest_1.evidence_json` at line 123 is a `RestaurantSuggestion`, a different type; leave it as-is.
+
+In `frontend/components/trip/__tests__/EvidenceChip.test.tsx`, add `quotes` to the typed `reel` literal (line 6-9):
+
+```ts
+const reel: TripPlaceEvidence = {
+  confidence: 0.82, source_url: 'https://instagram.com/reel/abc',
+  quote: 'the temple at dawn is unreal', quotes: ['the temple at dawn is unreal'],
+  rationale: null, evidence_kind: 'reel_quote',
+}
+```
 
 - [ ] **Step 6: Run frontend typecheck + tests**
 
 Run: `cd frontend && npx tsc --noEmit && npm test`
-Expected: `tsc` clean; frontend tests green (the `EvidenceChip`/`tokyo-trip` tests still pass with the added field).
+Expected: `tsc` clean (the required `quotes` is now present in every `TripPlaceEvidence` literal); frontend tests green.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add backend/pipeline/persist.py backend/pipeline/test_persist.py frontend/lib/trip/backend-types.ts frontend/lib/trip/fixtures/tokyo-trip.ts
-git commit -m "feat(evidence): emit TripPlaceEvidence-conformant evidence_json (quote/quotes/rationale/evidence_kind)"
+git add backend/models/evidence.py backend/models/test_evidence.py backend/pipeline/persist.py backend/pipeline/test_persist.py frontend/lib/trip/backend-types.ts frontend/lib/trip/fixtures/tokyo-trip.ts frontend/components/trip/__tests__/EvidenceChip.test.tsx
+git commit -m "feat(evidence): typed TripPlaceEvidence emission (quote/quotes/rationale/evidence_kind)"
 ```
 
 ---
@@ -278,7 +370,6 @@ git commit -m "feat(evidence): emit TripPlaceEvidence-conformant evidence_json (
 ```python
 # backend/pipeline/test_tradeoffs.py
 from models.trip import FeasibilityWarning
-from models.tradeoff import TripTradeoffComparison, TripTradeoffNote
 from pipeline.tradeoffs import build_hotel_comparisons, warnings_to_notes
 
 
@@ -297,16 +388,16 @@ def test_warnings_to_notes_maps_fields_and_severity_none_to_info():
 
 
 def test_warnings_to_notes_fills_refs_from_groups():
-    class P:  # minimal place-like stub with .name
+    class P:
         def __init__(self, name): self.name = name
     groups = [(2, [P("Senso-ji"), P("Tokyo Tower")])]
     notes = warnings_to_notes([_w("overpacked_day", 2, "…", "warn")], groups=groups)
     assert notes[0].refs == ["Senso-ji", "Tokyo Tower"]
 
 
-def _hotel(id_, name, price, star):
+def _hotel(id_, name, price, star, *, key="pricePerNight"):
     return {"id": id_, "name": name, "star_rating": star,
-            "price_snapshot": {"pricePerNight": price, "currency": "JPY"}}
+            "price_snapshot": {key: price, "currency": "JPY"}}
 
 
 def test_build_hotel_comparisons_price_vs_rating():
@@ -316,24 +407,36 @@ def test_build_hotel_comparisons_price_vs_rating():
     c = comps[0]
     assert c.axis == "price_vs_rating" and c.scope == "hotel"
     assert set(c.refs) == {"a", "b"}
-    assert "8000" in c.option_a.value and c.option_a.label == "Cheap Inn"
+    assert c.option_a.label == "Cheap Inn" and "8000" in c.option_a.value
+    assert "/night" in c.option_a.value          # pricePerNight labeled per-night
+    assert c.recommendation is None              # 2-star gap (>1) -> no clear winner
 
 
-def test_build_hotel_comparisons_needs_two_priced_hotels():
+def test_build_hotel_comparisons_recommends_cheaper_on_small_rating_gap():
+    rows = [_hotel("a", "Cheap", 8000, 4), _hotel("b", "Grand", 12000, 5)]
+    comps = build_hotel_comparisons(rows)
+    assert comps[0].recommendation == "Cheap"    # gap == 1 -> recommend cheaper
+
+
+def test_build_hotel_comparisons_total_price_labeled_total():
+    rows = [_hotel("a", "A", 40000, 3, key="totalPrice"),
+            _hotel("b", "B", 60000, 4, key="totalPrice")]
+    comps = build_hotel_comparisons(rows)
+    assert "total" in comps[0].option_a.value    # totalPrice NOT mislabeled as /night
+
+
+def test_build_hotel_comparisons_edge_cases():
     assert build_hotel_comparisons([]) == []
     assert build_hotel_comparisons([_hotel("a", "Solo", 8000, 3)]) == []
-    # both priced-none -> no comparison
+    # both unpriced -> no comparison
     assert build_hotel_comparisons(
         [{"id": "a", "name": "X", "star_rating": 3, "price_snapshot": {}},
          {"id": "b", "name": "Y", "star_rating": 4, "price_snapshot": {}}]) == []
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run it (fails), then implement**
 
-Run: `cd backend && uv run pytest pipeline/test_tradeoffs.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'pipeline.tradeoffs'`
-
-- [ ] **Step 3: Write minimal implementation**
+Run: `cd backend && uv run pytest pipeline/test_tradeoffs.py -v` → FAIL (`No module named 'pipeline.tradeoffs'`).
 
 ```python
 # backend/pipeline/tradeoffs.py
@@ -370,267 +473,274 @@ def warnings_to_notes(warnings, groups=None) -> list[TripTradeoffNote]:
     return notes
 
 
-def _price(row: dict) -> float | None:
+def _price(row: dict) -> tuple[float, str] | None:
+    """(price, unit_label) preferring per-night; falls back to total. None when unpriced."""
     snap = row.get("price_snapshot") or {}
-    val = snap.get("pricePerNight", snap.get("totalPrice"))
-    try:
-        return float(val) if val is not None else None
-    except (TypeError, ValueError):
-        return None
+    for key, unit in (("pricePerNight", "/night"), ("totalPrice", " total")):
+        val = snap.get(key)
+        if val is not None:
+            try:
+                return float(val), unit
+            except (TypeError, ValueError):
+                continue
+    return None
 
 
-def _fmt(price: float, snap_currency: str | None) -> str:
-    cur = snap_currency or ""
-    return f"{int(price)} {cur}/night".strip()
+def _value(price: float, unit: str, currency: str | None) -> str:
+    cur = currency or ""
+    return f"{int(price)} {cur}{unit}".replace("  ", " ").strip()
 
 
 def build_hotel_comparisons(hotel_rows) -> list[TripTradeoffComparison]:
-    priced = [(r, p) for r in hotel_rows if (p := _price(r)) is not None]
+    priced = []
+    for r in hotel_rows:
+        p = _price(r)
+        if p is not None:
+            priced.append((r, p[0], p[1]))
     if len(priced) < 2:
         return []
-    cheapest, cheapest_p = min(priced, key=lambda rp: rp[1])
-    # highest-rated distinct from cheapest (fall back to priciest if star ties are unhelpful)
-    others = [rp for rp in priced if rp[0]["id"] != cheapest["id"]]
-    best, best_p = max(others, key=lambda rp: (rp[0].get("star_rating") or 0, rp[1]))
-    c_cur = (cheapest.get("price_snapshot") or {}).get("currency")
-    b_cur = (best.get("price_snapshot") or {}).get("currency")
-    c_star = cheapest.get("star_rating")
-    b_star = best.get("star_rating")
-    option_a = TradeoffOption(
-        label=cheapest["name"], value=_fmt(cheapest_p, c_cur),
-        pro=f"cheaper ({_fmt(cheapest_p, c_cur)})",
-        con=f"{c_star or '?'}-star")
-    option_b = TradeoffOption(
-        label=best["name"], value=_fmt(best_p, b_cur),
-        pro=f"higher rated ({b_star or '?'}-star)",
-        con=f"pricier ({_fmt(best_p, b_cur)})")
-    # deterministic recommendation: prefer the cheaper one when the rating gap is small (<=1 star)
+    cheapest = min(priced, key=lambda t: t[1])
+    others = [t for t in priced if t[0]["id"] != cheapest[0]["id"]]
+    # highest-rated distinct row; ties broken by higher price (a clearly different option)
+    best = max(others, key=lambda t: (t[0].get("star_rating") or 0, t[1]))
+    (c_row, c_price, c_unit) = cheapest
+    (b_row, b_price, b_unit) = best
+    c_cur = (c_row.get("price_snapshot") or {}).get("currency")
+    b_cur = (b_row.get("price_snapshot") or {}).get("currency")
+    c_star, b_star = c_row.get("star_rating"), b_row.get("star_rating")
+    c_val, b_val = _value(c_price, c_unit, c_cur), _value(b_price, b_unit, b_cur)
+    option_a = TradeoffOption(label=c_row["name"], value=c_val,
+                              pro=f"cheaper ({c_val})", con=f"{c_star or '?'}-star")
+    option_b = TradeoffOption(label=b_row["name"], value=b_val,
+                              pro=f"higher rated ({b_star or '?'}-star)", con=f"pricier ({b_val})")
+    # deterministic recommendation: cheaper wins when the rating gap is small (<=1 star);
+    # None when ratings AND prices tie (no clear winner).
     rec = None
-    if b_star is not None and c_star is not None and (b_star - c_star) <= 1:
-        rec = cheapest["name"]
+    if c_star is not None and b_star is not None:
+        if (b_star - c_star) <= 1 and not (b_star == c_star and b_price == c_price):
+            rec = c_row["name"]
     return [TripTradeoffComparison(
         axis="price_vs_rating", option_a=option_a, option_b=option_b,
-        recommendation=rec, refs=[cheapest["id"], best["id"]])]
+        recommendation=rec, refs=[c_row["id"], b_row["id"]])]
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 3: Run test to verify it passes**
 
 Run: `cd backend && uv run pytest pipeline/test_tradeoffs.py -v`
-Expected: PASS (5 passed)
+Expected: PASS (6 passed)
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add backend/pipeline/tradeoffs.py backend/pipeline/test_tradeoffs.py
-git commit -m "feat(tradeoff): deterministic warnings_to_notes + build_hotel_comparisons"
+git commit -m "feat(tradeoff): deterministic warnings_to_notes + build_hotel_comparisons (price_vs_rating)"
 ```
 
 ---
 
-### Task 4: Migration + `persist_tradeoffs`
+### Task 4: Migration + single-write `persist_tradeoffs`
 
 **Files:**
 - Create: `supabase/migrations/20260715120000_trip_tradeoffs.sql`
 - Modify: `backend/pipeline/persist.py` (add `persist_tradeoffs`, near the other enrich persisters)
-- Modify: `backend/pipeline/test_persist.py` (add persist_tradeoffs tests, using the existing `_Table`/`_Result` fake)
+- Modify: `backend/pipeline/test_persist.py` (persist_tradeoffs tests, using the existing `_Client` at `test_persist.py:94`)
 
 **Interfaces:**
-- Produces: `persist.persist_tradeoffs(client, trip_id: str, user_id: str, *, notes=None, comparisons=None) -> None` — read-modify-write merge of `trips.tradeoffs`, owner-checked, idempotent.
-- Consumes: `TripTradeoffNote` / `TripTradeoffComparison` lists (or their `.model_dump()` dicts).
+- Produces: `persist.persist_tradeoffs(client, trip_id: str, user_id: str, *, notes, comparisons) -> None` — ONE owner-checked UPDATE writing `{notes, comparisons}`. No read (no read-modify-write). Accepts model lists OR dicts.
 
 - [ ] **Step 1: Write the migration**
 
 ```sql
 -- supabase/migrations/20260715120000_trip_tradeoffs.sql
-alter table public.trips add column if not exists tradeoffs jsonb not null default '{}'::jsonb;
+alter table public.trips
+  add column if not exists tradeoffs jsonb not null
+  default '{"notes": [], "comparisons": []}'::jsonb;
 
 comment on column public.trips.tradeoffs is
   'Trip-level tradeoffs contract: { notes: TripTradeoffNote[], comparisons: TripTradeoffComparison[] }. '
   'notes = deterministic feasibility gaps; comparisons = derived hotel A-vs-B (price_vs_rating). See '
   'docs/superpowers/specs/2026-07-15-evidence-tradeoff-contract-design.md.';
+
+-- refresh the stale evidence comment to name the exact TripPlaceEvidence keys
+comment on column public.trip_places.evidence_json is
+  'Per-trip place evidence contract (TripPlaceEvidence): '
+  '{ confidence, source_url, quote, quotes, rationale, evidence_kind }.';
 ```
 
 - [ ] **Step 2: Write the failing test**
 
 ```python
-# backend/pipeline/test_persist.py  (append)
+# backend/pipeline/test_persist.py  (append; reuse the existing _Client at line 94)
 import asyncio
 
-from models.tradeoff import TripTradeoffNote
+from models.tradeoff import TradeoffOption, TripTradeoffComparison, TripTradeoffNote
 
 
-def test_persist_tradeoffs_merges_notes_then_comparisons(fake_client_factory=None):
+def test_persist_tradeoffs_writes_full_object_in_one_update():
     from pipeline.persist import persist_tradeoffs
-    from pipeline.test_persist import _FakeClient  # defined in Step 4 if absent
-    client = _FakeClient({"trips": [{"id": "t1", "user_id": "u1", "tradeoffs": {}}]})
+    c = _Client({"trips": [{"id": "t1", "user_id": "u1",
+                            "tradeoffs": {"notes": [], "comparisons": []}}]})
     note = TripTradeoffNote(kind="empty_day", scope="day", severity="flag",
                             detail="day has no stops", day_number=3)
-    asyncio.run(persist_tradeoffs(client, "t1", "u1", notes=[note]))
-    row = client.db["trips"][0]
-    assert row["tradeoffs"]["notes"][0]["kind"] == "empty_day"
-    assert row["tradeoffs"]["comparisons"] == []
-    # second call merges comparisons without clobbering notes
-    from models.tradeoff import TradeoffOption, TripTradeoffComparison
     comp = TripTradeoffComparison(
         axis="price_vs_rating",
         option_a=TradeoffOption(label="A", value="8000 JPY/night", pro="cheaper", con="3-star"),
         option_b=TradeoffOption(label="B", value="12000 JPY/night", pro="4-star", con="pricier"),
         refs=["a", "b"])
-    asyncio.run(persist_tradeoffs(client, "t1", "u1", comparisons=[comp]))
-    assert row["tradeoffs"]["notes"][0]["kind"] == "empty_day"     # preserved
+    asyncio.run(persist_tradeoffs(c, "t1", "u1", notes=[note], comparisons=[comp]))
+    row = c.db["trips"][0]
+    assert row["tradeoffs"]["notes"][0]["kind"] == "empty_day"
     assert row["tradeoffs"]["comparisons"][0]["axis"] == "price_vs_rating"
+
+
+def test_persist_tradeoffs_is_owner_scoped():
+    from pipeline.persist import persist_tradeoffs
+    c = _Client({"trips": [{"id": "t1", "user_id": "u1",
+                            "tradeoffs": {"notes": [], "comparisons": []}}]})
+    # wrong user -> no row matches -> nothing written
+    asyncio.run(persist_tradeoffs(c, "t1", "WRONG", notes=[], comparisons=[]))
+    assert c.db["trips"][0]["tradeoffs"] == {"notes": [], "comparisons": []}
 ```
 
-> If `test_persist.py` does not already expose a reusable `_FakeClient` wrapper around
-> `_Table`/`_Result` with a public `.db` dict and `.table(name)` method, add a minimal one
-> in Step 4 alongside `persist_tradeoffs`. Mirror the existing `_Table` (`select/eq/update/execute`).
+> Verify the `_Client`/`_Table` fake at `test_persist.py:53-96` applies `update(...).eq("id").eq("user_id")` by writing into the matched row (the weather/hotel persist tests already rely on update-then-observe). If `update` does not mutate `self.db`, extend `_Table.execute` minimally so an `("update", patch)` op writes `patch` into every row matching the accumulated `.eq` filters. Keep it additive.
 
-- [ ] **Step 3: Run test to verify it fails**
+- [ ] **Step 3: Run it (fails), then implement**
 
-Run: `cd backend && uv run pytest pipeline/test_persist.py -k tradeoffs -v`
-Expected: FAIL — `ImportError: cannot import name 'persist_tradeoffs'`
-
-- [ ] **Step 4: Write minimal implementation**
+Run: `cd backend && uv run pytest pipeline/test_persist.py -k tradeoffs -v` → FAIL (`ImportError: cannot import name 'persist_tradeoffs'`).
 
 Add to `backend/pipeline/persist.py`:
 
 ```python
-from models.tradeoff import TripTradeoffComparison, TripTradeoffNote   # top-of-file import
-
-
 def _dump(items) -> list[dict]:
-    out = []
-    for it in items or []:
-        out.append(it.model_dump() if hasattr(it, "model_dump") else dict(it))
-    return out
+    return [it.model_dump() if hasattr(it, "model_dump") else dict(it) for it in (items or [])]
 
 
-async def persist_tradeoffs(client, trip_id: str, user_id: str, *,
-                            notes=None, comparisons=None) -> None:
-    """Additive, owner-checked (guardrail #6), best-effort (guardrail #3): merge the given
-    notes and/or comparisons into trips.tradeoffs. Read-modify-write — a single sequential
-    caller per field (notes before the enrich gather; comparisons only inside _stage_hotels),
-    so no lost update. A missing/failed read degrades to {} (never fails the trip)."""
-    try:
-        rows = (await client.table("trips").select("tradeoffs")
-                .eq("id", trip_id).eq("user_id", user_id).execute()).data
-        current = (rows[0].get("tradeoffs") if rows else None) or {}
-    except Exception:
-        current = {}
-    merged = {
-        "notes": _dump(notes) if notes is not None else (current.get("notes") or []),
-        "comparisons": _dump(comparisons) if comparisons is not None
-        else (current.get("comparisons") or []),
-    }
-    await client.table("trips").update({"tradeoffs": merged}) \
+async def persist_tradeoffs(client, trip_id: str, user_id: str, *, notes, comparisons) -> None:
+    """Additive, owner-checked (guardrail #6): write the FULL tradeoffs object in ONE update.
+
+    Deliberately NO read-modify-write — a transient read failure must never erase a sibling
+    field. The runner computes notes before the enrich gather and comparisons after it, then
+    calls this ONCE with both. Best-effort is the caller's responsibility (guardrail #3)."""
+    payload = {"notes": _dump(notes), "comparisons": _dump(comparisons)}
+    await client.table("trips").update({"tradeoffs": payload}) \
         .eq("id", trip_id).eq("user_id", user_id).execute()
 ```
 
-Add a `_FakeClient` to `test_persist.py` only if one is not already present (reuse `_Table`/`_Result`):
+- [ ] **Step 4: Run test to verify it passes**
 
-```python
-class _FakeClient:
-    def __init__(self, db): self.db = db
-    def table(self, name): return _Table(name, self.db)
-```
+Run: `cd backend && uv run pytest pipeline/test_persist.py -v`
+Expected: PASS (all persist tests including the two new ones).
 
-- [ ] **Step 5: Run test to verify it passes**
-
-Run: `cd backend && uv run pytest pipeline/test_persist.py -k tradeoffs -v`
-Expected: PASS (1 passed). Then full file: `cd backend && uv run pytest pipeline/test_persist.py -v` — all green.
-
-> If `_Table.update(...).eq(...).eq(...).execute()` in the existing fake does not persist into
-> `self.db`, extend `_Table` minimally so `update` writes the row it matched by `id` — mirror
-> how the existing weather/hotel tests observe writes. Keep the change additive.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add supabase/migrations/20260715120000_trip_tradeoffs.sql backend/pipeline/persist.py backend/pipeline/test_persist.py
-git commit -m "feat(tradeoff): trips.tradeoffs migration + owner-checked persist_tradeoffs merge"
+git commit -m "feat(tradeoff): trips.tradeoffs migration + single-write owner-checked persist_tradeoffs"
 ```
 
 ---
 
-### Task 5: Runner wiring + integration test
+### Task 5: Runner wiring + integration test + frozen-eval guard
 
 **Files:**
-- Modify: `backend/pipeline/runner.py` (import; notes after `persist_itinerary` ~line 218; comparisons inside `_stage_hotels` ~line 290)
-- Modify: `backend/pipeline/test_runner.py` (or the existing runner integration test file — add a tradeoffs assertion)
+- Modify: `backend/pipeline/runner.py` (imports; compute notes after `persist_itinerary` ~line 218; single tradeoffs write after `asyncio.gather` ~line 316)
+- Modify: `backend/pipeline/test_runner.py` (integration test) — if the runner integration test lives in a differently-named file, add the test there instead (grep for the existing offline `_run`/`generate` test that injects `weather=/transport=/restaurant=/hotel=/narrator=`).
+- Modify: `backend/evals/test_run_eval.py` (frozen-anchor regression)
 
 **Interfaces:**
-- Consumes: `itinerary.feasibility_warnings` (in scope from `assemble_itinerary`, runner.py:190); `group_places_by_day(canonical, dates)`; `warnings_to_notes`, `build_hotel_comparisons`, `persist_tradeoffs`; `hotel_suggestions` rows re-read after `persist_hotels`.
+- Consumes: `itinerary.feasibility_warnings` (in scope from `assemble_itinerary`, runner.py:190); `group_places_by_day(canonical, dates)`; `warnings_to_notes`, `build_hotel_comparisons`, `persist_tradeoffs`; `hotel_suggestions` rows re-read after the gather.
 
 - [ ] **Step 1: Add imports at the top of `runner.py`**
 
 ```python
 from pipeline.feasibility import group_places_by_day
 from pipeline.tradeoffs import build_hotel_comparisons, warnings_to_notes
-from pipeline.persist import persist_tradeoffs   # if persist_* are imported individually; else `from pipeline import persist`
+from pipeline.persist import persist_tradeoffs   # or add to the existing `from pipeline.persist import ...`
 ```
 
-- [ ] **Step 2: Persist notes after `persist_itinerary`**
+- [ ] **Step 2: Compute notes after `persist_itinerary` (do NOT write yet)**
 
-Immediately after the `dropped = await persist_itinerary(...)` block succeeds (runner.py ~line 218-231, inside the existing `try`), add (best-effort, guardrail #3):
+Immediately after the `dropped = await persist_itinerary(...)` block (runner.py ~line 218-231, inside the existing `try`), add:
 
 ```python
             # TRADEOFF NOTES — the FeasibilityWarnings feasibility.py flagged as "the seam".
+            # Computed here (warnings + groups in scope); WRITTEN once after the enrich gather.
             try:
-                _groups = group_places_by_day(canonical, dates)
-                _notes = warnings_to_notes(itinerary.feasibility_warnings, groups=_groups)
-                await persist_tradeoffs(client, trip_id, user_id, notes=_notes)
+                _tradeoff_notes = warnings_to_notes(
+                    itinerary.feasibility_warnings,
+                    groups=group_places_by_day(canonical, dates))
             except Exception:
-                pass   # best-effort — a tradeoff-note write must never fail the trip
+                _tradeoff_notes = []
 ```
 
-- [ ] **Step 3: Persist hotel comparisons inside `_stage_hotels`**
+- [ ] **Step 3: Single tradeoffs write AFTER the enrich gather**
 
-In `_stage_hotels()` (runner.py ~line 290), after `await persist_hotels(client, trip_id, fetch=hotel)`:
+Immediately after `await asyncio.gather(_stage_transport(), _stage_restaurants(), _stage_hotels(), _stage_narration(), return_exceptions=True)` (runner.py ~line 315-316, still inside the same `try`), add:
 
 ```python
-                    rows = (await client.table("hotel_suggestions")
-                            .select("id,name,star_rating,price_snapshot")
-                            .eq("trip_id", trip_id).execute()).data
-                    comps = build_hotel_comparisons(rows or [])
-                    if comps:
-                        await persist_tradeoffs(client, trip_id, user_id, comparisons=comps)
+            # ONE tradeoffs write (notes computed pre-gather + comparisons from persisted hotels).
+            # No read-modify-write; best-effort (a failure must never fail the trip, guardrail #3).
+            try:
+                _hotel_rows = (await client.table("hotel_suggestions")
+                               .select("id,name,star_rating,price_snapshot")
+                               .eq("trip_id", trip_id).execute()).data or []
+                _comparisons = build_hotel_comparisons(_hotel_rows)
+                await persist_tradeoffs(client, trip_id, user_id,
+                                        notes=_tradeoff_notes, comparisons=_comparisons)
+            except Exception:
+                pass   # best-effort — tradeoffs must never fail the trip
 ```
 
-(Keep it inside the stage's existing `try/except` so a failure stays a non-critical warning.)
+- [ ] **Step 4: Write the integration test (proves BOTH contracts are wired)**
 
-- [ ] **Step 4: Write the failing integration test**
-
-Mirror the existing runner integration test (offline, injected agents, fake client). Assert that after a run with a flaggable itinerary, `trips.tradeoffs.notes` is populated. Example assertion to add to the existing runner test that already drives `_run`/`generate` with a fake client:
+Mirror the existing runner integration test (offline, injected agents, `_Client` fake). Drive a run whose itinerary has a guaranteed `long_leg` (two coord places >4000 m apart → `assess_feasibility` emits a `flag`), and inject a hotel fake returning TWO priced hotels. Then assert the persisted `trips.tradeoffs`:
 
 ```python
-def test_run_persists_tradeoff_notes(...):
-    # ... existing setup that runs the pipeline offline with injected agents + fake client ...
+def test_run_persists_tradeoff_notes_and_comparisons(...):
+    # ... existing offline setup with _Client fake + injected weather/transport/restaurant/narrator ...
+    # inject a hotel fake returning two priced hotels:
+    async def _fake_hotels(location, check_in, check_out, rooms):
+        return "sess", [
+            {"name": "Cheap Inn", "star": 3, "pricePerNight": 8000, "currency": "JPY", "hotelId": 1},
+            {"name": "Grand", "star": 5, "pricePerNight": 12000, "currency": "JPY", "hotelId": 2},
+        ]
+    # ... run generation with two far-apart places (e.g. Tokyo + Osaka coords) and hotel=_fake_hotels ...
     trip = fake.db["trips"][0]
-    assert "tradeoffs" in trip
-    # an itinerary with a >=2000m leg or empty day yields at least one note
-    assert isinstance(trip["tradeoffs"].get("notes"), list)
+    notes = trip["tradeoffs"]["notes"]
+    comps = trip["tradeoffs"]["comparisons"]
+    assert any(n["kind"] == "long_leg" for n in notes)        # notes are wired, not empty
+    assert comps and comps[0]["axis"] == "price_vs_rating"    # comparisons are wired
+    assert set(comps[0]["refs"]) and comps[0]["option_a"]["label"] and comps[0]["option_b"]["label"]
 ```
 
-> Follow the existing runner test's construction exactly (same fake client, same injected
-> `weather=/transport=/restaurant=/hotel=/narrator=` fakes). If the existing offline fixture
-> produces no flag/warn legs, add two far-apart coord places so `assess_feasibility` emits a
-> `long_leg`, guaranteeing a non-empty `notes` list.
+> Follow the existing runner test's construction exactly (same `_Client` fake, same injected agent fakes, same `generate`/`_run` entry point). If the shipped offline fixture yields no flag leg, use two far-apart coord places so `assess_feasibility` emits `long_leg`.
 
-- [ ] **Step 5: Run the integration test to verify it fails, then passes**
+- [ ] **Step 5: Add the frozen-eval regression (freezes 6229.0)**
 
-Run: `cd backend && uv run pytest pipeline/test_runner.py -k tradeoff -v`
-Expected: FAIL first (notes not yet wired / assertion), then PASS after Steps 2-3.
+The existing `test_pipeline_route_beats_or_matches_baseline_on_parity_anchors` (`backend/evals/test_run_eval.py:60`) only asserts `mean_intra_day_travel_m <= baseline`. Add a sibling test that freezes the exact value (confirmed `6229.0` by a live eval run), using the same `load_case`/`build_ctx` + metric helpers that test already imports:
 
-- [ ] **Step 6: Run the full backend + eval-safety check**
+```python
+def test_pipeline_mean_intra_day_travel_is_frozen_anchor():
+    # Freezes the deterministic route anchor. This feature is additive (evidence + tradeoffs
+    # emitted AFTER assembly); if this value moves, dedup/assemble_itinerary changed — investigate.
+    case = load_case("japan_first_trip")
+    pipe_ctx = build_ctx(case, "pipeline")
+    # reuse the same metric accessor the parity-anchor test uses to read mean_intra_day_travel_m
+    assert metric_value(pipe_ctx, "mean_intra_day_travel_m") == 6229.0
+```
 
-Run: `cd backend && uv run pytest`
-Expected: all green (previously 431 passed, 6 skipped — now +new tests). Confirm the #16 eval / `mean_intra_day_travel_m` tests are unchanged (this feature is additive to the deterministic path).
+> Read `test_run_eval.py:60-90` to use the ACTUAL metric accessor (the parity-anchor test already computes `mean_intra_day_travel_m` for `pipe_ctx` — call it the same way; `metric_value` above is a placeholder for whatever that test uses). The frozen value is `6229.0`.
+
+- [ ] **Step 6: Run the integration test + full backend suite + eval**
+
+Run: `cd backend && uv run pytest pipeline/ evals/ -v` then `cd backend && uv run pytest`
+Expected: all green (previously 431 passed, 6 skipped — now +new tests). The frozen-anchor test passes at exactly `6229.0`.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add backend/pipeline/runner.py backend/pipeline/test_runner.py
-git commit -m "feat(tradeoff): wire feasibility notes + hotel comparisons into the runner (best-effort)"
+git add backend/pipeline/runner.py backend/pipeline/test_runner.py backend/evals/test_run_eval.py
+git commit -m "feat(tradeoff): wire feasibility notes + hotel comparisons (one write); freeze eval anchor 6229.0"
 ```
 
 ---
@@ -638,19 +748,18 @@ git commit -m "feat(tradeoff): wire feasibility notes + hotel comparisons into t
 ## Self-Review
 
 **Spec coverage:**
-- Evidence reconciliation (`_evidence_json`→`TripPlaceEvidence`, computed `evidence_kind`) → Task 2. ✅
-- `quotes` multi-source preservation → Task 2 (Pydantic + TS + fixtures). ✅
-- Tradeoff note type + comparison type → Task 1 (Pydantic + TS). ✅
-- Notes from `FeasibilityWarning` → Task 3 `warnings_to_notes` + Task 5 wiring. ✅
-- Comparisons from hotels → Task 3 `build_hotel_comparisons` + Task 5 wiring. ✅
-- `trips.tradeoffs` migration + column comment → Task 4. ✅
-- `persist_tradeoffs` owner-checked, best-effort, merge → Task 4. ✅
-- Three-side schema parity in one PR → Tasks 1, 2, 4 (Pydantic + TS + SQL). ✅
-- Eval-safety (no LLM, deterministic path untouched) → Task 5 Step 6 full-suite check. ✅
-- Narrator title/summary = out of scope (already persisted) → not a task, by design. ✅
+- Evidence reconciliation + typed `TripPlaceEvidence` Pydantic model → Task 2. ✅
+- `quotes` multi-source preservation → Task 2 (Pydantic + TS + all 7 fixtures). ✅
+- Tradeoff note + comparison types + `TripTradeoffs` → Task 1. ✅
+- `Trip.tradeoffs` TS row field → Task 1 Step 5. ✅ (was the schema-parity gap Codex flagged)
+- Notes from `FeasibilityWarning` → Task 3 + Task 5. ✅
+- Comparisons from persisted hotel rows, `price_vs_rating`, price/total labeling, ties → Task 3 (matches amended spec §4b). ✅
+- `trips.tradeoffs` migration, full-shape default, evidence-comment refresh → Task 4. ✅
+- Single-write `persist_tradeoffs` (no read-modify-write) → Task 4 + Task 5. ✅ (kills the erase bug)
+- Integration test proving BOTH contracts wired (non-empty note + real comparison) → Task 5 Step 4. ✅
+- Frozen eval anchor `6229.0` regression → Task 5 Step 5. ✅
+- Three-side schema parity in one PR → Tasks 1, 2, 4. ✅
 
-**Spec deviation logged:** comparison axis is `price_vs_rating` (hotels have no coords), not the spec's `price_vs_location` — recorded in Global Constraints; update spec §4b on landing.
+**Placeholder scan:** every code step has full code. Two `>` notes (verify the `_Client` fake's `update`; use the real metric accessor in the eval test) instruct the implementer to ground against actual code — they are verification guardrails, not gaps.
 
-**Placeholder scan:** every code step contains full code; no TBD/TODO. The two `>` notes (fake-client reuse in Tasks 4/5) instruct the implementer to reuse the existing `_Table` fake rather than invent one — they are guardrails, not gaps.
-
-**Type consistency:** `_evidence_kind`/`_evidence_json` (Task 2) match their calls; `warnings_to_notes`/`build_hotel_comparisons` (Task 3) signatures match the runner calls (Task 5) and the `persist_tradeoffs(client, trip_id, user_id, *, notes=, comparisons=)` signature (Task 4) matches both runner call sites. `TripTradeoff*` field names match across Pydantic (Task 1), TS (Task 1), and the pure functions (Task 3).
+**Type consistency:** `_evidence_json`/`_evidence_kind`/`TripPlaceEvidence` (Task 2) match. `warnings_to_notes`/`build_hotel_comparisons` (Task 3) signatures match the runner call sites (Task 5) and `persist_tradeoffs(client, trip_id, user_id, *, notes, comparisons)` (Task 4). `TripTradeoff*` field names match across Pydantic (Task 1), TS (Task 1), and the pure functions (Task 3). No `_FakeClient` — uses the real `_Client`.

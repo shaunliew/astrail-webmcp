@@ -104,6 +104,13 @@ export type TripPlaceEvidence = {
 `rationale` stays `null` for `reel_extracted`/`user_requested` (they carry a quote, not a
 rationale); it is the seam for future `agent_suggested` places that carry a "why".
 
+**Backend gets an exact Pydantic `TripPlaceEvidence` model** (new `models/evidence.py`)
+mirroring the TS type field-for-field (`confidence, source_url, quote, quotes, rationale,
+evidence_kind`). `_evidence_json` builds and returns `TripPlaceEvidence(...).model_dump()`,
+so the contract is typed on both sides (guardrail #4) and a parity test can assert the model
+fields equal the TS shape. The DB migration also refreshes the stale
+`trip_places.evidence_json` column comment to name the exact keys.
+
 ## 4. Tradeoff contract
 
 ```python
@@ -158,24 +165,27 @@ class TripTradeoffs(BaseModel):
 day's place group at the persist seam (where the grouped places are already in scope), not
 from the warning; `[]` when unavailable.
 
-### 4b. Comparisons — derived from the hotel enrichment result (deterministic, no LLM)
+### 4b. Comparisons — derived from persisted `hotel_suggestions` rows (deterministic, no LLM)
 
-Built from the **in-memory hotel enrichment objects** produced by the hotel agent (which
-carry `distance_m`, price, `star_rating`, `area`, `name`, and the persisted row id), NOT by
-re-reading `hotel_suggestions` rows — the table has no `distance_m` column. `build_hotel_comparisons`
-runs at the enrich seam right after the hotels are produced/persisted, so it has both the
-enrichment fields and the row ids for `refs`.
+**Axis is `price_vs_rating`, NOT `price_vs_location`.** Hotels have no coordinates or
+`distance_m`: `persist_hotels` sets `base_place_id = NULL` ("Travala gives no coords") and
+returns an `int` count, not in-memory models. So comparisons are derived from the **persisted
+`hotel_suggestions` rows** (`id`, `name`, `star_rating`, `price_snapshot`) — the only fields
+that actually exist — comparing price against star rating.
 
-`build_hotel_comparisons(hotels) -> list[TripTradeoffComparison]`:
-- If `< 2` hotels with a comparable price → return `[]`.
-- Pick the two most-relevant candidates (e.g. cheapest vs closest-to-route).
-- Emit one comparison on axis `"price_vs_location"`: `option_a`/`option_b` carry
-  `label=hotel name`, `value=price/distance summary`, and templated `pro`/`con`
-  (e.g. A: pro "cheaper (¥X/night)", con "farther from your stops (Ym)"; B inverse).
-- `recommendation` is a deterministic pick (cheapest within a distance threshold, else
-  closest) or `None` on a tie.
+`build_hotel_comparisons(hotel_rows) -> list[TripTradeoffComparison]`:
+- Extract a numeric price per row: prefer `price_snapshot.pricePerNight` (labeled "/night");
+  else `price_snapshot.totalPrice` (labeled "total"). Rows with neither are excluded.
+- If `< 2` priced rows → return `[]`.
+- `option_a` = cheapest row; `option_b` = highest-rated **distinct** row.
+- Emit one comparison on axis `"price_vs_rating"`: `option_a`/`option_b` carry
+  `label = hotel name`, `value = price summary`, templated `pro`/`con`
+  (A: pro "cheaper (…)", con "N-star"; B: pro "higher rated (M-star)", con "pricier (…)").
+- `recommendation`: prefer the cheaper row when the rating gap is ≤ 1 star; `None` when
+  ratings AND prices tie (no clear winner). Deterministic.
 
 Templated `pro`/`con` text is fixed-string interpolation of numeric fields — no model call.
+This supersedes the earlier `price_vs_location`/`distance_m` design (not grounded in code).
 
 ## 5. Persistence + migration
 
@@ -191,15 +201,17 @@ comment on column public.trips.tradeoffs is
   'docs/superpowers/specs/2026-07-15-evidence-tradeoff-contract-design.md.';
 ```
 
-Writers:
-- **Notes**: thread `ItineraryOutput.feasibility_warnings` (currently dropped) into a new
-  `persist_tradeoffs(client, trip_id, notes)` that writes `trips.tradeoffs` with `notes`
-  set. Called from the itinerary-assembly/persist seam where the warnings are in scope.
-  Write-through (guardrail #7): persist before returning.
-- **Comparisons**: after hotel enrich persists `hotel_suggestions`, call
-  `build_hotel_comparisons()` and UPDATE `trips.tradeoffs` merging in `comparisons`
-  (additive, runs AFTER `persist_itinerary` — matches the enrich-agent template). Best-effort
-  (guardrail #3): a hotel-comparison failure must never fail the trip.
+Writer — **one write, no read-modify-write** (avoids the transient-read-failure erase bug):
+`persist_tradeoffs(client, trip_id, user_id, *, notes, comparisons)` writes
+`{"notes": …, "comparisons": …}` in a single owner-checked UPDATE. It never reads the column
+back, so a read failure can't wipe a sibling field, and there is no lost-update surface.
+- Compute `notes` from `itinerary.feasibility_warnings` right after `persist_itinerary`
+  (warnings in scope), hold them in a local.
+- Run the enrich gather (hotels persist inside it).
+- **After** the gather, build `comparisons` from the persisted `hotel_suggestions` rows and
+  do the ONE `persist_tradeoffs(..., notes=notes, comparisons=comparisons)` write.
+- Best-effort (guardrail #3): the whole tradeoff write is wrapped so a failure never fails
+  the trip; write-through before the terminal result (guardrail #7).
 
 TS mirror (`backend-types.ts`): add `TripTradeoffNote`, `TradeoffOption`,
 `TripTradeoffComparison`, `TripTradeoffs`, and `tradeoffs: TripTradeoffs` on the trip row type.
@@ -208,9 +220,9 @@ TS mirror (`backend-types.ts`): add `TripTradeoffNote`, `TradeoffOption`,
 
 | Layer | Change |
 |---|---|
-| Pydantic | new `backend/models/tradeoff.py`; rewritten `_evidence_json` + `_evidence_kind` |
-| TypeScript | `TripPlaceEvidence.quotes`; `TripTradeoff*` types + `trips.tradeoffs` |
-| SQL | migration adding `trips.tradeoffs jsonb` + contract comment |
+| Pydantic | new `models/evidence.py` (`TripPlaceEvidence`) + `models/tradeoff.py`; `_evidence_json` returns `TripPlaceEvidence(...).model_dump()`; new `_evidence_kind` |
+| TypeScript | `TripPlaceEvidence.quotes` (+ update the 6 `tokyo-trip.ts` TripPlace literals AND `EvidenceChip.test.tsx`); `TripTradeoff*` types; **`tradeoffs: TripTradeoffs` on the `Trip` row type** |
+| SQL | migration adding `trips.tradeoffs jsonb` default `{"notes":[],"comparisons":[]}` + comment; refresh the stale `trip_places.evidence_json` comment to name the exact keys |
 
 ## 7. Testing + eval-safety
 

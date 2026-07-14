@@ -1,6 +1,8 @@
 # Astrail Beta Wiring Handoff
 
-> Current stop point: 2026-07-08, after Task 4 of the beta wiring plan.
+> Current stop point: 2026-07-15. Tasks 1-7 of the beta wiring plan have shipped on
+> `dev`; automated Task 8 checks passed, but the manual production E2E checklist and
+> reviewed `dev` -> `main` promotion remain open.
 > Previous handoff (DB implementation, 2026-07-02) is superseded; its schema work is merged and live.
 
 ## What this session is building
@@ -16,7 +18,7 @@ Governing documents (all committed on `zh`, all reviewed):
   — ENG review CLEAR + DESIGN review CLEAR (see its `## GSTACK REVIEW REPORT` final section).
   The plan contains literal code for every step. Follow it verbatim; deviations require a reason.
 
-## Progress: Tasks 1–4 done and committed
+## Progress: Tasks 1-7 done and committed
 
 | Task | Commit | What landed |
 |---|---|---|
@@ -24,36 +26,33 @@ Governing documents (all committed on `zh`, all reviewed):
 | 2. Frontend type parity + date-gated Generate | `fb18797` | Dates required end-to-end; `canGenerate(items, brief)`; literal test edits; also repaired pre-existing typecheck break (tokyo-trip fixture missing title/summary); 115 frontend tests |
 | 3. Passwordless email OTP auth | `f945cf3` | Sign-in page rewritten (email → 6-digit code, 60s resend cooldown, autofocus/refocus), `SignOutButton`, header links; Google removed (deferred post-beta) |
 | 4. Onboarding save + gate | `42d80fa` | New `frontend/lib/trip/supabase-api.ts` (RLS-direct `saveProfile` upsert), wizard swapped off mock-api with error state, middleware gate redirects un-onboarded users to `/app/onboarding` |
+| 5. Real create flow + SSE | `ab024b6` | `CreateTripFlow` uses the authenticated backend client and live EventSource stream; warnings and reconnect/failure behavior are covered by tests |
+| 6. Real trip reads + list | `f4492e0` | Trip detail and `/app/trips` read Supabase directly under RLS, including generating, failed, empty, and not-found states |
+| 7. Deploy readiness | `9542b1f` | Env-driven backend CORS, env documentation, and Supabase OTP setup landed; later Phase-2 PRs #36-#39 hardened and deployed the backend API |
 
-Verification state at stop: backend `373 passed, 5 skipped`; frontend `31 files / 115 tests`
-passed; `npm run typecheck` clean.
+Verification state at this reconciliation: backend `431 passed, 6 skipped`; frontend
+`32 files / 123 tests` passed; `npm run typecheck` clean. The Render backend is deployed
+and healthy, but production promotion is not complete because `main` and the Vercel
+frontend still trail `dev`.
 
-## Remaining: Tasks 5–8
+## Remaining: Task 8 + production promotion
 
-- **Task 5 — Create flow → real API + live SSE.** `getAccessToken()` helper,
-  `streamGeneration` EventSource wrapper (onReset on reconnect, onFail after 5
-  consecutive errors → navigate to trip page), fake-EventSource unit tests
-  (`api-stream.test.ts`), `NoticeEvent` type + GenerationProgress warning rendering
-  (design decision 1A), CreateTripFlow swaps mock-api → `lib/trip/api.ts`.
-- **Task 6 — Trip page + trips list on real data.** Extend `supabase-api.ts` with
-  `getTrip` (7-table bundle, RLS-direct) + `listTrips`; TripWorkspace swaps to it and
-  gains failed/generating states; new `/app/trips` page + `TripsList` (empty state has
-  a "Plan your first trip" CTA).
-- **Task 7 — Deploy-readiness.** `ALLOWED_ORIGINS` env-configurable CORS in
-  `backend/main.py`, `.env.example` updates, write `docs/SUPABASE-SETUP.md` (the plan
-  contains its full content — note it was CORRECTED: custom SMTP is required BEFORE
-  template editing, not deferrable).
 - **Task 8 — E2E QA.** Manual + scripted checks. Cold acceptance run uses these two
   reels (chosen by Zhi Hao, must be uncached):
   `https://www.instagram.com/reel/DYbmT-SNzVK/` and `https://www.instagram.com/reel/DYM_I5IvLSv/`.
-  Append QA evidence to the plan file. After QA: final gstack `/review` on the whole
-  branch diff (required by the astrail-plan-and-review skill before merge).
+  Automated checks are recorded in the plan. The remaining production checks are tracked
+  by the GitHub Project card `Both: manual production E2E QA checklist — real OTP, cold
+  multi-Reel run, second-user RLS, reload/listing, restart recovery`.
+- **Production promotion.** Open and review `dev` -> `main`, apply every required
+  Supabase migration, repoint Render to `main`, set Vercel `NEXT_PUBLIC_BACKEND_URL`,
+  keep `NEXT_PUBLIC_MOCK_AUTH` disabled, and redeploy. Do not merge without the repo's
+  review workflow.
 
-## The working loop (proven over Tasks 1–4 — keep using it)
+## Historical wiring implementation loop
 
-Codex CLI implements each task in a sandbox; the orchestrator (Claude) verifies the
-diff against the plan and makes the per-task commit. **Codex's sandbox cannot write
-to `.git`** — do not fight this; it's the workflow.
+Tasks 1-7 are complete. The command below is retained only as historical context for
+the reviewed wiring plan; do not resume at Task 5. New work starts from its GitHub
+Project card and the current repository build loop.
 
 Launch template (one task at a time):
 
@@ -82,8 +81,8 @@ before committing (`git diff`, rerun suites); commit messages follow the plan's,
 - `gh project item-list 1 --owner MalaysiaKaki` fails on this machine ("unknown owner
   type") — needs `gh auth refresh -s project`; skip board loads during plan execution.
 - Frontend: run all npm commands from `frontend/`.
-- Local branch `zh` is ahead of origin by ~10 commits — **push when convenient** as a
-  backup before more implementation.
+- The shared integration baseline is `dev` at `d76cd20`; `main` is intentionally not
+  advanced until the production-promotion review and migration checklist clear.
 
 ## External state already configured (do NOT redo)
 

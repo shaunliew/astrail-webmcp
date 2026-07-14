@@ -5,7 +5,8 @@ import type { TripPlaceEvidence } from '@/lib/trip/backend-types'
 
 const reel: TripPlaceEvidence = {
   confidence: 0.82, source_url: 'https://instagram.com/reel/abc',
-  quote: 'the temple at dawn is unreal', rationale: null, evidence_kind: 'reel_quote',
+  quote: 'the temple at dawn is unreal', quotes: ['the temple at dawn is unreal'],
+  rationale: null, evidence_kind: 'reel_quote',
 }
 
 describe('EvidenceChip', () => {

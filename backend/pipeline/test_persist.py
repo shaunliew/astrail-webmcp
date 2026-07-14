@@ -637,3 +637,29 @@ async def test_persist_hotels_retry_safe_and_star_nullsafe():
     rows = c.db["hotel_suggestions"]
     assert len(rows) == 1 and rows[0]["name"] == "No Star Inn"
     assert rows[0]["star_rating"] is None                # star=9 out of [0,5] -> NULL (CHECK-safe)
+
+
+def test_evidence_kind_maps_source_type():
+    assert persist._evidence_kind("reel_extracted") == "reel_quote"
+    assert persist._evidence_kind("user_requested") == "requested_by_you"
+    assert persist._evidence_kind("agent_suggested") == "suggested_by_astrail"
+    assert persist._evidence_kind("nonsense") == "suggested_by_astrail"  # safe fallback
+
+
+@pytest.mark.parametrize("src,kind", [
+    ("reel_extracted", "reel_quote"),
+    ("user_requested", "requested_by_you"),
+    ("agent_suggested", "suggested_by_astrail"),
+])
+def test_evidence_json_conforms_to_TripPlaceEvidence(src, kind):
+    p = _cp("Senso-ji", 35.71, 139.79, source_type=src)
+    ev = persist._evidence_json(p)
+    # exact contract key set — no legacy keys (evidence_quote/evidence_quotes must be GONE)
+    assert set(ev.keys()) == {"confidence", "source_url", "quote", "quotes",
+                              "rationale", "evidence_kind"}
+    assert "evidence_quote" not in ev and "evidence_quotes" not in ev
+    assert ev["quote"] == "📍Senso-ji"
+    assert ev["quotes"] == ["📍Senso-ji"]
+    assert ev["rationale"] is None
+    assert ev["evidence_kind"] == kind
+    assert ev["confidence"] == 0.9

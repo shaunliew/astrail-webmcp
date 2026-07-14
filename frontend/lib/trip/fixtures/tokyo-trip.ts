@@ -47,27 +47,31 @@ const tp = (
 const places: TripPlace[] = [
   tp('tp_senso', P.senso, 'reel_extracted', {
     confidence: 0.94, source_url: 'https://www.instagram.com/reel/AAA/',
-    quote: 'you HAVE to see Senso-ji at sunrise', rationale: null, evidence_kind: 'reel_quote',
+    quote: 'you HAVE to see Senso-ji at sunrise', quotes: ['you HAVE to see Senso-ji at sunrise'],
+    rationale: null, evidence_kind: 'reel_quote',
   }, 1, 0),
   tp('tp_teamlab', P.teamlab, 'reel_extracted', {
     confidence: 0.9, source_url: 'https://www.instagram.com/reel/BBB/',
-    quote: 'teamLab Planets is unreal 🌊', rationale: null, evidence_kind: 'reel_quote',
+    quote: 'teamLab Planets is unreal 🌊', quotes: ['teamLab Planets is unreal 🌊'],
+    rationale: null, evidence_kind: 'reel_quote',
   }, 1, 1),
   tp('tp_shibuya', P.shibuya, 'reel_extracted', {
     confidence: 0.88, source_url: 'https://www.instagram.com/reel/CCC/',
-    quote: 'Shibuya Sky at golden hour', rationale: null, evidence_kind: 'reel_quote',
+    quote: 'Shibuya Sky at golden hour', quotes: ['Shibuya Sky at golden hour'],
+    rationale: null, evidence_kind: 'reel_quote',
   }, 2, 0),
   tp('tp_ichiran', P.ichiran, 'agent_suggested', {
-    confidence: 0.8, source_url: 'https://ichiran.com/', quote: null,
+    confidence: 0.8, source_url: 'https://ichiran.com/', quote: null, quotes: [],
     rationale: 'Ramen near Shibuya Sky matching your ramen + walkable preference.',
     evidence_kind: 'suggested_by_astrail',
   }, 2, 1),
   tp('tp_disney', P.disney, 'user_requested', {
     confidence: 1, source_url: null, quote: 'Also want to go Tokyo Disneyland',
+    quotes: ['Also want to go Tokyo Disneyland'],
     rationale: null, evidence_kind: 'requested_by_you',
   }, 3, 0),
   tp('tp_hotelbase', P.hotelBase, 'agent_suggested', {
-    confidence: 0.75, source_url: null, quote: null,
+    confidence: 0.75, source_url: null, quote: null, quotes: [],
     rationale: 'Central Shinjuku base suggested for the trip; not tied to a specific day.',
     evidence_kind: 'suggested_by_astrail',
   }, null, null),

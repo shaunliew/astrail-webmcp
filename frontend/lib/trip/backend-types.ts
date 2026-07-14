@@ -49,7 +49,8 @@ export type Place = {
 export type TripPlaceEvidence = {
   confidence: number
   source_url: string | null
-  quote: string | null            // verbatim reel/user quote (PRD §11/§12)
+  quote: string | null            // primary verbatim reel/user quote (PRD §11/§12)
+  quotes: string[]                // all merged-source quotes (dedup flywheel)
   rationale: string | null        // agent_suggested rationale
   evidence_kind: EvidenceKind
 }

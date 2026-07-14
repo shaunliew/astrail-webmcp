@@ -62,3 +62,40 @@ def test_build_hotel_comparisons_edge_cases():
     assert build_hotel_comparisons(
         [{"id": "a", "name": "X", "star_rating": 3, "price_snapshot": {}},
          {"id": "b", "name": "Y", "star_rating": 4, "price_snapshot": {}}]) == []
+
+
+def test_build_hotel_comparisons_cheapest_also_highest_rated_is_honest():
+    # regression (Codex #5): when the CHEAPEST hotel is also the higher-rated one, option_b
+    # must NOT be labeled "higher rated", and the cheaper hotel is recommended (it dominates).
+    rows = [_hotel("a", "Cheap5", 8000, 5), _hotel("b", "Pricey3", 12000, 3)]
+    c = build_hotel_comparisons(rows)[0]
+    assert c.option_a.label == "Cheap5"
+    assert "higher rated" not in c.option_b.pro
+    assert "not higher rated" in c.option_b.con
+    assert c.recommendation == "Cheap5"
+
+
+def test_build_hotel_comparisons_rejects_mixed_currency():
+    # regression (Codex #4): comparing prices in different currencies is not fair -> no comparison.
+    rows = [{"id": "a", "name": "Yen", "star_rating": 3,
+             "price_snapshot": {"pricePerNight": 8000, "currency": "JPY"}},
+            {"id": "b", "name": "Dollar", "star_rating": 4,
+             "price_snapshot": {"pricePerNight": 100, "currency": "USD"}}]
+    assert build_hotel_comparisons(rows) == []
+
+
+def test_build_hotel_comparisons_never_mixes_price_units():
+    # regression (Codex #4): one hotel priced per-night, the other only total -> neither unit has
+    # >=2 comparable rows, so no (unit-mismatched) comparison is emitted.
+    rows = [_hotel("a", "PerNight", 8000, 3, key="pricePerNight"),
+            _hotel("b", "TotalOnly", 40000, 4, key="totalPrice")]
+    assert build_hotel_comparisons(rows) == []
+
+
+def test_build_hotel_comparisons_tiebreak_is_input_order_independent():
+    # regression (Codex #3): tied prices must resolve by stable name, not random row id/order.
+    h_alpha = _hotel("id-random-1", "Alpha", 8000, 3)
+    h_zeta = _hotel("id-random-2", "Zeta", 8000, 5)
+    a = build_hotel_comparisons([h_alpha, h_zeta])[0]
+    b = build_hotel_comparisons([h_zeta, h_alpha])[0]   # reversed input
+    assert a.option_a.label == b.option_a.label == "Alpha"   # name-sorted, order-independent

@@ -7,6 +7,8 @@ Hotels have no coords/distance (base_place_id NULL), so the axis is price_vs_rat
 """
 from __future__ import annotations
 
+import math
+
 from models.tradeoff import (
     TradeoffOption, TripTradeoffComparison, TripTradeoffNote,
 )
@@ -32,53 +34,80 @@ def warnings_to_notes(warnings, groups=None) -> list[TripTradeoffNote]:
     return notes
 
 
-def _price(row: dict) -> tuple[float, str] | None:
-    """(price, unit_label) preferring per-night; falls back to total. None when unpriced."""
-    snap = row.get("price_snapshot") or {}
-    for key, unit in (("pricePerNight", "/night"), ("totalPrice", " total")):
-        val = snap.get(key)
-        if val is not None:
-            try:
-                return float(val), unit
-            except (TypeError, ValueError):
-                continue
-    return None
+def _num(val) -> float | None:
+    """Finite float or None (rejects None, non-numeric, inf, nan)."""
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _priced_rows(hotel_rows, key: str) -> list[tuple[dict, float]]:
+    """(row, price) for every row carrying a finite numeric `price_snapshot[key]`."""
+    out: list[tuple[dict, float]] = []
+    for r in hotel_rows:
+        num = _num((r.get("price_snapshot") or {}).get(key))
+        if num is not None:
+            out.append((r, num))
+    return out
 
 
 def _value(price: float, unit: str, currency: str | None) -> str:
     cur = currency or ""
-    return f"{int(price)} {cur}{unit}".replace("  ", " ").strip()
+    # {:g} keeps decimals when present (8000.5) but drops them when whole (8000) — no int() truncation.
+    return f"{price:g} {cur}{unit}".replace("  ", " ").strip()
 
 
 def build_hotel_comparisons(hotel_rows) -> list[TripTradeoffComparison]:
-    priced = []
-    for r in hotel_rows:
-        p = _price(r)
-        if p is not None:
-            priced.append((r, p[0], p[1]))
+    # Rank within ONE price unit — never compare a per-night price against a total-stay price.
+    # Prefer per-night; fall back to total only if fewer than 2 rows carry per-night.
+    priced: list[tuple[dict, float]] = []
+    unit = "/night"
+    for key, u in (("pricePerNight", "/night"), ("totalPrice", " total")):
+        rows_p = _priced_rows(hotel_rows, key)
+        if len(rows_p) >= 2:
+            priced, unit = rows_p, u
+            break
     if len(priced) < 2:
         return []
-    # id is the final tiebreaker so A/B selection is deterministic regardless of DB row order
-    # (the hotel re-query has no ORDER BY): idempotent re-runs emit the same pairing.
-    cheapest = min(priced, key=lambda t: (t[1], str(t[0]["id"])))
+    # Tiebreak on hotel NAME, not row id: hotel_suggestions.id is gen_random_uuid(), regenerated on
+    # every delete+reinsert in persist_hotels, so an id tiebreak would flip the A/B pairing across
+    # idempotent re-runs. Name is stable per Travala hotel → deterministic across reruns.
+    cheapest = min(priced, key=lambda t: (t[1], str(t[0].get("name") or "")))
     others = [t for t in priced if t[0]["id"] != cheapest[0]["id"]]
-    # highest-rated distinct row; ties broken by higher price then id (a clearly different option)
-    best = max(others, key=lambda t: (t[0].get("star_rating") or 0, t[1], str(t[0]["id"])))
-    (c_row, c_price, c_unit) = cheapest
-    (b_row, b_price, b_unit) = best
+    if not others:
+        return []
+    best = max(others, key=lambda t: (t[0].get("star_rating") or 0, t[1], str(t[0].get("name") or "")))
+    c_row, c_price = cheapest
+    b_row, b_price = best
     c_cur = (c_row.get("price_snapshot") or {}).get("currency")
     b_cur = (b_row.get("price_snapshot") or {}).get("currency")
+    if c_cur != b_cur:
+        return []   # different currencies → "cheaper" is not a fair comparison; skip rather than mislead
     c_star, b_star = c_row.get("star_rating"), b_row.get("star_rating")
-    c_val, b_val = _value(c_price, c_unit, c_cur), _value(b_price, b_unit, b_cur)
-    option_a = TradeoffOption(label=c_row["name"], value=c_val,
-                              pro=f"cheaper ({c_val})", con=f"{c_star or '?'}-star")
-    option_b = TradeoffOption(label=b_row["name"], value=b_val,
-                              pro=f"higher rated ({b_star or '?'}-star)", con=f"pricier ({b_val})")
-    # deterministic recommendation: cheaper wins when the rating gap is small (<=1 star);
-    # None when ratings AND prices tie (no clear winner).
+    c_star_n, b_star_n = (c_star or 0), (b_star or 0)
+    c_val, b_val = _value(c_price, unit, c_cur), _value(b_price, unit, b_cur)
+    # Prose derives from the ACTUAL rating relationship (option_b is only "higher rated" when it is).
+    option_a = TradeoffOption(
+        label=c_row["name"], value=c_val, pro=f"cheaper ({c_val})",
+        con=f"{c_star or '?'}-star" + ("" if c_star_n >= b_star_n else " (lower rated)"))
+    if b_star_n > c_star_n:
+        option_b = TradeoffOption(label=b_row["name"], value=b_val,
+                                  pro=f"higher rated ({b_star or '?'}-star)",
+                                  con=f"pricier ({b_val})")
+    else:
+        # the pricier option is NOT higher-rated → the cheaper hotel dominates; say so honestly
+        option_b = TradeoffOption(label=b_row["name"], value=b_val,
+                                  pro=f"{b_star or '?'}-star",
+                                  con=f"pricier ({b_val}), not higher rated")
+    # Recommend the cheaper hotel when the pricier one isn't meaningfully higher-rated (gap <= 1),
+    # except an exact price+rating tie (no winner). A >=2-star premium is a real tradeoff → None.
     rec = None
     if c_star is not None and b_star is not None:
-        if (b_star - c_star) <= 1 and not (b_star == c_star and b_price == c_price):
+        gap = b_star_n - c_star_n
+        exact_tie = (gap == 0 and b_price == c_price)
+        if not exact_tie and gap <= 1:
             rec = c_row["name"]
     return [TripTradeoffComparison(
         axis="price_vs_rating", option_a=option_a, option_b=option_b,

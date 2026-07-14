@@ -1,8 +1,10 @@
 # Astrail Frontend ↔ Backend Connection Contract
 
-> Backend-owned contract for the production connection. The frontend is currently
-> mocked (`frontend/lib/trip/mock-api.ts`); the real client `frontend/lib/trip/api.ts`
-> exists but is unused. This documents what the frontend wires against.
+> Backend-owned contract for the production connection. On `dev`, trip generation uses
+> the authenticated backend client + live SSE, and trip detail/list reads use Supabase
+> directly under RLS. `mock-api.ts` remains only for offline fixtures/tests and the
+> still-unmigrated Settings view. Production remains gated on reviewed `dev` -> `main`
+> promotion and Vercel environment/redeploy verification.
 
 ## Split
 - **Writes / orchestration / streaming → backend** (`POST /generate-trip`, `GET /generate-trip/stream/{trip_id}`).
@@ -42,9 +44,13 @@
 ## Health
 - `/health` = liveness (Render deploy gate). `/readiness` = deep DB probe (monitoring only).
 
-## Frontend TODOs to go live (Zhi Hao — OUTSIDE the backend workstream; beta blockers)
-- [ ] Replace `mock-api` imports with `lib/trip/api.ts`; source the token from `supabase.auth.getSession()`.
-- [ ] Add the Render backend origin to `next.config.ts` CSP `connect-src` (else the browser silently blocks the fetch + EventSource).
-- [ ] Add a `NEXT_PUBLIC_MOCK_AUTH` production kill-switch (it currently has no build-time guard).
-- [ ] Set `NEXT_PUBLIC_BACKEND_URL` to the real Render URL in Vercel prod; confirm `NEXT_PUBLIC_MOCK_AUTH` is unset there.
-- [ ] Wire Supabase-direct reads for trip list/detail (`.from('trips')...` under RLS).
+## Frontend production status
+- [x] Generation uses `lib/trip/api.ts` with a token from `supabase.auth.getSession()`.
+- [x] Trip detail and list use Supabase-direct reads under RLS.
+- [x] `next.config.ts` builds CSP `connect-src` from `NEXT_PUBLIC_BACKEND_URL`.
+- [ ] Replace the remaining Settings view `mock-api` reads/actions with real data paths.
+- [ ] Add a production build/deploy guard that rejects `NEXT_PUBLIC_MOCK_AUTH=true`.
+- [ ] Promote the reviewed `dev` branch to `main` and repoint Render to `main`.
+- [ ] Set Vercel production `NEXT_PUBLIC_BACKEND_URL` to
+  `https://astrail-backend.onrender.com`, confirm `NEXT_PUBLIC_MOCK_AUTH` is unset, and redeploy.
+- [ ] Run and record the manual production E2E checklist before closing beta readiness.

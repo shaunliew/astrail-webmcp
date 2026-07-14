@@ -760,3 +760,46 @@ async def test_runner_mark_job_done_raise_does_not_double_result_or_flip_status(
     assert c.db["jobs"][0]["status"] == "running"   # never flipped to failed; left for recovery sweep
     warning_events = [e for e in c.events if e["event_type"] == "warning" and e["stage"] == "save"]
     assert any(e["message"] == "job completion mark failed; recovery may re-sweep" for e in warning_events)
+
+
+@pytest.mark.asyncio
+async def test_run_persists_tradeoff_notes_and_comparisons():
+    # Integration proof that BOTH tradeoff halves are wired: notes from feasibility
+    # warnings (computed pre-gather) and comparisons from persisted hotel rows
+    # (computed post-gather), written together in ONE persist_tradeoffs call.
+    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    # LOAD-BEARING: persist_hotels (persist.py:498-503) reads the trips row for dates +
+    # a location and returns 0 (never calling the hotel fake) if the row is missing. The
+    # runner only UPDATEs trips, never inserts — so SEED the row first, exactly like
+    # test_runner_persists_hotel_suggestions (~line 565). Fake places carry no city, so
+    # destination_hint is the location fallback that lets the hotel search run.
+    c.db["trips"] = [{"id": "trip-1", "user_id": "user-1", "start_date": "2026-08-01",
+                      "end_date": "2026-08-01", "adult_count": 2, "room_count": 1,
+                      "destination_hint": "Tokyo",
+                      "tradeoffs": {"notes": [], "comparisons": []}}]
+
+    async def scrape(url): return _reel(url)
+
+    async def extract(reel):
+        # Two far-apart coord places (Tokyo, Osaka) land in the same 1-day group ->
+        # assess_feasibility emits a "flag" long_leg warning (haversine ~400km >> 4000m).
+        return [_place("Tokyo Tower", lat=35.68, lng=139.76),
+                _place("Osaka Castle", lat=34.69, lng=135.50)]
+
+    async def hotel(location, check_in, check_out, rooms):
+        return "sess-1", [
+            {"name": "Cheap Inn", "star": 3, "pricePerNight": 8000, "currency": "JPY", "hotelId": 1},
+            {"name": "Grand", "star": 5, "pricePerNight": 12000, "currency": "JPY", "hotelId": 2},
+        ]
+
+    await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+                                job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                mem0=None, weather=_no_weather, transport=_no_transport,
+                                restaurant=_no_restaurant, narrator=_no_narrator, hotel=hotel)
+
+    trip = c.db["trips"][0]
+    notes = trip["tradeoffs"]["notes"]
+    comps = trip["tradeoffs"]["comparisons"]
+    assert any(n["kind"] == "long_leg" for n in notes)         # notes are wired, not empty
+    assert comps and comps[0]["axis"] == "price_vs_rating"     # comparisons are wired
+    assert set(comps[0]["refs"]) and comps[0]["option_a"]["label"] and comps[0]["option_b"]["label"]

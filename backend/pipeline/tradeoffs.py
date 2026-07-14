@@ -58,10 +58,12 @@ def build_hotel_comparisons(hotel_rows) -> list[TripTradeoffComparison]:
             priced.append((r, p[0], p[1]))
     if len(priced) < 2:
         return []
-    cheapest = min(priced, key=lambda t: t[1])
+    # id is the final tiebreaker so A/B selection is deterministic regardless of DB row order
+    # (the hotel re-query has no ORDER BY): idempotent re-runs emit the same pairing.
+    cheapest = min(priced, key=lambda t: (t[1], str(t[0]["id"])))
     others = [t for t in priced if t[0]["id"] != cheapest[0]["id"]]
-    # highest-rated distinct row; ties broken by higher price (a clearly different option)
-    best = max(others, key=lambda t: (t[0].get("star_rating") or 0, t[1]))
+    # highest-rated distinct row; ties broken by higher price then id (a clearly different option)
+    best = max(others, key=lambda t: (t[0].get("star_rating") or 0, t[1], str(t[0]["id"])))
     (c_row, c_price, c_unit) = cheapest
     (b_row, b_price, b_unit) = best
     c_cur = (c_row.get("price_snapshot") or {}).get("currency")

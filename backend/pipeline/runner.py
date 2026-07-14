@@ -329,11 +329,15 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
 
             # ONE tradeoffs write (notes computed pre-gather + comparisons from persisted hotels).
             # No read-modify-write; best-effort (a failure must never fail the trip, guardrail #3).
+            _comparisons = []
             try:
                 _hotel_rows = (await client.table("hotel_suggestions")
                                .select("id,name,star_rating,price_snapshot")
                                .eq("trip_id", trip_id).execute()).data or []
                 _comparisons = build_hotel_comparisons(_hotel_rows)
+            except Exception:
+                _comparisons = []   # a hotel-query blip must NOT discard the independently-valid notes
+            try:
                 await persist_tradeoffs(client, trip_id, user_id,
                                         notes=_tradeoff_notes, comparisons=_comparisons)
             except Exception:

@@ -251,6 +251,24 @@ anchor `mean_intra_day_travel_m = 6229.0` are untouched. **No LLM in the test pa
   and reversible.
 - **`agent_suggested` rationale population** — trigger: the pipeline starts emitting
   agent-suggested places (the `rationale` seam is already in the contract).
+- **Legacy `evidence_json` backfill** (Codex cross-model finding #1) — existing `trip_places`
+  rows written before this migration keep the old `{evidence_quote, evidence_quotes}` shape,
+  so a future frontend reading real rows would see blank chips for pre-migration trips. NOT
+  backfilled here because: (a) the frontend still renders from fixtures, not real
+  `evidence_json`, so there is no live consumer today; (b) pre-beta, trip data is disposable;
+  (c) shipping untested backfill SQL on a migration is riskier than the stale rows it fixes.
+  Trigger: the frontend switches to real `evidence_json` AND pre-migration trip data must
+  survive — then add a guarded `update … where evidence_json ? 'evidence_quote'` backfill
+  (mapping `evidence_quote→quote`, `evidence_quotes→quotes`, `source_type→evidence_kind`),
+  validated against staging first.
+- **Per-evidence-item provenance** (Codex cross-model finding #2) — `dedup._merge_cluster`
+  forces `source_type="user_requested"` cluster-wide (intentional user-requested protection),
+  so a place the user requested that ALSO appears in a Reel emits `evidence_kind=requested_by_you`
+  alongside the representative's Reel `quote`/`source_url`. Accepted as-is: "requested_by_you"
+  is the defensible *primary* provenance (the user's explicit ask is the strongest signal, which
+  is why dedup protects it), and the `quotes` list still preserves the Reel evidence. A true
+  fix (evidence as a list of per-source typed items instead of one `evidence_kind`) is a
+  contract redesign. Trigger: product decides a single primary kind is misleading in practice.
 
 ## 9. Collision boundaries (overnight parallel work)
 

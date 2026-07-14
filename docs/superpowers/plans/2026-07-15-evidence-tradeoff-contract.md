@@ -698,14 +698,23 @@ Mirror the existing runner integration test (offline, injected agents, `_Client`
 ```python
 def test_run_persists_tradeoff_notes_and_comparisons(...):
     # ... existing offline setup with _Client fake + injected weather/transport/restaurant/narrator ...
-    # inject a hotel fake returning two priced hotels:
+    # LOAD-BEARING: persist_hotels (persist.py:486-504) reads the trips row for dates + a
+    # location and returns 0 (never calling the hotel fake) if the row is missing. The runner
+    # only UPDATEs trips, never inserts — so SEED the row first, exactly like
+    # test_runner.py's hotel test (~line 594). Fake places carry no city, so destination_hint
+    # is the location fallback that lets the hotel search run.
+    c.db["trips"] = [{"id": "trip-1", "user_id": "user-1", "start_date": "2026-08-01",
+                      "end_date": "2026-08-01", "adult_count": 2, "room_count": 1,
+                      "destination_hint": "Tokyo",
+                      "tradeoffs": {"notes": [], "comparisons": []}}]
+
     async def _fake_hotels(location, check_in, check_out, rooms):
         return "sess", [
             {"name": "Cheap Inn", "star": 3, "pricePerNight": 8000, "currency": "JPY", "hotelId": 1},
             {"name": "Grand", "star": 5, "pricePerNight": 12000, "currency": "JPY", "hotelId": 2},
         ]
-    # ... run generation with two far-apart places (e.g. Tokyo + Osaka coords) and hotel=_fake_hotels ...
-    trip = fake.db["trips"][0]
+    # ... run generation with two far-apart coord places (e.g. Tokyo + Osaka) and hotel=_fake_hotels ...
+    trip = c.db["trips"][0]
     notes = trip["tradeoffs"]["notes"]
     comps = trip["tradeoffs"]["comparisons"]
     assert any(n["kind"] == "long_leg" for n in notes)        # notes are wired, not empty
@@ -713,7 +722,7 @@ def test_run_persists_tradeoff_notes_and_comparisons(...):
     assert set(comps[0]["refs"]) and comps[0]["option_a"]["label"] and comps[0]["option_b"]["label"]
 ```
 
-> Follow the existing runner test's construction exactly (same `_Client` fake, same injected agent fakes, same `generate`/`_run` entry point). If the shipped offline fixture yields no flag leg, use two far-apart coord places so `assess_feasibility` emits `long_leg`.
+> Follow the existing runner test's construction exactly (same `_Client` fake, same injected agent fakes, same `generate`/`_run` entry point, same `trips`-row seed as `test_runner.py` ~line 594 — the seed is REQUIRED for the comparison half or `build_hotel_comparisons([])` returns `[]` and the assertion fails). Use two far-apart coord places so `assess_feasibility` emits `long_leg`.
 
 - [ ] **Step 5: Add the frozen-eval regression (freezes 6229.0)**
 
@@ -723,13 +732,11 @@ The existing `test_pipeline_route_beats_or_matches_baseline_on_parity_anchors` (
 def test_pipeline_mean_intra_day_travel_is_frozen_anchor():
     # Freezes the deterministic route anchor. This feature is additive (evidence + tradeoffs
     # emitted AFTER assembly); if this value moves, dedup/assemble_itinerary changed — investigate.
-    case = load_case("japan_first_trip")
-    pipe_ctx = build_ctx(case, "pipeline")
-    # reuse the same metric accessor the parity-anchor test uses to read mean_intra_day_travel_m
-    assert metric_value(pipe_ctx, "mean_intra_day_travel_m") == 6229.0
+    ctx = build_ctx(load_case("japan_first_trip"), "pipeline")
+    assert QUALITY_METRICS["mean_intra_day_travel_m"](ctx) == 6229.0
 ```
 
-> Read `test_run_eval.py:60-90` to use the ACTUAL metric accessor (the parity-anchor test already computes `mean_intra_day_travel_m` for `pipe_ctx` — call it the same way; `metric_value` above is a placeholder for whatever that test uses). The frozen value is `6229.0`.
+> `QUALITY_METRICS` is already imported in `test_run_eval.py` (~line 11) and `QUALITY_METRICS["mean_intra_day_travel_m"](ctx)` is the ACTUAL accessor the parity-anchor test uses. The frozen value `6229.0` was confirmed by a live eval run.
 
 - [ ] **Step 6: Run the integration test + full backend suite + eval**
 

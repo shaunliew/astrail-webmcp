@@ -194,7 +194,8 @@ no new policy):
 
 ```sql
 -- supabase/migrations/<ts>_trip_tradeoffs.sql
-alter table public.trips add column if not exists tradeoffs jsonb not null default '{}'::jsonb;
+alter table public.trips add column if not exists tradeoffs jsonb not null
+  default '{"notes": [], "comparisons": []}'::jsonb;   -- full empty shape: failed trips still read a valid contract
 comment on column public.trips.tradeoffs is
   'Trip-level tradeoffs contract: { notes: TripTradeoffNote[], comparisons: TripTradeoffComparison[] }. '
   'notes = deterministic feasibility gaps; comparisons = derived hotel A-vs-B. See '

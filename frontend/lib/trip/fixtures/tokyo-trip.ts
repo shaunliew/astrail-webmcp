@@ -32,6 +32,7 @@ const trip: Trip = {
   preference_sources: ['explicit', 'memory'],
   preference_summary: 'Walkable days, ramen, not too rushed, mid-range budget.',
   title: null, summary: null,
+  tradeoffs: { notes: [], comparisons: [] },
   created_at: '2026-08-01T09:00:00Z', updated_at: '2026-08-01T09:03:00Z',
 }
 

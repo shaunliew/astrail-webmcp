@@ -544,3 +544,18 @@ async def persist_hotels(client, trip_id: str, *, fetch=None) -> int:
         }).execute()
         written += 1
     return written
+
+
+def _dump(items) -> list[dict]:
+    return [it.model_dump() if hasattr(it, "model_dump") else dict(it) for it in (items or [])]
+
+
+async def persist_tradeoffs(client, trip_id: str, user_id: str, *, notes, comparisons) -> None:
+    """Additive, owner-checked (guardrail #6): write the FULL tradeoffs object in ONE update.
+
+    Deliberately NO read-modify-write — a transient read failure must never erase a sibling
+    field. The runner computes notes before the enrich gather and comparisons after it, then
+    calls this ONCE with both. Best-effort is the caller's responsibility (guardrail #3)."""
+    payload = {"notes": _dump(notes), "comparisons": _dump(comparisons)}
+    await client.table("trips").update({"tradeoffs": payload}) \
+        .eq("id", trip_id).eq("user_id", user_id).execute()

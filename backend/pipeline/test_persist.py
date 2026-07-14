@@ -663,3 +663,35 @@ def test_evidence_json_conforms_to_TripPlaceEvidence(src, kind):
     assert ev["rationale"] is None
     assert ev["evidence_kind"] == kind
     assert ev["confidence"] == 0.9
+
+
+# --- persist_tradeoffs -------------------------------------------------------
+import asyncio
+
+from models.tradeoff import TradeoffOption, TripTradeoffComparison, TripTradeoffNote
+
+
+def test_persist_tradeoffs_writes_full_object_in_one_update():
+    from pipeline.persist import persist_tradeoffs
+    c = _Client({"trips": [{"id": "t1", "user_id": "u1",
+                            "tradeoffs": {"notes": [], "comparisons": []}}]})
+    note = TripTradeoffNote(kind="empty_day", scope="day", severity="flag",
+                            detail="day has no stops", day_number=3)
+    comp = TripTradeoffComparison(
+        axis="price_vs_rating",
+        option_a=TradeoffOption(label="A", value="8000 JPY/night", pro="cheaper", con="3-star"),
+        option_b=TradeoffOption(label="B", value="12000 JPY/night", pro="4-star", con="pricier"),
+        refs=["a", "b"])
+    asyncio.run(persist_tradeoffs(c, "t1", "u1", notes=[note], comparisons=[comp]))
+    row = c.db["trips"][0]
+    assert row["tradeoffs"]["notes"][0]["kind"] == "empty_day"
+    assert row["tradeoffs"]["comparisons"][0]["axis"] == "price_vs_rating"
+
+
+def test_persist_tradeoffs_is_owner_scoped():
+    from pipeline.persist import persist_tradeoffs
+    c = _Client({"trips": [{"id": "t1", "user_id": "u1",
+                            "tradeoffs": {"notes": [], "comparisons": []}}]})
+    # wrong user -> no row matches -> nothing written
+    asyncio.run(persist_tradeoffs(c, "t1", "WRONG", notes=[], comparisons=[]))
+    assert c.db["trips"][0]["tradeoffs"] == {"notes": [], "comparisons": []}

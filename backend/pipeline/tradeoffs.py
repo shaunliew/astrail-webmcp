@@ -71,6 +71,16 @@ def build_hotel_comparisons(hotel_rows) -> list[TripTradeoffComparison]:
             break
     if len(priced) < 2:
         return []
+    # Rank within a SINGLE currency — never compare JPY vs USD as raw numbers, and don't let a
+    # foreign-currency row distort the min/max ranking. All hotels from one Travala search share a
+    # currency; if a set is mixed, compare the largest currency group (deterministic tiebreak on the
+    # currency string). Guarding only the final pair (not the ranking) is insufficient (Codex #4).
+    by_cur: dict = {}
+    for row_p in priced:
+        by_cur.setdefault((row_p[0].get("price_snapshot") or {}).get("currency"), []).append(row_p)
+    _cur, priced = max(by_cur.items(), key=lambda kv: (len(kv[1]), str(kv[0])))
+    if len(priced) < 2:
+        return []   # no single currency has two comparable hotels
     # Tiebreak on hotel NAME, not row id: hotel_suggestions.id is gen_random_uuid(), regenerated on
     # every delete+reinsert in persist_hotels, so an id tiebreak would flip the A/B pairing across
     # idempotent re-runs. Name is stable per Travala hotel → deterministic across reruns.
@@ -81,10 +91,7 @@ def build_hotel_comparisons(hotel_rows) -> list[TripTradeoffComparison]:
     best = max(others, key=lambda t: (t[0].get("star_rating") or 0, t[1], str(t[0].get("name") or "")))
     c_row, c_price = cheapest
     b_row, b_price = best
-    c_cur = (c_row.get("price_snapshot") or {}).get("currency")
-    b_cur = (b_row.get("price_snapshot") or {}).get("currency")
-    if c_cur != b_cur:
-        return []   # different currencies → "cheaper" is not a fair comparison; skip rather than mislead
+    c_cur = b_cur = _cur   # guaranteed identical: priced is a single-currency group
     c_star, b_star = c_row.get("star_rating"), b_row.get("star_rating")
     c_star_n, b_star_n = (c_star or 0), (b_star or 0)
     c_val, b_val = _value(c_price, unit, c_cur), _value(b_price, unit, b_cur)

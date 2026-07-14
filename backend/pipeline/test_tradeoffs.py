@@ -84,6 +84,20 @@ def test_build_hotel_comparisons_rejects_mixed_currency():
     assert build_hotel_comparisons(rows) == []
 
 
+def test_build_hotel_comparisons_ranks_within_single_currency_group():
+    # regression (Codex #4 residual): a foreign-currency row must not distort the ranking. With
+    # 1 JPY + 2 USD, the emitted comparison is the USD pair only — never a cross-currency pairing.
+    rows = [{"id": "j", "name": "Yen", "star_rating": 3,
+             "price_snapshot": {"pricePerNight": 8000, "currency": "JPY"}},
+            {"id": "u1", "name": "Dollar A", "star_rating": 3,
+             "price_snapshot": {"pricePerNight": 90, "currency": "USD"}},
+            {"id": "u2", "name": "Dollar B", "star_rating": 5,
+             "price_snapshot": {"pricePerNight": 150, "currency": "USD"}}]
+    comps = build_hotel_comparisons(rows)
+    assert len(comps) == 1 and set(comps[0].refs) == {"u1", "u2"}   # USD group, JPY singleton dropped
+    assert "JPY" not in comps[0].option_a.value + comps[0].option_b.value
+
+
 def test_build_hotel_comparisons_never_mixes_price_units():
     # regression (Codex #4): one hotel priced per-night, the other only total -> neither unit has
     # >=2 comparable rows, so no (unit-mismatched) comparison is emitted.

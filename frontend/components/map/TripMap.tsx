@@ -44,8 +44,9 @@ export default function TripMap({
     mapRef.current = map
     map.on('load', () => {
       loadedRef.current = true
-      // Standard style (v3): dark cosmic look via the night light preset; globe renders its own atmosphere.
-      map.setConfigProperty('basemap', 'lightPreset', 'night')
+      // Daybreak world (DESIGN-DRAFT §5): generation happens at night (GenerationScene);
+      // the saved trip is explored at dawn — PRD §13's "readable trip exploration lighting".
+      map.setConfigProperty('basemap', 'lightPreset', 'dawn')
       drawMarkers()
       drawRoutes()
       flyToTrip()

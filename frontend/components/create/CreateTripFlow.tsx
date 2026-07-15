@@ -13,7 +13,7 @@ import type { StreamEvent } from '@/lib/trip/backend-types'
 import SignOutButton from '@/components/auth/SignOutButton'
 import InspirationTray from './InspirationTray'
 import TripBriefForm from './TripBriefForm'
-import GenerationProgress from './GenerationProgress'
+import GenerationScene from './GenerationScene'
 
 const EMPTY_BRIEF: BriefInput = {
   destination_hint: '', start_date: '', end_date: '',
@@ -35,6 +35,7 @@ export default function CreateTripFlow() {
   const [brief, setBrief] = useState<BriefInput>(EMPTY_BRIEF)
   const [phase, setPhase] = useState<'compose' | 'generating'>('compose')
   const [events, setEvents] = useState<StreamEvent[]>([])
+  const [tripId, setTripId] = useState<string | null>(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const handleRef = useRef<{ cancel: () => void } | null>(null)
   const activeRef = useRef(true)
@@ -60,6 +61,7 @@ export default function CreateTripFlow() {
       const token = await getAccessToken()
       const { trip_id } = await generateTrip(toGenerateRequest(items, brief), token)
       if (!activeRef.current) return // unmounted during POST — do not start the stream
+      setTripId(trip_id)
       handleRef.current = streamGeneration(
         trip_id,
         token,
@@ -87,7 +89,7 @@ export default function CreateTripFlow() {
   }
 
   if (phase === 'generating') {
-    return <GenerationProgress events={events} />
+    return <GenerationScene tripId={tripId} events={events} />
   }
 
   return (

@@ -1,6 +1,10 @@
 // RLS-direct Supabase reads/writes (architecture: most reads skip the backend).
 // Replaces mock-api for the real app; mock-api stays for offline shell/tests only.
 import { createClient } from '@/lib/supabase/client'
+// Mock-auth shell: reads come from the offline Tokyo fixture with zero backend
+// (mirrors the MOCK_AUTH_ENABLED switches in middleware.ts and use-user.ts).
+import { MOCK_AUTH_ENABLED } from '@/lib/auth/mock-auth'
+import * as mockApi from '@/lib/trip/mock-api'
 import type { ProfileInput } from '@/lib/onboarding/onboarding'
 import type {
   GenerationEvent, HotelSuggestion, RestaurantSuggestion, Trip, TripBundle,
@@ -22,6 +26,7 @@ export async function saveProfile(input: ProfileInput): Promise<TravelerProfile>
 }
 
 export async function getTrip(tripId: string): Promise<TripBundle | null> {
+  if (MOCK_AUTH_ENABLED) return mockApi.getTrip(tripId)
   const supabase = createClient()
   const { data: trip, error } = await supabase
     .from('trips').select('*').eq('id', tripId).maybeSingle()
@@ -52,6 +57,7 @@ export async function getTrip(tripId: string): Promise<TripBundle | null> {
 }
 
 export async function listTrips(): Promise<Trip[]> {
+  if (MOCK_AUTH_ENABLED) return mockApi.listTrips()
   const supabase = createClient()
   const { data, error } = await supabase
     .from('trips').select('*').order('created_at', { ascending: false })

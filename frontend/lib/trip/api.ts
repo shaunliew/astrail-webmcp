@@ -1,4 +1,8 @@
 import type { GenerateTripRequest, GenerateTripResponse, StreamEvent } from './backend-types'
+// Mock-auth shell: generation runs against the offline fixture replay with zero backend
+// (mirrors the MOCK_AUTH_ENABLED switches in middleware.ts and use-user.ts).
+import { MOCK_AUTH_ENABLED } from '@/lib/auth/mock-auth'
+import * as mockApi from '@/lib/trip/mock-api'
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000'
 
@@ -6,6 +10,7 @@ export async function generateTrip(
   req: GenerateTripRequest,
   accessToken: string
 ): Promise<GenerateTripResponse> {
+  if (MOCK_AUTH_ENABLED) return mockApi.createTrip(req)
   const res = await fetch(`${BACKEND_URL}/generate-trip`, {
     method: 'POST',
     headers: {
@@ -43,6 +48,7 @@ export function streamGeneration(
   onReset?: () => void,
   onFail?: () => void,
 ): { cancel: () => void } {
+  if (MOCK_AUTH_ENABLED) return mockApi.streamGeneration(tripId, onEvent) // scripted replay; never resets/fails
   const es = streamTrip(tripId, accessToken)
   let consecutiveErrors = 0
   es.onopen = () => {

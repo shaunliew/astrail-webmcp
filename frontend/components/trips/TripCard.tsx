@@ -10,7 +10,8 @@ export default function TripCard({ trip }: { trip: Trip }) {
     >
       <div className="flex items-start justify-between gap-3">
         <h3 className="type-display text-lg text-[var(--starlight)]">{tripTitle(trip)}</h3>
-        <span className="type-label shrink-0 rounded-full border border-[var(--line)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--brass)]">
+        <span className="type-label inline-flex shrink-0 items-center gap-1.5 rounded-full bg-[var(--brass-soft)] px-2.5 py-1 text-[10.5px] text-[var(--brass-bright)]">
+          <span aria-hidden className="pulse-dot" />
           {tripStatusLabel(trip.status)}
         </span>
       </div>

@@ -12,6 +12,40 @@
   --brass-soft: rgba(201, 151, 78, 0.15);
   --paper: #F2ECE0;
   --ink: #060818;
+
+  /* ——— Night & Daybreak system (approved 2026-07-15 — docs/DESIGN-DRAFT.md) ——— */
+  /* Night world: indigo-shifted darks, never neutral black (rule 05: the lights are on). */
+  --night-void: #0A0B14;
+  --night-deep: #111322;
+  --night-surface: #191C2E;
+  --night-line: rgba(200, 205, 255, 0.1);
+  --starlight-bright: #F7F3E8;
+  /* Daybreak world: paper + ink (applied to reading surfaces in Phase 3). */
+  --paper-0: #FBF8F1;
+  --paper-1: #F3EEE2;
+  --paper-line: rgba(26, 24, 16, 0.08);
+  --ink-day: #1A1810;
+  /* Brass thread — the only accent; bright on night, deep on paper (rule 02). */
+  --brass-bright: #EFC98D;
+  --brass-deep: #8A6023;
+  --brass-glow: rgba(201, 151, 78, 0.28);
+  /* Semantic states (never color-only): night / paper pairs. */
+  --ok: #7BC9A6;
+  --ok-day: #2E7D5B;
+  --warn: #D9A441;
+  --warn-day: #9A731F;
+  --fail: #D0705F;
+  --fail-day: #A8453A;
+  /* Geometry & light (rules 01 + 04). */
+  --radius-card: 8px;
+  --radius-chip: 6px;
+  --shadow-night:
+    inset 0 1px 0 rgba(247, 243, 232, 0.07),
+    0 1px 2px rgba(0, 0, 0, 0.55),
+    0 8px 28px rgba(0, 0, 0, 0.4);
+  --shadow-paper:
+    0 1px 2px rgba(26, 24, 16, 0.1),
+    0 8px 24px rgba(26, 24, 16, 0.1);
 }
 
 * {
@@ -301,6 +335,58 @@ button:focus-visible {
       stroke-dashoffset: 0;
     }
   }
+}
+
+/* ——— Night & Daybreak: app shell scope ———
+   Remaps the legacy tokens to Night-world values for everything inside the app.
+   Unlayered on purpose: must win over @layer utilities (.type-label font swap).
+   The landing keeps the :root values untouched. */
+.app-shell {
+  --void: var(--night-void);
+  --deep: var(--night-deep);
+  --elevated: var(--night-surface);
+  --line: var(--night-line);
+  --starlight: var(--starlight-bright);
+  --muted: rgba(247, 243, 232, 0.72);
+  --faint: rgba(247, 243, 232, 0.45);
+  background:
+    radial-gradient(ellipse 90% 42% at 50% -8%, rgba(201, 151, 78, 0.08), transparent 70%),
+    radial-gradient(ellipse 60% 44% at 85% 6%, rgba(42, 49, 96, 0.32), transparent 65%),
+    var(--night-void);
+  color: var(--starlight);
+  min-height: 100dvh;
+}
+
+/* Rule 03: inside the app, UI labels are sans — mono is reserved for evidence. */
+.app-shell .type-label {
+  font-family: var(--font-geist), system-ui, sans-serif;
+  font-weight: 600;
+}
+
+/* Rules 01 + 05: surfaces float on light, not lines. */
+.app-shell .surface {
+  background:
+    linear-gradient(180deg, rgba(247, 243, 232, 0.045), rgba(247, 243, 232, 0.008) 42%),
+    var(--night-surface);
+  border: 1px solid rgba(232, 210, 172, 0.09);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-night);
+}
+
+/* Mono = provenance. The only place monospace is allowed inside the app. */
+.type-evidence {
+  font-family:
+    var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, Menlo, Monaco,
+    Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+/* Live-status dot: brass point with a soft glow (used by status chips). */
+.pulse-dot {
+  background: var(--brass-bright);
+  border-radius: 999px;
+  box-shadow: 0 0 6px var(--brass-glow), 0 0 12px var(--brass-glow);
+  height: 5px;
+  width: 5px;
 }
 
 @media (prefers-reduced-motion: reduce) {

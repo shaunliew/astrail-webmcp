@@ -57,7 +57,7 @@ export default function SignInPage() {
   }
 
   return (
-    <main className="min-h-[100dvh] flex items-center justify-center bg-[color:var(--void)]">
+    <main className="app-shell flex min-h-[100dvh] items-center justify-center">
       <div className="flex w-full max-w-sm flex-col items-center gap-8 p-6">
         <div className="flex flex-col items-center gap-2">
           <h1 className="text-3xl font-[family-name:var(--font-instrument-serif)] text-[color:var(--starlight)] italic">

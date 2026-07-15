@@ -29,8 +29,8 @@ export default function DaySelector({
             className={[
               'type-label shrink-0 rounded-lg border px-3 py-2 text-left transition-colors',
               active
-                ? 'border-[var(--brass)] bg-[var(--brass-soft)] text-[var(--starlight)]'
-                : 'border-[var(--line)] text-[var(--muted)] hover:text-[var(--starlight)]',
+                ? 'border-[rgba(201,151,78,0.35)] bg-[var(--brass-soft)] text-[var(--brass-bright)] shadow-[0_0_14px_var(--brass-glow)]'
+                : 'border-transparent bg-[rgba(247,243,232,0.04)] text-[var(--muted)] hover:text-[var(--starlight)]',
             ].join(' ')}
           >
             <span className="block text-[11px] uppercase tracking-wide">Day {day.day_number}</span>

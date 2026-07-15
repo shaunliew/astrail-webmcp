@@ -20,6 +20,7 @@ from collections import defaultdict
 
 from genagents.transport import VALID_PROFILES, profile_to_mode   # keyless import (no network at module scope)
 from models.enrichment import WeatherReport
+from models.evidence import TripPlaceEvidence
 from models.place import CanonicalPlace
 from pipeline.dedup import DEFAULT_DISTANCE_M, normalize_name
 from pipeline.feasibility import group_places_by_day
@@ -45,14 +46,25 @@ def _source_summary(place: CanonicalPlace) -> dict:
     return ss
 
 
-def _evidence_json(place: CanonicalPlace) -> dict:
-    # Per-trip evidence lives here (an object), NOT in places.source_summary.
+def _evidence_kind(source_type: str) -> str:
+    # trip_places holds only these 3 source types (restaurants/hotels have their own tables).
     return {
-        "evidence_quote": place.evidence_quote,
-        "evidence_quotes": list(getattr(place, "evidence_quotes", []) or []),
-        "source_url": place.source_url,
-        "confidence": place.confidence,
-    }
+        "reel_extracted": "reel_quote",
+        "user_requested": "requested_by_you",
+        "agent_suggested": "suggested_by_astrail",
+    }.get(source_type, "suggested_by_astrail")
+
+
+def _evidence_json(place: CanonicalPlace) -> dict:
+    # Per-trip evidence — typed to the frontend TripPlaceEvidence contract (guardrail #4).
+    return TripPlaceEvidence(
+        confidence=place.confidence,
+        source_url=place.source_url,
+        quote=place.evidence_quote,                                   # primary verbatim quote
+        quotes=list(getattr(place, "evidence_quotes", []) or []),     # dedup flywheel
+        rationale=None,                                               # seam for agent_suggested "why"
+        evidence_kind=_evidence_kind(place.source_type),
+    ).model_dump()
 
 
 def _place_matches(place: CanonicalPlace, row: dict) -> bool:
@@ -532,3 +544,18 @@ async def persist_hotels(client, trip_id: str, *, fetch=None) -> int:
         }).execute()
         written += 1
     return written
+
+
+def _dump(items) -> list[dict]:
+    return [it.model_dump() if hasattr(it, "model_dump") else dict(it) for it in (items or [])]
+
+
+async def persist_tradeoffs(client, trip_id: str, user_id: str, *, notes, comparisons) -> None:
+    """Additive, owner-checked (guardrail #6): write the FULL tradeoffs object in ONE update.
+
+    Deliberately NO read-modify-write — a transient read failure must never erase a sibling
+    field. The runner computes notes before the enrich gather and comparisons after it, then
+    calls this ONCE with both. Best-effort is the caller's responsibility (guardrail #3)."""
+    payload = {"notes": _dump(notes), "comparisons": _dump(comparisons)}
+    await client.table("trips").update({"tradeoffs": payload}) \
+        .eq("id", trip_id).eq("user_id", user_id).execute()

@@ -75,6 +75,13 @@ def test_pipeline_route_beats_or_matches_baseline_on_parity_anchors():
                 assert p == b, f"{name}/{m}: pipeline {p} != baseline {b}"
 
 
+def test_pipeline_mean_intra_day_travel_is_frozen_anchor():
+    # Freezes the deterministic route anchor. This feature is additive (evidence + tradeoffs
+    # emitted AFTER assembly); if this value moves, dedup/assemble_itinerary changed — investigate.
+    ctx = build_ctx(load_case("japan_first_trip"), "pipeline")
+    assert QUALITY_METRICS["mean_intra_day_travel_m"](ctx) == 6229.0
+
+
 def test_pipeline_flags_long_leg_and_overpacked_on_feasibility_case():
     ctx = build_ctx(load_case("japan_feasibility"), "pipeline")
     kinds = {w["kind"] for w in ctx["itinerary"]["feasibility_warnings"]}

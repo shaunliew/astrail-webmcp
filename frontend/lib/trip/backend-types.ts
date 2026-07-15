@@ -49,10 +49,32 @@ export type Place = {
 export type TripPlaceEvidence = {
   confidence: number
   source_url: string | null
-  quote: string | null            // verbatim reel/user quote (PRD §11/§12)
+  quote: string | null            // primary verbatim reel/user quote (PRD §11/§12)
+  quotes: string[]                // all merged-source quotes (dedup flywheel)
   rationale: string | null        // agent_suggested rationale
   evidence_kind: EvidenceKind
 }
+
+// Trip-level tradeoffs (PRD §667/§894). Deterministic: notes from feasibility, comparisons from hotels.
+export type TripTradeoffNote = {
+  kind: 'long_leg' | 'overpacked_day' | 'empty_day' | 'note'
+  scope: 'trip' | 'day' | 'place'
+  severity: 'info' | 'warn' | 'flag'
+  detail: string
+  day_number: number | null
+  refs: string[]
+  leg_m: number | null
+}
+export type TradeoffOption = { label: string; value: string; pro: string; con: string }
+export type TripTradeoffComparison = {
+  axis: string
+  scope: 'hotel'
+  option_a: TradeoffOption
+  option_b: TradeoffOption
+  recommendation: string | null
+  refs: string[]
+}
+export type TripTradeoffs = { notes: TripTradeoffNote[]; comparisons: TripTradeoffComparison[] }
 
 export type TripPlace = {
   id: string
@@ -164,6 +186,7 @@ export type Trip = {
   preference_summary: string | null
   title: string | null            // generated trip title (narrator) — backend narration output
   summary: string | null          // read-only orchestrator summary (narrator)
+  tradeoffs: TripTradeoffs         // deterministic notes + hotel comparisons (backend emission)
   created_at: string
   updated_at: string
 }

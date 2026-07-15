@@ -20,9 +20,11 @@ import os
 
 from models.place import PlaceResult
 from pipeline.dedup import dedupe_places
+from pipeline.feasibility import group_places_by_day
 from pipeline.geo import centroid
 from pipeline.offline_harness import _date_range, assemble_itinerary
-from pipeline.persist import persist_hotels, persist_itinerary, persist_narration, persist_restaurants, persist_transport, persist_weather
+from pipeline.persist import persist_hotels, persist_itinerary, persist_narration, persist_restaurants, persist_tradeoffs, persist_transport, persist_weather
+from pipeline.tradeoffs import build_hotel_comparisons, warnings_to_notes
 from jobs import mark_job_done, mark_job_running
 from supabase_client import get_supabase_client
 
@@ -229,6 +231,16 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                 await record_event(client, trip_id, event_type="warning", stage="save",
                                    message=f"{dropped} place(s) shown in the itinerary were not saved "
                                            "(missing coordinates or merged with an existing place)")
+
+            # TRADEOFF NOTES — the FeasibilityWarnings feasibility.py flagged as "the seam".
+            # Computed here (warnings + groups in scope); WRITTEN once after the enrich gather.
+            try:
+                _tradeoff_notes = warnings_to_notes(
+                    itinerary.feasibility_warnings,
+                    groups=group_places_by_day(canonical, dates))
+            except Exception:
+                _tradeoff_notes = []
+
             if weather_reports:                       # weather AFTER persist created trip_days (ordering!)
                 try:
                     await persist_weather(client, trip_id, weather_reports)
@@ -314,6 +326,22 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
 
             await asyncio.gather(_stage_transport(), _stage_restaurants(),
                                  _stage_hotels(), _stage_narration(), return_exceptions=True)
+
+            # ONE tradeoffs write (notes computed pre-gather + comparisons from persisted hotels).
+            # No read-modify-write; best-effort (a failure must never fail the trip, guardrail #3).
+            _comparisons = []
+            try:
+                _hotel_rows = (await client.table("hotel_suggestions")
+                               .select("id,name,star_rating,price_snapshot")
+                               .eq("trip_id", trip_id).execute()).data or []
+                _comparisons = build_hotel_comparisons(_hotel_rows)
+            except Exception:
+                _comparisons = []   # a hotel-query blip must NOT discard the independently-valid notes
+            try:
+                await persist_tradeoffs(client, trip_id, user_id,
+                                        notes=_tradeoff_notes, comparisons=_comparisons)
+            except Exception:
+                pass   # best-effort — tradeoffs must never fail the trip
         except Exception:
             status = "saved_with_gaps"
             await record_event(client, trip_id, event_type="warning", stage="save",

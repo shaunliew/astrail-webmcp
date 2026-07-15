@@ -64,8 +64,12 @@ describe('Tokyo fixture invariants', () => {
       expect(l.route_geometry).not.toBeNull()
       const from = byId.get(l.from_place_id!)!
       const to = byId.get(l.to_place_id!)!
-      expect(l.route_geometry!.coordinates[0]).toEqual([from.lng, from.lat])
-      expect(l.route_geometry!.coordinates[1]).toEqual([to.lng, to.lat])
+      const coords = l.route_geometry!.coordinates
+      expect(coords[0]).toEqual([from.lng, from.lat])
+      expect(coords[coords.length - 1]).toEqual([to.lng, to.lat])
+      // Road-shaped, not pin-to-pin: the mock dogleg must carry intermediate points
+      // (mirrors what Mapbox Directions returns once the backend ships issue #42).
+      expect(coords.length).toBeGreaterThan(2)
     }
   })
 

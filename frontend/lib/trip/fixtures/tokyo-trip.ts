@@ -97,6 +97,24 @@ const days: TripDay[] = [
   },
 ]
 
+// Road-shaped mock geometry: a deterministic dogleg between stops so the offline demo
+// draws a plausible route instead of a straight pin-to-pin line. Real road polylines
+// come from Mapbox Directions once the backend requests them (issue #42) — endpoints
+// stay exact so the trail always meets the pins.
+const roadish = (from: Place, to: Place): NonNullable<TransportLeg['route_geometry']> => {
+  const dx = to.lng - from.lng
+  const dy = to.lat - from.lat
+  const bends = [0, 0.35, -0.25, 0.3, -0.15, 0] // fixed wiggle profile, first/last = exact endpoints
+  const last = bends.length - 1
+  return {
+    type: 'LineString',
+    coordinates: bends.map((b, i) => [
+      from.lng + dx * (i / last) + -dy * b * 0.12,
+      from.lat + dy * (i / last) + dx * b * 0.12,
+    ]),
+  }
+}
+
 const leg = (
   id: string, day: string, from: Place, to: Place, order: number,
   status: TransportLeg['status'], mode: TransportLeg['transport_mode'],
@@ -106,9 +124,7 @@ const leg = (
   id, trip_id: TRIP_ID, trip_day_id: day, from_place_id: from.id, to_place_id: to.id,
   leg_order: order, transport_mode: mode, routing_provider: profile ? 'mapbox' : 'none',
   routing_profile: profile, status, duration_seconds: dur, distance_meters: dist,
-  route_geometry: status === 'ok'
-    ? { type: 'LineString', coordinates: [[from.lng, from.lat], [to.lng, to.lat]] }
-    : null,
+  route_geometry: status === 'ok' ? roadish(from, to) : null,
   warning,
 })
 

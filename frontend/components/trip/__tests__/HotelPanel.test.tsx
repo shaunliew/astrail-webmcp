@@ -15,4 +15,9 @@ describe('HotelPanel', () => {
     render(<HotelPanel hotels={[skipped]} />)
     expect(screen.getByText(/skipped/i)).toBeInTheDocument()
   })
+
+  it('renders the composed empty state when there are no hotels', () => {
+    render(<HotelPanel hotels={[]} />)
+    expect(screen.getByText(/no hotel suggestions for these dates/i)).toBeInTheDocument()
+  })
 })

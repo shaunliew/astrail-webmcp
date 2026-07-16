@@ -350,6 +350,7 @@ button:focus-visible {
   --starlight: var(--starlight-bright);
   --muted: rgba(247, 243, 232, 0.72);
   --faint: rgba(247, 243, 232, 0.45);
+  --chip-bg: rgba(247, 243, 232, 0.05);
   background:
     radial-gradient(ellipse 90% 42% at 50% -8%, rgba(201, 151, 78, 0.08), transparent 70%),
     radial-gradient(ellipse 60% 44% at 85% 6%, rgba(42, 49, 96, 0.32), transparent 65%),
@@ -372,6 +373,87 @@ button:focus-visible {
   border: 1px solid rgba(232, 210, 172, 0.09);
   border-radius: var(--radius-card);
   box-shadow: var(--shadow-night);
+}
+
+.paper-scope {
+  color-scheme: light;
+  --starlight: var(--ink-day);
+  --muted: rgba(26, 24, 16, 0.64);
+  --faint: rgba(26, 24, 16, 0.42);
+  --line: var(--paper-line);
+  --brass-bright: var(--brass-deep);
+  --brass-soft: rgba(138, 96, 35, 0.12);
+  --brass-glow: rgba(138, 96, 35, 0.16);
+  --ok: var(--ok-day);
+  --warn: var(--warn-day);
+  --fail: var(--fail-day);
+  --chip-bg: rgba(26, 24, 16, 0.055);
+  color: var(--ink-day);
+}
+
+.paper-scope .surface {
+  background: linear-gradient(180deg, #FDFBF5, var(--paper-0));
+  border: 1px solid var(--paper-line);
+  border-radius: var(--radius-card);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28), 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+
+.constellation-pin {
+  align-items: center;
+  background: #0b0f16;
+  border: 1.5px solid #EFC98D;
+  border-radius: 9999px;
+  box-shadow: 0 0 0 6px var(--brass-glow), 0 0 16px rgba(239, 201, 141, 0.35);
+  color: #EFC98D;
+  cursor: pointer;
+  display: flex;
+  font-family: var(--font-geist), system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  height: 26px;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+  transition: opacity 200ms ease-out, scale 200ms ease-out, box-shadow 200ms ease-out;
+  width: 26px;
+}
+
+.constellation-pin--reel_extracted {
+  border-style: solid;
+}
+
+.constellation-pin--user_requested {
+  outline: 1px solid #EFC98D;
+  outline-offset: 3px;
+}
+
+.constellation-pin--agent_suggested {
+  border-style: dashed;
+}
+
+.constellation-pin--receding {
+  border-width: 1px;
+  box-shadow: 0 0 0 4px rgba(239, 201, 141, 0.08), 0 0 10px rgba(239, 201, 141, 0.16);
+  font-size: 0;
+  height: 16px;
+  opacity: 0.45;
+  width: 16px;
+}
+
+.constellation-pin--selected {
+  box-shadow: 0 0 0 7px rgba(239, 201, 141, 0.22), 0 0 24px rgba(239, 201, 141, 0.55);
+  /* `scale`, not `transform: scale()` — Mapbox positions markers via an inline
+     transform, which would override a transform-based scale entirely. */
+  scale: 1.15;
+}
+
+.trip-map-container {
+  opacity: 0;
+  transition: opacity 400ms ease-out;
+}
+
+.trip-map-container--loaded {
+  opacity: 1;
 }
 
 /* Mono = provenance. The only place monospace is allowed inside the app. */
@@ -428,6 +510,14 @@ button:focus-visible {
   .how-section-route .motion-route__draw,
   .pin-land {
     animation: none;
+  }
+
+  .constellation-pin {
+    transition: none;
+  }
+
+  .trip-map-container {
+    transition: none;
   }
 }
 

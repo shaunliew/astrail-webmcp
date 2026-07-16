@@ -19,7 +19,7 @@ function humanizeStatus(status: InspirationStatus): string {
 function statusClass(status: InspirationStatus): string {
   if (status === 'valid') return 'bg-[rgba(123,201,166,0.12)] text-[var(--ok)]'
   if (status === 'pending_resolution') return 'bg-[rgba(247,243,232,0.08)] text-[var(--muted)]'
-  return 'bg-[rgba(247,243,232,0.05)] text-[var(--faint)]'
+  return 'bg-[var(--chip-bg)] text-[var(--faint)]'
 }
 
 function reelShortcode(url: string): string {

@@ -32,7 +32,32 @@ const trip: Trip = {
   preference_sources: ['explicit', 'memory'],
   preference_summary: 'Walkable days, ramen, not too rushed, mid-range budget.',
   title: null, summary: null,
-  tradeoffs: { notes: [], comparisons: [] },
+  tradeoffs: {
+    notes: [
+      {
+        kind: 'long_leg', scope: 'day', severity: 'warn',
+        detail: 'The Shibuya Sky to Tokyo Disneyland leg could not be routed; public transit is likely more practical for this long transfer.',
+        day_number: 3, refs: ['leg_3'], leg_m: 17800,
+      },
+    ],
+    comparisons: [
+      {
+        axis: 'price_vs_rating', scope: 'hotel',
+        option_a: {
+          label: 'Shinjuku Granbell Hotel', value: 'USD 128/night · 4★',
+          pro: 'Central base with a confirmed mid-range price and a 4-star rating.',
+          con: 'Adds transfer time on the Disneyland day.',
+        },
+        option_b: {
+          label: 'Near Tokyo Disneyland', value: 'Price unavailable',
+          pro: 'Would keep the longest day closer to the park.',
+          con: 'The hotel search was skipped, so price and rating are not confirmed.',
+        },
+        recommendation: 'Keep the Shinjuku base unless Disneyland convenience matters more than a confirmed price and rating.',
+        refs: ['hotel_1', 'hotel_2'],
+      },
+    ],
+  },
   created_at: '2026-08-01T09:00:00Z', updated_at: '2026-08-01T09:03:00Z',
 }
 

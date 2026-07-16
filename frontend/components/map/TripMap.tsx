@@ -1,18 +1,12 @@
 'use client'
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import mapboxgl from 'mapbox-gl'
 import 'mapbox-gl/dist/mapbox-gl.css'
-import type { TripBundle, PlaceSourceType } from '@/lib/trip/backend-types'
-import { legsForDay, orderedDays, buildPlaceIndex } from '@/lib/trip/selectors'
+import type { TripBundle } from '@/lib/trip/backend-types'
+import { legsForDay, orderedDays, buildPlaceIndex, pinLabelForPlace } from '@/lib/trip/selectors'
 
 const TOKEN = process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN
-
-const PIN_COLOR: Record<PlaceSourceType, string> = {
-  reel_extracted: '#C9974E',
-  user_requested: '#F2ECE0',
-  agent_suggested: '#8FB4C9',
-}
 
 export default function TripMap({
   bundle, activeDayNumber, selectedPlaceId, onSelectPlace,
@@ -27,6 +21,7 @@ export default function TripMap({
   const markersRef = useRef<mapboxgl.Marker[]>([])
   const routeIdsRef = useRef<string[]>([])
   const loadedRef = useRef(false)
+  const [mapLoaded, setMapLoaded] = useState(false)
 
   // Create the map once.
   useEffect(() => {
@@ -44,6 +39,7 @@ export default function TripMap({
     mapRef.current = map
     map.on('load', () => {
       loadedRef.current = true
+      setMapLoaded(true)
       // Daybreak world (DESIGN-DRAFT §5): generation happens at night (GenerationScene);
       // the saved trip is explored at dawn — PRD §13's "readable trip exploration lighting".
       map.setConfigProperty('basemap', 'lightPreset', 'dawn')
@@ -70,9 +66,14 @@ export default function TripMap({
       const el = document.createElement('button')
       el.type = 'button'
       el.setAttribute('aria-label', tp.place.name)
-      el.style.cssText =
-        `width:14px;height:14px;border-radius:9999px;border:2px solid #050506;cursor:pointer;` +
-        `background:${PIN_COLOR[tp.source_type]};box-shadow:0 0 0 1px rgba(242,236,224,0.3)`
+      const label = pinLabelForPlace(bundle, tp, activeDayNumber)
+      el.className = [
+        'constellation-pin',
+        `constellation-pin--${tp.source_type}`,
+        label ? '' : 'constellation-pin--receding',
+        tp.place_id === selectedPlaceId ? 'constellation-pin--selected' : '',
+      ].filter(Boolean).join(' ')
+      el.textContent = label ?? ''
       el.addEventListener('click', (e) => { e.stopPropagation(); onSelectPlace(tp.place_id) })
       const marker = new mapboxgl.Marker({ element: el }).setLngLat([tp.place.lng, tp.place.lat]).addTo(map)
       markersRef.current.push(marker)
@@ -82,7 +83,7 @@ export default function TripMap({
   function clearRoutes() {
     const map = mapRef.current
     if (!map) return
-    for (const id of routeIdsRef.current) {
+    for (const id of [...routeIdsRef.current].reverse()) {
       if (map.getLayer(id)) map.removeLayer(id)
       if (map.getSource(id)) map.removeSource(id)
     }
@@ -95,21 +96,65 @@ export default function TripMap({
     clearRoutes()
     const day = orderedDays(bundle).find((d) => d.day_number === activeDayNumber)
     if (!day) return
+    const placeIndex = buildPlaceIndex(bundle)
     for (const leg of legsForDay(bundle, day.id)) {
-      if (leg.status !== 'ok' || !leg.route_geometry) continue // skip no_route/failed legs
       const id = `route-${leg.id}`
-      map.addSource(id, {
+      if (leg.status === 'ok' && leg.route_geometry) {
+        const casingId = `${id}-casing`
+        const coreId = `${id}-core`
+        map.addSource(id, {
+          type: 'geojson',
+          data: { type: 'Feature', properties: {}, geometry: leg.route_geometry },
+        })
+        map.addLayer({
+          id: casingId,
+          type: 'line',
+          source: id,
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: { 'line-color': '#C9974E', 'line-width': 9, 'line-opacity': 0.18 },
+        })
+        map.addLayer({
+          id: coreId,
+          type: 'line',
+          source: id,
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: {
+            'line-color': '#C9974E',
+            'line-width': 2.6,
+            'line-opacity': 0.95,
+            'line-dasharray': [0.1, 1.6],
+          },
+        })
+        routeIdsRef.current.push(id, casingId, coreId)
+        continue
+      }
+
+      const from = leg.from_place_id ? placeIndex.get(leg.from_place_id) : undefined
+      const to = leg.to_place_id ? placeIndex.get(leg.to_place_id) : undefined
+      if (!from || !to) continue
+      const stubSourceId = `${id}-stub-source`
+      const stubLayerId = `${id}-stub`
+      const stubGeometry = {
+        type: 'LineString' as const,
+        coordinates: [[from.lng, from.lat], [to.lng, to.lat]] as [number, number][],
+      }
+      map.addSource(stubSourceId, {
         type: 'geojson',
-        data: { type: 'Feature', properties: {}, geometry: leg.route_geometry },
+        data: { type: 'Feature', properties: {}, geometry: stubGeometry },
       })
       map.addLayer({
-        id,
+        id: stubLayerId,
         type: 'line',
-        source: id,
+        source: stubSourceId,
         layout: { 'line-join': 'round', 'line-cap': 'round' },
-        paint: { 'line-color': '#C9974E', 'line-width': 3, 'line-opacity': 0.85 },
+        paint: {
+          'line-color': '#D0705F',
+          'line-width': 1.5,
+          'line-opacity': 0.5,
+          'line-dasharray': [1.2, 2],
+        },
       })
-      routeIdsRef.current.push(id)
+      routeIdsRef.current.push(stubSourceId, stubLayerId)
     }
   }
 
@@ -123,15 +168,19 @@ export default function TripMap({
     map.fitBounds(bounds, { padding: 80, maxZoom: 13, pitch: 45, duration: 2200 })
   }
 
-  // Redraw routes when the active day changes.
+  // Redraw markers and routes when the active day changes.
   useEffect(() => {
-    if (loadedRef.current) drawRoutes()
+    if (loadedRef.current) {
+      drawMarkers()
+      drawRoutes()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeDayNumber])
 
-  // Fly to the selected place.
+  // Refresh marker selection and fly to the selected place.
   useEffect(() => {
     const map = mapRef.current
+    if (loadedRef.current) drawMarkers()
     if (!map || !selectedPlaceId) return
     const idx = buildPlaceIndex(bundle)
     const place = idx.get(selectedPlaceId)
@@ -146,5 +195,11 @@ export default function TripMap({
       </div>
     )
   }
-  return <div ref={containerRef} data-testid="trip-map" className="h-full w-full" />
+  return (
+    <div
+      ref={containerRef}
+      data-testid="trip-map"
+      className={['trip-map-container h-full w-full', mapLoaded ? 'trip-map-container--loaded' : ''].filter(Boolean).join(' ')}
+    />
+  )
 }

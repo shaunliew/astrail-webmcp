@@ -19,4 +19,9 @@ describe('TransportStrip', () => {
     render(<TransportStrip legs={legs} placeIndex={idx} />)
     expect(screen.getByText(/public transit may be preferable/i)).toBeInTheDocument()
   })
+
+  it('renders the composed empty state when there are no legs', () => {
+    render(<TransportStrip legs={[]} placeIndex={idx} />)
+    expect(screen.getByText(/no route legs for this day/i)).toBeInTheDocument()
+  })
 })

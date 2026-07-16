@@ -16,6 +16,7 @@ import HotelPanel from './HotelPanel'
 import PlaceIntelPanel from './PlaceIntelPanel'
 import OrchestratorSummary from './OrchestratorSummary'
 import AgentDecisionRail from './AgentDecisionRail'
+import TradeoffPanel from './TradeoffPanel'
 
 const TripMap = dynamic(() => import('@/components/map/TripMap'), { ssr: false })
 
@@ -113,7 +114,7 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
 
       <aside
         className={[
-          'absolute z-10 overflow-y-auto surface backdrop-blur-sm',
+          'absolute z-10 overflow-y-auto paper-scope bg-[rgba(10,11,20,0.35)] backdrop-blur-sm',
           'inset-x-0 bottom-0 rounded-t-2xl transition-[height] duration-300 ease-out',
           expanded ? 'h-[82dvh]' : 'h-[42dvh]',
           'md:inset-y-0 md:left-0 md:right-auto md:h-full md:w-[440px] md:rounded-none md:rounded-r-2xl',
@@ -129,6 +130,7 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
         />
         <div className="p-4">
           <OrchestratorSummary bundle={bundle} />
+          <TradeoffPanel tradeoffs={bundle.trip.tradeoffs} />
 
           <Section title="Days">
             <DaySelector days={days} activeDayNumber={activeDayNumber} onSelect={setActiveDayNumber} />

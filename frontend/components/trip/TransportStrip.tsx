@@ -15,7 +15,11 @@ export default function TransportStrip({
   placeIndex: Map<string, Place>
 }) {
   if (legs.length === 0) {
-    return <p className="type-body text-xs text-[var(--muted)]">No transfers for this day.</p>
+    return (
+      <div className="rounded-[var(--radius-card)] border border-dashed border-[var(--line)] p-3">
+        <p className="type-body text-xs text-[var(--muted)]">No route legs for this day.</p>
+      </div>
+    )
   }
   const name = (id: string | null) => (id ? placeIndex.get(id)?.name ?? 'Unknown' : 'Unknown')
   return (

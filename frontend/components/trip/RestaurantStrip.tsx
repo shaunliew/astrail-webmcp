@@ -7,7 +7,13 @@ export default function RestaurantStrip({
   placeIndex: Map<string, Place>
 }) {
   if (restaurants.length === 0) {
-    return <p className="type-body text-xs text-[var(--muted)]">No restaurant picks for this day.</p>
+    return (
+      <div className="rounded-[var(--radius-card)] border border-dashed border-[var(--line)] p-3">
+        <p className="type-body text-xs text-[var(--muted)]">
+          Astrail didn&apos;t find restaurants near this route yet.
+        </p>
+      </div>
+    )
   }
   return (
     <ul className="flex flex-col gap-2">

@@ -13,6 +13,7 @@ import type { StreamEvent } from '@/lib/trip/backend-types'
 import SignOutButton from '@/components/auth/SignOutButton'
 import InspirationTray from './InspirationTray'
 import TripBriefForm from './TripBriefForm'
+import TripBriefReview from './TripBriefReview'
 import GenerationScene from './GenerationScene'
 
 const EMPTY_BRIEF: BriefInput = {
@@ -33,7 +34,7 @@ export default function CreateTripFlow() {
   const router = useRouter()
   const [items, setItems] = useState<DraftInspirationItem[]>([])
   const [brief, setBrief] = useState<BriefInput>(EMPTY_BRIEF)
-  const [phase, setPhase] = useState<'compose' | 'generating'>('compose')
+  const [phase, setPhase] = useState<'compose' | 'brief' | 'generating'>('compose')
   const [events, setEvents] = useState<StreamEvent[]>([])
   const [tripId, setTripId] = useState<string | null>(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
@@ -112,21 +113,32 @@ export default function CreateTripFlow() {
         </p>
       </header>
 
-      <InspirationTray items={items} onChange={setItems} />
-      <TripBriefForm brief={brief} onChange={setBrief} />
+      {phase === 'compose' ? (
+        <>
+          <InspirationTray items={items} onChange={setItems} />
+          <TripBriefForm brief={brief} onChange={setBrief} />
 
-      {submitError ? (
-        <p className="type-body text-xs text-red-400" role="alert">{submitError}</p>
-      ) : null}
+          {submitError ? (
+            <p className="type-body text-xs text-red-400" role="alert">{submitError}</p>
+          ) : null}
 
-      <button
-        type="button"
-        onClick={handleGenerate}
-        disabled={!canGenerate(items, brief)}
-        className="type-label rounded-xl border border-[var(--brass)] bg-[var(--brass-soft)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
-      >
-        Generate my trip
-      </button>
+          <button
+            type="button"
+            onClick={() => setPhase('brief')}
+            disabled={!canGenerate(items, brief)}
+            className="type-label rounded-xl border border-[var(--brass)] bg-[var(--brass-soft)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Review trip brief
+          </button>
+        </>
+      ) : (
+        <TripBriefReview
+          items={items}
+          brief={brief}
+          onBack={() => setPhase('compose')}
+          onGenerate={handleGenerate}
+        />
+      )}
     </main>
   )
 }

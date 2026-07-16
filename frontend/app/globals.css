@@ -342,6 +342,7 @@ button:focus-visible {
    Unlayered on purpose: must win over @layer utilities (.type-label font swap).
    The landing keeps the :root values untouched. */
 .app-shell {
+  color-scheme: dark;
   --void: var(--night-void);
   --deep: var(--night-deep);
   --elevated: var(--night-surface);

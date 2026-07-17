@@ -548,6 +548,10 @@ button:focus-visible {
     animation: none;
   }
 
+  .trip-details-panel {
+    transition: none;
+  }
+
   .constellation-pin {
     transition: none;
   }

@@ -38,6 +38,7 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
   const [activeDayNumber, setActiveDayNumber] = useState(1)
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null)
   const [expanded, setExpanded] = useState(false)
+  const [panelOpen, setPanelOpen] = useState(true)
 
   useEffect(() => {
     let active = true
@@ -111,27 +112,53 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
           bundle={bundle}
           activeDayNumber={activeDayNumber}
           selectedPlaceId={selectedPlaceId}
-          onSelectPlace={(id) => { setSelectedPlaceId(id); setExpanded(true) }}
+          onSelectPlace={(id) => { setSelectedPlaceId(id); setExpanded(true); setPanelOpen(true) }}
         />
       </div>
 
-      <aside
-        className={[
-          'absolute z-10 overflow-y-auto paper-scope bg-[rgba(243,238,226,0.55)] backdrop-blur-sm',
-          'inset-x-0 bottom-0 rounded-t-2xl transition-[height] duration-300 ease-out',
-          expanded ? 'h-[82dvh]' : 'h-[42dvh]',
-          'md:inset-y-0 md:left-0 md:right-auto md:h-full md:w-[440px] md:rounded-none md:rounded-r-2xl',
-        ].join(' ')}
-        aria-label="Trip details"
-      >
+      {/* Reopen affordance: floats over the map while the panel is hidden, so
+          closing it is never a dead end. */}
+      {!panelOpen ? (
         <button
           type="button"
-          onClick={() => setExpanded((v) => !v)}
-          aria-expanded={expanded}
-          className="mx-auto mt-2 mb-1 block h-1.5 w-10 rounded-full bg-[var(--line)] md:hidden"
-          aria-label={expanded ? 'Collapse panel' : 'Expand panel'}
-        />
-        <div className="p-4">
+          onClick={() => setPanelOpen(true)}
+          className="surface type-label absolute inset-x-0 bottom-5 z-10 mx-auto flex w-fit items-center gap-2 rounded-full px-4 py-2.5 text-[11px] uppercase tracking-wide text-[var(--starlight)] md:inset-x-auto md:inset-y-0 md:left-5 md:my-auto md:h-fit"
+        >
+          <span aria-hidden>&uarr;</span>
+          Trip details
+        </button>
+      ) : null}
+
+      <aside
+        className={[
+          'trip-details-panel absolute z-10 overflow-y-auto paper-scope bg-[rgba(243,238,226,0.55)] backdrop-blur-sm',
+          'inset-x-0 bottom-0 rounded-t-2xl transition-all duration-300 ease-out',
+          expanded ? 'h-[82dvh]' : 'h-[42dvh]',
+          panelOpen ? 'translate-y-[0%]' : 'translate-y-[100%]',
+          'md:inset-y-0 md:left-0 md:right-auto md:h-full md:w-[440px] md:rounded-none md:rounded-r-2xl',
+          panelOpen ? 'md:translate-x-[0%]' : 'md:translate-x-[-100%]',
+        ].join(' ')}
+        aria-label="Trip details"
+        inert={!panelOpen}
+      >
+        <div className="relative shrink-0 px-2 pt-2">
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            aria-expanded={expanded}
+            className="mx-auto block h-1.5 w-10 rounded-full bg-[var(--line)] md:hidden"
+            aria-label={expanded ? 'Collapse panel' : 'Expand panel'}
+          />
+          <button
+            type="button"
+            onClick={() => setPanelOpen(false)}
+            aria-label="Hide trip details and show the full map"
+            className="type-label absolute right-2 top-2 rounded-[var(--radius-chip)] px-2 py-1 text-[10px] uppercase tracking-wide text-[var(--faint)] transition-colors hover:bg-[var(--chip-bg)] hover:text-[var(--muted)]"
+          >
+            Hide
+          </button>
+        </div>
+        <div className="p-4 pt-1">
           <OrchestratorSummary bundle={bundle} />
           <TradeoffPanel tradeoffs={bundle.trip.tradeoffs} />
 

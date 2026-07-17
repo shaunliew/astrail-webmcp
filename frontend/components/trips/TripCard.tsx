@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import type { Trip } from '@/lib/trip/backend-types'
-import { tripTitle, tripDateRange, tripStatusLabel, budgetLabel } from '@/lib/trip/trip-presenters'
+import { tripTitle, tripDateRange, tripStatusLabel, statusDotClass, budgetLabel } from '@/lib/trip/trip-presenters'
 
 type RoutePoint = { x: number; y: number }
 
@@ -68,7 +68,7 @@ export default function TripCard({ trip }: { trip: Trip }) {
             <p className="type-body text-sm text-[var(--muted)]">{tripDateRange(trip)}</p>
           </div>
           <span className="type-label inline-flex shrink-0 items-center gap-1.5 rounded-full bg-[var(--brass-soft)] px-2.5 py-1 text-[10.5px] text-[var(--brass-bright)]">
-            <span aria-hidden className="pulse-dot" />
+            <span aria-hidden className={statusDotClass(trip.status)} />
             {tripStatusLabel(trip.status)}
           </span>
         </div>

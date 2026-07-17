@@ -36,7 +36,7 @@ export default function TradeoffPanel({
   return (
     <section className="mt-4" data-testid="tradeoff-panel">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <h3 className="type-label text-[11px] uppercase tracking-wide text-[var(--faint)]">Tradeoffs</h3>
+        <h3 className="type-display text-[15px] text-[var(--starlight)]">Tradeoffs</h3>
       </div>
 
       {notes.length > 0 ? (

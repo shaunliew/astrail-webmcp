@@ -22,8 +22,11 @@ const TripMap = dynamic(() => import('@/components/map/TripMap'), { ssr: false }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="mt-4">
-      <h3 className="type-label mb-2 text-[11px] uppercase tracking-wide text-[var(--faint)]">{title}</h3>
+    <section className="mt-5">
+      {/* Serif sentence-case headers — the uppercase-eyebrow-on-every-section cadence is
+          the classic generated-UI tell; uppercase micro-labels stay reserved for form
+          labels and data captions. */}
+      <h3 className="type-display mb-2 text-[15px] text-[var(--starlight)]">{title}</h3>
       {children}
     </section>
   )
@@ -114,7 +117,7 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
 
       <aside
         className={[
-          'absolute z-10 overflow-y-auto paper-scope bg-[rgba(10,11,20,0.35)] backdrop-blur-sm',
+          'absolute z-10 overflow-y-auto paper-scope bg-[rgba(243,238,226,0.55)] backdrop-blur-sm',
           'inset-x-0 bottom-0 rounded-t-2xl transition-[height] duration-300 ease-out',
           expanded ? 'h-[82dvh]' : 'h-[42dvh]',
           'md:inset-y-0 md:left-0 md:right-auto md:h-full md:w-[440px] md:rounded-none md:rounded-r-2xl',

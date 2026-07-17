@@ -17,7 +17,7 @@ export default function OrchestratorSummary({ bundle }: { bundle: TripBundle }) 
         <h2 className="type-display text-lg text-[var(--starlight)]">{bundle.trip.inferred_destination ?? bundle.trip.destination_hint ?? 'Your trip'}</h2>
         {withGaps ? (
           <span className="type-label inline-flex items-center gap-1.5 rounded-full bg-[var(--brass-soft)] px-2.5 py-1 text-[10.5px] text-[var(--brass-bright)]">
-            <span aria-hidden className="pulse-dot" />
+            <span aria-hidden className="pulse-dot pulse-dot--warn" />
             Saved with gaps
           </span>
         ) : null}

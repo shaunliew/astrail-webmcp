@@ -27,7 +27,7 @@ export default function DaySelector({
             aria-pressed={active}
             onClick={() => onSelect(day.day_number)}
             className={[
-              'type-label shrink-0 rounded-lg border px-3 py-2 text-left transition-colors',
+              'type-label min-h-11 shrink-0 rounded-lg border px-3 py-2 text-left transition-colors',
               active
                 ? 'border-[rgba(201,151,78,0.35)] bg-[var(--brass-soft)] text-[var(--brass-bright)] shadow-[0_0_14px_var(--brass-glow)]'
                 : 'border-transparent bg-[var(--chip-bg)] text-[var(--muted)] hover:text-[var(--starlight)]',

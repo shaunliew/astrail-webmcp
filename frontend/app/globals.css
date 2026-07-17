@@ -349,7 +349,7 @@ button:focus-visible {
   --line: var(--night-line);
   --starlight: var(--starlight-bright);
   --muted: rgba(247, 243, 232, 0.72);
-  --faint: rgba(247, 243, 232, 0.45);
+  --faint: rgba(247, 243, 232, 0.55); /* 10px bold captions need >=4.5:1 on --night-surface */
   --chip-bg: rgba(247, 243, 232, 0.05);
   background:
     radial-gradient(ellipse 90% 42% at 50% -8%, rgba(201, 151, 78, 0.08), transparent 70%),
@@ -379,7 +379,7 @@ button:focus-visible {
   color-scheme: light;
   --starlight: var(--ink-day);
   --muted: rgba(26, 24, 16, 0.64);
-  --faint: rgba(26, 24, 16, 0.42);
+  --faint: rgba(26, 24, 16, 0.55); /* was 0.42 (~2.6:1 on paper) — captions must clear AA */
   --line: var(--paper-line);
   --brass-bright: var(--brass-deep);
   --brass-soft: rgba(138, 96, 35, 0.12);
@@ -469,7 +469,7 @@ button:focus-visible {
 
 /* Generation pins: verified places landing on the night map (GenerationScene). */
 .pin-land {
-  animation: pin-land 480ms cubic-bezier(0.2, 0.9, 0.3, 1.35) backwards;
+  animation: pin-land 480ms cubic-bezier(0.16, 1, 0.3, 1) backwards;
   background: var(--brass-bright);
   border: 2px solid rgba(10, 11, 20, 0.9);
   border-radius: 999px;
@@ -490,13 +490,44 @@ button:focus-visible {
   }
 }
 
-/* Live-status dot: brass point with a soft glow (used by status chips). */
+/* Status dot: color carries the state's tone; ONLY live states animate —
+   a glowing pulse on a finished trip is motion telling a lie. */
 .pulse-dot {
   background: var(--brass-bright);
   border-radius: 999px;
   box-shadow: 0 0 6px var(--brass-glow), 0 0 12px var(--brass-glow);
+  flex-shrink: 0;
   height: 5px;
   width: 5px;
+}
+
+.pulse-dot--ok {
+  background: var(--ok);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--ok) 55%, transparent);
+}
+
+.pulse-dot--warn {
+  background: var(--warn);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--warn) 55%, transparent);
+}
+
+.pulse-dot--fail {
+  background: var(--fail);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--fail) 55%, transparent);
+}
+
+.pulse-dot--live {
+  animation: pulse-dot-breathe 1.6s ease-in-out infinite alternate;
+}
+
+@keyframes pulse-dot-breathe {
+  from {
+    opacity: 0.5;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -512,7 +543,8 @@ button:focus-visible {
 
   .pain-local-shards .motion-shard,
   .how-section-route .motion-route__draw,
-  .pin-land {
+  .pin-land,
+  .pulse-dot--live {
     animation: none;
   }
 

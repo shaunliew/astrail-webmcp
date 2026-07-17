@@ -58,7 +58,7 @@ function Card({ item, onRemove }: { item: DraftInspirationItem; onRemove: () => 
         type="button"
         onClick={onRemove}
         aria-label={`Remove ${removeLabel ?? 'item'}`}
-        className="type-label rounded-[var(--radius-chip)] border border-transparent px-1.5 py-1 text-[var(--faint)] transition-colors hover:bg-[rgba(247,243,232,0.06)] hover:text-[var(--starlight)]"
+        className="type-label -my-2 -mr-1 flex min-h-11 min-w-11 items-center justify-center rounded-[var(--radius-chip)] border border-transparent text-[var(--faint)] transition-colors hover:bg-[rgba(247,243,232,0.06)] hover:text-[var(--starlight)]"
       >
         ✕
       </button>

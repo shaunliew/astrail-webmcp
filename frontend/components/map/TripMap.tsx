@@ -47,7 +47,17 @@ export default function TripMap({
       drawRoutes()
       flyToTrip()
     })
+
+    // Mapbox's built-in trackResize only reliably corrects the canvas on a window
+    // resize event. When the container changes size for any other reason — device
+    // rotation, mobile browser chrome collapsing, a parent layout change — the WebGL
+    // canvas can stay frozen at its old size, and the surplus container renders black.
+    // Observing the container directly and calling resize() closes that gap.
+    const resizeObserver = new ResizeObserver(() => { mapRef.current?.resize() })
+    resizeObserver.observe(containerRef.current)
+
     return () => {
+      resizeObserver.disconnect()
       map.remove()
       mapRef.current = null
       loadedRef.current = false

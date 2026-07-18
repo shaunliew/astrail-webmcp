@@ -45,3 +45,55 @@ export type CaptureSavedReelRequest = {
 export type CaptureSavedReelResponse = {
   saved_reel: SavedReel
 }
+
+// Browser-safe projection returned by saved_reel_cards. Raw cache payloads and
+// transcripts are intentionally absent; places carry only grounded proof.
+export type SavedReelPlaceProof = {
+  place_id: string
+  name: string
+  lat: number
+  lng: number
+  country_code: string
+  country_name: string
+  evidence_quote: string
+  source_url: string | null
+  source_reel_url: string
+  confidence: number
+}
+
+export type SavedReelCard = SavedReel & {
+  caption: string | null
+  thumbnail_url: string | null
+  places: SavedReelPlaceProof[]
+}
+
+export type OrganizeJobStatus = 'initializing' | 'pending' | 'processing' | 'succeeded' | 'failed'
+export type OrganizeItemStatus = 'queued' | 'processing' | 'organized' | 'location_not_found' | 'failed'
+
+export type OrganizeJobItem = {
+  saved_reel_id: string
+  status: OrganizeItemStatus
+  place_count: number
+  error_message: string | null
+}
+
+export type OrganizeJob = {
+  job_id: string
+  status: OrganizeJobStatus
+  status_message: string
+  total_items: number
+  processed_items: number
+  organized_items: number
+  location_not_found_items: number
+  failed_items: number
+  items: OrganizeJobItem[]
+}
+
+export type StartOrganizeResponse = { job_id: string }
+
+export type OrganizeStage = 'queued' | 'processing' | 'grounding' | 'organize' | 'complete'
+export type OrganizeStreamEvent =
+  | { type: 'stage'; stage: OrganizeStage; msg: string }
+  | { type: 'heartbeat'; elapsed_s: number }
+  | { type: 'result'; content: string }
+  | { type: 'warning' | 'error'; stage: OrganizeStage; msg: string }

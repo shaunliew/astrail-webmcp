@@ -1,5 +1,5 @@
-import CreateTripFlow from '@/components/create/CreateTripFlow'
+import SavedReelsFlow from '@/components/reels/SavedReelsFlow'
 
 export default function AppHomePage() {
-  return <CreateTripFlow />
+  return <SavedReelsFlow />
 }

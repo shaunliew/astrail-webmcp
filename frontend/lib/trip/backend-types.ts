@@ -241,6 +241,7 @@ export type StreamEvent = StageEvent | HeartbeatEvent | ResultEvent | NoticeEven
 // ---- Request/response for the pipeline endpoint ----
 export type GenerateTripRequest = {
   reel_urls: string[]
+  place_ids?: string[]
   requested_places: string[]
   destination_hint: string | null
   start_date: string   // required — pipeline date-range needs real dates

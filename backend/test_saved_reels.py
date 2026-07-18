@@ -1,10 +1,17 @@
 """Unit tests for the saved Reel capture persistence seam."""
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
+os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
+os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "service-role-key")
+
+import auth  # noqa: E402
+import main  # noqa: E402
 from api.schemas import CaptureSavedReelRequest, CaptureSavedReelResponse, SavedReel
 from saved_reels import capture_saved_reel
 
@@ -104,3 +111,166 @@ async def test_capture_fails_closed_unless_rpc_returns_exactly_one_row(rows):
     with pytest.raises(RuntimeError, match="exactly one"):
         await capture_saved_reel(client, "jwt-user-id", "https://www.instagram.com/reel/ABC123")
 
+
+def _route_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main.app, raise_app_exceptions=False),
+        base_url="http://test",
+    )
+
+
+async def test_saved_reel_route_returns_the_exact_typed_response(monkeypatch):
+    client = object()
+    captured: list[tuple[object, str, str]] = []
+
+    async def _current_user_id():
+        return "authenticated-user-id"
+
+    async def _get_client():
+        return client
+
+    async def _capture(actual_client, user_id, url):
+        captured.append((actual_client, user_id, url))
+        return _ROW
+
+    main.app.dependency_overrides[auth.get_current_user_id] = _current_user_id
+    monkeypatch.setattr(main, "get_supabase_client", _get_client)
+    monkeypatch.setattr(main, "capture_saved_reel", _capture, raising=False)
+    try:
+        async with _route_client() as ac:
+            response = await ac.post(
+                "/saved-reels",
+                json={"url": "https://www.instagram.com/reel/ABC123"},
+            )
+    finally:
+        main.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {"saved_reel": _ROW}
+    assert captured == [
+        (client, "authenticated-user-id", "https://www.instagram.com/reel/ABC123")
+    ]
+
+
+async def test_saved_reel_route_rejects_invalid_url_with_the_standard_422_envelope(monkeypatch):
+    async def _current_user_id():
+        return "authenticated-user-id"
+
+    main.app.dependency_overrides[auth.get_current_user_id] = _current_user_id
+    try:
+        async with _route_client() as ac:
+            response = await ac.post("/saved-reels", json={"url": "https://www.instagram.com/p/ABC123"})
+    finally:
+        main.app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "error": {
+            "code": "validation_error",
+            "message": "A valid Instagram Reel URL is required",
+        }
+    }
+
+
+async def test_saved_reel_route_requires_authentication():
+    async with _route_client() as ac:
+        response = await ac.post(
+            "/saved-reels",
+            json={"url": "https://www.instagram.com/reel/ABC123"},
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {
+        "error": {
+            "code": "unauthorized",
+            "message": "Missing or malformed Authorization header",
+        }
+    }
+
+
+async def test_saved_reel_route_reuses_the_atomic_row_without_background_work(monkeypatch):
+    calls: list[tuple[object, str, str]] = []
+
+    async def _current_user_id():
+        return "authenticated-user-id"
+
+    async def _get_client():
+        return object()
+
+    async def _capture(client, user_id, url):
+        calls.append((client, user_id, url))
+        return _ROW
+
+    async def _unexpected(*_args, **_kwargs):
+        raise AssertionError("capture must not consume trip quota or dispatch generation work")
+
+    main.app.dependency_overrides[auth.get_current_user_id] = _current_user_id
+    monkeypatch.setattr(main, "get_supabase_client", _get_client)
+    monkeypatch.setattr(main, "capture_saved_reel", _capture, raising=False)
+    monkeypatch.setattr(main, "check_and_increment_daily_quota", _unexpected)
+    monkeypatch.setattr(main, "enqueue_job", _unexpected)
+    monkeypatch.setattr(main, "run_generation", _unexpected)
+    try:
+        async with _route_client() as ac:
+            first = await ac.post("/saved-reels", json={"url": "https://www.instagram.com/reel/ABC123"})
+            second = await ac.post("/saved-reels", json={"url": "https://www.instagram.com/reel/ABC123"})
+    finally:
+        main.app.dependency_overrides.clear()
+
+    assert first.status_code == second.status_code == 200
+    assert first.json() == second.json() == {"saved_reel": _ROW}
+    assert len(calls) == 2
+    assert "scrape_reel_direct" not in main.__dict__
+    assert "extract_places_agent" not in main.__dict__
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("database unavailable"), RuntimeError("exactly one row")])
+async def test_saved_reel_route_hides_persistence_failures(monkeypatch, failure):
+    async def _current_user_id():
+        return "authenticated-user-id"
+
+    async def _get_client():
+        return object()
+
+    async def _capture(*_args, **_kwargs):
+        raise failure
+
+    main.app.dependency_overrides[auth.get_current_user_id] = _current_user_id
+    monkeypatch.setattr(main, "get_supabase_client", _get_client)
+    monkeypatch.setattr(main, "capture_saved_reel", _capture, raising=False)
+    try:
+        async with _route_client() as ac:
+            response = await ac.post("/saved-reels", json={"url": "https://www.instagram.com/reel/ABC123"})
+    finally:
+        main.app.dependency_overrides.clear()
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "error": {"code": "internal_error", "message": "Internal server error"}
+    }
+    assert "database unavailable" not in response.text
+    assert "exactly one row" not in response.text
+
+
+@pytest.mark.parametrize("extra_field", ["user_id", "analysis_status", "reel_cache_id"])
+async def test_saved_reel_route_rejects_client_owned_backend_fields(monkeypatch, extra_field):
+    async def _current_user_id():
+        return "authenticated-user-id"
+
+    main.app.dependency_overrides[auth.get_current_user_id] = _current_user_id
+    try:
+        async with _route_client() as ac:
+            response = await ac.post(
+                "/saved-reels",
+                json={
+                    "url": "https://www.instagram.com/reel/ABC123",
+                    extra_field: "client-controlled-value",
+                },
+            )
+    finally:
+        main.app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+    assert response.json() == {
+        "error": {"code": "validation_error", "message": "Request validation failed"}
+    }

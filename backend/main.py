@@ -20,12 +20,18 @@ from contextlib import asynccontextmanager
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import ConfigDict
 from slowapi.errors import RateLimitExceeded
 
 from api.errors import build_error_response, register_error_handlers
-from api.schemas import GenerateTripRequest, GenerateTripResponse
+from api.schemas import (
+    CaptureSavedReelRequest,
+    CaptureSavedReelResponse,
+    GenerateTripRequest,
+    GenerateTripResponse,
+)
 from api.streaming import stream_trip_events
-from auth import get_user_id_from_query_or_header
+from auth import get_current_user_id, get_user_id_from_query_or_header
 from jobs import compute_idempotency_key, enqueue_job, recover_inflight_jobs
 from pipeline.runner import record_event, run_generation
 from preferences import compose_preference_summary, fetch_traveler_profile
@@ -37,6 +43,7 @@ from rate_limit import (
     limiter,
     refund_daily_quota,
 )
+from saved_reels import capture_saved_reel
 from supabase_client import get_supabase_client
 
 _RECOVERY_TASKS: set = set()
@@ -96,6 +103,10 @@ app.add_middleware(
 )
 
 
+class _CaptureSavedReelRequest(CaptureSavedReelRequest):
+    model_config = ConfigDict(extra="forbid")
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -111,6 +122,19 @@ async def readiness():
         return {"ready": True}
     except Exception:
         return JSONResponse(status_code=503, content={"ready": False})
+
+
+@app.post("/saved-reels", response_model=CaptureSavedReelResponse)
+async def create_saved_reel(
+    req: _CaptureSavedReelRequest,
+    user_id: str = Depends(get_current_user_id),
+) -> CaptureSavedReelResponse:
+    client = await get_supabase_client()
+    try:
+        saved_reel = await capture_saved_reel(client, user_id, req.url)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="A valid Instagram Reel URL is required") from exc
+    return CaptureSavedReelResponse(saved_reel=saved_reel)
 
 
 @app.post("/generate-trip", response_model=GenerateTripResponse)

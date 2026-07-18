@@ -1,6 +1,9 @@
 """Request/response models for the generation API."""
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -25,3 +28,28 @@ class GenerateTripRequest(BaseModel):
 
 class GenerateTripResponse(BaseModel):
     trip_id: str
+
+
+class CaptureSavedReelRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+
+
+class SavedReel(BaseModel):
+    id: str
+    user_id: str
+    normalized_url: str
+    source_platform: Literal["instagram", "tiktok", "manual"]
+    reel_cache_id: str | None
+    analysis_status: Literal[
+        "not_analyzed", "queued", "processing", "organized",
+        "location_not_found", "failed",
+    ]
+    personal_label: str | None
+    retry_after: datetime | None
+    analyzed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CaptureSavedReelResponse(BaseModel):
+    saved_reel: SavedReel

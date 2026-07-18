@@ -45,6 +45,17 @@ describe('TripMap', () => {
     expect(MapCtor).toHaveBeenCalledTimes(1)
   })
 
+  it('anchors wheel zoom to the map center so pins do not follow the cursor', async () => {
+    process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN = 'pk.test'
+    vi.resetModules()
+    const { default: TripMap } = await import('@/components/map/TripMap')
+    render(<TripMap bundle={TOKYO_TRIP} activeDayNumber={1} selectedPlaceId={null} onSelectPlace={() => {}} />)
+
+    expect(MapCtor).toHaveBeenCalledWith(expect.objectContaining({
+      scrollZoom: { around: 'center' },
+    }))
+  })
+
   it('shows a fallback and does not construct a map without a token', async () => {
     vi.resetModules()
     const { default: TripMap } = await import('@/components/map/TripMap')

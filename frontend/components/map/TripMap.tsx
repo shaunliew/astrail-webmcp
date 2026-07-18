@@ -35,6 +35,7 @@ export default function TripMap({
       center: first ? [first.lng, first.lat] : [0, 20],
       zoom: 1.4,
       pitch: 0,
+      scrollZoom: { around: 'center' },
     })
     mapRef.current = map
     map.on('load', () => {

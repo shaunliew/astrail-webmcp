@@ -8,5 +8,9 @@ major_version = 15
 enabled = true
 # Google OAuth only in v1 (see CLAUDE.md).
 
+[auth.email.template.magic_link]
+subject = "Your Astrail sign-in code"
+content_path = "./supabase/templates/magic_link.html"
+
 [storage]
 enabled = true

@@ -4,10 +4,13 @@ import type { NextConfig } from "next";
 // governs EventSource). Dev defaults to localhost:8000; deploys set
 // NEXT_PUBLIC_BACKEND_URL to the Render URL (see .env.example).
 const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://*.supabase.co";
+const isProduction = process.env.NODE_ENV === "production";
 
 const scriptSrc = [
   "'self'",
   "'unsafe-inline'",
+  "'wasm-unsafe-eval'",
   "https://tally.so",
   process.env.NODE_ENV === "development" ? "'unsafe-eval'" : "",
 ]
@@ -20,7 +23,7 @@ const contentSecurityPolicy = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https://img.youtube.com https://i.ytimg.com",
   "font-src 'self' data:",
-  `connect-src 'self' ${backendUrl} https://tally.so https://*.supabase.co https://api.mapbox.com https://events.mapbox.com https://us.i.posthog.com`,
+  `connect-src 'self' ${backendUrl} ${supabaseUrl} https://tally.so https://*.supabase.co https://api.mapbox.com https://events.mapbox.com https://us.i.posthog.com`,
   "frame-src https://tally.so https://www.youtube.com https://www.youtube-nocookie.com",
   "worker-src 'self' blob:",
   "media-src 'self' blob:",
@@ -28,7 +31,7 @@ const contentSecurityPolicy = [
   "base-uri 'self'",
   "form-action 'self' https://tally.so",
   "frame-ancestors 'none'",
-  "upgrade-insecure-requests",
+  ...(isProduction ? ["upgrade-insecure-requests"] : []),
 ].join("; ");
 
 const securityHeaders = [
@@ -57,10 +60,10 @@ const securityHeaders = [
     key: "Cross-Origin-Opener-Policy",
     value: "same-origin-allow-popups",
   },
-  {
+  ...(isProduction ? [{
     key: "Strict-Transport-Security",
     value: "max-age=31536000; includeSubDomains",
-  },
+  }] : []),
 ];
 
 const nextConfig: NextConfig = {

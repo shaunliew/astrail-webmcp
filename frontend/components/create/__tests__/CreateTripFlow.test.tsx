@@ -35,7 +35,7 @@ describe('CreateTripFlow', () => {
 
   it('disables Generate until there is at least one item', () => {
     render(<CreateTripFlow />)
-    expect(screen.getByRole('button', { name: /generate/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /review trip brief/i })).toBeDisabled()
   })
 
   it('creates the trip, streams progress, and routes to the trip view', async () => {
@@ -47,7 +47,8 @@ describe('CreateTripFlow', () => {
     fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
     fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
 
-    fireEvent.click(screen.getByRole('button', { name: /generate/i }))
+    fireEvent.click(screen.getByRole('button', { name: /review trip brief/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /generate my trip/i }))
 
     await waitFor(() => expect(generateTrip).toHaveBeenCalledTimes(1))
     expect(getAccessToken).toHaveBeenCalledTimes(1)
@@ -73,7 +74,8 @@ describe('CreateTripFlow', () => {
     fireEvent.click(screen.getByRole('button', { name: /add links/i }))
     fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
     fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
-    fireEvent.click(screen.getByRole('button', { name: /generate/i }))
+    fireEvent.click(screen.getByRole('button', { name: /review trip brief/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /generate my trip/i }))
 
     await waitFor(() => expect(generateTrip).toHaveBeenCalledTimes(1))
     unmount() // unmount BEFORE generateTrip resolves

@@ -16,10 +16,9 @@ export default function EvidenceChip({ evidence }: { evidence: TripPlaceEvidence
   const pct = `${Math.round(evidence.confidence * 100)}%`
   const label = KIND_LABEL[evidence.evidence_kind]
   return (
-    <span className="type-label inline-flex items-center gap-1.5 rounded-full border border-[var(--line)] bg-[var(--brass-soft)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--brass)]">
-      <span aria-hidden className="h-1 w-1 rounded-full bg-[var(--brass)]" />
-      {label}
-      <span className="text-[var(--muted)]">{pct}</span>
+    <span className="type-evidence inline-flex items-center gap-1.5 rounded-[var(--radius-chip)] bg-[var(--chip-bg)] px-2 py-0.5 text-[10px] tracking-wide text-[var(--muted)]">
+      <span className="font-semibold uppercase text-[var(--brass-bright)]">{label}</span>
+      <span>{pct}</span>
       {evidence.source_url ? (
         <a
           href={evidence.source_url}

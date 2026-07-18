@@ -12,6 +12,21 @@ const STATUS_LABEL: Partial<Record<InspirationStatus, string>> = {
   pending_resolution: 'Will confirm',
 }
 
+function humanizeStatus(status: InspirationStatus): string {
+  return STATUS_LABEL[status] ?? status.replaceAll('_', ' ').toLowerCase()
+}
+
+function statusClass(status: InspirationStatus): string {
+  if (status === 'valid') return 'bg-[rgba(123,201,166,0.12)] text-[var(--ok)]'
+  if (status === 'pending_resolution') return 'bg-[rgba(247,243,232,0.08)] text-[var(--muted)]'
+  return 'bg-[var(--chip-bg)] text-[var(--faint)]'
+}
+
+function reelShortcode(url: string): string {
+  const match = url.match(/\/(reel|p|tv)\/([^/]+)\/?$/i)
+  return match ? `${match[1].toLowerCase()}/${match[2]}` : url
+}
+
 function TypeBadge({ item }: { item: DraftInspirationItem }) {
   const isReel = item.item_type === 'reel_url'
   return (
@@ -22,19 +37,28 @@ function TypeBadge({ item }: { item: DraftInspirationItem }) {
 }
 
 function Card({ item, onRemove }: { item: DraftInspirationItem; onRemove: () => void }) {
-  const primary = item.item_type === 'reel_url' ? item.normalized_reel_url : item.requested_place_text
+  const isReel = item.item_type === 'reel_url'
+  const primary = isReel ? reelShortcode(item.normalized_reel_url ?? '') : item.requested_place_text
+  const removeLabel = isReel ? item.normalized_reel_url : item.requested_place_text
   return (
-    <li className="surface flex items-center gap-3 rounded-lg p-3">
+    <li className="surface flex items-start gap-3 p-3">
       <TypeBadge item={item} />
-      <span className="type-body min-w-0 flex-1 truncate text-sm text-[var(--starlight)]">{primary}</span>
-      <span className="type-label text-[10px] uppercase tracking-wide text-[var(--brass)]">
-        {STATUS_LABEL[item.status] ?? item.status}
+      <div className="min-w-0 flex-1">
+        <span className="type-body block truncate text-sm text-[var(--starlight)]">{primary}</span>
+        {isReel ? (
+          <span className="type-evidence mt-1 block truncate text-[10px] text-[var(--faint)]">
+            {item.normalized_reel_url}
+          </span>
+        ) : null}
+      </div>
+      <span className={`type-label shrink-0 rounded-[var(--radius-chip)] px-2 py-1 text-[10px] uppercase tracking-wide ${statusClass(item.status)}`}>
+        {humanizeStatus(item.status)}
       </span>
       <button
         type="button"
         onClick={onRemove}
-        aria-label={`Remove ${primary ?? 'item'}`}
-        className="type-label text-[var(--faint)] transition-colors hover:text-[var(--starlight)]"
+        aria-label={`Remove ${removeLabel ?? 'item'}`}
+        className="type-label -my-2 -mr-1 flex min-h-11 min-w-11 items-center justify-center rounded-[var(--radius-chip)] border border-transparent text-[var(--faint)] transition-colors hover:bg-[rgba(247,243,232,0.06)] hover:text-[var(--starlight)]"
       >
         ✕
       </button>

@@ -4,6 +4,7 @@ import type {
 } from '@/lib/trip/backend-types'
 
 export const MAX_REELS = 5
+export const MAX_TRIP_PLACES = 8
 
 export type DraftInspirationItem = {
   key: string // stable React key: the normalized URL (reels) or `place:<lowercased text>` (places)

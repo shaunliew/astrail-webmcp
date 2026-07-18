@@ -22,7 +22,7 @@ const STAGE_LABEL: Record<GenerationStage, string> = {
 
 export default function GenerationProgress({ events }: { events: StreamEvent[] }) {
   return (
-    <section data-testid="generation-progress" className="mx-auto flex w-full max-w-xl flex-col gap-4 p-6">
+    <section data-testid="generation-progress" className="flex w-full flex-col gap-4">
       <h1 className="type-display text-2xl text-[var(--starlight)]">Building your trip</h1>
       <p className="type-body text-sm text-[var(--muted)]">
         Astrail is turning your inspiration into a mapped route. Pins appear as places are verified.
@@ -56,12 +56,22 @@ export default function GenerationProgress({ events }: { events: StreamEvent[] }
               )
             }
             const mapped = event.stage === 'dedup'
+            const current = i === events.length - 1
             return (
-              <li key={i} className="surface flex flex-col gap-0.5 rounded-lg p-3">
+              <li
+                key={i}
+                className={[
+                  'flex flex-col gap-0.5 rounded-lg border px-3 py-2.5',
+                  current
+                    ? 'border-[rgba(201,151,78,0.3)] bg-[var(--brass-soft)] shadow-[0_0_14px_var(--brass-glow)]'
+                    : 'border-transparent bg-[rgba(247,243,232,0.04)]',
+                ].join(' ')}
+              >
                 <span className={[
-                  'type-label text-[10px] uppercase tracking-wide',
-                  mapped ? 'text-[var(--brass)]' : 'text-[var(--muted)]',
+                  'type-label flex items-center gap-1.5 text-[10px] uppercase tracking-wide',
+                  mapped || current ? 'text-[var(--brass-bright)]' : 'text-[var(--muted)]',
                 ].join(' ')}>
+                  {current ? <span aria-hidden className="pulse-dot" /> : null}
                   {STAGE_LABEL[event.stage]}
                 </span>
                 <span className="type-body text-sm text-[var(--starlight)]">{event.msg}</span>

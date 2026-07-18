@@ -3,6 +3,7 @@ import { TOKYO_TRIP } from '@/lib/trip/fixtures'
 import {
   orderedDays, placesForDay, legsForDay, restaurantsForDay,
   tripHotels, buildPlaceIndex, findTripPlace,
+  pinLabelForPlace,
 } from '@/lib/trip/selectors'
 
 describe('trip selectors', () => {
@@ -45,5 +46,13 @@ describe('trip selectors', () => {
     expect(findTripPlace(TOKYO_TRIP, known)?.place_id).toBe(known)
     expect(findTripPlace(TOKYO_TRIP, 'nope')).toBeNull()
     expect(findTripPlace(TOKYO_TRIP, null)).toBeNull()
+  })
+
+  it('pinLabelForPlace numbers only the active day in itinerary order', () => {
+    const day1 = placesForDay(TOKYO_TRIP, 1)
+    expect(pinLabelForPlace(TOKYO_TRIP, day1[0], 1)).toBe('1')
+    expect(pinLabelForPlace(TOKYO_TRIP, day1[1], 1)).toBe('2')
+    expect(pinLabelForPlace(TOKYO_TRIP, placesForDay(TOKYO_TRIP, 2)[0], 1)).toBeNull()
+    expect(pinLabelForPlace(TOKYO_TRIP, TOKYO_TRIP.places.find((tp) => tp.day_number === null)!, 1)).toBeNull()
   })
 })

@@ -27,6 +27,28 @@ export function tripStatusLabel(status: TripStatus): string {
   return STATUS_LABEL[status]
 }
 
+// Tone drives the status dot: 'live' is the only tone that may animate —
+// pulse means in-progress, never "saved" (a finished trip does not breathe).
+export type StatusTone = 'ok' | 'warn' | 'fail' | 'live'
+
+const STATUS_TONE: Record<TripStatus, StatusTone> = {
+  draft: 'live',
+  generating: 'live',
+  places_ready: 'live',
+  complete: 'ok',
+  saved_with_gaps: 'warn',
+  failed: 'fail',
+}
+
+export function tripStatusTone(status: TripStatus): StatusTone {
+  return STATUS_TONE[status]
+}
+
+export function statusDotClass(status: TripStatus): string {
+  const tone = tripStatusTone(status)
+  return tone === 'live' ? 'pulse-dot pulse-dot--live' : `pulse-dot pulse-dot--${tone}`
+}
+
 const BUDGET_LABEL: Record<BudgetLevel, string> = {
   budget: 'Budget',
   mid_range: 'Mid-range',

@@ -15,6 +15,6 @@ describe('RestaurantStrip', () => {
 
   it('renders an empty-state when there are no restaurants', () => {
     render(<RestaurantStrip restaurants={[]} placeIndex={idx} />)
-    expect(screen.getByText(/no restaurant/i)).toBeInTheDocument()
+    expect(screen.getByText(/Astrail didn.t find restaurants near this route yet/i)).toBeInTheDocument()
   })
 })

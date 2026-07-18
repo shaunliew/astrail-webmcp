@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import DottedGlobe from '@/components/night/DottedGlobe'
 
 const RESEND_COOLDOWN_S = 60 // Supabase rate-limits OTP sends (~1/min) — surface it, don't let users hit the raw error
 
@@ -57,8 +58,14 @@ export default function SignInPage() {
   }
 
   return (
-    <main className="min-h-[100dvh] flex items-center justify-center bg-[color:var(--void)]">
-      <div className="flex w-full max-w-sm flex-col items-center gap-8 p-6">
+    <main className="app-shell relative flex min-h-[100dvh] items-center justify-center overflow-hidden">
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-[55dvh] overflow-hidden">
+        <div className="absolute left-1/2 top-0 -translate-x-1/2 opacity-90">
+          <DottedGlobe />
+        </div>
+        <div aria-hidden className="absolute inset-x-0 bottom-0 h-2/5 bg-gradient-to-t from-[var(--night-void)] to-transparent" />
+      </div>
+      <section className="surface relative z-10 flex w-full max-w-sm flex-col gap-8 p-6">
         <div className="flex flex-col items-center gap-2">
           <h1 className="text-3xl font-[family-name:var(--font-instrument-serif)] text-[color:var(--starlight)] italic">
             Astrail
@@ -126,14 +133,14 @@ export default function SignInPage() {
               type="button"
               onClick={() => void sendCode()}
               disabled={pending || cooldown > 0}
-              className="type-label text-[11px] uppercase tracking-wide text-[var(--muted)] underline-offset-2 hover:underline disabled:opacity-40"
+              className="type-label min-h-11 text-[11px] uppercase tracking-wide text-[var(--muted)] underline-offset-2 hover:underline disabled:opacity-40"
             >
               {cooldown > 0 ? `Resend code (${cooldown}s)` : 'Resend code'}
             </button>
             <button
               type="button"
               onClick={() => { setStep('email'); setCode(''); setError(null); setNotice(null) }}
-              className="type-label text-[11px] uppercase tracking-wide text-[var(--faint)] underline-offset-2 hover:underline"
+              className="type-label min-h-11 text-[11px] uppercase tracking-wide text-[var(--faint)] underline-offset-2 hover:underline"
             >
               Use a different email
             </button>
@@ -142,7 +149,7 @@ export default function SignInPage() {
 
         {notice ? <p className="type-body text-xs text-[var(--muted)]">{notice}</p> : null}
         {error ? <p className="type-body text-xs text-red-400" role="alert">{error}</p> : null}
-      </div>
+      </section>
     </main>
   )
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { tripTitle, tripDateRange, tripStatusLabel, budgetLabel } from '@/lib/trip/trip-presenters'
+import { tripTitle, tripDateRange, tripStatusLabel, tripStatusTone, statusDotClass, budgetLabel } from '@/lib/trip/trip-presenters'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures'
 import type { Trip } from '@/lib/trip/backend-types'
 
@@ -27,6 +27,15 @@ describe('tripStatusLabel', () => {
   it('maps statuses to human labels', () => {
     expect(tripStatusLabel('saved_with_gaps')).toBe('Saved with gaps')
     expect(tripStatusLabel('complete')).toBe('Complete')
+  })
+
+  it('maps statuses to tones — only in-flight states animate', () => {
+    expect(tripStatusTone('generating')).toBe('live')
+    expect(tripStatusTone('complete')).toBe('ok')
+    expect(tripStatusTone('saved_with_gaps')).toBe('warn')
+    expect(tripStatusTone('failed')).toBe('fail')
+    expect(statusDotClass('generating')).toBe('pulse-dot pulse-dot--live')
+    expect(statusDotClass('saved_with_gaps')).toBe('pulse-dot pulse-dot--warn')
   })
 })
 

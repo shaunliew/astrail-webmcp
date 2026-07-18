@@ -36,3 +36,13 @@ export function findTripPlace(bundle: TripBundle, placeId: string | null): TripP
   if (!placeId) return null
   return bundle.places.find((tp) => tp.place_id === placeId) ?? null
 }
+
+export function pinLabelForPlace(
+  bundle: TripBundle,
+  tripPlace: TripPlace,
+  activeDayNumber: number,
+): string | null {
+  if (tripPlace.day_number !== activeDayNumber) return null
+  const index = placesForDay(bundle, activeDayNumber).findIndex((tp) => tp.id === tripPlace.id)
+  return index >= 0 ? String(index + 1) : null
+}

@@ -9,7 +9,11 @@ const STATUS_LABEL: Record<HotelStatus, string> = {
 
 export default function HotelPanel({ hotels }: { hotels: HotelSuggestion[] }) {
   if (hotels.length === 0) {
-    return <p className="type-body text-xs text-[var(--muted)]">No lodging suggestions yet.</p>
+    return (
+      <div className="rounded-[var(--radius-card)] border border-dashed border-[var(--line)] p-3">
+        <p className="type-body text-xs text-[var(--muted)]">No hotel suggestions for these dates.</p>
+      </div>
+    )
   }
   return (
     <ul className="flex flex-col gap-2">

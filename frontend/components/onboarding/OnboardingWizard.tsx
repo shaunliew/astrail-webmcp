@@ -54,29 +54,31 @@ export default function OnboardingWizard() {
   }
 
   return (
-    <main className="mx-auto flex min-h-[100dvh] w-full max-w-lg flex-col gap-8 bg-[var(--void)] p-6">
+    <main className="app-shell flex min-h-[100dvh] w-full items-center justify-center p-6">
+      <div className="flex w-full max-w-lg flex-col gap-6">
       <div className="flex flex-col gap-2">
         <span className="type-label text-[10px] uppercase tracking-wide text-[var(--faint)]">
           Step {stepIndex + 1} of {STEPS.length}
         </span>
         <div
-          className="flex gap-1"
+          className="h-1.5 overflow-hidden rounded-full bg-[rgba(247,243,232,0.08)]"
           role="progressbar"
           aria-valuenow={stepIndex + 1}
           aria-valuemin={1}
           aria-valuemax={STEPS.length}
         >
-          {STEPS.map((s, i) => (
-            <span
-              key={s.key}
-              className={['h-1 flex-1 rounded-full', i <= stepIndex ? 'bg-[var(--brass)]' : 'bg-[var(--line)]'].join(' ')}
-            />
-          ))}
+          <span
+            className="block h-full rounded-full bg-[var(--brass)] transition-[width] duration-200"
+            style={{ width: `${((stepIndex + 1) / STEPS.length) * 100}%` }}
+          />
         </div>
-        <h1 className="type-display text-3xl text-[var(--starlight)]">{step.title}</h1>
+        <h1 className="type-display flex items-center gap-2 text-3xl text-[var(--starlight)]">
+          {step.title}
+          {isLast ? <span aria-hidden className="pulse-dot" /> : null}
+        </h1>
       </div>
 
-      <section className="flex flex-col gap-4">
+      <section className="surface flex flex-col gap-6 p-6 sm:p-8">
         {step.key === 'origin' ? (
           <div className="flex flex-col gap-2">
             <label htmlFor="origin-city" className="type-label text-[11px] uppercase tracking-wide text-[var(--muted)]">
@@ -127,7 +129,7 @@ export default function OnboardingWizard() {
         ) : null}
 
         {step.key === 'review' ? (
-          <dl className="surface flex flex-col gap-3 rounded-xl p-4">
+            <dl className="flex flex-col gap-3">
             <ReviewRow label="Origin" value={draft.origin_city || 'Not set'} />
             <ReviewRow label="Style" value={draft.travel_style_tags.join(', ') || 'None yet'} />
             <ReviewRow label="Interests" value={draft.preference_tags.join(', ') || 'None yet'} />
@@ -145,7 +147,7 @@ export default function OnboardingWizard() {
           type="button"
           onClick={() => setStepIndex((i) => Math.max(0, i - 1))}
           disabled={stepIndex === 0}
-          className="type-label rounded-lg border border-[var(--line)] px-4 py-2 text-xs uppercase tracking-wide text-[var(--muted)] disabled:opacity-30"
+          className="type-label rounded-lg px-4 py-3 text-sm uppercase tracking-wide text-[var(--faint)] transition-colors hover:bg-[rgba(247,243,232,0.06)] hover:text-[var(--muted)] disabled:opacity-30"
         >
           Back
         </button>
@@ -155,7 +157,7 @@ export default function OnboardingWizard() {
             type="button"
             onClick={finish}
             disabled={!canFinish(draft) || saving}
-            className="type-label rounded-lg border border-[var(--brass)] bg-[var(--brass-soft)] px-4 py-2 text-xs uppercase tracking-wide text-[var(--starlight)] disabled:opacity-40"
+            className="type-label rounded-lg border border-[var(--brass)] bg-[var(--brass-glow)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] transition-colors hover:bg-[rgba(201,151,78,0.38)] disabled:opacity-40"
           >
             {saving ? 'Saving…' : 'Finish'}
           </button>
@@ -163,11 +165,12 @@ export default function OnboardingWizard() {
           <button
             type="button"
             onClick={() => setStepIndex((i) => Math.min(STEPS.length - 1, i + 1))}
-            className="type-label rounded-lg border border-[var(--brass)] bg-[var(--brass-soft)] px-4 py-2 text-xs uppercase tracking-wide text-[var(--starlight)]"
+            className="type-label rounded-lg border border-[var(--brass)] bg-[var(--brass-glow)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] transition-colors hover:bg-[rgba(201,151,78,0.38)]"
           >
             Next
           </button>
         )}
+      </div>
       </div>
     </main>
   )

@@ -25,6 +25,7 @@ describe('TripsList', () => {
   it('shows an empty state when there are no trips', async () => {
     listTrips.mockResolvedValueOnce([])
     render(<TripsList />)
-    expect(await screen.findByText(/no trips yet/i)).toBeInTheDocument()
+    expect(await screen.findByText('No trails yet. Your saved trips will land here.')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /plan your first trip/i })).toHaveAttribute('href', '/app')
   })
 })

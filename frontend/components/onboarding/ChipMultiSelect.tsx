@@ -19,10 +19,10 @@ export default function ChipMultiSelect({
             aria-pressed={on}
             onClick={() => onToggle(opt)}
             className={[
-              'type-label rounded-full border px-3 py-1.5 text-xs uppercase tracking-wide transition-colors',
+              'type-label rounded-[6px] px-3 py-1.5 text-xs uppercase tracking-wide transition-colors',
               on
-                ? 'border-[var(--brass)] bg-[var(--brass-soft)] text-[var(--starlight)]'
-                : 'border-[var(--line)] text-[var(--muted)] hover:text-[var(--starlight)]',
+                ? 'border border-[rgba(201,151,78,0.35)] bg-[var(--brass-soft)] text-[var(--brass-bright)]'
+                : 'bg-[var(--chip-bg)] text-[var(--muted)] hover:text-[var(--starlight)]',
             ].join(' ')}
           >
             {opt}

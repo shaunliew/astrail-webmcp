@@ -44,5 +44,14 @@ Thumbs.db
 backend/captures/
 
 # pytest basetemp redirect (default %TEMP%/pytest-of-* is permission-locked on this machine)
-backend/.pytest-tmp/
+backend/.pytest-tmp*/
+backend/tmpastrail-pytest*/
+.pytest_cache/
 .uv-cache/
+
+# Graphify local knowledge-graph output (regenerate with `graphify update backend`)
+graphify-out/
+.gstack/
+
+# Machine-local Claude permissions and MCP toggles
+.claude/settings.local.json

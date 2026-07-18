@@ -12,6 +12,12 @@
       "runtimeExecutable": "uv",
       "runtimeArgs": ["run", "--directory", "backend", "--env-file", ".env", "uvicorn", "main:app", "--port", "8000"],
       "port": 8000
+    },
+    {
+      "name": "graphify-view",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8899", "--directory", "backend/graphify-out"],
+      "port": 8899
     }
   ]
 }

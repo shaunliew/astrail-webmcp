@@ -24,7 +24,8 @@ def _now() -> str:
 
 def compute_idempotency_key(user_id: str, reel_urls: list[str], start_date: str, end_date: str,
                             *, preferences: str | None = None, pace: str = "balanced",
-                            destination_hint: str | None = None) -> str:
+                            destination_hint: str | None = None,
+                            place_ids: list[str] | None = None) -> str:
     """Deterministic key from the REQUEST (not the trip id) so retries dedupe. Folds in
     every output-affecting field (A4): same reels+dates but CHANGED preferences/pace/
     destination_hint must produce a NEW trip, not replay the old one.
@@ -36,7 +37,7 @@ def compute_idempotency_key(user_id: str, reel_urls: list[str], start_date: str,
     `preferences` is stripped to match the runtime's `merge_preferences`, so a
     whitespace-only difference doesn't spawn a duplicate trip."""
     material = json.dumps(
-        [user_id, sorted(reel_urls), start_date, end_date,
+        [user_id, sorted(reel_urls), sorted(place_ids or []), start_date, end_date,
          (preferences or "").strip(), (pace or "balanced"), (destination_hint or "")],
         separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(material.encode("utf-8")).hexdigest()

@@ -26,7 +26,7 @@ FALLBACK_MODEL = "gpt-4o"
 
 # Bump this on ANY change to the extractor (instructions, model, keep_valid_places, or the
 # PlaceResult schema) — the extraction cache keys on it, so a bump auto-invalidates stale entries.
-EXTRACTOR_VERSION = "2026-07-06.1"
+EXTRACTOR_VERSION = "2026-07-18.3"
 
 PLACE_EXTRACTOR_INSTRUCTIONS = """\
 You are a travel place-extraction agent. You receive an Instagram reel caption and an \
@@ -52,6 +52,11 @@ Step 4 — return ExtractionResult. For each place:
   - category: restaurant | hotel | attraction | transport | other
   - source_type: "reel_extracted"
   - lat / lng: from web_search (null if not found — Pydantic bounds apply)
+  - country_code: uppercase ISO 3166-1 alpha-2 code for the researched coordinates.
+    ALWAYS include it; set it to null only when the country cannot be established from
+    web_search evidence. Never infer it from the venue name alone.
+  - country_name: researched country display name matching country_code. ALWAYS include
+    it; set it to null when country_code is null.
   - confidence: tier value for tagged places; 0.5–0.7 for free-text-only
   - evidence_quote: COPY THE EXACT PHRASE verbatim from the caption or location tag — \
     a literal substring, character for character, including emoji (e.g. "📍Tokyo Dream Park")
@@ -64,6 +69,10 @@ Rules:
     (like evidence_quote). If there is no local-script name in the text, set it to null.
   - A Tier 1 📍 place overrides any conflicting inference.
   - Drop places with confidence < 0.5 or with no lat/lng found after two searches.
+  - country_code and country_name must be supported by the same web_search evidence used
+    for the coordinates. Never mix a venue from one country with coordinates from another.
+  - If coordinates or their country cannot be verified after two searches, drop the place.
+  - Return at most 10 places. Keep the strongest creator-tagged, evidenced candidates.
   - If the caption + location tag are only city-level (e.g. "Tokyo, Japan") with no \
     specific venue, return an empty places list rather than inventing a venue.
 """
@@ -74,6 +83,18 @@ _FAKE_DOMAINS = frozenset({
 })
 _PLACEHOLDER_PATH_RE = re.compile(
     r"placeholder|example|your[-_]?(url|link|website)|insert[-_]?(url|link)", re.IGNORECASE
+)
+_PROMPT_INJECTION_RE = re.compile(
+    r"(?:"
+    r"\b(?:ignore|disregard|forget|override)\b.{0,80}"
+    r"\b(?:previous|prior|above|system|developer|agent)\b.{0,80}"
+    r"\b(?:instructions?|prompt|rules?|message)\b"
+    r"|(?:^|[\r\n])\s*(?:system|developer|assistant)\s*:"
+    r"|<\s*/?\s*(?:system|developer|assistant)\s*>"
+    r"|\[\s*(?:system|developer|assistant|inst)\s*\]"
+    r"|<\|(?:im_start|system|developer|assistant)\|>"
+    r")",
+    re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -107,7 +128,7 @@ def build_extractor_input(reel: ReelData) -> str:
 
 
 def keep_valid_places(places: list[PlaceResult], reel: ReelData) -> list[PlaceResult]:
-    """Drop hallucinations: null coords, non-verbatim evidence_quote, or placeholder source_url.
+    """Drop hallucinations: incomplete coords/country, non-verbatim evidence, or placeholder URLs.
     Also null a non-verbatim name_local (keep the place) so an unreliable local name never
     reaches the geocoder — guardrails #1 (no hallucinated data) and #11 (untrusted content)."""
     corpus = (reel.caption + " " + (reel.location_name or "")).lower()
@@ -117,7 +138,9 @@ def keep_valid_places(places: list[PlaceResult], reel: ReelData) -> list[PlaceRe
             continue
         if not p.evidence_quote or p.evidence_quote.lower() not in corpus:
             continue
-        if p.source_url is not None and is_placeholder_url(p.source_url):
+        if is_placeholder_url(p.source_url):
+            continue
+        if p.country_code is None or p.country_name is None:
             continue
         # Normalize name_local to None unless it is a non-blank verbatim substring of the
         # caption — blank ("" / whitespace) or non-verbatim values never reach the geocoder
@@ -134,6 +157,29 @@ def _model_errors() -> tuple[type[BaseException], ...]:
     return (openai.NotFoundError, openai.BadRequestError, openai.PermissionDeniedError)
 
 
+def _guardrail_errors() -> tuple[type[BaseException], ...]:
+    """Lazy: keep the Agents SDK out of module import while preserving the list-return contract."""
+    from agents import InputGuardrailTripwireTriggered
+    return (InputGuardrailTripwireTriggered,)
+
+
+def _build_reel_input_guardrail():
+    """Reject instruction-like Reel text before the web-search-enabled agent starts."""
+    from agents import GuardrailFunctionOutput, input_guardrail
+
+    @input_guardrail(name="reject_reel_prompt_injection", run_in_parallel=False)
+    def reject_reel_prompt_injection(context, agent, input_value):
+        del context, agent
+        text = input_value if isinstance(input_value, str) else str(input_value)
+        tripped = _PROMPT_INJECTION_RE.search(text) is not None
+        return GuardrailFunctionOutput(
+            output_info={"reason": "prompt_injection"} if tripped else None,
+            tripwire_triggered=tripped,
+        )
+
+    return reject_reel_prompt_injection
+
+
 def build_extractor(model: str):
     """Construct the place-extractor Agent. Lazy-imports the Agents SDK."""
     from agents import Agent, ModelSettings, WebSearchTool
@@ -144,6 +190,7 @@ def build_extractor(model: str):
         instructions=PLACE_EXTRACTOR_INSTRUCTIONS,
         tools=[WebSearchTool(search_context_size="high")],
         model_settings=ModelSettings(tool_choice="required", parallel_tool_calls=True),
+        input_guardrails=[_build_reel_input_guardrail()],
         output_type=ExtractionResult,
     )
 
@@ -187,10 +234,14 @@ async def extract_places(reel: ReelData, *, model: str | None = None, runner=Non
     user_input = build_extractor_input(reel)
     used = model
     try:
-        result = await run(build_extractor(model), user_input)
-    except _model_errors():
-        used = FALLBACK_MODEL
-        result = await run(build_extractor(FALLBACK_MODEL), user_input)
+        try:
+            result = await run(build_extractor(model), user_input)
+        except _model_errors():
+            used = FALLBACK_MODEL
+            result = await run(build_extractor(FALLBACK_MODEL), user_input)
+    except _guardrail_errors():
+        print("  [extract] input_guardrail=tripped places=0", file=sys.stderr)
+        return []
     raw = result.final_output.places
     kept = keep_valid_places(raw, reel)
     print(f"  [extract] model={used} web_search_calls={_count_web_searches(result)} "

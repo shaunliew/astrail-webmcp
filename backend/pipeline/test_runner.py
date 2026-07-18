@@ -183,6 +183,29 @@ async def test_happy_path_completes_marks_job_and_emits_result():
 
 
 @pytest.mark.asyncio
+async def test_place_only_trip_uses_authorized_canonical_place_without_scrape(monkeypatch):
+    c = _Client(jobs=[{"id": "job-1", "status": "pending"}])
+
+    async def authorize(_client, _user_id, _place_ids):
+        return [{
+            "id": "place-1", "name": "Tokyo Tower", "place_type": "attraction",
+            "lat": 35.6586, "lng": 139.7454, "city": "Tokyo",
+            "confidence": 0.95, "evidence_quote": "Tokyo Tower", "source_url": None,
+        }]
+
+    monkeypatch.setattr(runner, "authorize_place_ids", authorize)
+    out = await runner.run_generation(
+        "trip-1", "user-1", [], "2026-08-01", "2026-08-01", job_id="job-1",
+        place_ids=["place-1"], client=c, mem0=None, weather=_no_weather,
+        transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel,
+    )
+
+    assert out["itinerary"]["days"][0]["place_names"] == ["Tokyo Tower"]
+    assert "scrape" not in _event_stages(c)
+    assert c.db["jobs"][0]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
 async def test_one_reel_fails_saves_with_gaps():
     c = _Client(jobs=[{"id": "job-1", "status": "pending"}])
 

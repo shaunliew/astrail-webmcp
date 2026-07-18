@@ -12,9 +12,10 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 PlaceSourceType = Literal["reel_extracted", "user_requested", "agent_suggested"]
+MAX_EXTRACTED_PLACES = 10
 
 
 class PlaceResult(BaseModel):
@@ -36,12 +37,22 @@ class PlaceResult(BaseModel):
                     "(e.g. '東京タワー'), or None when the caption has no local-script name. "
                     "Used to ground coords in providers that index POIs in the local script.",
     )
+    country_code: str | None = Field(default=None, pattern=r"^[A-Z]{2}$")
+    country_name: str | None = None
+
+    @model_validator(mode="after")
+    def country_fields_are_a_pair(self) -> "PlaceResult":
+        if (self.country_code is None) != (self.country_name is None):
+            raise ValueError("country_code and country_name must be set together")
+        if self.country_name is not None and not self.country_name.strip():
+            raise ValueError("country_name must be nonblank")
+        return self
 
 
 class ExtractionResult(BaseModel):
     """Single-model SDK output_type wrapper for the extractor agent (Step 5)."""
 
-    places: list[PlaceResult]
+    places: list[PlaceResult] = Field(max_length=MAX_EXTRACTED_PLACES)
 
 
 class CanonicalPlace(PlaceResult):

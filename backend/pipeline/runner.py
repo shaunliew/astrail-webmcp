@@ -26,6 +26,7 @@ from pipeline.offline_harness import _date_range, assemble_itinerary
 from pipeline.persist import persist_hotels, persist_itinerary, persist_narration, persist_restaurants, persist_tradeoffs, persist_transport, persist_weather
 from pipeline.tradeoffs import build_hotel_comparisons, warnings_to_notes
 from jobs import mark_job_done, mark_job_running
+from organizer import authorize_place_ids
 from supabase_client import get_supabase_client
 
 # A3: mem0=_UNSET (not None) means "not injected -> resolve the real singleton". Explicit
@@ -74,6 +75,7 @@ async def _fail(client, trip_id, user_id, job_id, stage, message) -> dict:
 
 async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                           *, job_id=None, pace="balanced", preferences=None, destination_hint=None,
+                          place_ids=None,
                           client=None, scrape=None, extract=None, mem0=_UNSET,
                           weather=None, transport=None, restaurant=None, narrator=None, hotel=None) -> dict:
     """Run the deterministic spine; own the job lifecycle; always write a terminal result."""
@@ -81,13 +83,14 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
         if client is None:
             client = await get_supabase_client()
 
-        if scrape is None:
+        place_ids = place_ids or []
+        if not place_ids and scrape is None:
             from scrape.apify_direct import scrape_reel
             token = os.environ["APIFY_TOKEN"]
 
             async def scrape(url):
                 return await scrape_reel(url, token=token)
-        if extract is None:
+        if not place_ids and extract is None:
             from genagents.place_extractor import extract_places
             extract = extract_places
 
@@ -115,68 +118,77 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                            message=pref_ctx.summary,
                            payload={"preference_source": pref_ctx.source})
 
-        # PHASE 1+2: SCRAPE + EXTRACT, with a per-reel EXTRACTION CACHE. A repeat reel (same
-        # normalized URL + EXTRACTOR_VERSION) skips BOTH scrape and extract. Non-reel URLs are
-        # uncacheable → normal scrape+extract. Cache writes are best-effort (never fail the trip).
-        from genagents.place_extractor import EXTRACTOR_VERSION
-        from pipeline.cache import cache_places, get_cached_places
-
-        # Per-reel results indexed by reel_urls position, so `places` is assembled in reel-URL order
-        # regardless of cache state (WARM == COLD). Without this, cache-HIT places would precede MISS
-        # extractions and change the input order into the (mostly, but not fully) order-independent
-        # dedup — re-running the same reels could then yield a different itinerary at a confidence tie.
-        results: list[list[PlaceResult] | None] = [None] * len(reel_urls)
-        miss_idx: list[int] = []
-        n_hit = 0
-        for i, url in enumerate(reel_urls):
-            try:
-                cached = await get_cached_places(client, url, EXTRACTOR_VERSION)
-            except Exception:
-                cached = None   # cache READ is a pure optimization — a Supabase blip / model_validate
-                                # drift = MISS (scrape+extract), NEVER fail the trip (guardrail #3).
-            if cached is not None:
-                results[i] = cached
-                n_hit += 1
-            else:
-                miss_idx.append(i)
-        if n_hit:
+        if place_ids:
+            # Organized-place trips are deliberately a separate branch: selected
+            # canonical IDs are owner-checked through Saved Reel proof and never
+            # trigger a second scrape, extraction, or paid analysis.
+            selected = await authorize_place_ids(client, user_id, place_ids)
+            places = [PlaceResult(
+                name=row["name"], category=row.get("place_type", "other"),
+                lat=row["lat"], lng=row["lng"], confidence=row.get("confidence", 0.0),
+                evidence_quote=row.get("evidence_quote", "Organized from a Saved Reel"),
+                source_type="reel_extracted", source_url=row.get("source_url"),
+                city_or_region_guess=row.get("city"),
+            ) for row in selected]
             await record_event(client, trip_id, event_type="stage", stage="cache_hit",
-                               message=f"{n_hit} reel(s) from cache (skipped scrape+extract)")
+                               message=f"using {len(places)} organized place(s)")
+        else:
+            # PHASE 1+2: SCRAPE + EXTRACT, with a per-reel EXTRACTION CACHE. A repeat
+            # reel (same normalized URL + EXTRACTOR_VERSION) skips BOTH scrape and
+            # extract. Cache writes are best-effort for the existing trip flow.
+            from genagents.place_extractor import EXTRACTOR_VERSION
+            from pipeline.cache import cache_places, get_cached_places
 
-        if miss_idx:
-            # SCRAPE (misses only, parallel, partial-failure isolated)
-            await record_event(client, trip_id, event_type="stage", stage="scrape",
-                               message=f"scraping {len(miss_idx)} reel(s)")
-            scraped = await asyncio.gather(*[scrape(reel_urls[i]) for i in miss_idx],
-                                           return_exceptions=True)
-            to_extract: list[tuple[int, object]] = []   # (reel_urls index, ReelData)
-            for i, res in zip(miss_idx, scraped):
-                if isinstance(res, Exception):
-                    degraded = True
-                    await record_event(client, trip_id, event_type="warning", stage="scrape",
-                                       message=f"reel skipped: {reel_urls[i]}")
+            # Per-reel results indexed by reel_urls position, so `places` is assembled
+            # in reel-URL order regardless of cache state.
+            results: list[list[PlaceResult] | None] = [None] * len(reel_urls)
+            miss_idx: list[int] = []
+            n_hit = 0
+            for i, url in enumerate(reel_urls):
+                try:
+                    cached = await get_cached_places(client, url, EXTRACTOR_VERSION)
+                except Exception:
+                    cached = None
+                if cached is not None:
+                    results[i] = cached
+                    n_hit += 1
                 else:
-                    to_extract.append((i, res))
-            # EXTRACT (misses only) + write-through cache each successful extraction
-            if to_extract:
-                await record_event(client, trip_id, event_type="stage", stage="extract",
-                                   message=f"extracting places from {len(to_extract)} reel(s)")
-                extracted = await asyncio.gather(*[extract(reel) for _i, reel in to_extract],
-                                                 return_exceptions=True)
-                for (i, reel), res in zip(to_extract, extracted):
+                    miss_idx.append(i)
+            if n_hit:
+                await record_event(client, trip_id, event_type="stage", stage="cache_hit",
+                                   message=f"{n_hit} reel(s) from cache (skipped scrape+extract)")
+
+            if miss_idx:
+                await record_event(client, trip_id, event_type="stage", stage="scrape",
+                                   message=f"scraping {len(miss_idx)} reel(s)")
+                scraped = await asyncio.gather(*[scrape(reel_urls[i]) for i in miss_idx],
+                                               return_exceptions=True)
+                to_extract: list[tuple[int, object]] = []
+                for i, res in zip(miss_idx, scraped):
                     if isinstance(res, Exception):
                         degraded = True
-                        await record_event(client, trip_id, event_type="warning", stage="extract",
-                                           message="extraction failed for one reel")
+                        await record_event(client, trip_id, event_type="warning", stage="scrape",
+                                           message=f"reel skipped: {reel_urls[i]}")
                     else:
-                        results[i] = res
-                        try:
-                            await cache_places(client, reel_urls[i], reel, res, EXTRACTOR_VERSION)
-                        except Exception:
-                            pass   # cache write is best-effort — never fail the trip on it
+                        to_extract.append((i, res))
+                if to_extract:
+                    await record_event(client, trip_id, event_type="stage", stage="extract",
+                                       message=f"extracting places from {len(to_extract)} reel(s)")
+                    extracted = await asyncio.gather(*[extract(reel) for _i, reel in to_extract],
+                                                     return_exceptions=True)
+                    for (i, reel), res in zip(to_extract, extracted):
+                        if isinstance(res, Exception):
+                            degraded = True
+                            await record_event(client, trip_id, event_type="warning", stage="extract",
+                                               message="extraction failed for one reel")
+                        else:
+                            results[i] = res
+                            try:
+                                await cache_places(client, reel_urls[i], reel, res, EXTRACTOR_VERSION)
+                            except Exception:
+                                pass
 
-        # Flatten in reel-URL order (index-stable): cache state cannot reorder the itinerary input.
-        places: list[PlaceResult] = [p for r in results if r for p in r]
+            places = [p for r in results if r for p in r]
         if not places:
             return await _fail(client, trip_id, user_id, job_id, "extract",
                                 "no verified places after extraction")

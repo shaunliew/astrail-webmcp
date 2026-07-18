@@ -16,8 +16,9 @@ from typing import AsyncIterator
 DONE = "data: [DONE]\n\n"
 
 
-def format_sse(payload: dict) -> str:
-    return f"data: {json.dumps(payload)}\n\n"
+def format_sse(payload: dict, *, event_id: int | str | None = None) -> str:
+    prefix = f"id: {event_id}\n" if event_id is not None else ""
+    return f"{prefix}data: {json.dumps(payload)}\n\n"
 
 
 async def stream_trip_events(
@@ -68,5 +69,94 @@ async def stream_trip_events(
     yield format_sse({
         "type": "result", "stage": "save", "msg": "stream timed out",
         "content": json.dumps({"error": "generation timed out"}),
+    })
+    yield DONE
+
+
+async def stream_organize_status(
+    client, job_id: str, user_id: str, *, poll_s: float = 0.5, max_polls: int = 600,
+    status_loader=None,
+) -> AsyncIterator[str]:
+    """Refresh-safe status stream using the durable organize job as its cursor."""
+    if status_loader is None:
+        from organizer import get_organize_status
+        status_loader = get_organize_status
+    seen: str | None = None
+    for _ in range(max_polls):
+        try:
+            status = await status_loader(client, job_id, user_id)
+        except Exception:
+            status = None
+        if status is not None:
+            serialized = json.dumps(status, sort_keys=True)
+            if serialized != seen:
+                seen = serialized
+                terminal = status["status"] in {"succeeded", "failed"}
+                if terminal:
+                    yield format_sse({
+                        "type": "result",
+                        "stage": "organize",
+                        "msg": status.get("status_message", "Organization complete"),
+                        "content": serialized,
+                    })
+                    yield DONE
+                    return
+                yield format_sse({
+                    "type": "stage", "stage": "organize",
+                    "msg": status.get("status_message", "Finding places"),
+                    "content": status,
+                })
+        if poll_s:
+            yield ": heartbeat\n\n"
+            await asyncio.sleep(poll_s)
+    yield format_sse({
+        "type": "result", "stage": "organize", "msg": "stream timed out",
+        "content": json.dumps({"error": "organize stream timed out"}),
+    })
+    yield DONE
+
+
+async def stream_organize_events(
+    client, job_id: str, user_id: str, *, cursor: str | None = None,
+    poll_s: float = 0.5, max_polls: int = 600,
+) -> AsyncIterator[str]:
+    """Replay durable organize_events after cursor and terminate on its result event."""
+    try:
+        cursor_sequence = int(cursor) if cursor else 0
+    except ValueError:
+        cursor_sequence = 0
+    for _ in range(max_polls):
+        try:
+            query = client.table("organize_events").select("*").eq("job_id", job_id).eq("user_id", user_id)
+            if cursor_sequence and hasattr(query, "gt"):
+                query = query.gt("sequence", cursor_sequence)
+            result = await query.order("sequence").execute()
+        except Exception:
+            result = None
+        if result is not None:
+            for row in result.data or []:
+                sequence = int(row.get("sequence", 0))
+                if sequence <= cursor_sequence:
+                    continue
+                cursor_sequence = sequence
+                event_type = row.get("event_type", "stage")
+                payload = row.get("payload") or {}
+                if event_type == "result":
+                    yield format_sse({
+                        "type": "result", "stage": "organize", "msg": row.get("message", ""),
+                        "content": json.dumps(payload),
+                    }, event_id=sequence)
+                    yield DONE
+                    return
+                yield format_sse({
+                    "type": event_type, "stage": "organize", "msg": row.get("message", ""),
+                    "content": payload,
+                }, event_id=sequence)
+        if poll_s:
+            yield ": heartbeat\n\n"
+            await asyncio.sleep(poll_s)
+    yield format_sse({
+        "type": "result", "stage": "organize", "msg": "stream timed out",
+        "content": json.dumps({"error": "organize stream timed out"}),
     })
     yield DONE

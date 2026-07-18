@@ -4,11 +4,12 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class GenerateTripRequest(BaseModel):
-    reel_urls: list[str] = Field(min_length=1, max_length=5)
+    reel_urls: list[str] = Field(default_factory=list, max_length=5)
+    place_ids: list[str] = Field(default_factory=list, max_length=5)
     start_date: str
     end_date: str
     destination_hint: str | None = None
@@ -24,6 +25,12 @@ class GenerateTripRequest(BaseModel):
     requested_places: list[str] = Field(default_factory=list)
     budget_level: str | None = None
     origin_city: str | None = None
+
+    @model_validator(mode="after")
+    def require_reel_or_place(self):
+        if not self.reel_urls and not self.place_ids:
+            raise ValueError("At least one Reel URL or canonical place ID is required")
+        return self
 
 
 class GenerateTripResponse(BaseModel):
@@ -53,3 +60,30 @@ class SavedReel(BaseModel):
 
 class CaptureSavedReelResponse(BaseModel):
     saved_reel: SavedReel
+
+
+class OrganizeSavedReelsRequest(BaseModel):
+    saved_reel_ids: list[str] = Field(min_length=1, max_length=5)
+
+
+class OrganizeSavedReelsResponse(BaseModel):
+    job_id: str
+
+
+class OrganizeJobItem(BaseModel):
+    saved_reel_id: str
+    status: Literal["queued", "processing", "organized", "location_not_found", "failed"]
+    place_count: int = 0
+    error_message: str | None = None
+
+
+class OrganizeJobStatus(BaseModel):
+    job_id: str
+    status: Literal["initializing", "pending", "processing", "succeeded", "failed"]
+    status_message: str
+    total_items: int
+    processed_items: int = 0
+    organized_items: int = 0
+    location_not_found_items: int = 0
+    failed_items: int = 0
+    items: list[OrganizeJobItem] = Field(default_factory=list)

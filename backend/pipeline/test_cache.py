@@ -99,6 +99,32 @@ async def test_cache_zero_places_is_cached_as_hit():
     assert hit == []                                     # HIT with 0 places (not None)
 
 
+@pytest.mark.asyncio
+async def test_cache_oversized_payload_is_a_miss():
+    c = _Client({
+        "reel_cache": [{
+            "normalized_url": _KEY,
+            "extractor_version": "v1",
+            "extracted_places": [_place(f"Place {index}").model_dump() for index in range(11)],
+        }],
+    })
+
+    assert await get_cached_places(c, _REEL, "v1") is None
+
+
+@pytest.mark.asyncio
+async def test_cache_malformed_payload_is_a_miss():
+    c = _Client({
+        "reel_cache": [{
+            "normalized_url": _KEY,
+            "extractor_version": "v1",
+            "extracted_places": [{"name": "Missing required fields"}],
+        }],
+    })
+
+    assert await get_cached_places(c, _REEL, "v1") is None
+
+
 def test_import_needs_no_keys(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     import importlib

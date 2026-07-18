@@ -275,6 +275,54 @@ async def test_burst_limit_returns_enveloped_429(ctx):
     assert r.json()["error"]["code"] == "rate_limited"
 
 
+async def test_saved_reels_organize_has_per_user_burst_limit(ctx, monkeypatch):
+    ac, _db, _calls, _client = ctx
+    created = []
+
+    async def create_job(_client, user_id, saved_reel_ids):
+        created.append((user_id, saved_reel_ids))
+        return f"organize-{len(created)}"
+
+    async def run_job(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(main, "create_organize_job", create_job)
+    monkeypatch.setattr(main, "run_organize_job", run_job)
+
+    for _ in range(3):
+        response = await ac.post(
+            "/saved-reels/organize", json={"saved_reel_ids": ["reel-1"]}
+        )
+        assert response.status_code == 200
+    response = await ac.post(
+        "/saved-reels/organize", json={"saved_reel_ids": ["reel-1"]}
+    )
+
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "rate_limited"
+    assert len(created) == 3
+
+
+async def test_saved_reels_organize_requires_auth(monkeypatch):
+    called = False
+
+    async def create_job(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("unauthenticated request must not create a job")
+
+    monkeypatch.setattr(main, "create_organize_job", create_job)
+    main.app.dependency_overrides.clear()
+
+    async with _async_client() as ac:
+        response = await ac.post(
+            "/saved-reels/organize", json={"saved_reel_ids": ["reel-1"]}
+        )
+
+    assert response.status_code == 401
+    assert called is False
+
+
 async def test_daily_quota_full_returns_429_before_insert(ctx):
     """Layer 1 (durable quota): increment_daily_trip_usage returns None (at/over quota)
     -> the gate rejects with 429 BEFORE any trip insert or dispatch."""

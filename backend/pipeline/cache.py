@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import sys
 
-from models.place import PlaceResult
+from pydantic import ValidationError
+
+from models.place import ExtractionResult, PlaceResult
 from scrape.reel_url import normalize_reel_url
 
 EXTRACTION_CACHE_TABLE = "reel_cache"
@@ -23,7 +25,12 @@ async def get_cached_places(client, url: str, extractor_version: str) -> list[Pl
             .eq("normalized_url", key).eq("extractor_version", extractor_version).execute()).data
     if not rows or rows[0].get("extracted_places") is None:
         return None
-    places = [PlaceResult.model_validate(d) for d in rows[0]["extracted_places"]]
+    try:
+        places = ExtractionResult.model_validate({
+            "places": rows[0]["extracted_places"],
+        }).places
+    except ValidationError:
+        return None
     print(f"  [cache] HIT {key} -> {len(places)} places (skipped scrape+extract)", file=sys.stderr)
     return places
 

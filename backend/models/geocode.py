@@ -17,3 +17,12 @@ class GeocodeResult(BaseModel):
     formatted_address: str | None = None
     name: str | None = None
     mapbox_id: str | None = None
+    country_code: str | None = None
+    country_name: str | None = None
+
+
+class CountryResult(BaseModel):
+    """Normalized administrative country returned by Mapbox reverse geocoding."""
+
+    country_code: str = Field(pattern=r"^[A-Z]{2}$")
+    country_name: str = Field(min_length=1)

@@ -71,6 +71,22 @@ def test_parse_forward_response_extracts_properties():
     assert result.mapbox_id == "dXJuOm1ieHBvaTo0NzI1NjI3"
 
 
+def test_parse_forward_response_extracts_live_keyed_country_context():
+    feature = {
+        "features": [{
+            "geometry": {"coordinates": [139.77, 35.68]},
+            "properties": {
+                "name": "Tokyo Tower",
+                "context": {"country": {"name": "Japan", "country_code": "jp"}},
+            },
+        }],
+    }
+    result = parse_forward_response(feature)
+    assert result is not None
+    assert result.country_code == "jp"
+    assert result.country_name == "Japan"
+
+
 def test_parse_forward_response_empty_features_returns_none():
     assert parse_forward_response(_EMPTY_FEATURE_COLLECTION) is None
 
@@ -138,6 +154,28 @@ async def test_forward_geocode_empty_features_returns_none():
     ))
     result = await forward_geocode("Totally Nonexistent Place XYZ", token="TKN", client=client)
     assert result is None
+
+
+async def test_forward_geocode_omits_proximity_when_unknown():
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json=_FEATURE_COLLECTION)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    await forward_geocode(
+        "Harry Potter Cafe, Tokyo, Japan",
+        token="TKN",
+        country=None,
+        proximity_lng_lat=None,
+        client=client,
+    )
+
+    qs = parse_qs(urlparse(seen["url"]).query)
+    assert qs.get("q") == ["Harry Potter Cafe, Tokyo, Japan"]
+    assert "country" not in qs
+    assert "proximity" not in qs
 
 
 # ---------------------------------------------------------------------------

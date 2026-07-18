@@ -69,6 +69,24 @@ def parse_forward_response(data: dict) -> GeocodeResult | None:
     # full_address is the primary field; fall back to place_formatted (also seen in docs).
     formatted_address: str | None = props.get("full_address") or props.get("place_formatted")
     mapbox_id: str | None = props.get("mapbox_id")
+    country_code = country_name = None
+    context = props.get("context") or feature.get("context") or []
+    if isinstance(context, dict):
+        # Search Box returns context as a keyed object in live responses
+        # (country: {country_code, name}), while older fixtures use a list of
+        # {id, short_code, text} entries.
+        country = context.get("country")
+        if isinstance(country, dict):
+            country_code = country.get("country_code") or country.get("short_code")
+            country_name = country.get("name") or country.get("text")
+        context = list(context.values())
+    if isinstance(context, list):
+        for entry in context:
+            if not isinstance(entry, dict) or not str(entry.get("id", "")).startswith("country"):
+                continue
+            country_code = entry.get("short_code") or entry.get("shortCode")
+            country_name = entry.get("text") or entry.get("name")
+            break
     try:
         return GeocodeResult(
             lat=lat,
@@ -76,6 +94,8 @@ def parse_forward_response(data: dict) -> GeocodeResult | None:
             name=name,
             formatted_address=formatted_address,
             mapbox_id=mapbox_id,
+            country_code=country_code,
+            country_name=country_name,
         )
     except ValidationError:
         return None  # out-of-range coords from a bad response → miss
@@ -85,9 +105,10 @@ async def forward_geocode(
     query: str,
     *,
     token: str,
-    proximity_lng_lat: tuple[float, float] = TOKYO,
-    country: str = "jp",
+    proximity_lng_lat: tuple[float, float] | None = TOKYO,
+    country: str | None = "jp",
     language: str = "en",
+    types: str = "poi",
     client: httpx.AsyncClient | None = None,
     timeout_s: int = 15,
 ) -> GeocodeResult | None:
@@ -107,16 +128,18 @@ async def forward_geocode(
         client: Optional injected httpx.AsyncClient (for testing / connection reuse).
         timeout_s: Request timeout in seconds.
     """
-    lng, lat = proximity_lng_lat
     params = {
         "q": query,
         "language": language,
-        "country": country,
-        "types": "poi",
+        "types": types,
         "limit": 1,
-        "proximity": f"{lng},{lat}",
         "access_token": token,
     }
+    if proximity_lng_lat is not None:
+        lng, lat = proximity_lng_lat
+        params["proximity"] = f"{lng},{lat}"
+    if country:
+        params["country"] = country
 
     owns_client = client is None
     http = client or httpx.AsyncClient(timeout=timeout_s)

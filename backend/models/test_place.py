@@ -11,6 +11,43 @@ EXPECTED = Path(__file__).parents[1] / "evals" / "fixtures" / "expected_places.j
 MINI = Path(__file__).parents[1] / "pipeline" / "fixtures" / "mini_places.json"
 
 
+def _place(**overrides):
+    values = {
+        "name": "Harry Potter Cafe",
+        "category": "restaurant",
+        "lat": 35.67311,
+        "lng": 139.73625,
+        "confidence": 0.8,
+        "evidence_quote": "Harry Potter Cafe",
+        "source_url": "https://hpcafe.jp/",
+    }
+    values.update(overrides)
+    return PlaceResult(**values)
+
+
+def test_place_result_country_pair_defaults_to_none():
+    place = _place()
+    assert place.country_code is None
+    assert place.country_name is None
+
+
+def test_place_result_accepts_researched_iso_country_pair():
+    place = _place(country_code="JP", country_name="Japan")
+    assert (place.country_code, place.country_name) == ("JP", "Japan")
+
+
+@pytest.mark.parametrize("overrides", [
+    {"country_code": "JP", "country_name": None},
+    {"country_code": None, "country_name": "Japan"},
+    {"country_code": "jpn", "country_name": "Japan"},
+    {"country_code": "jp", "country_name": "Japan"},
+    {"country_code": "JP", "country_name": "   "},
+])
+def test_place_result_rejects_invalid_country_pair(overrides):
+    with pytest.raises(ValidationError):
+        _place(**overrides)
+
+
 def test_validates_expected_places_fixture():
     places = json.loads(EXPECTED.read_text(encoding="utf-8"))["places"]
     models = [PlaceResult.model_validate(p) for p in places]
@@ -55,6 +92,15 @@ def test_extraction_result_wraps_places():
     er = ExtractionResult(places=[PlaceResult(name="A", category="other",
                                               confidence=0.9, evidence_quote="A")])
     assert er.places[0].name == "A"
+
+
+def test_extraction_result_caps_provider_verification_fanout():
+    places = [
+        PlaceResult(name=f"Place {i}", category="other", confidence=0.9, evidence_quote=str(i))
+        for i in range(11)
+    ]
+    with pytest.raises(ValidationError):
+        ExtractionResult(places=places)
 
 
 def test_canonical_place_adds_times_referenced():

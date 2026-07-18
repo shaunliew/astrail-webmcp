@@ -29,8 +29,11 @@ from api.schemas import (
     CaptureSavedReelResponse,
     GenerateTripRequest,
     GenerateTripResponse,
+    OrganizeJobStatus,
+    OrganizeSavedReelsRequest,
+    OrganizeSavedReelsResponse,
 )
-from api.streaming import stream_trip_events
+from api.streaming import stream_organize_events, stream_trip_events
 from auth import get_current_user_id, get_user_id_from_query_or_header
 from jobs import compute_idempotency_key, enqueue_job, recover_inflight_jobs
 from pipeline.runner import record_event, run_generation
@@ -44,6 +47,7 @@ from rate_limit import (
     refund_daily_quota,
 )
 from saved_reels import capture_saved_reel
+from organizer import create_organize_job, get_organize_status, recover_organize_jobs, run_organize_job
 from supabase_client import get_supabase_client
 
 _RECOVERY_TASKS: set = set()
@@ -62,6 +66,10 @@ async def lifespan(app: FastAPI):
         for job in await recover_inflight_jobs(client=client):
             task = asyncio.create_task(_redispatch(client, job))
             _RECOVERY_TASKS.add(task)                     # retain ref so it isn't GC'd mid-flight
+            task.add_done_callback(_RECOVERY_TASKS.discard)
+        for job in await recover_organize_jobs(client):
+            task = asyncio.create_task(run_organize_job(job["id"], job["user_id"], client=client))
+            _RECOVERY_TASKS.add(task)
             task.add_done_callback(_RECOVERY_TASKS.discard)
         try:
             from mem0_client import get_mem0_client
@@ -149,7 +157,7 @@ async def generate_trip(
     client = await get_supabase_client()
     idem = compute_idempotency_key(user_id, req.reel_urls, req.start_date, req.end_date,
                                    preferences=req.preferences, pace=req.pace,
-                                   destination_hint=req.destination_hint)
+                                   destination_hint=req.destination_hint, place_ids=req.place_ids)
 
     # Idempotent replay: a retried POST (same request-derived key) returns the
     # SAME trip instead of creating a duplicate — WITHOUT consuming daily quota.
@@ -204,6 +212,7 @@ async def generate_trip(
                 "preferences": req.preferences,
                 "destination_hint": req.destination_hint,
                 "requested_places": req.requested_places,
+                "place_ids": req.place_ids,
             },
         )
         job_id, winning_trip_id = await enqueue_job(trip_id, user_id, idem)
@@ -238,8 +247,60 @@ async def generate_trip(
         run_generation, trip_id, user_id, req.reel_urls, req.start_date, req.end_date,
         job_id=job_id, pace=req.pace, preferences=req.preferences,
         destination_hint=req.destination_hint,
+        place_ids=req.place_ids,
     )
     return GenerateTripResponse(trip_id=trip_id)
+
+
+class _OrganizeSavedReelsRequest(OrganizeSavedReelsRequest):
+    model_config = ConfigDict(extra="forbid")
+
+
+@app.post("/saved-reels/organize", response_model=OrganizeSavedReelsResponse)
+@limiter.limit(BURST_LIMIT)
+async def organize_saved_reels(
+    request: Request,
+    response: Response,
+    req: _OrganizeSavedReelsRequest,
+    background: BackgroundTasks,
+    user_id: str = Depends(get_current_user_id_stashed),
+) -> OrganizeSavedReelsResponse:
+    client = await get_supabase_client()
+    try:
+        job_id = await create_organize_job(client, user_id, req.saved_reel_ids)
+    except PermissionError as exc:
+        raise HTTPException(status_code=404, detail="Saved Reel not found") from exc
+    background.add_task(run_organize_job, job_id, user_id, client=client)
+    return OrganizeSavedReelsResponse(job_id=job_id)
+
+
+@app.get("/saved-reels/organize/{job_id}", response_model=OrganizeJobStatus)
+async def organize_status(
+    job_id: str,
+    user_id: str = Depends(get_current_user_id),
+) -> OrganizeJobStatus:
+    client = await get_supabase_client()
+    try:
+        return OrganizeJobStatus.model_validate(await get_organize_status(client, job_id, user_id))
+    except PermissionError as exc:
+        raise HTTPException(status_code=404, detail="Organize job not found") from exc
+
+
+@app.get("/saved-reels/organize/{job_id}/stream")
+async def organize_stream(
+    job_id: str,
+    cursor: str | None = None,
+    user_id: str = Depends(get_user_id_from_query_or_header),
+) -> StreamingResponse:
+    client = await get_supabase_client()
+    try:
+        await get_organize_status(client, job_id, user_id)
+    except PermissionError as exc:
+        raise HTTPException(status_code=404, detail="Organize job not found") from exc
+    return StreamingResponse(
+        stream_organize_events(client, job_id, user_id, cursor=cursor),
+        media_type="text/event-stream",
+    )
 
 
 @app.get("/generate-trip/stream/{trip_id}")
@@ -273,4 +334,5 @@ async def _redispatch(client, job: dict) -> None:
             job["trip_id"], job["user_id"], payload["reel_urls"], payload["start_date"],
             payload["end_date"], job_id=job["id"], pace=payload.get("pace", "balanced"),
             preferences=payload.get("preferences"), destination_hint=payload.get("destination_hint"),
+            place_ids=payload.get("place_ids", []),
         )

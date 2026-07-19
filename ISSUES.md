@@ -3,7 +3,8 @@
 Priority order: **B1, B4, B6, B2, B3, B5, B7**. B1 is live security-adjacent log
 exposure; B4 is restart burst-cost and provider-rate-limit risk; B6 is a cheap correctness
 guard for a currently unreachable UI path; B2/B3 are canonical-data hygiene; B5 is
-currently protected by a single-writer invariant; B7 is cosmetic product wording.
+**RESOLVED** (it was never protected by the single-writer invariant claimed below — Arc A's
+lease work replaced that premise with a database row lock); B7 is cosmetic product wording.
 
 ---
 
@@ -26,9 +27,10 @@ All of B1–B7 are now planned in **`docs/superpowers/plans/2026-07-19-saved-ree
   deferred, with "before public beta" as a mandatory gate.
 - **B7 decided:** presentation-layer map `CN → China`; the stored canonical Mapbox name is left
   untouched and `CN` stays the grouping key.
-- **B5's premise here is wrong.** "Currently protected by a single-writer invariant" does not hold
-  — recovery erased the very claim the CAS depended on, so two writers were reachable. The Arc A
-  lease work is what actually makes that invariant true; B5 is sequenced after it.
+- **B5's premise here is wrong — and B5 is now RESOLVED.** "Currently protected by a single-writer
+  invariant" never held: recovery erased the very claim the CAS depended on, so two writers were
+  reachable. Arc A did not settle for documenting that weaker truth — it removed the dependency on
+  single-writer execution altogether (see the corrected B5 section below).
 - **B4 is materially larger than described** — it merges with the double-execution defect above.
 
 **→ NEW: B8 below needs your decision, Zhi Hao.** It is the only item blocking on you.
@@ -191,37 +193,60 @@ producer, and assert a 1536-dimensional vector is stored and discoverable throug
 intended similarity query. Until then, add a contract test/documentation assertion that
 null is deliberate rather than accidental.
 
-## B5 — Make organize-event sequencing explicitly single-writer or atomic
+## B5 — Make organize-event sequencing explicitly single-writer or atomic — **RESOLVED (Arc A)**
 
-**Suggested severity:** P3. The current CAS job claim gives one organizer writer per job,
-and `(job_id, sequence)` is unique, so normal operation is safe; the implementation is
-fragile if another writer is introduced.
+**Status:** closed by Arc A. The mechanism this issue described no longer exists, and the
+safety property it *asserted* has been replaced with a stronger one that is actually true.
+
+**CORRECTION — the original severity note was wrong.** It read: "The current CAS job claim
+gives one organizer writer per job … so normal operation is safe; the implementation is
+fragile if another writer is introduced." That understated the problem in the one way that
+matters. A second writer did not have to be *introduced* — one was already reachable.
+`recover_organize_jobs` could requeue a job whose original worker was still alive, and
+nothing stopped that superseded worker from continuing to write. So "safe under normal
+operation, fragile later" was really "already unsafe, and invisible". Anyone reading the old
+text would have inherited a false premise about why the code was correct.
+
+**What the problem was.** `_record_organize_event` read the existing sequences, computed
+`MAX(sequence) + 1` in Python, and issued a separate insert. Two writers could compute the
+same sequence; the loser then violated `organize_events_job_sequence_unique`, turning
+otherwise valid work into a terminal failure.
+
+**How it was fixed.** Arc A did not document the single-writer dependency — it removed it.
+Allocation moved into `public.append_organize_event`
+(`supabase/migrations/20260720090000_job_leases.sql`), which takes `select … for update` on
+the parent `organize_jobs` row and then allocates inside that lock. Two consequences:
+
+1. `MAX(sequence) + 1` is collision-free because the **database serializes allocation**, not
+   because exactly one writer exists. Correctness no longer rests on distributed
+   exactly-once execution.
+2. A `p_lease_token` fence rejects a superseded worker outright (`AS409`), so it cannot write
+   at all. There is no unfenced form — a null token raises `AS400` by design.
+
+**Therefore a second event producer is now safe to add**, provided it goes through this RPC
+with a valid lease. That is the opposite of the original recommendation, and it is the reason
+this issue is closed rather than deferred.
 
 **Files and symbols:**
 
-- `backend/organizer.py::_record_organize_event`
-- `backend/organizer.py::run_organize_job`
+- `backend/organizer.py::_record_organize_event` (carries the load-bearing invariant comment)
+- `supabase/migrations/20260720090000_job_leases.sql` (`append_organize_event` — the row lock)
 - `supabase/migrations/20260718130000_saved_reels_organize.sql`
-  (`organize_events_job_sequence_unique`)
+  (`organize_events_job_sequence_unique` — the backstop)
 
-**Problem:** `_record_organize_event` reads all existing sequences, computes
-`MAX(sequence) + 1` in Python, and performs a separate insert. Two writers for the same job
-can choose the same sequence; one then fails the unique constraint and may turn otherwise
-valid work into a terminal failure. Safety currently depends on the load-bearing CAS
-single-writer invariant elsewhere in `run_organize_job`.
+**Regression tests (shipped):**
 
-**Options:** Allocate and insert the next sequence atomically in a database function under a
-job/advisory lock; maintain a per-job database counter; or retain the current implementation
-with an explicit load-bearing invariant comment and a test proving a second worker cannot
-write after losing the claim.
+- `supabase/tests/010_organize_event_sequencing.sql` — proves against real Postgres that the
+  `for update` row lock is genuinely taken (via the row-level lock *mode*: `For Update`, not
+  the foreign key's incidental `For Key Share`) and that the unique constraint fires on a
+  hand-rolled duplicate sequence. Fault-injected both ways.
+- `backend/test_organizer_lease.py` (`--- ISSUES-B5 ---`) — races two claims and proves the
+  loser emits **zero** events while the winner's sequences stay unique, gapless and ordered.
 
-**Recommendation:** For the MVP, document and test the CAS single-writer dependency beside
-`_record_organize_event`. Move allocation into one database operation before adding any
-second event producer or concurrent writer for a job.
-
-**Regression test:** Race two job claims and prove only the winner can emit events and that
-sequences remain unique and ordered. If atomic allocation is implemented, concurrently
-insert many events and assert no unique violations, gaps caused by retries, or lost events.
+**Known limit, recorded deliberately:** no test races N *real* concurrent writers.
+`supabase test db` runs each file in one transaction on one connection, so genuine contention
+is unreachable there. The tests pin the lock's presence and the constraint's behaviour, and
+serialization follows from Postgres given both. Stated in full at the top of test file 010.
 
 ## B7 — Decide the user-facing name for country code CN
 

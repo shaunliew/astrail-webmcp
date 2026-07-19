@@ -99,6 +99,22 @@ async def create_organize_job(client, user_id: str, saved_reel_ids: list[str]) -
     return result.data
 
 
+# LOAD-BEARING INVARIANT (ISSUES-B5): event sequences are allocated INSIDE
+# append_organize_event, which takes `select ... for update` on the parent organize_jobs
+# row. That row lock — not any assumption of a single live writer — is what makes
+# MAX(sequence)+1 collision-free, and the p_lease_token fence is what stops a superseded
+# worker writing at all. A second event producer is therefore SAFE to add, provided it
+# goes through this RPC with a valid lease. Allocating a sequence anywhere else reopens
+# organize_events_job_sequence_unique. There is no unfenced form to reach for instead:
+# p_lease_token=None is rejected outright with AS400, by design and with no boot-path
+# exception (20260720090000_job_leases.sql:59-69 records why that escape hatch was removed).
+#
+# ISSUES.md's original B5 said this was safe because a CAS made exactly one writer exist.
+# That was FALSE when written — a superseded worker could still write — and the fix was not
+# to document the weaker claim but to remove the dependency on it. Pinned by
+# `supabase/tests/010_organize_event_sequencing.sql` (the row lock and the unique backstop,
+# against real Postgres) and `backend/test_organizer_lease.py` "--- ISSUES-B5 ---" (the
+# control flow: a worker that lost the claim emits nothing).
 async def _record_organize_event(
     client, job_id: str, user_id: str, event_type: str, message: str, payload=None,
     *, lease_token: str,

@@ -27,6 +27,7 @@ from organizer import (
     _heartbeat,
     _mark_organize_job_failed,
     _pg_timestamp,
+    _record_organize_event,
     recover_organize_jobs,
     run_organize_job,
 )
@@ -915,3 +916,110 @@ async def test_a_superseded_workers_stale_counts_write_cannot_land():
     job = live.db["organize_jobs"][0]
     assert (job["organized_count"], job["failed_count"]) == (1, 1), \
         "the lease holder's own recompute must land"
+
+
+# --- ISSUES-B5: the event-sequencing invariant ----------------------------------------------
+#
+# CHARACTERIZATION, NOT RED->GREEN. All three pass against the code exactly as A2 shipped it;
+# none of them had a red phase and this section does not claim one. They exist because
+# `_record_organize_event` now carries a comment asserting a safety property, and an asserted
+# property nothing tests is the failure mode B5 was originally filed about — ISSUES.md claimed
+# a single-writer invariant that did not hold.
+#
+# WHAT THIS FILE CAN AND CANNOT PROVE. These pin the CONTROL FLOW around the RPC: who reaches
+# it, with which token, and how many rows come out. They cannot prove SERIALIZATION, because
+# the fake has no true concurrency — every `execute()` runs straight through without awaiting,
+# so gathered callers interleave between calls and never inside one. That is faithful to a
+# database statement being atomic, and it is exactly why deleting `for update` from the real
+# function leaves everything here green. Serialization is pinned where it is observable, in
+# `supabase/tests/010_organize_event_sequencing.sql`, against a real Postgres.
+
+
+@pytest.mark.asyncio
+async def test_only_the_worker_that_won_the_claim_emits_events(fake_client, monkeypatch):
+    """B5's own regression test: race two claims, and only the winner may write events.
+
+    This is the property the original issue asked for and never got. The existing claim test
+    asserts the loser's RETURN VALUE (`{"skipped": "job already claimed"}`) — but a skip string
+    says nothing about whether the loser went on to write, and writing is the part that
+    corrupts the sequence. The two are asserted together here.
+
+    The loser is proven silent by counting, not by inspecting its return: every
+    `append_organize_event` call made during the whole race must have produced exactly one row.
+    A loser that emitted would show up as either an extra row (unfenced) or a call with no row
+    (an AS409 the wrapper swallowed) — the count catches both, and neither is visible from the
+    skip string alone.
+    """
+    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    seed_two_item_job(fake_client)
+
+    first, second = await asyncio.gather(
+        run_organize_job("j1", "u1", client=fake_client, ground=_grounded),
+        run_organize_job("j1", "u1", client=fake_client, ground=_grounded),
+    )
+
+    skipped = [r for r in (first, second) if r == {"skipped": "job already claimed"}]
+    winners = [r for r in (first, second) if r.get("status") == "succeeded"]
+    assert len(skipped) == 1, "exactly one worker must lose the CAS"
+    assert len(winners) == 1, "exactly one worker must run the job"
+    assert winners[0]["organized_items"] == 2, "the winner ran the whole job, not part of it"
+
+    events = fake_client.db["organize_events"]
+    sequences = [event["sequence"] for event in events]
+    assert sequences == sorted(sequences), "events are appended in sequence order"
+    assert len(set(sequences)) == len(sequences), "no two events share a sequence"
+    assert sequences == list(range(1, len(events) + 1)), "sequences are gapless from one"
+
+    appends = [call for call in fake_client.rpc_calls if call[0] == "append_organize_event"]
+    assert len(appends) == len(events), \
+        "every append in the race produced exactly one row — the loser never even tried"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_appends_under_one_lease_allocate_unique_gapless_sequences(fake_client):
+    """N appends holding the SAME valid lease each get their own sequence, with no collision.
+
+    Scoped honestly: this pins the ALLOCATION CONTRACT — N calls in, N rows out, sequences
+    1..N, every return value matching the row it wrote — which is what `_record_organize_event`
+    and `stream_organize_events` are entitled to assume. It does NOT pin the row lock that
+    makes the contract hold under real contention (see this section's header). Both halves
+    matter: a second event producer added later would rely on this contract, and on the lock
+    proven in `supabase/tests/010_organize_event_sequencing.sql`.
+    """
+    seed_job(fake_client, status="processing", lease_token="t-live")
+
+    sequences = [result.data for result in await asyncio.gather(*(
+        append_event(fake_client, p_message=f"Organizing reel {n}") for n in range(8)
+    ))]
+
+    assert sorted(sequences) == list(range(1, 9)), "each caller got its own sequence"
+    events = fake_client.db["organize_events"]
+    assert len(events) == 8, "eight appends wrote exactly eight events"
+    assert sorted(event["sequence"] for event in events) == list(range(1, 9))
+    assert [event["sequence"] for event in events] == sequences, \
+        "each call's return value names the row it actually wrote"
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_worker_writes_no_event_and_does_not_crash(fake_client, caplog):
+    """The fence, at its smallest scope: a stale token writes nothing and raises nothing.
+
+    Both halves are load-bearing in opposite directions and neither is redundant with the
+    integration tests above. If the write landed, a superseded worker's terminal `result` row
+    would end the user's SSE session on an outcome that never happened. If the AS409 escaped
+    instead, it would crash a terminal cleanup path on a job the replacement is already
+    finishing correctly. The swallow is silent by design, so the log line is the only evidence
+    the rejection happened at all rather than the append quietly doing nothing.
+    """
+    caplog.set_level(logging.WARNING, logger="organizer")
+    seed_job(fake_client, status="processing", lease_token="t-live")
+    await _record_organize_event(
+        fake_client, "j1", "u1", "stage", "Finding places", lease_token="t-live")
+
+    await _record_organize_event(
+        fake_client, "j1", "u1", "result", "Organized", {"status": "succeeded"},
+        lease_token="t-superseded")
+
+    assert [event["message"] for event in fake_client.db["organize_events"]] == ["Finding places"], \
+        "the superseded worker's terminal event must not land"
+    assert "organize_event_lease_superseded" in caplog.text

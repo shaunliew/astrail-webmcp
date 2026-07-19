@@ -4,6 +4,19 @@ Verdict at review: **REQUEST CHANGES**. Core trust contract proven live (Japan t
 pin, cache-hit retry, no re-scrape, quota reserve/consume happy path). No P0/P1. Everything
 below is P2/P3/hygiene. Line numbers drift — find code by symbol.
 
+**Status 2026-07-19: Section A fully landed and verified.** Codex implemented all 9 commits
+(`9512495`..`e7635c1`). Claude's commit-by-commit review found the `supabase db reset &&
+supabase test db` gate still red after Codex's own run reported it "unavailable" — three
+real bugs, not environment noise: (1) the P2-5 view migration inserted a column mid-list in
+`CREATE OR REPLACE VIEW`, which Postgres treats as an illegal rename; (2) the P2-1 lockdown
+test and one metadata-introspection assertion ran under the wrong role, so they either
+silently passed as superuser or broke after the lockdown correctly took effect; (3) the
+P2-6 pgTAP fixtures leaked extra Saved Reels/jobs into three downstream row-count
+assertions written against the original single-fixture shape. All three fixed in `0216a0e`.
+**Full gate now green: backend 585/7 skip, evals 49, pgTAP 398/398, `db lint` clean,
+frontend 170 tests + typecheck + build.** Final verdict: **PASS** — ready for Zhi Hao's
+Section B pass and live localhost re-verification before merge.
+
 Execution model: Claude drives Codex CLI — planning critique on `gpt-5.6-sol`
 (`model_reasoning_effort="high"`), implementation/coding on `gpt-5.6-luna`
 (`model_reasoning_effort="xhigh"`) — one commit per task, no push, then Claude reviews

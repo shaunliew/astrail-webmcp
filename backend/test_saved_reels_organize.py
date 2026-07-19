@@ -2225,3 +2225,75 @@ async def test_unmapped_organize_job_sqlstate_still_propagates():
 
     with pytest.raises(APIError):
         await create_organize_job(_UnmappedRpcClient(), "user-a", ["r1"])
+
+
+# ---------------------------------------------------------------------------
+# B5(e): dangling quota reservations are reconciled at recovery.
+# ---------------------------------------------------------------------------
+
+
+def _items_client(*items) -> "_Client":
+    return _Client({"organize_jobs": [], "organize_job_items": list(items)})
+
+
+@pytest.mark.asyncio
+async def test_recovery_refunds_only_dangling_reserved_charges_on_terminal_items(monkeypatch):
+    """A terminal item still holding `reserved` was charged a quota unit nobody released.
+
+    It gets there when `refund_organize_item_analysis` ITSELF fails inside `_process_item`'s
+    handler: the item goes terminal `failed`, the reservation stays, and nothing else in the
+    system ever looks at it — the user loses that unit permanently, and re-organizing the
+    same Reel charges again. Two provider faults are needed to reach it, which is why it is
+    low-severity and not zero.
+
+    The `status` filter is as load-bearing as the `analysis_charge_state` one: an item still
+    `queued` or `processing` holds its reservation LEGITIMATELY — a live worker is mid-run and
+    will consume or refund it. Refunding that one hands out free analyses.
+    """
+    refunded: list[tuple[str, str]] = []
+
+    async def refund(_client, item_id, user_id):
+        refunded.append((item_id, user_id))
+        return True
+
+    monkeypatch.setattr("organizer.refund_organize_item_analysis", refund)
+    client = _items_client(
+        {"id": "dangling", "user_id": "user-a", "status": "failed", "analysis_charge_state": "reserved"},
+        {"id": "dangling-organized", "user_id": "user-a", "status": "organized", "analysis_charge_state": "reserved"},
+        {"id": "dangling-nlf", "user_id": "user-b", "status": "location_not_found", "analysis_charge_state": "reserved"},
+        {"id": "settled", "user_id": "user-a", "status": "organized", "analysis_charge_state": "consumed"},
+        {"id": "free", "user_id": "user-a", "status": "failed", "analysis_charge_state": "not_charged"},
+        {"id": "already", "user_id": "user-a", "status": "failed", "analysis_charge_state": "refunded"},
+        {"id": "in-flight", "user_id": "user-a", "status": "processing", "analysis_charge_state": "reserved"},
+        {"id": "queued", "user_id": "user-a", "status": "queued", "analysis_charge_state": "reserved"},
+    )
+
+    await recover_organize_jobs(client)
+
+    assert refunded == [
+        ("dangling", "user-a"),
+        ("dangling-organized", "user-a"),
+        ("dangling-nlf", "user-b"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_refund_does_not_stop_recovery_dispatching_pending_jobs(monkeypatch):
+    """The sweep is janitorial; re-dispatch is guardrail #12. A blip in the former must never
+    cost the latter — otherwise this fix trades a leaked quota unit for a dropped job."""
+    async def refund(*_args, **_kwargs):
+        raise RuntimeError("postgrest unavailable")
+
+    monkeypatch.setattr("organizer.refund_organize_item_analysis", refund)
+    client = _Client({
+        "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending",
+                           "created_at": datetime.now(timezone.utc).isoformat()}],
+        "organize_job_items": [
+            {"id": "dangling", "user_id": "user-a", "status": "failed",
+             "analysis_charge_state": "reserved"},
+        ],
+    })
+
+    pending = await recover_organize_jobs(client)
+
+    assert [row["id"] for row in pending] == ["job-1"]

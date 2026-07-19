@@ -467,6 +467,48 @@ async def _mark_organize_job_failed(client, job_id: str, user_id: str, *, lease_
         pass
 
 
+_TERMINAL_ITEM_STATUSES = ("organized", "location_not_found", "failed")
+
+
+async def _refund_dangling_reservations(client) -> None:
+    """Release quota units held by reservations on items that already finished.
+
+    An item reaches this state when `refund_organize_item_analysis` ITSELF fails inside
+    `_process_item`'s except-handler: the item is written terminal `failed`, the reservation
+    survives, and nothing else in the system ever revisits it. The user has been charged one
+    analysis forever, and the next organize of that Reel charges again.
+
+    BOTH predicates are load-bearing. `analysis_charge_state = 'reserved'` alone would refund
+    items a live worker is mid-run on — a legitimate reservation it is about to consume — so
+    the terminal-status filter is what makes this reconciliation rather than a quota giveaway.
+    (`refund_organize_item_analysis` is itself a CAS on `reserved`, so a concurrent consume
+    still cannot double-release; the filter is what stops us racing it in the first place.)
+
+    ENTIRELY best-effort, including the SELECT. This runs inside `recover_organize_jobs`,
+    whose real job is re-dispatching interrupted work (guardrail #12) — letting a janitorial
+    quota sweep raise would trade a leaked quota unit for a dropped job, which is the worse
+    bug by a wide margin. It re-runs on every reaper tick, so a blip costs at most one
+    interval. Log the error TYPE only: these exceptions can carry connection strings.
+    """
+    try:
+        dangling = (await client.table("organize_job_items").select("id,user_id")
+                    .eq("analysis_charge_state", "reserved")
+                    .in_("status", list(_TERMINAL_ITEM_STATUSES)).execute()).data or []
+    except Exception as exc:
+        logger.warning("organize_dangling_charge_scan_failed error=%s", type(exc).__name__)
+        return
+    for row in dangling:
+        try:
+            await refund_organize_item_analysis(client, row["id"], row["user_id"])
+        except Exception as exc:
+            logger.warning(
+                "organize_dangling_charge_refund_failed item_id=%s error=%s",
+                row["id"], type(exc).__name__,
+            )
+    if dangling:
+        logger.info("organize_dangling_charges_swept count=%d", len(dangling))
+
+
 async def recover_organize_jobs(client) -> list[dict]:
     """Reclaim organize jobs whose LEASE HAS EXPIRED, then return pending jobs to dispatch.
 
@@ -495,6 +537,9 @@ async def recover_organize_jobs(client) -> list[dict]:
     }).execute()).data or 0
     if reclaimed:
         logger.info("organize_leases_reclaimed count=%d", reclaimed)
+    # After the reclaim, and on every reaper tick rather than only at boot: an item whose
+    # refund failed has no other reader anywhere in the system.
+    await _refund_dangling_reservations(client)
     return (await client.table("organize_jobs").select("id,user_id").eq("status", "pending")
             .order("created_at").execute()).data or []
 

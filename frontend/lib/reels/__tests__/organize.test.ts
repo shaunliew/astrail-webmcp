@@ -48,16 +48,23 @@ describe('groupPlacesByCountry', () => {
     ])[0].places).toHaveLength(1)
   })
 
-  it('renders backend-verified China, Japan, and Korea trays without renaming them', () => {
+  // The CN tray stores "People's Republic of China" and displays "China", so stored order
+  // (Japan, China, South Korea) and displayed order (China, Japan, South Korea) disagree.
+  // [CN, JP, KR] is what this file expected before ISSUES-B7 — but only because the fixture
+  // faked the CN name as "China". The stored name is now the real one, and [CN, JP, KR] is
+  // right again for the real reason: it is the order the labels are read in.
+  it('orders trays by the displayed label, not the stored provider name', () => {
     const groups = groupPlacesByCountry([
       place({ place_id: 'jp', name: 'Tokyo place', country_code: 'JP', country_name: 'Japan' }),
       place({ place_id: 'cn', name: 'Shanghai place', country_code: 'CN', country_name: "People's Republic of China" }),
       place({ place_id: 'kr', name: 'Seoul place', country_code: 'KR', country_name: 'South Korea' }),
     ])
 
+    expect(groups.map(countryDisplayLabel)).toEqual(['China', 'Japan', 'South Korea'])
+    // Reordering is presentation-only: every stored provider name survives the sort intact.
     expect(groups.map(({ country_code, country_name }) => ({ country_code, country_name }))).toEqual([
-      { country_code: 'JP', country_name: 'Japan' },
       { country_code: 'CN', country_name: "People's Republic of China" },
+      { country_code: 'JP', country_name: 'Japan' },
       { country_code: 'KR', country_name: 'South Korea' },
     ])
   })

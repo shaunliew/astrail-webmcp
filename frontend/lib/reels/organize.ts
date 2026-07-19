@@ -34,5 +34,5 @@ export function groupPlacesByCountry(places: SavedReelPlaceProof[]): CountryTray
 
   return [...countries.values()]
     .map((group) => ({ ...group, places: [...group.places].sort((a, b) => a.name.localeCompare(b.name)) }))
-    .sort((a, b) => a.country_name.localeCompare(b.country_name))
+    .sort((a, b) => countryDisplayLabel(a).localeCompare(countryDisplayLabel(b)))
 }

@@ -6,6 +6,13 @@
 -- `MAX(sequence) + 1` is collision-free *because of the row lock inside this function*. A
 -- claim that load-bearing has to be enforced by a test, not just asserted in prose.
 --
+-- REJECTED APPROACH, recorded so nobody re-derives it: asserting the lock via `throws_ok`
+-- (call the function inside a subtransaction that raises, then check the lock is still held)
+-- does NOT work. pgTAP's `throws_ok` runs the statement in a subtransaction, and aborting a
+-- subtransaction RELEASES the row locks it took — so the probe finds nothing and the test
+-- fails for a reason unrelated to the code under test. The lock must be observed from a live,
+-- un-aborted transaction, which is what this file does.
+--
 -- WHY THIS FILE AND NOT 008. Verified by fault injection before it was written: delete
 -- `for update` from `append_organize_event` and the whole suite (9 files / 491 tests,
 -- 008_job_leases.sql included) stays GREEN. 008 drives its appends SEQUENTIALLY down one

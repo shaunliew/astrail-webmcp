@@ -59,7 +59,7 @@ begin
   -- FENCE: p_lease_token is REQUIRED — there is no unfenced form.
   -- An earlier draft allowed `p_lease_token is null` as an "unfenced caller (boot paths that
   -- legitimately have no lease yet)". No such caller exists: EVERY event writer runs after the
-  -- claim returns (verified — organizer.py:422, :434, :455, :485, and _mark_organize_job_failed
+  -- claim returns (verified — every _record_organize_event call site, and _mark_organize_job_failed
   -- from run_organize_job's outer except; the claim early-returns at `if not claimed.data`).
   -- It was the same speculative unfenced form already deleted from mark_job_done, and left in
   -- it would be a standing bypass: a caller with no token writing to a row with no token

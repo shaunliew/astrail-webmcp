@@ -84,6 +84,88 @@ async def test_ground_and_persist_reports_database_phase_for_persist_failures():
     assert phases == ["mapbox", "database"]
 
 
+def _quota_miss_client() -> _Client:
+    """A job whose single item takes the cache-MISS path with quota to reserve."""
+    return _Client({
+        "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending"}],
+        "organize_job_items": [{
+            "id": "item-1", "job_id": "job-1", "user_id": "user-a",
+            "saved_reel_id": "r1", "status": "queued", "analysis_charge_state": "not_charged",
+        }],
+        "saved_reels": [{
+            "id": "r1", "user_id": "user-a",
+            "normalized_url": "https://www.instagram.com/reel/A",
+            "reel_cache_id": "cache-1", "analysis_status": "queued",
+        }],
+    })
+
+
+async def test_provider_failure_reports_its_own_phase_not_quota(monkeypatch, caplog):
+    """An Apify failure must log `phase=apify` even though a refund runs on the way out.
+
+    The refund handler used to overwrite `phase` UNCONDITIONALLY before re-raising, so
+    every failure that reached it — apify, extractor or database — logged `phase=quota`.
+    Cache MISS is the common path for first-time analysis, so this mislabelled MOST real
+    failures and sent on-call to the quota system for what is an Apify outage. Same defect
+    class `cf9d490` fixed for `_ground_and_persist`'s mapbox/database split.
+
+    Observed through `caplog`, not the `set_phase` callback: that seam is an argument to
+    `_ground_and_persist` only, and this failure happens before it is ever called. The log
+    line IS the on-call signal under repair, so asserting on it tests the real artifact.
+    """
+    client = _quota_miss_client()
+
+    async def _reserve(*_a, **_kw):
+        return True
+
+    async def _refund(*_a, **_kw):
+        return None                            # the refund itself is healthy
+
+    async def _scrape(*_a, **_kw):
+        raise RuntimeError("source down")      # apify is what actually broke
+
+    monkeypatch.setattr("organizer.reserve_organize_item_analysis", _reserve)
+    monkeypatch.setattr("organizer.refund_organize_item_analysis", _refund)
+    monkeypatch.setattr("organizer.get_cached_places", _cached(None))
+
+    with caplog.at_level("ERROR", logger="organizer"):
+        await run_organize_job("job-1", "user-a", client=client, scrape=_scrape, extract=None)
+
+    assert "phase=apify" in caplog.text
+    assert "phase=quota" not in caplog.text
+
+
+async def test_failing_refund_reports_quota_phase(monkeypatch, caplog):
+    """When the REFUND is what breaks, quota is the honest phase — it replaces the original.
+
+    The mirror of the test above, and the reason the fix is not just deleting the phase
+    overwrite. A raising refund propagates ITS OWN exception in place of the provider
+    failure, so the phase must follow the exception that actually escapes. Without this
+    test, the fix for `phase=quota`-on-everything would silently install
+    `phase=apify`-on-a-quota-outage — the same defect pointed the other way.
+    """
+    client = _quota_miss_client()
+
+    async def _reserve(*_a, **_kw):
+        return True
+
+    async def _refund(*_a, **_kw):
+        raise RuntimeError("quota service down")   # the refund is now the failure
+
+    async def _scrape(*_a, **_kw):
+        raise RuntimeError("source down")
+
+    monkeypatch.setattr("organizer.reserve_organize_item_analysis", _reserve)
+    monkeypatch.setattr("organizer.refund_organize_item_analysis", _refund)
+    monkeypatch.setattr("organizer.get_cached_places", _cached(None))
+
+    with caplog.at_level("ERROR", logger="organizer"):
+        await run_organize_job("job-1", "user-a", client=client, scrape=_scrape, extract=None)
+
+    assert "phase=quota" in caplog.text
+    assert "phase=apify" not in caplog.text
+
+
 async def test_process_item_skips_counts_when_saved_reel_is_gone():
     """Orphaned item (its `saved_reels` row was deleted) must be SKIPPED.
 

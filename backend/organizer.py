@@ -592,8 +592,20 @@ async def _process_item(ctx: _ItemContext, item: dict) -> bool:
                     quota_state = "consumed"
             except Exception:
                 if quota_state == "reserved":
-                    phase = "quota"
+                    # `phase` must name what the ESCAPING exception broke, and which one
+                    # escapes depends on the refund. Overwriting it unconditionally (what
+                    # this replaced) logged `phase=quota` for every apify/extractor/
+                    # database failure — and since cache MISS is the common path, that was
+                    # MOST real failures, sending on-call to the quota system for an Apify
+                    # outage. Deleting the overwrite installs the mirror bug: a refund that
+                    # throws replaces the original exception, and a genuine quota-system
+                    # outage would then log `phase=apify`. So: claim "quota" for the
+                    # duration of the refund, and hand the phase back only once the refund
+                    # has RETURNED — if it raises, its own exception propagates and the
+                    # phase it leaves behind is already the correct one.
+                    failed_phase, phase = phase, "quota"
                     await refund_organize_item_analysis(ctx.client, item["id"], ctx.user_id)
+                    phase = failed_phase
                 raise
         else:
             if item.get("analysis_charge_state") == "reserved":

@@ -333,3 +333,22 @@ async def test_claim_mints_a_fresh_token_and_preserves_started_at(fake_client, m
     assert datetime.fromisoformat(second["lock_expires_at"]) > _now_utc()
     assert first["started_at"] == second["started_at"] == FIRST_ATTEMPT_STARTED_AT
     assert (first["attempt_count"], second["attempt_count"]) == (1, 2)
+
+
+@pytest.mark.asyncio
+async def test_claiming_a_vanished_job_skips_instead_of_crashing():
+    """A job deleted between recovery listing it and the claim must skip, not raise.
+
+    `maybe_single()` returns a result whose `.data` is None when no row matches. Without the
+    `or {}` at the pre-claim read, the following `.get("attempt_count")` raises AttributeError
+    — which the outer handler would then try to convert into `_mark_organize_job_failed`
+    against a row that no longer exists. Skipping is the correct outcome: the CAS finds
+    nothing to claim.
+    """
+    client = _Client({"organize_jobs": []})     # the job is gone
+
+    result = await run_organize_job(
+        "vanished-job", "u1", client=client, scrape=None, extract=None, ground=None,
+    )
+
+    assert result == {"skipped": "job already claimed"}

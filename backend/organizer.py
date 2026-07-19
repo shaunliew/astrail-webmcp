@@ -477,7 +477,11 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
         client = await get_supabase_client()
     current = await (client.table("organize_jobs").select("attempt_count,started_at")
                      .eq("id", job_id).eq("user_id", user_id).maybe_single().execute())
-    current_row = current.data if current is not None else {}
+    # `or {}` is load-bearing, not defensive noise. maybe_single() returns a result whose
+    # `.data` is None when NO row matches — a job deleted between recovery listing it and this
+    # claim, or a job_id/user_id mismatch. Without it the next `.get()` raises AttributeError
+    # instead of falling through to the CAS, which then returns empty and skips cleanly.
+    current_row = (current.data if current is not None else None) or {}
     attempt_count = int(current_row.get("attempt_count", 0)) + 1
     # Minted PER ATTEMPT, never reused: this token is what every later write CASes on, so a
     # token shared across attempts would let a superseded worker pass the fence its own

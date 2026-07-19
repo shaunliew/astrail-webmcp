@@ -502,7 +502,11 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
     claimed = await (client.table("organize_jobs").update(claim_update)
                      .eq("id", job_id).eq("user_id", user_id).eq("status", "pending").execute())
     if not claimed.data:
-        return {"skipped": "job already claimed"}
+        # Two distinct outcomes, distinguishable by whether the pre-claim read found a row:
+        # the job is GONE (deleted between recovery listing it and now) versus another worker
+        # holds it. A-III adds logging on this path; "already claimed" for a deleted job would
+        # send whoever reads that log looking for a competing worker that never existed.
+        return {"skipped": "job already claimed" if current_row else "job not found"}
     try:
         await _record_organize_event(client, job_id, user_id, "stage", "Finding places")
         if scrape is None:

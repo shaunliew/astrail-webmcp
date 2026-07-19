@@ -351,4 +351,22 @@ async def test_claiming_a_vanished_job_skips_instead_of_crashing():
         "vanished-job", "u1", client=client, scrape=None, extract=None, ground=None,
     )
 
+    assert result == {"skipped": "job not found"}
+
+
+@pytest.mark.asyncio
+async def test_claiming_a_job_another_worker_holds_reports_already_claimed():
+    """The sibling of the vanished-job case: the row EXISTS but is no longer `pending`.
+
+    Distinguishing these two is the point — A-III logs this path, and reporting "already
+    claimed" for a job that was deleted would send a reader hunting a competing worker that
+    never existed.
+    """
+    client = _Client({"organize_jobs": [{
+        "id": "j1", "user_id": "u1", "status": "processing",      # someone else won the CAS
+        "attempt_count": 1, "started_at": "2026-07-19T00:00:00+00:00",
+    }]})
+
+    result = await run_organize_job("j1", "u1", client=client, scrape=None, extract=None, ground=None)
+
     assert result == {"skipped": "job already claimed"}

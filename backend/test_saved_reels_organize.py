@@ -1206,9 +1206,20 @@ async def test_default_scrape_seam_fails_closed_without_an_apify_token(monkeypat
 
 @pytest.mark.asyncio
 async def test_organize_event_stream_replays_integer_cursor_and_json_result():
+    """Seeded OUT of sequence order ON PURPOSE — the fixture is the assertion.
+
+    `stream_organize_events` relies on `.order("sequence")`. Until B8, the fake's `.order()`
+    was `return self` — a silent no-op — so this test passed whether or not production ordered
+    anything. Seeding 1-then-2 kept it vacuous even after the fake was fixed, because the
+    insertion order already matched the expected output. Seeding 2-then-1 is what makes
+    removing `.order("sequence")` from `api/streaming.py` turn this red.
+
+    SSE order is a frontend contract: the client replays events in the order it receives them,
+    so an unordered replay would show the pipeline running backwards.
+    """
     client = _Client({"organize_events": [
-        {"sequence": 1, "job_id": "job-1", "user_id": "user-a", "event_type": "stage", "message": "Queued", "payload": {}},
         {"sequence": 2, "job_id": "job-1", "user_id": "user-a", "event_type": "result", "message": "Organized", "payload": {"status": "succeeded"}},
+        {"sequence": 1, "job_id": "job-1", "user_id": "user-a", "event_type": "stage", "message": "Queued", "payload": {}},
     ]})
     events = [event async for event in stream_organize_events(client, "job-1", "user-a", poll_s=0)]
     assert events[0].startswith("id: 1\ndata: ")

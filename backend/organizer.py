@@ -6,6 +6,7 @@ import inspect
 import json
 import logging
 import os
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
@@ -335,6 +336,7 @@ class _ItemContext:
     scrape: Callable[[str], Any]
     extract: Callable[[Any], Any]
     ground: Callable[[PlaceResult], Any]
+    lease_token: str
 
 
 async def _ground_and_persist(
@@ -473,15 +475,28 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
     if client is None:
         from supabase_client import get_supabase_client
         client = await get_supabase_client()
-    current = await (client.table("organize_jobs").select("attempt_count")
+    current = await (client.table("organize_jobs").select("attempt_count,started_at")
                      .eq("id", job_id).eq("user_id", user_id).maybe_single().execute())
-    attempt_count = int((current.data if current is not None else {}).get("attempt_count", 0)) + 1
+    current_row = current.data if current is not None else {}
+    attempt_count = int(current_row.get("attempt_count", 0)) + 1
+    # Minted PER ATTEMPT, never reused: this token is what every later write CASes on, so a
+    # token shared across attempts would let a superseded worker pass the fence its own
+    # replacement installed.
+    lease_token = str(uuid.uuid4())
     now = datetime.now(timezone.utc)
-    claimed = await (client.table("organize_jobs").update({
+    claim_update = {
         "status": "processing", "status_message": "Finding places", "locked_at": now.isoformat(),
-        "started_at": now.isoformat(),
+        "lock_expires_at": (now + timedelta(seconds=ORGANIZE_LEASE_TTL_S)).isoformat(),
+        "lease_token": lease_token,
         "attempt_count": attempt_count,
-    }).eq("id", job_id).eq("user_id", user_id).eq("status", "pending").execute())
+    }
+    if not current_row.get("started_at"):
+        # Only the FIRST attempt stamps it. `started_at` is the run's user-visible elapsed
+        # time; re-stamping on every retry makes a job stuck in a retry loop for an hour
+        # report as though it had just begun, hiding the loop it is actually in.
+        claim_update["started_at"] = now.isoformat()
+    claimed = await (client.table("organize_jobs").update(claim_update)
+                     .eq("id", job_id).eq("user_id", user_id).eq("status", "pending").execute())
     if not claimed.data:
         return {"skipped": "job already claimed"}
     try:
@@ -502,7 +517,7 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
         # from it inside _ground_and_persist — neither needs a new call-site parameter.
         ctx = _ItemContext(
             client=client, job_id=job_id, user_id=user_id,
-            scrape=scrape, extract=extract, ground=ground,
+            scrape=scrape, extract=extract, ground=ground, lease_token=lease_token,
         )
         for item in items:
             processed = await _process_item(ctx, item)

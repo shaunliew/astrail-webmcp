@@ -8,12 +8,18 @@ reclaim tests would pass while asserting nothing.
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from organizer import ORGANIZE_LEASE_TTL_S, _pg_timestamp, recover_organize_jobs
-from test_saved_reels_organize import _Client, _eval_filter_term
+from organizer import (
+    ORGANIZE_LEASE_TTL_S,
+    _pg_timestamp,
+    recover_organize_jobs,
+    run_organize_job,
+)
+from test_saved_reels_organize import _Client, _eval_filter_term, _place
 
 
 def _iso(value: datetime) -> str:
@@ -252,3 +258,78 @@ def test_pg_timestamp_rejects_a_non_utc_datetime(bad):
 def test_pg_timestamp_emits_a_z_suffix_for_utc():
     stamped = _pg_timestamp(datetime(2026, 7, 19, 12, 0, 0, tzinfo=timezone.utc))
     assert stamped.endswith("Z") and "+" not in stamped
+
+
+# --- claim ---------------------------------------------------------------------------------
+
+
+FIRST_ATTEMPT_STARTED_AT = "2026-07-19T00:00:00+00:00"
+
+
+def seed_claimable_job(client) -> None:
+    """A pending job with one queued item, ready for `run_organize_job` to claim.
+
+    `started_at` is pre-populated: this job has already had a first attempt, which is the
+    only state in which the preserve-vs-overwrite distinction is observable.
+    """
+    seed_job(client, status="pending", started_at=FIRST_ATTEMPT_STARTED_AT)
+    client.db["organize_job_items"] = [{
+        "id": "i1", "job_id": "j1", "user_id": "u1", "saved_reel_id": "r1", "status": "queued",
+    }]
+    client.db["saved_reels"] = [{
+        "id": "r1", "user_id": "u1", "normalized_url": "https://www.instagram.com/reel/A",
+        "reel_cache_id": "cache-1", "analysis_status": "queued",
+    }]
+
+
+def crash_after_snapshotting_the_row(client, snapshots):
+    """A `ground` that records the claimed row, then dies the way a SIGTERM'd worker does.
+
+    Two things make this shape load-bearing rather than fussy. The claim's `lock_expires_at`
+    is nulled again by the job's own finalization, so a post-run assertion would silently
+    check the teardown instead of the claim — the row has to be read mid-run. And
+    `CancelledError` is a `BaseException`, so it slips both `except Exception` handlers and
+    leaves the job `processing` with an unrenewed lease and its item mid-flight: exactly the
+    state the reaper exists to find, produced rather than hand-forged.
+    """
+    async def ground(_place_result):
+        snapshots.append(dict(job_row(client)))
+        raise asyncio.CancelledError()
+
+    return ground
+
+
+@pytest.mark.asyncio
+async def test_claim_mints_a_fresh_token_and_preserves_started_at(fake_client, monkeypatch):
+    """Every claim attempt mints its OWN token; only the first one stamps `started_at`.
+
+    Both halves are what the rest of A2 rests on. A token minted once and reused across
+    attempts would let a superseded worker satisfy the `.eq("lease_token", ...)` CAS its
+    replacement installed — fencing that admits the exact writer it exists to exclude, while
+    every single-attempt test stays green. And `started_at` is the run's user-visible elapsed
+    time: re-stamping it on each retry makes a job that has been grinding for an hour report
+    as though it had just begun, hiding the retry loop it is actually stuck in.
+    """
+    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    seed_claimable_job(fake_client)
+    snapshots: list[dict] = []
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_organize_job("j1", "u1", client=fake_client,
+                               ground=crash_after_snapshotting_the_row(fake_client, snapshots))
+
+    # Ten minutes on the lease is past its TTL, so the reaper takes the abandoned job back.
+    assert [j["id"] for j in await recover_organize_jobs(
+        fake_client, now=_now_utc() + timedelta(minutes=10))] == ["j1"]
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_organize_job("j1", "u1", client=fake_client,
+                               ground=crash_after_snapshotting_the_row(fake_client, snapshots))
+
+    first, second = snapshots
+    assert first["lease_token"] and second["lease_token"]
+    assert first["lease_token"] != second["lease_token"]
+    assert datetime.fromisoformat(first["lock_expires_at"]) > _now_utc()
+    assert datetime.fromisoformat(second["lock_expires_at"]) > _now_utc()
+    assert first["started_at"] == second["started_at"] == FIRST_ATTEMPT_STARTED_AT
+    assert (first["attempt_count"], second["attempt_count"]) == (1, 2)

@@ -20,7 +20,7 @@ def _ctx(client, *, ground=None, scrape=None, extract=None) -> _ItemContext:
     """Build the per-job context the organizer item loop threads through."""
     return _ItemContext(
         client=client, job_id="job-1", user_id="u1",
-        scrape=scrape, extract=extract, ground=ground,
+        scrape=scrape, extract=extract, ground=ground, lease_token="lease-1",
     )
 
 

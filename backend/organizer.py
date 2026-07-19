@@ -96,14 +96,37 @@ async def create_organize_job(client, user_id: str, saved_reel_ids: list[str]) -
     return result.data
 
 
-async def _record_organize_event(client, job_id: str, user_id: str, event_type: str, message: str, payload=None) -> None:
-    existing = await (client.table("organize_events").select("sequence")
-                      .eq("job_id", job_id).eq("user_id", user_id).execute())
-    sequence = max((row.get("sequence", 0) for row in (existing.data or [])), default=0) + 1
-    await client.table("organize_events").insert({
-        "job_id": job_id, "user_id": user_id, "sequence": sequence, "event_type": event_type,
-        "message": message, "payload": payload or {},
-    }).execute()
+async def _record_organize_event(
+    client, job_id: str, user_id: str, event_type: str, message: str, payload=None,
+    *, lease_token: str,
+) -> None:
+    """Append one organize event through the fenced, sequence-assigning RPC.
+
+    The RPC replaces a select-MAX-then-insert that was neither atomic (two writers could
+    compute the same sequence and violate `organize_events_job_sequence_unique`) nor fenced
+    (a superseded worker's terminal `result` row ends the user's SSE session on an outcome
+    that never happened — `stream_organize_events` returns on the FIRST result by sequence,
+    and the seen-set dedupes by row id, so a second writer's row is not deduped).
+
+    `lease_token` is REQUIRED, mirroring the RPC: `append_organize_event` raises AS400 on a
+    null token because there is no unfenced form and no caller that legitimately lacks one —
+    every event writer runs after the claim has returned. A defaulted `None` would turn that
+    design into a runtime surprise at whichever call site forgot it.
+
+    AS409 means a replacement owns the job. That is NOT an error to propagate: both terminal
+    paths append an event, so raising here would convert "we were superseded" — the expected
+    outcome of a deploy overlap — into a crash inside cleanup, on a job another worker is
+    already finishing correctly. Log it and return; the replacement writes the real events.
+    """
+    try:
+        await client.rpc("append_organize_event", {
+            "p_job_id": job_id, "p_user_id": user_id, "p_lease_token": lease_token,
+            "p_event_type": event_type, "p_message": message, "p_payload": payload or {},
+        }).execute()
+    except APIError as exc:
+        if exc.code != "AS409":
+            raise
+        logger.warning("organize_event_lease_superseded job_id=%s event_type=%s", job_id, event_type)
 
 
 async def authorize_place_ids(client, user_id: str, place_ids: list[str]) -> list[dict]:
@@ -253,8 +276,22 @@ async def _consume_organize_item_analysis(client, item_id: str, user_id: str) ->
      .eq("analysis_charge_state", "reserved").execute())
 
 
-async def _mark_organize_job_failed(client, job_id: str, user_id: str) -> None:
-    """Best-effort terminal cleanup for errors outside the per-item boundary."""
+async def _mark_organize_job_failed(client, job_id: str, user_id: str, *, lease_token: str) -> None:
+    """Best-effort terminal cleanup for errors outside the per-item boundary.
+
+    FENCED, and the fence is not cosmetic tidiness — it closes a cascade that was reproduced
+    against the real organizer. Worker A is superseded and aborts with `LeaseLost`, which
+    lands here. Unfenced, this write flips `status` to `failed` on a row worker B legitimately
+    leases. B's own renewal CAS requires `status='processing'`, so B's next heartbeat matches
+    zero rows, B reads that as ITS lease being lost, and B abandons a run it was entitled to
+    finish — observed as `status='failed'` on a job whose second item was never even started.
+
+    Note the shape of that bug: the renewal CAS's `status` predicate turns any unfenced write
+    to `status` into an implicit "you lost your lease" aimed at the rightful owner. The
+    heartbeat is also what makes it fire in practice, by giving a worker parked in a slow
+    provider call a guaranteed exit one renewal interval after being superseded. So this fence
+    is not optional relative to the heartbeat — the two must ship together.
+    """
     try:
         await (client.table("organize_jobs").update({
             "status": "failed",
@@ -262,12 +299,13 @@ async def _mark_organize_job_failed(client, job_id: str, user_id: str) -> None:
             "completed_at": _now(),
             "locked_at": None,
             "lock_expires_at": None,
-        }).eq("id", job_id).eq("user_id", user_id).execute())
+        }).eq("id", job_id).eq("user_id", user_id).eq("lease_token", lease_token).execute())
     except Exception:
         pass
     try:
         await _record_organize_event(
-            client, job_id, user_id, "result", ORGANIZE_FAILURE_MESSAGE, {"status": "failed"}
+            client, job_id, user_id, "result", ORGANIZE_FAILURE_MESSAGE, {"status": "failed"},
+            lease_token=lease_token,
         )
     except Exception:
         pass
@@ -501,7 +539,7 @@ async def _process_item(ctx: _ItemContext, item: dict) -> bool:
             "reel_cache_id": cache_id, "analysis_status": terminal,
             "analyzed_at": _now(), "retry_after": None,
         }).eq("id", reel["id"]).eq("user_id", ctx.user_id).execute()
-        await _record_organize_event(ctx.client, ctx.job_id, ctx.user_id, "stage", "Reel organized", {"saved_reel_id": reel["id"], "place_count": place_count})
+        await _record_organize_event(ctx.client, ctx.job_id, ctx.user_id, "stage", "Reel organized", {"saved_reel_id": reel["id"], "place_count": place_count}, lease_token=ctx.lease_token)
     except Exception:
         logger.error(
             "saved_reel_organize_item_failed phase=%s job_id=%s item_id=%s",
@@ -513,7 +551,7 @@ async def _process_item(ctx: _ItemContext, item: dict) -> bool:
         await ctx.client.table("saved_reels").update({
             "analysis_status": "failed", "retry_after": None,
         }).eq("id", reel["id"]).eq("user_id", ctx.user_id).execute()
-        await _record_organize_event(ctx.client, ctx.job_id, ctx.user_id, "error", "Reel organization failed", {"saved_reel_id": reel["id"]})
+        await _record_organize_event(ctx.client, ctx.job_id, ctx.user_id, "error", "Reel organization failed", {"saved_reel_id": reel["id"]}, lease_token=ctx.lease_token)
     return True
 
 
@@ -555,7 +593,7 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
         # send whoever reads that log looking for a competing worker that never existed.
         return {"skipped": "job already claimed" if current_row else "job not found"}
     try:
-        await _record_organize_event(client, job_id, user_id, "stage", "Finding places")
+        await _record_organize_event(client, job_id, user_id, "stage", "Finding places", lease_token=lease_token)
         if scrape is None:
             async def scrape(url):
                 token = os.environ.get("APIFY_TOKEN")
@@ -594,15 +632,20 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
                 await beat
         status = await get_organize_status(client, job_id, user_id)
         final_status = "failed" if status["failed_items"] and not status["organized_items"] and not status["location_not_found_items"] else "succeeded"
+        # FENCED. The loop's `lease_lost` gate sits BEFORE each item, so a superseded worker
+        # parked in its LAST item never reaches a gate — the loop just ends and it arrives
+        # here. Without the token predicate it would stamp its own terminal state over the
+        # replacement's, which is the one organize write a user reads directly (the polling
+        # status endpoint reads this row, not the event log).
         await client.table("organize_jobs").update({
             "status": final_status,
             "status_message": "Organization failed" if final_status == "failed" else "Organized",
             "completed_at": _now(), "locked_at": None, "lock_expires_at": None,
-        }).eq("id", job_id).eq("user_id", user_id).execute()
-        await _record_organize_event(client, job_id, user_id, "result", "Organization failed" if final_status == "failed" else "Organized", {"status": final_status})
+        }).eq("id", job_id).eq("user_id", user_id).eq("lease_token", lease_token).execute()
+        await _record_organize_event(client, job_id, user_id, "result", "Organization failed" if final_status == "failed" else "Organized", {"status": final_status}, lease_token=lease_token)
         return await get_organize_status(client, job_id, user_id)
     except Exception:
-        await _mark_organize_job_failed(client, job_id, user_id)
+        await _mark_organize_job_failed(client, job_id, user_id, lease_token=lease_token)
         try:
             return await get_organize_status(client, job_id, user_id)
         except Exception:

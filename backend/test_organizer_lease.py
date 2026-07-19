@@ -10,16 +10,20 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
+
+from postgrest.exceptions import APIError
 
 import organizer
 from organizer import (
     ORGANIZE_LEASE_TTL_S,
     LeaseLost,
     _heartbeat,
+    _mark_organize_job_failed,
     _pg_timestamp,
     recover_organize_jobs,
     run_organize_job,
@@ -145,6 +149,45 @@ async def test_fake_rejects_postgrest_operators_it_does_not_implement(fake_clien
     with pytest.raises(ValueError, match="gte"):
         await (fake_client.table("organize_jobs").update({"status": "pending"})
                .or_("attempt_count.gte.1").execute())
+
+
+def append_event(client, **overrides):
+    """Call the fake's `append_organize_event` the way `_record_organize_event` does."""
+    return client.rpc("append_organize_event", {
+        "p_job_id": "j1", "p_user_id": "u1", "p_lease_token": "t-live",
+        "p_event_type": "stage", "p_message": "Finding places", "p_payload": {},
+        **overrides,
+    }).execute()
+
+
+@pytest.mark.asyncio
+async def test_fake_append_organize_event_rejects_a_superseded_token(fake_client):
+    """THE FENCE'S FIDELITY PROOF. A fake that always inserted would make every fencing test
+    in this file green against an implementation with no fence at all.
+
+    Pins all three of the migration's error codes AND their precedence, because the wrapper
+    reacts to exactly one of them: AS409 is swallowed (a superseded worker must never crash a
+    terminal path), while AS400 and AS404 are real defects that must keep propagating. Get the
+    codes wrong here and the wrapper would swallow — or re-raise — the wrong thing.
+    """
+    seed_job(fake_client, status="processing", lease_token="t-live")
+
+    assert (await append_event(fake_client)).data == 1
+
+    with pytest.raises(APIError) as superseded:
+        await append_event(fake_client, p_lease_token="t-stale")
+    assert superseded.value.code == "AS409"
+
+    with pytest.raises(APIError) as tokenless:
+        await append_event(fake_client, p_lease_token=None)
+    assert tokenless.value.code == "AS400"
+
+    # AS404 outranks the null-token check: the real function locks the row FIRST.
+    with pytest.raises(APIError) as missing:
+        await append_event(fake_client, p_job_id="gone", p_lease_token=None)
+    assert missing.value.code == "AS404"
+
+    assert len(fake_client.db["organize_events"]) == 1     # only the fenced-and-valid append
 
 
 # --- reclaim semantics --------------------------------------------------------------------
@@ -645,3 +688,179 @@ async def test_heartbeat_stops_when_the_run_signals_it_is_done(fake_client, monk
         await asyncio.wait_for(beat, timeout=5)
 
     assert job_row(fake_client)["lock_expires_at"] == expired           # never renewed
+
+
+# --- fenced terminal writes -----------------------------------------------------------------
+
+
+def parked_ground(entered: asyncio.Event, release: asyncio.Event):
+    """A `ground` that parks the run inside the provider call until released.
+
+    A real Mapbox/Apify call is where a superseded worker actually sits, and it is the only
+    state in which a worker can be both replaced and still alive to write. Every test below
+    needs a worker in exactly that state, produced rather than hand-forged.
+    """
+    async def ground(place):
+        entered.set()
+        await release.wait()
+        return await _grounded(place)
+
+    return ground
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_worker_cannot_force_fail_the_worker_that_replaced_it(
+    fake_client, monkeypatch
+):
+    """THE CASCADE — reproduced against the real organizer before this fence existed.
+
+    Two workers, both alive: A superseded, B legitimately leased. A's `LeaseLost` reaches the
+    outer `except` and calls `_mark_organize_job_failed`; unfenced, that write lands
+    `status='failed'` on B's row. B's OWN renewal CAS is predicated on `status='processing'`,
+    so B's next heartbeat matches zero rows, B reads it as lease loss, and B abandons a run it
+    was entitled to finish. Observed before the fix: B organized item 1, then `status='failed'`,
+    `organized_items=1`, item 2 left `queued`.
+
+    Worse than a wrong status value, and worth its own regression test for that reason: the
+    renewal CAS's `status` predicate turns ANY unfenced write to `status` into an implicit
+    "you lost your lease" aimed at whoever legitimately holds it. One worker reaching into
+    another's control flow is something no pre-heartbeat worker could do at all, and the
+    heartbeat is what makes it fire reliably — a worker stuck in a provider call now has a
+    guaranteed exit one renewal interval after being superseded.
+    """
+    monkeypatch.setattr("organizer.ORGANIZE_LEASE_RENEW_S", 0)
+    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    seed_two_item_job(fake_client)
+
+    renewals: list[bool] = []
+    real_renew = organizer._renew_organize_lease
+
+    async def watched_renew(*args):
+        outcome = await real_renew(*args)
+        renewals.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(organizer, "_renew_organize_lease", watched_renew)
+
+    a_entered, a_release = asyncio.Event(), asyncio.Event()
+    b_entered, b_release = asyncio.Event(), asyncio.Event()
+
+    worker_a = asyncio.create_task(run_organize_job(
+        "j1", "u1", client=fake_client, ground=parked_ground(a_entered, a_release)))
+    await _spin_until(a_entered.is_set)
+
+    # The reaper finds A's lease expired and worker B claims — the deploy-overlap sequence in
+    # full, driven through the real reclaim rather than by editing the row.
+    assert [j["id"] for j in await recover_organize_jobs(
+        fake_client, now=_now_utc() + timedelta(minutes=10))] == ["j1"]
+    worker_b = asyncio.create_task(run_organize_job(
+        "j1", "u1", client=fake_client, ground=parked_ground(b_entered, b_release)))
+    await _spin_until(b_entered.is_set)
+    b_token = job_row(fake_client)["lease_token"]
+    assert b_token and job_status(fake_client) == "processing"
+
+    await _spin_until(lambda: False in renewals)     # A's beat has learned it was superseded
+    a_release.set()
+    await asyncio.wait_for(worker_a, timeout=5)
+
+    # A has now run its ENTIRE terminal cleanup while B is still parked mid-provider-call.
+    row = job_row(fake_client)
+    assert (row["status"], row["lease_token"]) == ("processing", b_token)
+
+    b_release.set()
+    status = await asyncio.wait_for(worker_b, timeout=5)
+
+    # B finishes on its own terms: the whole job, not the one item it had done when A aborted.
+    assert status["status"] == "succeeded"
+    assert status["organized_items"] == 2
+    assert item_row(fake_client, "i2")["status"] == "organized"
+
+
+@pytest.mark.asyncio
+async def test_fenced_writer_cannot_finalize_the_job(fake_client, monkeypatch):
+    """NEITHER terminal `organize_jobs` write may land from a worker that lost the lease —
+    not the failure cleanup, and not the SUCCESS finalization.
+
+    The success half is not symmetry for its own sake. The loop's `lease_lost` gate sits
+    BEFORE each item, so a superseded worker parked in its LAST item never reaches a gate at
+    all — the loop simply ends and it falls straight through to the final-status update.
+    Fence only the failure path and that worker stamps its own `succeeded`/`Organized` over
+    the replacement's terminal state, which is why the replacement here deliberately fails:
+    `succeeded` is then a value only the stale writer could possibly have written.
+    """
+    seed_job(fake_client, status="processing", lease_token="new-owner")
+
+    await _mark_organize_job_failed(fake_client, "j1", "u1", lease_token="stale-owner")
+
+    assert job_status(fake_client) == "processing"       # untouched by the fenced writer
+
+    monkeypatch.setattr("organizer.ORGANIZE_LEASE_RENEW_S", 0)
+    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    client = _Client({"organize_jobs": []})
+    seed_claimable_job(client)                           # ONE item, so the loop never gates
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    old = asyncio.create_task(run_organize_job(
+        "j1", "u1", client=client, ground=parked_ground(entered, release)))
+    await _spin_until(entered.is_set)
+
+    async def failing_ground(_place_result):
+        raise RuntimeError("Mapbox is down for the replacement")
+
+    await recover_organize_jobs(client, now=_now_utc() + timedelta(minutes=10))
+    replacement = await run_organize_job("j1", "u1", client=client, ground=failing_ground)
+    assert replacement["status"] == "failed"
+    new_token = job_row(client)["lease_token"]
+
+    release.set()
+    await asyncio.wait_for(old, timeout=5)
+
+    row = job_row(client)
+    assert (row["status"], row["status_message"]) == ("failed", "Organization failed")
+    assert row["lease_token"] == new_token
+    # The old worker DID run to the end — only the fence stopped it, so this is not vacuous.
+    assert item_row(client, "i1")["status"] == "organized"
+
+
+@pytest.mark.asyncio
+async def test_old_worker_resuming_after_replacement_cannot_finalize_the_job(
+    fake_client, monkeypatch, caplog
+):
+    """The full old-vs-new sequence, asserting EXACTLY the hard-fenced set.
+
+    Deliberately does NOT assert that no item row moved. Item terminal statuses,
+    `saved_reels.analysis_status` and mention replacement are bounded, not fenced — the
+    `lease_lost` gate sits between items, so a worker parked in one provider call still lands
+    THAT item. Asserting otherwise would pin a guarantee this task does not ship.
+
+    The AS409 log line is the observable for the fence itself: `_record_organize_event`
+    swallows a superseded append so a terminal path never crashes, which means the log is the
+    only place that rejection surfaces. Without it, "the event simply never appeared" would be
+    equally consistent with the append silently doing nothing at all.
+    """
+    monkeypatch.setattr("organizer.ORGANIZE_LEASE_RENEW_S", 0)
+    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    caplog.set_level(logging.WARNING, logger="organizer")
+    seed_two_item_job(fake_client)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    old = asyncio.create_task(run_organize_job(
+        "j1", "u1", client=fake_client, ground=parked_ground(entered, release)))
+    await _spin_until(entered.is_set)
+
+    assert [j["id"] for j in await recover_organize_jobs(
+        fake_client, now=_now_utc() + timedelta(minutes=10))] == ["j1"]
+    replacement = await run_organize_job("j1", "u1", client=fake_client, ground=_grounded)
+    assert replacement["status"] == "succeeded"
+    new_token = job_row(fake_client)["lease_token"]
+
+    release.set()
+    await asyncio.wait_for(old, timeout=5)
+
+    row = job_row(fake_client)
+    assert (row["status"], row["status_message"]) == ("succeeded", "Organized")
+    assert row["lease_token"] == new_token
+    events = fake_client.db["organize_events"]
+    assert [event["sequence"] for event in events] == list(range(1, len(events) + 1))
+    assert [event["message"] for event in events].count(organizer.ORGANIZE_FAILURE_MESSAGE) == 0
+    assert "organize_event_lease_superseded" in caplog.text

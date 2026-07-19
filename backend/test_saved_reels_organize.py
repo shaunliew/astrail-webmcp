@@ -157,12 +157,58 @@ class _Client:
         self.rpc_calls.append((name, params))
         if name == "create_saved_reels_organize_job":
             return _CreateOrganizeJobRpc(self, params)
+        if name == "append_organize_event":
+            return _AppendOrganizeEventRpc(self, params)
         return _Rpc(self, name)
 
 
 class _Rpc:
     def __init__(self, client, name): self.client, self.name = client, name
     async def execute(self): return _Result(self.client.db.get(f"rpc:{self.name}"))
+
+
+def _pg_error(code, message):
+    from postgrest.exceptions import APIError
+
+    return APIError({"code": code, "message": message, "details": None, "hint": None})
+
+
+class _AppendOrganizeEventRpc:
+    """Mirror of `public.append_organize_event` (20260720090000_job_leases.sql).
+
+    The AS409 branch is the load-bearing part. `_record_organize_event` swallows a superseded
+    append so a terminal path never crashes on it — which means a fake that always inserted
+    would leave that handling as dead code AND let every fencing test below pass while the
+    real RPC's fence was gone. The error ORDER matters too and mirrors the function: the row
+    lookup happens first (AS404), then the null-token rejection (AS400), then the fence
+    (AS409). `is distinct from` and Python's `!=` agree on a NULL lease against a real token.
+    """
+
+    def __init__(self, client, params): self.client, self.params = client, params
+
+    async def execute(self):
+        job_id, user_id = self.params["p_job_id"], self.params["p_user_id"]
+        job = next((row for row in self.client.db.get("organize_jobs", [])
+                    if row.get("id") == job_id and row.get("user_id") == user_id), None)
+        if job is None:
+            raise _pg_error("AS404", "Organize job not found")
+        if self.params["p_lease_token"] is None:
+            raise _pg_error("AS400", "Organize event requires a lease token")
+        if job.get("lease_token") != self.params["p_lease_token"]:
+            raise _pg_error("AS409", "Organize job lease superseded")
+        events = self.client.db.setdefault("organize_events", [])
+        sequence = max((row.get("sequence", 0) for row in events
+                        if row.get("job_id") == job_id), default=0) + 1
+        events.append({
+            "id": f"organize_events-{len(events) + 1}",
+            "user_id": user_id,
+            "job_id": job_id,
+            "sequence": sequence,
+            "event_type": self.params["p_event_type"],
+            "message": self.params["p_message"],
+            "payload": self.params.get("p_payload") or {},
+        })
+        return _Result(sequence)
 
 
 class _CreateOrganizeJobRpc:
@@ -452,15 +498,12 @@ async def test_recover_organize_jobs_immediately_requeues_prior_process_work():
 async def test_unexpected_organizer_failure_marks_job_failed_and_emits_result(
     monkeypatch, failure
 ):
+    class _FaultRpc:
+        async def execute(self):
+            raise RuntimeError("initial event write failed")
+
     class _FaultTable(_Table):
         async def execute(self):
-            if failure == "initial_event" and self.name == "organize_events":
-                if (
-                    isinstance(self.op, tuple)
-                    and self.op[0] == "insert"
-                    and self.op[1].get("message") == "Finding places"
-                ):
-                    raise RuntimeError("initial event write failed")
             if failure == "items_load" and self.name == "organize_job_items":
                 if self.op == "select" and self.filters.get("job_id") == "job-1":
                     raise RuntimeError("item load failed")
@@ -478,6 +521,19 @@ async def test_unexpected_organizer_failure_marks_job_failed_and_emits_result(
     class _FaultClient(_Client):
         def table(self, name):
             return _FaultTable(name, self.db)
+
+        def rpc(self, name, params):
+            # The opening event moved from a table insert to `append_organize_event`, so the
+            # fault has to move with it. Left on the table, this hook would simply never fire
+            # and the case would assert the SUCCESS path while still looking green.
+            call = super().rpc(name, params)
+            if (
+                failure == "initial_event"
+                and name == "append_organize_event"
+                and params.get("p_message") == "Finding places"
+            ):
+                return _FaultRpc()
+            return call
 
     client = _FaultClient({
         "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending"}],

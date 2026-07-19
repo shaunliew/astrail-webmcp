@@ -2401,6 +2401,44 @@ removing them is frontend-visible churn for zero value.
 
 ### Arc B closeout
 
+> ## ⛔ STEP 0 — APPLY `20260720130000` BEFORE THE MERGE. NOT OPTIONAL.
+>
+> B5(d) replaced Postgres error matching by message string with custom SQLSTATEs.
+> `_ORGANIZE_JOB_ERRORS` maps **only** `AS409`/`AS404`/`AS422` and re-raises everything else.
+> The deployed database still raises `P0001`.
+>
+> ```
+> merge before applying  →  deployed Postgres raises P0001
+>                        →  not in the map  →  re-raised
+>                        →  api/errors.py's bare-Exception handler returns a generic 500
+>                        →  EVERY 409 ("already organizing") and EVERY 404 (bad/cross-owner id)
+>                           on POST /saved-reels/organize becomes an opaque 500, for the whole
+>                           skew window. Mainline paths, not edge cases.
+> ```
+>
+> **Nothing in this repo enforces the order.** `render.yaml` has `autoDeploy: true` with no
+> pre-deploy migration hook, and `.github/workflows/rls-tests.yml` only runs `supabase db start`
+> against a fresh ephemeral Postgres — CI never touches the deployed project.
+>
+> **A code fallback was considered and REJECTED.** `rate_limit.py` has a precedent (catching
+> `PGRST202` and failing closed), but it does not transfer: there the function genuinely does not
+> exist yet, so the signal is unambiguous. Here the function exists in BOTH versions
+> (`create or replace`), and after the migration `P0001` is deliberately overloaded to mean "some
+> other validation" — so a `P0001`-plus-message fallback would be correct during the window and
+> **silently wrong afterwards**, misclassifying new P0001s into 409/404. That is precisely the
+> fragility B5(d) exists to remove, reintroduced on a timer. Fail-loud-500 for a controlled
+> window beats fail-quiet-wrong forever.
+>
+> **Order:**
+> 1. Apply `supabase/migrations/20260720130000_organize_job_error_codes.sql` to the deployed
+>    Supabase (plus `…120000_saved_reels_cache_signal_v2` if Arc A's closeout did not).
+> 2. Confirm the **currently deployed** code still works against it — it does; the migration is
+>    additive and old code matches on message text, which is unchanged.
+> 3. Only then merge and let auto-deploy ship the code.
+> 4. Smoke it: a duplicate organize of an already-active Reel must return **409, not 500**. If it
+>    returns 500, the migration did not land.
+
+
 1. Final whole-branch `astrail-reviewer` pass, **`model: fable`**.
 2. gstack `/review` Codex cross-model pass — run BOTH.
 3. Verify B3's view migration actually copied A3's user-scoped join (diff the two view

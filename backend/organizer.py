@@ -716,7 +716,15 @@ async def _process_item(ctx: _ItemContext, item: dict) -> bool:
         phase = "database"
         try:
             places = await _maybe_await(get_cached_places(ctx.client, reel["normalized_url"], EXTRACTOR_VERSION))
-        except Exception:
+        except Exception as exc:
+            # LOG IT. Without this the handler is indistinguishable from a real programming
+            # error: a None client (AttributeError) or a renamed column (APIError) degrades
+            # PERMANENTLY into "always MISS, always re-scrape", and the only symptom is a
+            # quiet rise in Apify/OpenAI spend. A transient blip logs once; a broken cache
+            # read logs on every item of every job, which is the signal worth having.
+            logger.warning(
+                "organize_cache_read_blip item_id=%s error=%s", item["id"], type(exc).__name__
+            )
             # A cache-READ blip is a MISS, never an item failure — the trip runner's exact
             # behavior (`pipeline/runner.py:208-211`). ACCEPTED TRADE-OFF: on a reel we had
             # cached, this triggers a fresh, quota-charged scrape. That is strictly cheaper

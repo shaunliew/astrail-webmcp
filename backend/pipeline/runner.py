@@ -249,7 +249,13 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
             for i, url in enumerate(reel_urls):
                 try:
                     cached = await get_cached_places(client, url, EXTRACTOR_VERSION)
-                except Exception:
+                except Exception as exc:
+                    # See organizer._process_item's mirror of this handler: unlogged, a real
+                    # bug here is indistinguishable from a transient blip and shows up only as
+                    # extra provider spend.
+                    logger.warning(
+                        "trip_cache_read_blip url=%s error=%s", url, type(exc).__name__
+                    )
                     cached = None
                 if cached is not None:
                     results[i] = cached

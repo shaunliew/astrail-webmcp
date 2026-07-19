@@ -6,7 +6,13 @@ that follows can target `_ground_and_persist` directly. The fake client and the
 """
 from __future__ import annotations
 
-from organizer import _ItemContext, _ground_and_persist, _process_item
+from organizer import (
+    _ItemContext,
+    _ground_and_persist,
+    _process_item,
+    get_organize_status,
+    run_organize_job,
+)
 from test_saved_reels_organize import _Client, _place
 
 
@@ -94,3 +100,55 @@ async def test_process_item_skips_counts_when_saved_reel_is_gone():
     )
 
     assert processed is False, "an orphaned item must report skipped, not processed"
+
+
+async def test_failed_item_still_updates_job_counts(monkeypatch):
+    """A genuinely FAILED item must still reach `_update_job_counts`.
+
+    `_process_item` returns False only for an ORPHANED item (its `saved_reels` row is
+    gone); a real failure must return True so the caller updates counts. This is not a
+    counting nicety: `run_organize_job` derives `final_status` from
+    `organize_jobs.failed_count`, a column ONLY `_update_job_counts` writes. If a failed
+    item were misread as skipped, the job would report **"succeeded" with 0 failed items**
+    while its `organize_job_items` row sits at `status=failed` — a false positive that is
+    worse than the orphan bug this return value was introduced to fix.
+
+    No other test in the suite asserts on the count columns or on
+    `get_organize_status()`'s numeric fields after a run, so nothing else pins this.
+    """
+    client = _Client({
+        "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending"}],
+        "organize_job_items": [{
+            "id": "item-1", "job_id": "job-1", "user_id": "user-a",
+            "saved_reel_id": "r1", "status": "queued",
+        }],
+        "saved_reels": [{
+            "id": "r1", "user_id": "user-a",
+            "normalized_url": "https://www.instagram.com/reel/A",
+            "reel_cache_id": "cache-1", "analysis_status": "queued",
+        }],
+    })
+
+    async def _reserve(*_a, **_kw):
+        return True
+
+    async def _refund(*_a, **_kw):
+        return None
+
+    async def _scrape(*_a, **_kw):
+        raise RuntimeError("source down")      # a real failure, NOT an orphaned row
+
+    monkeypatch.setattr("organizer.reserve_organize_item_analysis", _reserve)
+    monkeypatch.setattr("organizer.refund_organize_item_analysis", _refund)
+    monkeypatch.setattr("organizer.get_cached_places", lambda *_a, **_kw: None)
+
+    await run_organize_job("job-1", "user-a", client=client, scrape=_scrape, extract=None)
+
+    assert client.db["organize_job_items"][0]["status"] == "failed"
+    job = client.db["organize_jobs"][0]
+    assert job["failed_count"] == 1, "counts must reflect a failed item, not skip it"
+    assert job["processed_count"] == 1
+    assert job["status"] == "failed", "a job whose only item failed must not read 'succeeded'"
+
+    status = await get_organize_status(client, "job-1", "user-a")
+    assert (status["failed_items"], status["organized_items"]) == (1, 0)

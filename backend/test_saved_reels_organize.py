@@ -17,7 +17,7 @@ from organizer import (
     recover_organize_jobs,
     run_organize_job,
 )
-from usage import refund_daily_reel_analysis, reserve_daily_reel_analysis
+from usage import refund_organize_item_analysis, reserve_organize_item_analysis
 
 
 class _Result:
@@ -499,8 +499,8 @@ async def test_uncached_source_failure_refunds_reserved_analysis(monkeypatch):
     async def refund(*_args, **_kwargs): calls.append("refund")
     async def scrape(*_args, **_kwargs): calls.append("scrape"); raise RuntimeError("source down")
     async def extract(*_args, **_kwargs): calls.append("extract")
-    monkeypatch.setattr("organizer.reserve_daily_reel_analysis", reserve)
-    monkeypatch.setattr("organizer.refund_daily_reel_analysis", refund)
+    monkeypatch.setattr("organizer.reserve_organize_item_analysis", reserve)
+    monkeypatch.setattr("organizer.refund_organize_item_analysis", refund)
     monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: None)
     await run_organize_job("job-1", "user-a", client=client, scrape=scrape, extract=extract)
     assert calls == ["reserve", "scrape", "refund"]
@@ -598,17 +598,134 @@ async def test_place_ids_are_owner_scoped_through_organized_reel_proof():
 
 
 @pytest.mark.asyncio
-async def test_analysis_rpc_helpers_use_the_schema_contract():
-    from datetime import date
-
-    client = _Client({"rpc:reserve_daily_reel_analysis": 1, "rpc:refund_daily_reel_analysis": 0})
-    assert await reserve_daily_reel_analysis(client, "user-a") is True
-    await refund_daily_reel_analysis(client, "user-a")
-    today = date.today().isoformat()
+async def test_analysis_rpc_helpers_use_item_contract_without_python_dates():
+    client = _Client({
+        "rpc:reserve_organize_item_analysis": "2026-07-19",
+        "rpc:refund_organize_item_analysis": True,
+    })
+    assert await reserve_organize_item_analysis(client, "item-a", "user-a") == "2026-07-19"
+    assert await refund_organize_item_analysis(client, "item-a", "user-a") is True
     assert client.rpc_calls == [
-        ("reserve_daily_reel_analysis", {"p_user_id": "user-a", "p_usage_date": today}),
-        ("refund_daily_reel_analysis", {"p_user_id": "user-a", "p_usage_date": today}),
+        (
+            "reserve_organize_item_analysis",
+            {"p_item_id": "item-a", "p_user_id": "user-a"},
+        ),
+        (
+            "refund_organize_item_analysis",
+            {"p_item_id": "item-a", "p_user_id": "user-a"},
+        ),
     ]
+
+
+@pytest.mark.asyncio
+async def test_refunded_item_gets_fresh_reservation_before_uncached_analysis(monkeypatch):
+    client = _Client({
+        "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending"}],
+        "organize_job_items": [{
+            "id": "item-1", "job_id": "job-1", "user_id": "user-a",
+            "saved_reel_id": "r1", "status": "queued", "analysis_charge_state": "refunded",
+            "analysis_usage_date": "2026-07-18",
+        }],
+        "saved_reels": [{
+            "id": "r1", "user_id": "user-a",
+            "normalized_url": "https://www.instagram.com/reel/A",
+            "analysis_status": "queued",
+        }],
+    })
+    calls = []
+
+    async def reserve(_client, item_id, user_id):
+        calls.append(("reserve", item_id, user_id))
+        client.db["organize_job_items"][0].update({
+            "analysis_charge_state": "reserved",
+            "analysis_usage_date": "2026-07-19",
+        })
+        return "2026-07-19"
+
+    async def scrape(url):
+        calls.append(("scrape", url))
+        return object()
+
+    async def extract(_scraped):
+        calls.append(("extract",))
+        return [_place()]
+
+    async def cache(_client, url, _scraped, _places, _version):
+        calls.append(("cache", url))
+        client.db.setdefault("reel_cache", []).append({
+            "id": "cache-1", "normalized_url": url,
+        })
+
+    monkeypatch.setattr("organizer.reserve_organize_item_analysis", reserve)
+    monkeypatch.setattr("organizer.cache_places", cache)
+    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: None)
+
+    await run_organize_job(
+        "job-1", "user-a", client=client, scrape=scrape, extract=extract,
+        ground=lambda place: {"place": place, "country_code": "JP", "country_name": "Japan"},
+    )
+
+    assert calls[:3] == [("reserve", "item-1", "user-a"), ("scrape", "https://www.instagram.com/reel/A"), ("extract",)]
+    assert client.db["organize_job_items"][0]["analysis_charge_state"] == "consumed"
+
+
+@pytest.mark.asyncio
+async def test_cache_retry_consumes_existing_reservation_without_apify(monkeypatch):
+    client = _Client({
+        "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending"}],
+        "organize_job_items": [{
+            "id": "item-1", "job_id": "job-1", "user_id": "user-a",
+            "saved_reel_id": "r1", "status": "queued", "analysis_charge_state": "reserved",
+            "analysis_usage_date": "2026-07-19",
+        }],
+        "saved_reels": [{
+            "id": "r1", "user_id": "user-a",
+            "normalized_url": "https://www.instagram.com/reel/A",
+            "reel_cache_id": "cache-1", "analysis_status": "queued",
+        }],
+    })
+
+    async def unexpected_reserve(*_args, **_kwargs):
+        raise AssertionError("a reserved item must not reserve again")
+
+    async def unexpected_scrape(*_args, **_kwargs):
+        raise AssertionError("cache retry must not call Apify")
+
+    monkeypatch.setattr("organizer.reserve_organize_item_analysis", unexpected_reserve)
+    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+
+    await run_organize_job(
+        "job-1", "user-a", client=client, scrape=unexpected_scrape,
+        ground=lambda place: {"place": place, "country_code": "JP", "country_name": "Japan"},
+    )
+
+    assert client.db["organize_job_items"][0]["analysis_charge_state"] == "consumed"
+    assert client.db["organize_job_items"][0]["analysis_consumed_at"]
+
+
+@pytest.mark.asyncio
+async def test_terminal_items_are_not_replayed_after_requeue(monkeypatch):
+    client = _Client({
+        "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending"}],
+        "organize_job_items": [{
+            "id": "item-1", "job_id": "job-1", "user_id": "user-a",
+            "saved_reel_id": "r1", "status": "organized", "analysis_charge_state": "consumed",
+        }],
+        "saved_reels": [{
+            "id": "r1", "user_id": "user-a",
+            "normalized_url": "https://www.instagram.com/reel/A",
+            "reel_cache_id": "cache-1", "analysis_status": "organized",
+        }],
+    })
+
+    async def unexpected_ground(*_args, **_kwargs):
+        raise AssertionError("terminal items must not be replayed")
+
+    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+
+    await run_organize_job("job-1", "user-a", client=client, ground=unexpected_ground)
+
+    assert client.db["organize_job_items"][0]["status"] == "organized"
 
 
 @pytest.mark.asyncio
@@ -1098,7 +1215,7 @@ async def test_uncached_reel_caches_research_output_before_country_verification(
             "normalized_url": "https://www.instagram.com/reel/A",
             "analysis_status": "queued",
         }],
-        "rpc:reserve_daily_reel_analysis": 1,
+        "rpc:reserve_organize_item_analysis": "2026-07-19",
     })
     research = PlaceResult(
         name="Harry Potter Cafe", category="restaurant", lat=35.67311, lng=139.73625,
@@ -1154,6 +1271,7 @@ async def test_provider_outage_consumes_cached_research_then_retries_without_api
 
     async def reserve(*_args, **_kwargs):
         calls.append("reserve")
+        client.db["organize_job_items"][0]["analysis_charge_state"] = "reserved"
         return True
 
     async def refund(*_args, **_kwargs):
@@ -1178,8 +1296,8 @@ async def test_provider_outage_consumes_cached_research_then_retries_without_api
         calls.append("outage")
         raise RuntimeError("Mapbox reverse-country failed: status 503")
 
-    monkeypatch.setattr("organizer.reserve_daily_reel_analysis", reserve)
-    monkeypatch.setattr("organizer.refund_daily_reel_analysis", refund)
+    monkeypatch.setattr("organizer.reserve_organize_item_analysis", reserve)
+    monkeypatch.setattr("organizer.refund_organize_item_analysis", refund)
     monkeypatch.setattr(
         "organizer.get_cached_places",
         lambda *_args, **_kwargs: list(cached) if cached else None,

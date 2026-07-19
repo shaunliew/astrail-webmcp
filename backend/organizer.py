@@ -14,7 +14,7 @@ from pipeline.cache import cache_places, get_cached_places
 from pipeline.dedup import DEFAULT_DISTANCE_M
 from pipeline.geo import haversine_m
 from scrape.apify_direct import scrape_reel
-from usage import refund_daily_reel_analysis, reserve_daily_reel_analysis
+from usage import refund_organize_item_analysis, reserve_organize_item_analysis
 
 LOCATION_VERIFICATION_VERSION = "mapbox-country-v1"
 INITIALIZING_STALE_AFTER_S = 120
@@ -278,6 +278,14 @@ async def _update_job_counts(client, job_id: str, user_id: str) -> None:
     await client.table("organize_jobs").update(counts).eq("id", job_id).eq("user_id", user_id).execute()
 
 
+async def _consume_organize_item_analysis(client, item_id: str, user_id: str) -> None:
+    await (client.table("organize_job_items").update({
+        "analysis_charge_state": "consumed",
+        "analysis_consumed_at": _now(),
+    }).eq("id", item_id).eq("user_id", user_id)
+     .eq("analysis_charge_state", "reserved").execute())
+
+
 async def _mark_organize_job_failed(client, job_id: str, user_id: str) -> None:
     """Best-effort terminal cleanup for errors outside the per-item boundary."""
     try:
@@ -348,7 +356,7 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
             extract = extract_places
         ground = ground or _ground_place
         items = (await client.table("organize_job_items").select("*").eq("job_id", job_id)
-                 .eq("user_id", user_id).execute()).data or []
+                 .eq("user_id", user_id).in_("status", ["queued", "processing"]).execute()).data or []
         for item in items:
             reel_result = await (client.table("saved_reels").select(
                 "id,normalized_url,reel_cache_id"
@@ -364,13 +372,10 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
                 places = await _maybe_await(get_cached_places(client, reel["normalized_url"], EXTRACTOR_VERSION))
                 if places is None:
                     quota_state = item.get("analysis_charge_state", "not_charged")
-                    if quota_state == "not_charged":
-                        if not await reserve_daily_reel_analysis(client, user_id):
+                    if quota_state in {"not_charged", "refunded"}:
+                        if await reserve_organize_item_analysis(client, item["id"], user_id) is None:
                             raise RuntimeError("analysis quota reached")
                         quota_state = "reserved"
-                        await client.table("organize_job_items").update({
-                            "analysis_charge_state": quota_state, "analysis_reserved_at": _now(),
-                        }).eq("id", item["id"]).eq("user_id", user_id).execute()
                     try:
                         scraped = await _maybe_await(scrape(reel["normalized_url"]))
                         places = await _maybe_await(extract(scraped))
@@ -383,10 +388,9 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
                             places,
                             EXTRACTOR_VERSION,
                         )
-                        quota_state = "consumed"
-                        await client.table("organize_job_items").update({
-                            "analysis_charge_state": quota_state, "analysis_consumed_at": _now(),
-                        }).eq("id", item["id"]).eq("user_id", user_id).execute()
+                        if quota_state == "reserved":
+                            await _consume_organize_item_analysis(client, item["id"], user_id)
+                            quota_state = "consumed"
                         grounded = [
                             resolved
                             for place in places
@@ -394,12 +398,11 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
                         ]
                     except Exception:
                         if quota_state == "reserved":
-                            await refund_daily_reel_analysis(client, user_id)
-                            await client.table("organize_job_items").update({
-                                "analysis_charge_state": "refunded", "analysis_refunded_at": _now(),
-                            }).eq("id", item["id"]).eq("user_id", user_id).execute()
+                            await refund_organize_item_analysis(client, item["id"], user_id)
                         raise
                 else:
+                    if item.get("analysis_charge_state") == "reserved":
+                        await _consume_organize_item_analysis(client, item["id"], user_id)
                     grounded = [resolved for place in places if (resolved := await _maybe_await(ground(place))) is not None]
                 if cache_id is None:
                     cache_id = await _find_cache_id(client, reel["normalized_url"])

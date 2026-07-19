@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(140);
+select plan(166);
 
 insert into auth.users (id, email)
 values
@@ -83,6 +83,7 @@ select has_column('public', 'places', 'country_code', 'places.country_code exist
 select has_column('public', 'places', 'country_name', 'places.country_name exists');
 select has_column('public', 'user_daily_usage', 'reel_analysis_count', 'reel_analysis_count exists');
 select has_column('public', 'reel_place_mentions', 'verification_version', 'mentions carry a verification version');
+select has_column('public', 'organize_job_items', 'analysis_usage_date', 'organize item usage date exists');
 
 select col_type_is('public', 'reel_place_mentions', 'reel_cache_id', 'uuid', 'mention cache id is uuid');
 select col_type_is('public', 'reel_place_mentions', 'place_id', 'uuid', 'mention place id is uuid');
@@ -98,6 +99,7 @@ select col_type_is('public', 'organize_job_items', 'analysis_charge_state', 'tex
 select col_type_is('public', 'organize_events', 'sequence', 'integer', 'organize event sequence is integer');
 select col_type_is('public', 'user_daily_usage', 'reel_analysis_count', 'integer', 'reel analysis count is integer');
 select col_type_is('public', 'reel_place_mentions', 'verification_version', 'text', 'mention verification version is text');
+select col_type_is('public', 'organize_job_items', 'analysis_usage_date', 'date', 'organize item usage date is date');
 select col_not_null('public', 'reel_place_mentions', 'verification_version', 'mention verification version is required after cleanup');
 
 select col_not_null('public', 'reel_place_mentions', 'reel_cache_id', 'mention cache id is required');
@@ -607,7 +609,11 @@ select throws_ok(
 );
 
 update public.organize_job_items
-set analysis_charge_state = 'reserved', analysis_reserved_at = now()
+set analysis_charge_state = 'reserved',
+    analysis_usage_date = current_date,
+    analysis_reserved_at = now(),
+    analysis_refunded_at = null,
+    analysis_consumed_at = null
 where id = '73000000-0000-0000-0000-000000000001';
 select is(
   (select analysis_charge_state from public.organize_job_items where id = '73000000-0000-0000-0000-000000000001'),
@@ -646,6 +652,181 @@ select throws_ok(
   $$insert into public.user_daily_usage (user_id, usage_date, reel_analysis_count) values ('00000000-0000-0000-0000-000000000701', current_date - 1, -1)$$,
   '23514', null,
   'negative reel analysis usage is rejected'
+);
+
+select ok(
+  not has_function_privilege('authenticated', 'public.reserve_organize_item_analysis(uuid,uuid)', 'EXECUTE'),
+  'authenticated cannot reserve an organize item analysis'
+);
+select ok(
+  not has_function_privilege('authenticated', 'public.refund_organize_item_analysis(uuid,uuid)', 'EXECUTE'),
+  'authenticated cannot refund an organize item analysis'
+);
+select ok(
+  has_function_privilege('service_role', 'public.reserve_organize_item_analysis(uuid,uuid)', 'EXECUTE'),
+  'service role can reserve an organize item analysis'
+);
+select ok(
+  has_function_privilege('service_role', 'public.refund_organize_item_analysis(uuid,uuid)', 'EXECUTE'),
+  'service role can refund an organize item analysis'
+);
+
+select isnt_empty(
+  $$select id from public.capture_saved_reel('00000000-0000-0000-0000-000000000702', 'https://www.instagram.com/reel/ORGANIZE-B-2')$$,
+  'service role captures a second user B saved reel for quota tests'
+);
+insert into public.organize_job_items (
+  id, user_id, job_id, saved_reel_id, status, analysis_charge_state
+)
+values
+(
+  '73000000-0000-0000-0000-000000000002',
+  '00000000-0000-0000-0000-000000000702',
+  '72000000-0000-0000-0000-000000000002',
+  (select id from public.saved_reels where user_id = '00000000-0000-0000-0000-000000000702' and normalized_url = 'https://www.instagram.com/reel/ORGANIZE-B'),
+  'queued',
+  'not_charged'
+),
+(
+  '73000000-0000-0000-0000-000000000003',
+  '00000000-0000-0000-0000-000000000702',
+  '72000000-0000-0000-0000-000000000002',
+  (select id from public.saved_reels where user_id = '00000000-0000-0000-0000-000000000702' and normalized_url = 'https://www.instagram.com/reel/ORGANIZE-B-2'),
+  'queued',
+  'not_charged'
+);
+
+select is(
+  public.reserve_organize_item_analysis(
+    '73000000-0000-0000-0000-000000000002',
+    '00000000-0000-0000-0000-000000000702'
+  ),
+  current_date,
+  'organize item reservation stamps the database current date'
+);
+select is(
+  (select reel_analysis_count from public.user_daily_usage
+   where user_id = '00000000-0000-0000-0000-000000000702' and usage_date = current_date),
+  1,
+  'organize item reservation increments quota once'
+);
+select results_eq(
+  $$select analysis_charge_state, analysis_usage_date from public.organize_job_items where id = '73000000-0000-0000-0000-000000000002'$$,
+  $$values ('reserved'::text, current_date)$$,
+  'organize item reservation stamps state and usage date atomically'
+);
+select is(
+  public.reserve_organize_item_analysis(
+    '73000000-0000-0000-0000-000000000002',
+    '00000000-0000-0000-0000-000000000702'
+  ),
+  current_date,
+  'retrying a reserved organize item returns the existing reservation'
+);
+select is(
+  (select reel_analysis_count from public.user_daily_usage
+   where user_id = '00000000-0000-0000-0000-000000000702' and usage_date = current_date),
+  1,
+  'retrying a reserved organize item does not double charge'
+);
+select ok(
+  public.refund_organize_item_analysis(
+    '73000000-0000-0000-0000-000000000002',
+    '00000000-0000-0000-0000-000000000702'
+  ),
+  'reserved organize item refunds successfully'
+);
+select is(
+  (select reel_analysis_count from public.user_daily_usage
+   where user_id = '00000000-0000-0000-0000-000000000702' and usage_date = current_date),
+  0,
+  'organize item refund decrements the current reservation'
+);
+select results_eq(
+  $$select analysis_charge_state, analysis_usage_date from public.organize_job_items where id = '73000000-0000-0000-0000-000000000002'$$,
+  $$values ('refunded'::text, current_date)$$,
+  'refund preserves the reservation usage date'
+);
+select ok(
+  public.refund_organize_item_analysis(
+    '73000000-0000-0000-0000-000000000002',
+    '00000000-0000-0000-0000-000000000702'
+  ),
+  'retrying a refunded organize item is idempotent'
+);
+select is(
+  (select reel_analysis_count from public.user_daily_usage
+   where user_id = '00000000-0000-0000-0000-000000000702' and usage_date = current_date),
+  0,
+  'retrying a refund does not decrement quota twice'
+);
+insert into public.user_daily_usage (user_id, usage_date, reel_analysis_count)
+values ('00000000-0000-0000-0000-000000000702', current_date - 1, 1);
+update public.organize_job_items
+set analysis_charge_state = 'reserved',
+    analysis_usage_date = current_date - 1,
+    analysis_reserved_at = now() - interval '1 day',
+    analysis_refunded_at = null,
+    analysis_consumed_at = null
+where id = '73000000-0000-0000-0000-000000000002';
+select ok(
+  public.refund_organize_item_analysis(
+    '73000000-0000-0000-0000-000000000002',
+    '00000000-0000-0000-0000-000000000702'
+  ),
+  'refund succeeds for an older persisted usage date'
+);
+select is(
+  (select reel_analysis_count from public.user_daily_usage
+   where user_id = '00000000-0000-0000-0000-000000000702' and usage_date = current_date - 1),
+  0,
+  'refund decrements the persisted reservation date'
+);
+select is(
+  coalesce((select reel_analysis_count from public.user_daily_usage
+   where user_id = '00000000-0000-0000-0000-000000000702' and usage_date = current_date), 0),
+  0,
+  'older-date refund leaves current-date quota unchanged'
+);
+select results_eq(
+  $$select analysis_charge_state, analysis_usage_date, analysis_refunded_at is null from public.organize_job_items where id = '73000000-0000-0000-0000-000000000002'$$,
+  $$values ('refunded'::text, (current_date - 1), false)$$,
+  'older-date refund keeps the item terminal refund state'
+);
+select is(
+  public.reserve_organize_item_analysis(
+    '73000000-0000-0000-0000-000000000002',
+    '00000000-0000-0000-0000-000000000702'
+  ),
+  current_date,
+  'a refunded item gets a fresh current-date reservation'
+);
+select is(
+  (select reel_analysis_count from public.user_daily_usage
+   where user_id = '00000000-0000-0000-0000-000000000702' and usage_date = current_date),
+  1,
+  'fresh reservation increments only the new usage date'
+);
+select results_eq(
+  $$select analysis_charge_state, analysis_usage_date, analysis_refunded_at is null from public.organize_job_items where id = '73000000-0000-0000-0000-000000000002'$$,
+  $$values ('reserved'::text, current_date, true)$$,
+  'fresh reservation clears the prior refund marker'
+);
+update public.user_daily_usage
+set reel_analysis_count = 5
+where user_id = '00000000-0000-0000-0000-000000000702' and usage_date = current_date;
+select is(
+  public.reserve_organize_item_analysis(
+    '73000000-0000-0000-0000-000000000003',
+    '00000000-0000-0000-0000-000000000702'
+  ),
+  null,
+  'quota rejection returns null'
+);
+select results_eq(
+  $$select analysis_charge_state, analysis_usage_date, analysis_reserved_at, analysis_refunded_at, analysis_consumed_at from public.organize_job_items where id = '73000000-0000-0000-0000-000000000003'$$,
+  $$values ('not_charged'::text, null::date, null::timestamptz, null::timestamptz, null::timestamptz)$$,
+  'quota rejection leaves the item unchanged'
 );
 
 reset role;

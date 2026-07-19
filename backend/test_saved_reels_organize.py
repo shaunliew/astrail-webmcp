@@ -12,6 +12,7 @@ from api.schemas import GenerateTripRequest, OrganizeJobStatus, OrganizeSavedRee
 from genagents.place_extractor import EXTRACTOR_VERSION
 from api.streaming import DONE, format_sse, stream_organize_events
 from models.place import PlaceResult
+from pipeline.dedup import DEFAULT_DISTANCE_M
 from pipeline.geo import haversine_m
 from organizer import (
     ActiveOrganizeConflict,
@@ -1739,6 +1740,63 @@ async def test_persist_place_prefers_the_country_code_match_over_a_null_country_
 
     assert place_id == "place-verified"
     assert client.db["places"][0]["country_code"] is None, "the unchosen row stays untouched"
+
+
+@pytest.mark.asyncio
+async def test_persist_place_finds_or_creates_in_exactly_one_round_trip():
+    """The whole find-or-create is ONE call, and it is the RPC (B2 + 20260720160000).
+
+    B2 made reuse null-country-aware with two unconditional selects, so an organize of N places
+    issued up to 2N; B6 collapsed them into one `or=` select; the serialization then moved the
+    entire lookup-and-insert into `find_or_create_place`, which is what makes the count exactly
+    one rather than merely fewer. `_persist_place` runs once per grounded place, so this is the
+    loop worth keeping tight — and the count is now CORRECTNESS, not just cost: a second round
+    trip is by definition outside the function's transaction and therefore outside its advisory
+    lock, which is precisely the race 20260720160000 closed. Without this, a later increment
+    re-adds a read here and every other test in this file stays green.
+    """
+    round_trips = []
+
+    class _CountingClient(_Client):
+        def table(self, name):
+            round_trips.append(("table", name))
+            return super().table(name)
+
+        def rpc(self, name, params):
+            round_trips.append(("rpc", name))
+            return super().rpc(name, params)
+
+    client = _CountingClient({"places": [
+        _legacy_null_country_row("place-legacy", 35.67311, 139.73625),
+    ]})
+    place = PlaceResult(
+        name="Harry Potter Cafe", category="restaurant", lat=35.67320, lng=139.73630,
+        confidence=0.8, evidence_quote="Harry Potter Cafe", source_url="https://hpcafe.jp/",
+        country_code="JP", country_name="Japan",
+    )
+
+    place_id = await _persist_place(client, {
+        "place": place, "country_code": "JP", "country_name": "Japan",
+    })
+
+    assert round_trips == [("rpc", "find_or_create_place")]
+    assert place_id == "place-legacy"        # and it still reused, rather than trip-counting a no-op
+    # The reuse rule needs every one of these, and a missing key would raise inside the mirror
+    # rather than silently widen the gate. Which candidate the rule then PREFERS is decided by
+    # `order by (country_code is null), id` inside the function — proven against real Postgres
+    # in `supabase/tests/012_serialized_place_find_or_create.sql`, since no Python assertion can
+    # reach a SQL ORDER BY.
+    assert client.rpc_calls[0][1] == {
+        "p_name": "Harry Potter Cafe",
+        "p_place_type": "restaurant",
+        "p_lat": 35.67320,
+        "p_lng": 139.73630,
+        "p_country": "Japan",
+        "p_country_code": "JP",
+        "p_country_name": "Japan",
+        "p_city": None,
+        "p_max_distance_m": DEFAULT_DISTANCE_M,
+    }
 
 
 @pytest.mark.asyncio

@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 import json
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
 
 from api.schemas import GenerateTripRequest, OrganizeJobStatus, OrganizeSavedReelsRequest
+from genagents.place_extractor import EXTRACTOR_VERSION
 from api.streaming import DONE, format_sse, stream_organize_events
 from models.place import PlaceResult
 from pipeline.geo import haversine_m
@@ -2125,3 +2127,53 @@ async def test_organized_job_still_reports_organized(monkeypatch):
 
     job = client.db["organize_jobs"][0]
     assert (job["status"], job["status_message"]) == ("succeeded", "Organized")
+
+
+@pytest.mark.asyncio
+async def test_extraction_cache_read_blip_is_a_miss_not_an_item_failure(monkeypatch):
+    """A `reel_cache` SELECT blip must degrade to a MISS, exactly as the trip runner does
+    (`pipeline/runner.py:208-211`), not fail the item.
+
+    Deliberately runs the REAL `get_cached_places` — monkeypatching it would test the fake
+    rather than the seam where the blip actually arrives. Only the SELECT faults; the
+    write-through upsert still has to work, so a MISS can complete.
+    """
+
+    class _BlipTable(_Table):
+        async def execute(self):
+            if self.name == "reel_cache" and self.op == "select":
+                raise RuntimeError("connection reset by peer")
+            return await super().execute()
+
+    class _BlipClient(_Client):
+        def table(self, name): return _BlipTable(name, self.db)
+
+    client = _BlipClient({
+        "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending"}],
+        "organize_job_items": [{"id": "item-1", "job_id": "job-1", "user_id": "user-a",
+                                "saved_reel_id": "r1", "status": "queued"}],
+        "saved_reels": [{"id": "r1", "user_id": "user-a",
+                         "normalized_url": "https://www.instagram.com/reel/A",
+                         "reel_cache_id": "cache-1", "analysis_status": "queued"}],
+        "reel_cache": [{"id": "cache-1", "normalized_url": "https://www.instagram.com/reel/A",
+                        "extractor_version": EXTRACTOR_VERSION, "extracted_places": []}],
+    })
+    scraped = []
+
+    async def scrape(url):
+        scraped.append(url)
+        return SimpleNamespace(caption="c", location_name=None, transcript=None)
+
+    async def reserve(*_args, **_kwargs): return "2026-07-20"
+    monkeypatch.setattr("organizer.reserve_organize_item_analysis", reserve)
+
+    await run_organize_job(
+        "job-1", "user-a", client=client, scrape=scrape,
+        extract=lambda _scraped: [_place()],
+        ground=lambda place: {"place": place, "country_code": "JP", "country_name": "Japan"},
+    )
+
+    # The blip is a MISS: the item scraped fresh and completed, rather than failing.
+    assert scraped == ["https://www.instagram.com/reel/A"]
+    assert client.db["organize_job_items"][0]["status"] == "organized"
+    assert client.db["organize_jobs"][0]["status"] == "succeeded"

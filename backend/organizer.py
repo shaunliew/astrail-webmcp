@@ -655,7 +655,17 @@ async def _process_item(ctx: _ItemContext, item: dict) -> bool:
         cache_id = await _find_cache_id(ctx.client, reel["normalized_url"])
     try:
         phase = "database"
-        places = await _maybe_await(get_cached_places(ctx.client, reel["normalized_url"], EXTRACTOR_VERSION))
+        try:
+            places = await _maybe_await(get_cached_places(ctx.client, reel["normalized_url"], EXTRACTOR_VERSION))
+        except Exception:
+            # A cache-READ blip is a MISS, never an item failure — the trip runner's exact
+            # behavior (`pipeline/runner.py:208-211`). ACCEPTED TRADE-OFF: on a reel we had
+            # cached, this triggers a fresh, quota-charged scrape. That is strictly cheaper
+            # than failing an item the user must retry, and consistency with the runner
+            # matters more than saving one scrape on a transient error. The WRITE side stays
+            # strict (`cache_places`, `_store_cached_country`) — a cache is an optimization
+            # on the way in and a durability guarantee on the way out.
+            places = None
         if places is None:
             quota_state = item.get("analysis_charge_state", "not_charged")
             if quota_state in {"not_charged", "refunded"}:

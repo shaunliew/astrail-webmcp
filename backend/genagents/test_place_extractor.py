@@ -327,3 +327,29 @@ async def test_live_single_reel_extraction():
         and p.country_name is not None
         for p in places
     )
+
+
+def test_google_url_echoing_coordinates_in_the_query_is_rejected():
+    """The place-id check is a FORMAT check, not a Google API lookup — so on a Google host it
+    was the only gate, and a fabricated URL pairing any place-id-shaped string with
+    `?lat=…&lng=…` sailed through as "independent evidence".
+
+    The PATH stays exempt (that is where real Google Maps URLs legitimately carry the venue's
+    coordinates, and scanning it would reject the whole accepted-evidence class). The QUERY is
+    not: a genuine Google Maps URL never puts lat/lng there, so an echo in the query is the
+    model quoting its own coordinates back with a trusted hostname on the front.
+
+    Found in review of the coordinate-echo hardening — the Google fork was moved ahead of the
+    echo check, which exempted the query as a side effect of exempting the path.
+    """
+    fabricated = (
+        "https://www.google.com/maps/place/Fake+Venue/"
+        "data=!3m1!4b1!4m6!3m5!1sChIJFakePlaceId1234567?lat=35.658600&lng=139.745400"
+    )
+    assert is_independent_source_url(fabricated, 35.6586, 139.7454) is False
+
+    legitimate = (
+        "https://www.google.com/maps/place/Tokyo+Tower/@35.6586,139.7454,17z/"
+        "data=!3m1!4b1!4m6!3m5!1sChIJ1234567890!8m2!3d35.6586!4d139.7454"
+    )
+    assert is_independent_source_url(legitimate, 35.6586, 139.7454) is True

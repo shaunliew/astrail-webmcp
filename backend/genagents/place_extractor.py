@@ -144,6 +144,19 @@ def is_placeholder_url(url: str | None) -> bool:
     return False
 
 
+def _echoes_coordinates(corpus: str, lat: float, lng: float) -> bool:
+    """Does this text carry BOTH the extracted lat and lng back at us?
+
+    Requiring both axes is what keeps the tolerance usable: one stray number near a
+    coordinate is a coincidence, two is the model quoting itself.
+    """
+    numbers = [float(value) for value in _QUERY_NUMBER_RE.findall(corpus)]
+    return (
+        any(abs(value - lat) <= _COORD_ECHO_TOLERANCE for value in numbers)
+        and any(abs(value - lng) <= _COORD_ECHO_TOLERANCE for value in numbers)
+    )
+
+
 def is_independent_source_url(url: str | None, lat: float | None, lng: float | None) -> bool:
     """Return whether a source URL is independent of the extracted coordinates.
 
@@ -164,16 +177,22 @@ def is_independent_source_url(url: str | None, lat: float | None, lng: float | N
             return False
         if "/maps/place/" not in path:
             return False
+        # The PATH is exempt — `/@35.6586,139.7454,17z` and `!3d…!4d…` are how a real Google
+        # Maps URL is shaped, so scanning it would reject the whole accepted-evidence class.
+        # The QUERY is NOT exempt: a genuine Google Maps URL never carries the venue's lat/lng
+        # as query params, so an echo there is the model talking back to itself with a Google
+        # hostname on the front. Without this, a fabricated URL pairing any place-id-shaped
+        # string with `?lat=…&lng=…` passed as "independent evidence" — the place-id regex is a
+        # format check, not a Google API lookup, so it was the ONLY gate. Found in review.
+        if _echoes_coordinates(unquote(parsed.query), lat, lng):
+            return False
         return _GOOGLE_PLACE_ID_RE.search(f"{parsed.path}?{parsed.query}") is not None
 
     # Non-Google: the coordinates must not appear anywhere in the URL the model built.
     # Path as well as query — `/@35.6586,139.7454,17z` is the same circular claim as
     # `?lat=…&lng=…`, just moved one delimiter over.
-    corpus = f"{unquote(parsed.path)} {unquote(parsed.query)}"
-    numbers = [float(value) for value in _QUERY_NUMBER_RE.findall(corpus)]
-    return not (
-        any(abs(value - lat) <= _COORD_ECHO_TOLERANCE for value in numbers)
-        and any(abs(value - lng) <= _COORD_ECHO_TOLERANCE for value in numbers)
+    return not _echoes_coordinates(
+        f"{unquote(parsed.path)} {unquote(parsed.query)}", lat, lng
     )
 
 

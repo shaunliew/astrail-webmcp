@@ -1,3 +1,11 @@
+-- REVERT PATH (no rollback file, deliberately). Unlike A3's re-key, this migration is a pure
+-- view + function swap: it destroys no data and changes no key. To revert, re-run the
+-- `create or replace function private.can_select_verified_saved_reel_place` and the
+-- `drop view public.saved_reel_cards; create view ...` blocks from
+-- 20260720100000_reel_place_mentions_user_scope.sql verbatim — that file still contains the
+-- complete pre-B3 definitions of both. A3 ships a scripted rollback because its backfill
+-- DELETES rows; nothing here does. Recorded because the EXTRACTOR_VERSION bump makes this a
+-- deliberately-timed merge, and whoever times it should not have to derive the undo.
 -- Two coupled read-surface changes, one view swap.
 --
 -- (1) EXTRACTOR_VERSION bump → '2026-07-20.1'. `has_current_cache` embeds the literal, so the

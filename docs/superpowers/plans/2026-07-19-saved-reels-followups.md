@@ -2356,6 +2356,20 @@ into a quota re-review for zero present value.
 a method — that hides real supabase-py API drift (review §3). Do this AFTER all behavior tasks
 so the fake-interface work lands once.
 
+> **Carried in from B2's review (2026-07-20) — collapse `_persist_place`'s two selects here.**
+> B2 made canonical-place reuse null-country-aware by issuing TWO selects unconditionally
+> (`.eq("country_code", …)` then `.is_("country_code", "null")`) and concatenating the results.
+> The plan mandated that shape deliberately — it avoids `or_` so the fakes stay simple *until
+> this task*. Cost, confirmed: `_persist_place` runs once per grounded place, so an organize of
+> N places issues up to **2N** selects instead of N. Latency only, never correctness — the
+> single shared distance gate and the single shared update site mean the two branches cannot
+> diverge. **B6 is the natural moment to fix it**, because adding `or_` to the fake is already
+> this task's business: once it exists, the two selects collapse into one
+> `or(country_code.eq.<code>,country_code.is.null)`. Keep the ordering preference — a
+> country-code match must still win over a null-country row, since it is already
+> Mapbox-verified — and keep `test_persist_place_prefers_the_country_code_match_over_a_null_country_row`
+> green, which is what pins that.
+
 **Files:**
 - Modify: `backend/organizer.py` (delete `_maybe_await` (39-40) + all call sites; delete `_initializing_job_is_stale` (43-52). Note: `_persist_mention` and its `hasattr(table, "upsert")` fork were already deleted by **A3**, which replaced them with the `replace_reel_place_mentions` RPC — verify they are gone rather than re-deleting them)
 - Modify: `backend/api/streaming.py::stream_organize_events` (88) — drop `hasattr(query, "gt")`; always `.gt("sequence", cursor_sequence)` when a cursor is set

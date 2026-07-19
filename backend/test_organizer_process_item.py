@@ -6,8 +6,16 @@ that follows can target `_ground_and_persist` directly. The fake client and the
 """
 from __future__ import annotations
 
-from organizer import _ground_and_persist, _process_item
+from organizer import _ItemContext, _ground_and_persist, _process_item
 from test_saved_reels_organize import _Client, _place
+
+
+def _ctx(client, *, ground=None, scrape=None, extract=None) -> _ItemContext:
+    """Build the per-job context the organizer item loop threads through."""
+    return _ItemContext(
+        client=client, job_id="job-1", user_id="u1",
+        scrape=scrape, extract=extract, ground=ground,
+    )
 
 
 async def test_ground_and_persist_empty_grounded_is_location_not_found():
@@ -17,7 +25,7 @@ async def test_ground_and_persist_empty_grounded_is_location_not_found():
         return None
 
     terminal, count = await _ground_and_persist(
-        client, {"id": "r1"}, "cache-1", [_place()], ground=ground
+        _ctx(client, ground=ground), {"id": "r1"}, "cache-1", [_place()]
     )
 
     assert (terminal, count) == ("location_not_found", 0)
@@ -33,7 +41,7 @@ async def test_ground_and_persist_persists_place_and_mention():
         return {"place": place_result, "country_code": "JP", "country_name": "Japan"}
 
     terminal, count = await _ground_and_persist(
-        client, {"id": "r1"}, "cache-1", [place], ground=ground
+        _ctx(client, ground=ground), {"id": "r1"}, "cache-1", [place]
     )
 
     assert (terminal, count) == ("organized", 1)
@@ -62,7 +70,7 @@ async def test_ground_and_persist_reports_database_phase_for_persist_failures():
 
     phases: list[str] = []
     await _ground_and_persist(
-        client, {"id": "r1"}, "cache-1", [_place()], ground=ground,
+        _ctx(client, ground=ground), {"id": "r1"}, "cache-1", [_place()],
         set_phase=phases.append,
     )
 
@@ -82,8 +90,7 @@ async def test_process_item_skips_counts_when_saved_reel_is_gone():
     client = _Client({"saved_reels": []})     # the item's reel row is gone
 
     processed = await _process_item(
-        client, "job-1", "u1", {"id": "item-1", "saved_reel_id": "missing"},
-        scrape=None, extract=None, ground=None,
+        _ctx(client), {"id": "item-1", "saved_reel_id": "missing"},
     )
 
     assert processed is False, "an orphaned item must report skipped, not processed"

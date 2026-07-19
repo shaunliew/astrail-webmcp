@@ -6,7 +6,9 @@ import inspect
 import json
 import logging
 import os
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from typing import Any, Callable
 
 from genagents.place_extractor import EXTRACTOR_VERSION, is_placeholder_url
 from models.place import PlaceResult
@@ -281,8 +283,29 @@ async def recover_organize_jobs(client, stale_after_s: int = 900) -> list[dict]:
             .order("created_at").execute()).data or []
 
 
+@dataclass(frozen=True)
+class _ItemContext:
+    """Per-job context threaded through the item loop.
+
+    Frozen — the loop must never mutate what it was handed.
+
+    Its purpose is forward-looking, not cosmetic. A2 threads a per-attempt fencing token
+    through every per-item write, and A3 needs `user_id` inside `_ground_and_persist` to
+    scope the mention rewrite (today that delete is unscoped — the cross-user destruction
+    defect). Both arrive as ONE new field here instead of an eighth, then ninth, positional
+    parameter at every call site. Bundling before that work lands is the whole point.
+    """
+
+    client: Any
+    job_id: str
+    user_id: str
+    scrape: Callable[[str], Any]
+    extract: Callable[[Any], Any]
+    ground: Callable[[PlaceResult], Any]
+
+
 async def _ground_and_persist(
-    client, reel: dict, cache_id: str | None, places: list[PlaceResult], *, ground,
+    ctx: _ItemContext, reel: dict, cache_id: str | None, places: list[PlaceResult], *,
     set_phase=None,
 ) -> tuple[str, int]:
     """Verify researched places and rewrite this Reel's canonical mentions.
@@ -301,21 +324,22 @@ async def _ground_and_persist(
     grounded = [
         resolved
         for place in places
-        if (resolved := await _maybe_await(ground(place))) is not None
+        if (resolved := await _maybe_await(ctx.ground(place))) is not None
     ]
     set_phase("database")
     if cache_id:
-        await (client.table("reel_place_mentions").delete()
+        # A3 scopes this delete to ctx.user_id — today it is cross-user destructive.
+        await (ctx.client.table("reel_place_mentions").delete()
                .eq("reel_cache_id", cache_id).execute())
     if not grounded or not cache_id:
         return "location_not_found", len(grounded)
     for resolved in grounded:
-        place_id = await _persist_place(client, resolved)
-        await _persist_mention(client, cache_id, place_id, resolved["place"])
+        place_id = await _persist_place(ctx.client, resolved)
+        await _persist_mention(ctx.client, cache_id, place_id, resolved["place"])
     return "organized", len(grounded)
 
 
-async def _process_item(client, job_id: str, user_id: str, item: dict, *, scrape, extract, ground) -> bool:
+async def _process_item(ctx: _ItemContext, item: dict) -> bool:
     """Organize one Saved Reel. Failures stay inside this item (guardrail #3).
 
     Returns True if the item was processed, False if it was SKIPPED because its
@@ -332,37 +356,37 @@ async def _process_item(client, job_id: str, user_id: str, item: dict, *, scrape
         nonlocal phase
         phase = new_phase
 
-    reel_result = await (client.table("saved_reels").select(
+    reel_result = await (ctx.client.table("saved_reels").select(
         "id,normalized_url,reel_cache_id"
-    ).eq("id", item["saved_reel_id"]).eq("user_id", user_id).maybe_single().execute())
+    ).eq("id", item["saved_reel_id"]).eq("user_id", ctx.user_id).maybe_single().execute())
     reel = reel_result.data if reel_result is not None else None
     if reel is None:
         return False
-    await client.table("organize_job_items").update({"status": "processing"}).eq("id", item["id"]).eq("user_id", user_id).execute()
+    await ctx.client.table("organize_job_items").update({"status": "processing"}).eq("id", item["id"]).eq("user_id", ctx.user_id).execute()
     cache_id = reel.get("reel_cache_id")
     if cache_id is None:
         phase = "database"
-        cache_id = await _find_cache_id(client, reel["normalized_url"])
+        cache_id = await _find_cache_id(ctx.client, reel["normalized_url"])
     try:
         phase = "database"
-        places = await _maybe_await(get_cached_places(client, reel["normalized_url"], EXTRACTOR_VERSION))
+        places = await _maybe_await(get_cached_places(ctx.client, reel["normalized_url"], EXTRACTOR_VERSION))
         if places is None:
             quota_state = item.get("analysis_charge_state", "not_charged")
             if quota_state in {"not_charged", "refunded"}:
                 phase = "quota"
-                if await reserve_organize_item_analysis(client, item["id"], user_id) is None:
+                if await reserve_organize_item_analysis(ctx.client, item["id"], ctx.user_id) is None:
                     raise RuntimeError("analysis quota reached")
                 quota_state = "reserved"
             try:
                 phase = "apify"
-                scraped = await _maybe_await(scrape(reel["normalized_url"]))
+                scraped = await _maybe_await(ctx.scrape(reel["normalized_url"]))
                 phase = "extractor"
-                places = await _maybe_await(extract(scraped))
+                places = await _maybe_await(ctx.extract(scraped))
                 # The cache stores research provenance before provider verification. A
                 # Mapbox retry can therefore reuse research without paying for Apify again.
                 phase = "database"
                 await cache_places(
-                    client,
+                    ctx.client,
                     reel["normalized_url"],
                     scraped,
                     places,
@@ -370,44 +394,44 @@ async def _process_item(client, job_id: str, user_id: str, item: dict, *, scrape
                 )
                 if quota_state == "reserved":
                     phase = "quota"
-                    await _consume_organize_item_analysis(client, item["id"], user_id)
+                    await _consume_organize_item_analysis(ctx.client, item["id"], ctx.user_id)
                     quota_state = "consumed"
             except Exception:
                 if quota_state == "reserved":
                     phase = "quota"
-                    await refund_organize_item_analysis(client, item["id"], user_id)
+                    await refund_organize_item_analysis(ctx.client, item["id"], ctx.user_id)
                 raise
         else:
             if item.get("analysis_charge_state") == "reserved":
                 phase = "quota"
-                await _consume_organize_item_analysis(client, item["id"], user_id)
+                await _consume_organize_item_analysis(ctx.client, item["id"], ctx.user_id)
         phase = "database"
         if cache_id is None:
-            cache_id = await _find_cache_id(client, reel["normalized_url"])
+            cache_id = await _find_cache_id(ctx.client, reel["normalized_url"])
         terminal, place_count = await _ground_and_persist(
-            client, reel, cache_id, places, ground=ground, set_phase=_set_phase
+            ctx, reel, cache_id, places, set_phase=_set_phase
         )
         phase = "database"
-        await client.table("organize_job_items").update({
+        await ctx.client.table("organize_job_items").update({
             "status": terminal, "place_count": place_count, "error_message": None, "completed_at": _now()
-        }).eq("id", item["id"]).eq("user_id", user_id).execute()
-        await client.table("saved_reels").update({
+        }).eq("id", item["id"]).eq("user_id", ctx.user_id).execute()
+        await ctx.client.table("saved_reels").update({
             "reel_cache_id": cache_id, "analysis_status": terminal,
             "analyzed_at": _now(), "retry_after": None,
-        }).eq("id", reel["id"]).eq("user_id", user_id).execute()
-        await _record_organize_event(client, job_id, user_id, "stage", "Reel organized", {"saved_reel_id": reel["id"], "place_count": place_count})
+        }).eq("id", reel["id"]).eq("user_id", ctx.user_id).execute()
+        await _record_organize_event(ctx.client, ctx.job_id, ctx.user_id, "stage", "Reel organized", {"saved_reel_id": reel["id"], "place_count": place_count})
     except Exception:
         logger.error(
             "saved_reel_organize_item_failed phase=%s job_id=%s item_id=%s",
-            phase, job_id, item["id"],
+            phase, ctx.job_id, item["id"],
         )
-        await client.table("organize_job_items").update({
+        await ctx.client.table("organize_job_items").update({
             "status": "failed", "error_message": "Reel organization failed", "completed_at": _now()
-        }).eq("id", item["id"]).eq("user_id", user_id).execute()
-        await client.table("saved_reels").update({
+        }).eq("id", item["id"]).eq("user_id", ctx.user_id).execute()
+        await ctx.client.table("saved_reels").update({
             "analysis_status": "failed", "retry_after": None,
-        }).eq("id", reel["id"]).eq("user_id", user_id).execute()
-        await _record_organize_event(client, job_id, user_id, "error", "Reel organization failed", {"saved_reel_id": reel["id"]})
+        }).eq("id", reel["id"]).eq("user_id", ctx.user_id).execute()
+        await _record_organize_event(ctx.client, ctx.job_id, ctx.user_id, "error", "Reel organization failed", {"saved_reel_id": reel["id"]})
     return True
 
 
@@ -441,8 +465,14 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
         ground = ground or _ground_place
         items = (await client.table("organize_job_items").select("*").eq("job_id", job_id)
                  .eq("user_id", user_id).in_("status", ["queued", "processing"]).execute()).data or []
+        # Built ONCE per job: A2 adds the per-attempt lease token here, A3 reads user_id
+        # from it inside _ground_and_persist — neither needs a new call-site parameter.
+        ctx = _ItemContext(
+            client=client, job_id=job_id, user_id=user_id,
+            scrape=scrape, extract=extract, ground=ground,
+        )
         for item in items:
-            processed = await _process_item(client, job_id, user_id, item, scrape=scrape, extract=extract, ground=ground)
+            processed = await _process_item(ctx, item)
             if processed:   # a skipped orphan must not reach counts — pre-refactor this was `continue`
                 await _update_job_counts(client, job_id, user_id)
         status = await get_organize_status(client, job_id, user_id)

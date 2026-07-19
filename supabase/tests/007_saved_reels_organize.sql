@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(204);
+select plan(192);
 
 insert into auth.users (id, email)
 values
@@ -368,11 +368,12 @@ select ok(
 select table_privs_are('public', 'organize_jobs', 'authenticated', array['SELECT'], 'authenticated can read organize jobs only');
 select table_privs_are('public', 'organize_job_items', 'authenticated', array['SELECT'], 'authenticated can read organize items only');
 select table_privs_are('public', 'organize_events', 'authenticated', array['SELECT'], 'authenticated can replay organize events only');
-select ok(not has_function_privilege('authenticated', 'public.reserve_daily_reel_analysis(uuid,date)', 'EXECUTE'), 'authenticated cannot reserve analysis');
-select ok(not has_function_privilege('anon', 'public.reserve_daily_reel_analysis(uuid,date)', 'EXECUTE'), 'anon cannot reserve analysis');
-select ok(has_function_privilege('service_role', 'public.reserve_daily_reel_analysis(uuid,date)', 'EXECUTE'), 'service role can reserve analysis');
-select ok(not has_function_privilege('authenticated', 'public.refund_daily_reel_analysis(uuid,date)', 'EXECUTE'), 'authenticated cannot refund analysis');
-select ok(has_function_privilege('service_role', 'public.refund_daily_reel_analysis(uuid,date)', 'EXECUTE'), 'service role can refund analysis');
+-- The day-level quota functions were superseded by the item-level RPCs asserted below and
+-- dropped in 20260720140000. Assert they are GONE rather than deleting their coverage
+-- silently: a drop migration that failed to apply would otherwise leave a second, unfenced
+-- way to charge the same quota column with nothing pointing at it.
+select hasnt_function('public', 'reserve_daily_reel_analysis', 'day-level reserve is dropped');
+select hasnt_function('public', 'refund_daily_reel_analysis', 'day-level refund is dropped');
 select ok(
   not exists (
     select 1
@@ -693,15 +694,6 @@ select throws_ok(
   '23503', null,
   'organize items reject cross-owner job/reel links'
 );
-
-select is(public.reserve_daily_reel_analysis('00000000-0000-0000-0000-000000000701', current_date), 1, 'analysis reservation one');
-select is(public.reserve_daily_reel_analysis('00000000-0000-0000-0000-000000000701', current_date), 2, 'analysis reservation two');
-select is(public.reserve_daily_reel_analysis('00000000-0000-0000-0000-000000000701', current_date), 3, 'analysis reservation three');
-select is(public.reserve_daily_reel_analysis('00000000-0000-0000-0000-000000000701', current_date), 4, 'analysis reservation four');
-select is(public.reserve_daily_reel_analysis('00000000-0000-0000-0000-000000000701', current_date), 5, 'analysis reservation five');
-select is(public.reserve_daily_reel_analysis('00000000-0000-0000-0000-000000000701', current_date), null, 'sixth analysis reservation is capped');
-select is(public.refund_daily_reel_analysis('00000000-0000-0000-0000-000000000701', current_date), 4, 'analysis refund returns four');
-select is(public.reserve_daily_reel_analysis('00000000-0000-0000-0000-000000000701', current_date), 5, 'refunded analysis can be reserved again');
 
 select throws_ok(
   $$insert into public.user_daily_usage (user_id, usage_date, reel_analysis_count) values ('00000000-0000-0000-0000-000000000701', current_date - 1, -1)$$,
@@ -1106,12 +1098,6 @@ select throws_ok(
   '42501', null,
   'authenticated clients cannot mutate organize items'
 );
-select throws_ok(
-  $$select public.reserve_daily_reel_analysis('00000000-0000-0000-0000-000000000701', current_date)$$,
-  '42501', null,
-  'authenticated clients cannot reserve analysis quota'
-);
-
 reset role;
 set local role service_role;
 

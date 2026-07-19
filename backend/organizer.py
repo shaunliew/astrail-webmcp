@@ -26,7 +26,6 @@ from usage import refund_organize_item_analysis, reserve_organize_item_analysis
 
 LOCATION_VERIFICATION_VERSION = "mapbox-country-v1"
 GEOCODE_CACHE_TABLE = "geocode_country_cache"
-INITIALIZING_STALE_AFTER_S = 120
 ORGANIZE_LEASE_TTL_S = 300      # short on purpose: the heartbeat renews a live run, so a
                                 # real crash is reclaimed in ~5 min rather than ~15.
 ORGANIZE_LEASE_RENEW_S = 60     # comfortably under the TTL: several renewals may blip and be
@@ -72,18 +71,6 @@ def _request_key(user_id: str, saved_reel_ids: list[str]) -> str:
 
 async def _maybe_await(value):
     return await value if inspect.isawaitable(value) else value
-
-
-def _initializing_job_is_stale(job: dict) -> bool:
-    if job.get("status") != "initializing" or not job.get("created_at"):
-        return False
-    try:
-        created_at = datetime.fromisoformat(str(job["created_at"]).replace("Z", "+00:00"))
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
-    except (TypeError, ValueError):
-        return False
-    return created_at <= datetime.now(timezone.utc) - timedelta(seconds=INITIALIZING_STALE_AFTER_S)
 
 
 async def _find_cache_id(client, normalized_url: str) -> str | None:

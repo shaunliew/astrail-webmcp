@@ -118,6 +118,7 @@ class _Table:
         self.in_filters = {}
         self.is_null_filters = set()
         self.or_filters = []
+        self.order_keys = []
         self.on_conflict = None
         self.single = False
 
@@ -141,8 +142,31 @@ class _Table:
         return self
 
     def in_(self, key, values): self.in_filters[key] = set(values); return self
-    def order(self, *_args, **_kwargs): return self
     def maybe_single(self): self.single = True; return self
+
+    def order(self, column, *, desc=False, **unsupported):
+        # This used to `return self` without sorting, which is the worst kind of fake: every
+        # caller's `.order()` looked honoured while the rows came back in insertion order, so a
+        # test asserting on ordering passed whether or not production ordered anything.
+        # Ascending-only, matching every call site; anything else fails loudly rather than
+        # silently sorting on nothing, same rule as the filter operators above.
+        if desc or unsupported:
+            raise ValueError(
+                f"fake implements only ascending .order(column), got "
+                f".order({column!r}, desc={desc!r}, **{unsupported!r})"
+            )
+        self.order_keys.append(column)
+        return self
+
+    def _ordered(self, rows):
+        # PostgREST reads chained `.order()` calls left-to-right, first call primary. Stable
+        # sorts applied last-key-first compose into exactly that. `None` sorts last, matching
+        # Postgres NULLS LAST on an ascending order, and the two-element key means two nulls
+        # compare equal instead of raising on `None < None`.
+        ordered = list(rows)
+        for key in reversed(self.order_keys):
+            ordered.sort(key=lambda row: (row.get(key) is None, row.get(key)))
+        return ordered
 
     def _matches(self, row):
         return all(row.get(k) == v for k, v in self.filters.items()) and all(
@@ -178,12 +202,12 @@ class _Table:
             rows.append(stored)
             return _Result([stored])
         if isinstance(self.op, tuple) and self.op[0] == "update":
-            matched = [row for row in rows if self._matches(row)]
+            matched = self._ordered(row for row in rows if self._matches(row))
             for row in matched:
                 row.update(self.op[1])
             return _Result(matched)
         if self.op == "delete":
-            matched = [row for row in rows if self._matches(row)]
+            matched = self._ordered(row for row in rows if self._matches(row))
             self.db[self.name] = [row for row in rows if row not in matched]
             if self.name == "organize_jobs":
                 job_ids = {row["id"] for row in matched}
@@ -193,7 +217,7 @@ class _Table:
                         if row.get("job_id") not in job_ids
                     ]
             return _Result(matched)
-        matched = [row for row in rows if self._matches(row)]
+        matched = self._ordered(row for row in rows if self._matches(row))
         return _Result(matched[0] if self.single and matched else (None if self.single else matched))
 
 
@@ -1807,6 +1831,40 @@ async def test_persist_place_prefers_the_country_code_match_over_a_null_country_
 
     assert place_id == "place-verified"
     assert client.db["places"][0]["country_code"] is None, "the unchosen row stays untouched"
+
+
+@pytest.mark.asyncio
+async def test_persist_place_breaks_a_same_country_tie_by_lowest_id():
+    """Two equally-eligible rows must resolve to the SAME canonical id on every run.
+
+    The country preference is a single boolean, so it separates the two groups and orders
+    nothing within them; a stable sort then means the winner among equally-eligible rows is
+    whatever order the database happened to return — and an unordered select promises none.
+    Two same-name, same-country rows both inside the 500 m gate could therefore hand
+    `reel_place_mentions` a different canonical place on a re-organize after a plan change or
+    a vacuum, which is the one thing a canonical id may not do. The second key in
+    `order by (country_code is null), id` is what makes the ordering total at the source
+    (20260720180000).
+
+    The lower id is seeded SECOND so the assertion cannot be satisfied by insertion order.
+    """
+    client = _Client({"places": [
+        {"id": "place-zzz", "name": "Starbucks", "lat": 35.67315, "lng": 139.73628,
+         "country": "Japan", "country_code": "JP", "country_name": "Japan"},
+        {"id": "place-aaa", "name": "Starbucks", "lat": 35.67311, "lng": 139.73625,
+         "country": "Japan", "country_code": "JP", "country_name": "Japan"},
+    ]})
+    place = PlaceResult(
+        name="Starbucks", category="restaurant", lat=35.67320, lng=139.73630,
+        confidence=0.8, evidence_quote="Starbucks", source_url="https://starbucks.co.jp/",
+        country_code="JP", country_name="Japan",
+    )
+
+    place_id = await _persist_place(client, {
+        "place": place, "country_code": "JP", "country_name": "Japan",
+    })
+
+    assert place_id == "place-aaa"
 
 
 @pytest.mark.asyncio

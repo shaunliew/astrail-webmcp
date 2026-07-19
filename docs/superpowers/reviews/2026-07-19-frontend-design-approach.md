@@ -61,25 +61,55 @@ numbered itinerary with verbatim reel-quote provenance.
 
 ## Where it actually reads generic — 5 concrete findings
 
-1. **`frontend/components/create/TripBriefForm.tsx`** (renders `04-create-trip.png`) — the weakest
-   screen and the first real interaction after the landing page. Every field gets identical
-   treatment: uppercase-mono label → dark input, stacked vertically, **no visual anchor**. A
-   workmanlike SaaS form on the highest-stakes screen.
+> ### ⚠️ CORRECTION — 2026-07-20. Findings 1, 3 and 4 below were WRONG as first written.
+>
+> They were derived from screenshots plus the **`:root`** declaration of `.type-label`, without
+> checking whether anything overrode it inside the app. Something does:
+>
+> ```css
+> /* globals.css:362 — Rule 03: inside the app, UI labels are sans — mono is reserved for evidence. */
+> .app-shell .type-label { font-family: var(--font-geist), …; font-weight: 600; }
+> ```
+>
+> `app/app/layout.tsx:5` wraps the whole `/app` tree in `.app-shell`, so **every `.type-label` inside
+> the product already renders Geist sans semibold, not uppercase mono.** Mono survives in exactly one
+> class, `.type-evidence`, carrying the comment *"the only place monospace is allowed inside the
+> app"* — i.e. the system already does precisely what finding 3 demanded it start doing.
+>
+> Worse, commit **`52cf367`** ("de-slop polish pass — impeccable audit P1/P2 findings, 14/20") had
+> already run this exact audit and set the rule: *"uppercase tracked micro-labels are now reserved
+> for form labels and data captions only."* Under that rule `TripBriefForm.tsx:15` is **correct
+> usage**, not a violation. The original finding 3 would have "fixed" a screen into breaking its own
+> audited standard.
+>
+> **Method error worth keeping:** a CSS class's identity is not its `:root` declaration — it is the
+> cascade at the point of use. Grep the selector, not just the definition. The corrected findings
+> follow; findings 2 and 5 survived verification unchanged.
+
+1. ~~`TripBriefForm.tsx` — uniform uppercase-mono labels~~ **RETRACTED.** Labels render Geist sans
+   semibold via the `.app-shell` override, and uppercase micro-labels on form fields are the
+   standard set by the `52cf367` audit. No defect here.
 2. **`frontend/components/settings/SettingsView.tsx`** (renders `07-settings.png`) — "Astrail
    learned:" (the mem0 personalization feature, the genuinely novel part of the product) and "Using
    your saved travel preferences" (static data) render as **two visually identical dark cards**. The
-   differentiated feature gets no visual priority.
-3. **⭐ HIGHEST LEVERAGE — `.type-label` is overused.** Both screens above apply the uppercase
-   JetBrains Mono treatment — defined in the system as *provenance only* — as the default for every
-   plain form label. Applying one typographic device uniformly regardless of importance is
-   **structurally the same failure as uniform border-radius**, just typographic instead of geometric.
-   Fix: reserve mono-caps for actual evidence (reel quotes, coordinates, confidence %, source chips —
-   exactly what `DESIGN-DRAFT.md` §3 already specifies) and give plain UI labels a quieter
-   sentence-case Geist treatment. This one change should de-genericize both weak screens.
-4. **Trips list** (`05-trips-list.png`) — one card floating in a large empty cream field.
-   `DESIGN-DRAFT.md` §4 already states the violated rule: *"Empty screens are composed (centered,
-   illustrated, actionable), never content-top-left-plus-void."* The system wrote the rule; the
-   screen doesn't follow it.
+   differentiated feature gets no visual priority. **Confirmed still true** — `SettingsView.tsx` was
+   never swept by `52cf367` (that diff touches InspirationTray, DaySelector, OrchestratorSummary,
+   TradeoffPanel, TripWorkspace, TripCard — not Settings).
+3. **The real violation, and it is a regression against the repo's own audited rule.**
+   `SettingsView.tsx:55` styles an `<h2>` **section header** as an uppercase tracked micro-label —
+   twelve lines above its sibling `<h2>` at `:67`, `"Astrail learned:"`, styled `type-display` serif
+   sentence-case, the *corrected* post-audit treatment. Two structurally identical section headers,
+   two design-system generations, one file. `TripBriefReview.tsx` (the comparable screen) is fully
+   consistent, so this is a one-file miss from an unswept component — not a systemic pattern.
+4. **⭐ HIGHEST LEVERAGE — the astronaut mascot is fully specified and was never built.**
+   `docs/PRD.md` §3 builds the entire "astronaut traveler" persona around it; `DESIGN-DRAFT.md` §7
+   specs exactly where it appears — *"waiting and empty moments — generation progress, empty states,
+   final onboarding step, error pages."* `grep -rl astronaut frontend/` returns **zero hits.** Every
+   screen the spec says should carry the product's one piece of character currently carries nothing.
+   This is a far larger lever on "feels generic" than any label-casing nit, and it **subsumes the old
+   finding 4**: the trips-list empty state *is* composed (dashed paper card, real copy "No trails
+   yet. Your saved trips will land here.", working CTA) and fails only on *centered* and
+   *illustrated* — illustrated being impossible while the mascot doesn't exist.
 5. **`docs/DESIGN-DRAFT.md` was never promoted.** Prose only — no YAML front matter, not at repo
    root, not in DESIGN.md format, not wired into any installed skill. Its own header says "canonical
    UX doc is EMDEE `astrail/DESIGN.md`; merge this in after review with Shaun" — **verified
@@ -88,16 +118,26 @@ numbered itinerary with verbatim reel-quote provenance.
 
 ## Recommended sequence
 
-1. **Transcribe** `docs/DESIGN-DRAFT.md` + the `:root` tokens from `globals.css` into a repo-root
-   `DESIGN.md` in the real spec format (YAML front matter + ordered prose sections + a Do's/Don'ts
-   list built from the rules already written: "brass concentration", "mono = provenance only",
-   "radius is 8/6 only", "empty screens are composed"). This is **transcription of an approved
-   system, not new design work**.
+1. **Promote** `docs/DESIGN-DRAFT.md` → repo-root `DESIGN.md`, **grounded against shipped code, not
+   copied.** The draft predates Phases 0–4 and the `52cf367` audit, so it carries claims the code has
+   since overtaken — at minimum: (a) `.type-label` is sans inside `.app-shell`, mono now lives only
+   in `.type-evidence`; (b) reel quotes are spec'd *"italic serif with a brass quote-bar"* but ship
+   as `type-body` Geist sans at `PlaceIntelPanel.tsx:21`. Transcribe what is true, and mark each
+   spec/ship gap as a gap rather than silently picking a side. Add two things the draft lacks: the
+   **evidence-chip-as-primitive** contract (below) and the `SettingsView.tsx:55` before/after as the
+   worked example of breaking vs following the rule.
 2. **Run `/design-review`** against the live app *after* `DESIGN.md` exists — it now calibrates
    against Astrail's real constraints and treats deviations as higher severity, instead of guessing.
    It fixes what it finds via atomic commits with before/after screenshots.
-3. **Land the three named fixes** — label hierarchy in `TripBriefForm.tsx` and `SettingsView.tsx`,
-   and a composed empty state for the trips list.
+3. **Land the two verified fixes** — `SettingsView.tsx:55`'s section header brought onto the audited
+   rule, and a visual distinction between mem0-remembered and user-entered data in the same file.
+   Both are inside one unswept component; neither is speculative.
+4. **The mascot is a decision, not a task — do not build it autonomously.** It is the highest-leverage
+   item and it is the one item an AI should not resolve unasked: it is net-new creative work in
+   Zhi Hao's ownership area, it has no correctness criterion to verify against, and an invented
+   mascot is the single change most likely to *produce* the "AI-generated" quality being complained
+   about. Surface the gap, show that PRD §3 and DESIGN-DRAFT §7 already specify it, let Shaun and
+   Zhi Hao decide.
 
 ## Second pass — the native shape, grounded in backend code
 

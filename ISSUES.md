@@ -5,6 +5,34 @@ exposure; B4 is restart burst-cost and provider-rate-limit risk; B6 is a cheap c
 guard for a currently unreachable UI path; B2/B3 are canonical-data hygiene; B5 is
 currently protected by a single-writer invariant; B7 is cosmetic product wording.
 
+---
+
+## STATUS UPDATE — 2026-07-19 (Shaun). Read this before picking anything up.
+
+All of B1–B7 are now planned in **`docs/superpowers/plans/2026-07-19-saved-reels-followups.md`**
+(3 arcs; Arc A ships as a 5-PR stack). Implementation started on branch
+`feat/saved-reels-arc-a-reliability`. What changed since this file was written:
+
+- **Two P1 defects were found that are NOT in this list**, both in `organizer.py`, both now Arc A
+  tasks. (1) `recover_organize_jobs` accepts `stale_after_s` and never uses it, so every
+  zero-downtime Render deploy requeues in-flight jobs and **double-executes** them — and the trip
+  side has its own variant that resurrects `succeeded` as `retryable`. (2) The mention rewrite at
+  `organizer.py:377` deletes by `reel_cache_id` with no user scope, so one user's failed
+  re-grounding **destroys another user's verified places**. Full evidence:
+  `docs/superpowers/reviews/2026-07-19-saved-reels-merged-diff-review.md`.
+- **B1 is RESOLVED in favour of log redaction.** The sentinel probe was run against the live
+  service (`srv-d976aess728c738pskk0`): the token appears in `type=app` (uvicorn access) logs, and
+  **no `type=request` platform logs exist at all** on the starter plan. One-time stream tokens stay
+  deferred, with "before public beta" as a mandatory gate.
+- **B7 decided:** presentation-layer map `CN → China`; the stored canonical Mapbox name is left
+  untouched and `CN` stays the grouping key.
+- **B5's premise here is wrong.** "Currently protected by a single-writer invariant" does not hold
+  — recovery erased the very claim the CAS depended on, so two writers were reachable. The Arc A
+  lease work is what actually makes that invariant true; B5 is sequenced after it.
+- **B4 is materially larger than described** — it merges with the double-execution defect above.
+
+**→ NEW: B8 below needs your decision, Zhi Hao.** It is the only item blocking on you.
+
 ## B1 — Stop bearer tokens from leaking into stream access logs
 
 **Suggested severity:** P2. This is an observed credential-exposure surface in normal live
@@ -232,3 +260,54 @@ evidence.
 the backend card shape and frontend grouping. Assert one CN tray and the chosen visible
 label, while confirming the stored canonical provider name remains available if the
 presentation layer maps it.
+
+## B8 — Saved Reel cards will stop showing pins the viewer cannot actually use
+
+**Suggested severity:** P3 product-behavior change. Not a bug and not a security issue — a
+visible change to your surface that should not land silently inside a backend PR.
+
+**Owner/decision:** **Zhi Hao.** This is the only item in this file blocking on you. Arc A task
+A3 implements whichever way you call it; the backend work does not otherwise depend on the answer.
+
+**Files and symbols:**
+
+- `supabase/migrations/20260718190000_saved_reels_location_verification.sql` (the
+  `saved_reel_cards` view) and `20260719103000_saved_reels_current_cache_signal.sql:36`
+- `backend/organizer.py::authorize_place_ids` (`organizer.py:96-120`)
+- `frontend/components/reels/CountryTrays.tsx`, `frontend/components/reels/VerifiedPlacesMap.tsx`
+
+**Problem — the two surfaces disagree today.** `reel_place_mentions` is keyed on
+`reel_cache_id` and shared by every user who saved the same Reel. The `saved_reel_cards` view
+joins it filtering only on `verification_version`, **not** on the viewer's own
+`analysis_status`. But `authorize_place_ids` additionally requires *this* user's saved Reel to be
+`organized` before a place may enter a trip.
+
+Net effect right now: if you save a Reel that **someone else** already organized, you SEE their
+verified pins on your card — and selecting them fails trip generation with a terminal
+`PermissionError`. Pins you can look at but cannot use.
+
+Arc A's A3 migration adds a `user_id` dimension to the mentions table and scopes the view to the
+viewer, which removes that mismatch. The consequence: **users who saved a Reel but have not
+successfully organized it themselves will see no pins until they run their own Organize.**
+
+**Scoped options:**
+
+1. **Accept the narrowing (what the plan currently does).** The card shows only what the viewer
+   can actually use. Honest, and it makes the read surface and the authorization surface agree.
+   Cost: an emptier-looking card for a user who saved but has not organized — needs UI copy telling
+   them to hit Organize, otherwise it reads as breakage.
+2. **Keep the wider view and fix the mismatch at the other end** — let cards keep showing verified
+   pins from any owner, and make `authorize_place_ids` accept them. This is a real product/security
+   decision, not a display tweak: it would let any user pull another user's organized places into
+   their own trip. Not recommended without a deliberate sharing model.
+3. **Keep the wider view but mark unusable pins in the UI** (greyed, "Organize to use these").
+   Preserves discovery while making the limit legible. Most frontend work of the three.
+
+**Recommendation/open question:** option 1, plus a line of empty-state copy. It is the smallest
+change, it is what the plan already implements, and it removes a state where the UI promises
+something the backend refuses. If you want option 3, say so before Arc A's A3 lands — after that,
+widening the view again means another migration.
+
+**Regression test:** Seed two users sharing one `reel_cache_id`, only one of them `organized`.
+Assert the non-organizing user's card shows the chosen state (no pins for option 1), and that
+`authorize_place_ids` still rejects their attempt to select those places into a trip.

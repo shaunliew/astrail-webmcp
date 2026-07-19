@@ -16,6 +16,8 @@ on every trips write), #12 (durable job = restart-with-cache-reuse). Every
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 import os
 
 from models.place import PlaceResult
@@ -25,14 +27,37 @@ from pipeline.geo import centroid
 from pipeline.offline_harness import _date_range, assemble_itinerary
 from pipeline.persist import persist_hotels, persist_itinerary, persist_narration, persist_restaurants, persist_tradeoffs, persist_transport, persist_weather
 from pipeline.tradeoffs import build_hotel_comparisons, warnings_to_notes
-from jobs import mark_job_done, mark_job_running
-from organizer import authorize_place_ids
+from jobs import _heartbeat, mark_job_done, mark_job_running
+from organizer import LeaseLost, authorize_place_ids
 from supabase_client import get_supabase_client
 
 # A3: mem0=_UNSET (not None) means "not injected -> resolve the real singleton". Explicit
 # mem0=None then unambiguously means "memory disabled" (tests pass None or a fake), so a
 # CI run with MEM0_API_KEY set never constructs the real client / hits the network.
 _UNSET = object()
+
+logger = logging.getLogger(__name__)
+
+
+async def _complete_trip_run(client, job_id, trip_id, lease_token, *,
+                             status, stage, message, payload) -> bool:
+    """Terminal write for a leased run: the job's status AND the `result` event in ONE
+    fenced transaction. Returns False iff we were superseded — then emit nothing.
+
+    They cannot be two statements. `mark_job_done`'s fence stops a superseded worker writing
+    the JOB row, but nothing stops it writing the EVENT — and `api/streaming.py` ends the
+    stream on the first `result` row, deduping by row **id**, so a second writer's row is a
+    different id and is NOT deduped. The user's session would end on a stale worker's result:
+    a failure that isn't real, or an itinerary the replacement has already superseded, with
+    the replacement's genuine result never delivered. A fenced UPDATE followed by a separate
+    INSERT can still interleave — the update failing while the insert lands. One transaction
+    is what makes "no job write => no event write" true rather than merely probable.
+    """
+    result = await client.rpc("complete_trip_run", {
+        "p_job_id": job_id, "p_trip_id": trip_id, "p_lease_token": lease_token,
+        "p_status": status, "p_stage": stage, "p_message": message, "p_payload": payload,
+    }).execute()
+    return bool(result.data)
 
 
 async def record_event(client, trip_id, *, event_type, stage, message, payload=None) -> None:
@@ -67,16 +92,23 @@ async def _fail(client, trip_id, user_id, job_id, stage, message, *, lease_token
         await _set_status(client, trip_id, user_id, "failed")
     except Exception:
         pass
-    try:
-        await record_event(client, trip_id, event_type="result", stage=stage,
-                            message="generation failed", payload={"error": message})
-    except Exception:
-        pass
-    if job_id and lease_token is not None:
+    if job_id is None:
+        # No durable job to fence against — the terminal result is still REQUIRED, because
+        # the SSE stream ends on it.
         try:
-            await mark_job_done(client, job_id, status="failed", lease_token=lease_token)
+            await record_event(client, trip_id, event_type="result", stage=stage,
+                                message="generation failed", payload={"error": message})
         except Exception:
             pass
+        return {"error": message}
+    if lease_token is None:
+        return {"error": message}     # never owned the job; the reaper owns this row
+    try:
+        await _complete_trip_run(client, job_id, trip_id, lease_token, status="failed",
+                                 stage=stage, message="generation failed",
+                                 payload={"error": message})
+    except Exception:
+        pass
     return {"error": message}
 
 
@@ -87,6 +119,8 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                           weather=None, transport=None, restaurant=None, narrator=None, hotel=None) -> dict:
     """Run the deterministic spine; own the job lifecycle; always write a terminal result."""
     lease_token = None      # in scope for the pre-claim failure path, which must NOT finalize
+    lease_lost = asyncio.Event()
+    beat = None
     try:
         if client is None:
             client = await get_supabase_client()
@@ -109,6 +143,9 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
             lease_token = await mark_job_running(client, job_id)
             if lease_token is None:
                 return {"skipped": "job already claimed by another run"}
+            # Started only AFTER the claim is won: a loser that started a beat would be
+            # renewing the WINNER's lease. Cancelled in this function's `finally`.
+            beat = asyncio.create_task(_heartbeat(client, job_id, lease_token, lease_lost))
 
         await _set_status(client, trip_id, user_id, "generating")
         degraded = False
@@ -236,6 +273,13 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                                    message="weather unavailable")
             except Exception:
                 pass   # best-effort: a warning-write failure must not fail the trip either
+
+        # GATE (not a fence). The normalized-persistence block below and the terminal trip
+        # status are in-process-gated, not CAS-fenced: this bounds the window in which a
+        # superseded worker can write to one JOB_LEASE_RENEW_S, it does not close it. The
+        # hard fence is on the job row and the terminal result event, via complete_trip_run.
+        if lease_lost.is_set():
+            raise LeaseLost(f"trip job {job_id} lease superseded")
 
         status = "saved_with_gaps" if degraded else "complete"
         await record_event(client, trip_id, event_type="stage", stage="save", message="saving trip")
@@ -369,19 +413,31 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
             status = "saved_with_gaps"
             await record_event(client, trip_id, event_type="warning", stage="save",
                                 message="normalized persistence failed; itinerary saved to the result event only")
+        if lease_lost.is_set():
+            raise LeaseLost(f"trip job {job_id} lease superseded")
         await _set_status(client, trip_id, user_id, status)
         payload = {"itinerary": itinerary.model_dump()}
-        await record_event(client, trip_id, event_type="result", stage="save",
-                            message="generation complete", payload=payload)
-        if job_id:
+        if job_id is None:
+            await record_event(client, trip_id, event_type="result", stage="save",
+                                message="generation complete", payload=payload)
+        else:
+            # The job status and the terminal result land together or not at all.
+            superseded = False
             try:
-                await mark_job_done(client, job_id, status="succeeded", lease_token=lease_token)
+                superseded = not await _complete_trip_run(
+                    client, job_id, trip_id, lease_token, status="succeeded", stage="save",
+                    message="generation complete", payload=payload)
             except Exception:
                 try:
                     await record_event(client, trip_id, event_type="warning", stage="save",
                                        message="job completion mark failed; recovery may re-sweep")
                 except Exception:
-                    pass   # post-terminal-result: a failure here must never re-enter _fail / flip the trip
+                    pass   # post-persistence: a failure here must never re-enter _fail / flip the trip
+            if superseded:
+                # A replacement owns this run and has written (or will write) the real
+                # terminal state. Emit nothing further — not even the memory write-back.
+                logger.warning("trip_run_superseded job_id=%s", job_id)
+                return payload
 
         # WRITE-BACK — AFTER the terminal `result` (stream already ended → invisible),
         # AWAITED (not create_task → no GC risk). Wrapped in its OWN try/except: memory
@@ -410,3 +466,12 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
             raise  # never got a client → BackgroundTasks logs it; startup recovery sweep re-picks the still-pending job
         return await _fail(client, trip_id, user_id, job_id, "save", "unexpected generation error",
                            lease_token=lease_token)
+    finally:
+        # A leaked beat would go on renewing the lease of a run that has already finished,
+        # holding a completed job against the reaper. `lease_lost` doubles as the beat's
+        # shutdown flag, so setting it stops the loop even if the cancel races the sleep.
+        lease_lost.set()
+        if beat is not None:
+            beat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await beat

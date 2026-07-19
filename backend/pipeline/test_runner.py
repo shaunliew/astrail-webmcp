@@ -9,6 +9,11 @@ from models.enrichment import WeatherReport
 from models.place import PlaceResult
 from models.reel import ReelData
 from pipeline import runner
+# Reuse the organize fake's PostgREST filter evaluator rather than growing a second one: its
+# Postgres-faithful `NULL < value` semantics and its refusal to evaluate an unimplemented
+# operator are pinned by fidelity tests in `test_organizer_lease.py`. A second, subtly
+# different evaluator here is how a lease test passes while proving nothing.
+from test_saved_reels_organize import _eval_filter_term, _lt, _split_top_level
 
 
 class _Result:
@@ -26,6 +31,8 @@ class _Table:
         self._filters: dict = {}
         self._in_filters: dict = {}
         self._range: dict = {}
+        self._lt_filters: dict = {}
+        self._or_filters: list = []
 
     def insert(self, row):
         self._op = ("insert", row)
@@ -59,6 +66,14 @@ class _Table:
         self._range[(col, "lte")] = val
         return self
 
+    def lt(self, col, val):
+        self._lt_filters[col] = val
+        return self
+
+    def or_(self, expr):
+        self._or_filters.append(expr)
+        return self
+
     def _matches(self, row):
         if not all(row.get(k) == v for k, v in self._filters.items()):
             return False
@@ -69,7 +84,12 @@ class _Table:
                 return False
             if op == "lte" and not row.get(col, 0) <= val:
                 return False
-        return True
+        if not all(_lt(row, k, v) for k, v in self._lt_filters.items()):
+            return False
+        return all(
+            any(_eval_filter_term(row, term) for term in _split_top_level(expr))
+            for expr in self._or_filters
+        )
 
     async def execute(self):
         op, arg = self._op
@@ -92,12 +112,50 @@ class _Table:
         return _Result(matched)
 
 
+class _CompleteTripRunRpc:
+    """Mirror of `public.complete_trip_run` (20260720090000_job_leases.sql).
+
+    The fence and the insert are ONE unit here for the same reason they are one transaction
+    there: a superseded worker must write NEITHER the job status NOR the terminal `result`
+    event. A fake that inserted unconditionally would leave the caller's `False` branch dead
+    under test while the real fence could be missing entirely — and every fencing test in
+    `test_runner_lease.py` would pass while proving nothing.
+    """
+
+    def __init__(self, client, params):
+        self.client, self.params = client, params
+
+    async def execute(self):
+        params = self.params
+        job = next((row for row in self.client.db.get("jobs", [])
+                    if row.get("id") == params["p_job_id"]
+                    and row.get("lease_token") == params["p_lease_token"]
+                    and row.get("status") == "running"), None)
+        if job is None:
+            return _Result(False)
+        job.update({"status": params["p_status"], "completed_at": "2026-07-20T00:00:00+00:00"})
+        events = self.client.db.setdefault("generation_events", [])
+        events.append({
+            "id": f"generation_events-{len(events) + 1}",
+            "trip_id": params["p_trip_id"], "event_type": "result", "stage": params["p_stage"],
+            "message": params["p_message"], "payload": params.get("p_payload") or {},
+        })
+        return _Result(True)
+
+
 class _Client:
     def __init__(self, jobs=None):
         self.db: dict = {"jobs": jobs or []}
+        self.rpc_calls: list = []
 
     def table(self, name):
         return _Table(name, self.db)
+
+    def rpc(self, name, params):
+        self.rpc_calls.append((name, params))
+        if name == "complete_trip_run":
+            return _CompleteTripRunRpc(self, params)
+        raise AssertionError(f"fake does not implement rpc {name!r}")
 
     @property
     def events(self):
@@ -739,50 +797,6 @@ async def test_runner_write_back_raise_does_not_double_result_or_flip_status(mon
     # as every other best-effort stage in this function.
     warning_events = [e for e in c.events if e["event_type"] == "warning" and e["stage"] == "save"]
     assert any(e["message"] == "memory write-back unavailable" for e in warning_events)
-
-
-class _JobDoneBoomTable(_Table):
-    """Raises only on the mark_job_done update (completed_at set to a real value); the
-    earlier mark_job_running update (completed_at explicitly None) must still succeed."""
-
-    async def execute(self):
-        if self.name == "jobs" and self._op[0] == "update" and self._op[1].get("completed_at") is not None:
-            raise RuntimeError("db blip marking job done")
-        return await super().execute()
-
-
-class _JobDoneBoomClient(_Client):
-    def table(self, name):
-        return _JobDoneBoomTable(name, self.db)
-
-
-@pytest.mark.asyncio
-async def test_runner_mark_job_done_raise_does_not_double_result_or_flip_status():
-    # gstack /review cross-model finding (High): the success-tail `mark_job_done` call
-    # sits AFTER the terminal `result` event but is INSIDE run_generation's outermost
-    # try. If it raises (a DB blip), the outer `except Exception: _fail(...)` would emit
-    # a SECOND `result` event and flip the already-succeeded trip/job to `failed`. It
-    # must be independently guarded like the write-back is.
-    c = _JobDoneBoomClient(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
-
-    async def scrape(url):
-        return _reel(url)
-
-    async def extract(reel):
-        return [_place("Tokyo Tower")]
-
-    out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
-                                      job_id="job-1", client=c, scrape=scrape, extract=extract,
-                                      mem0=None, weather=_no_weather, transport=_no_transport,
-                                      restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
-    assert out["itinerary"]["days"]
-    result_events = [e for e in c.events if e["event_type"] == "result"]
-    assert len(result_events) == 1   # never a second (error) result event
-    assert result_events[0]["message"] == "generation complete"
-    assert c.trip_updates[-1]["status"] != "failed"
-    assert c.db["jobs"][0]["status"] == "running"   # never flipped to failed; left for recovery sweep
-    warning_events = [e for e in c.events if e["event_type"] == "warning" and e["stage"] == "save"]
-    assert any(e["message"] == "job completion mark failed; recovery may re-sweep" for e in warning_events)
 
 
 @pytest.mark.asyncio

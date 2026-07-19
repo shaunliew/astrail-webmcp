@@ -36,7 +36,7 @@ from organizer import (
     recover_organize_jobs,
     run_organize_job,
 )
-from test_saved_reels_organize import _Client, _eval_filter_term, _iso, _place
+from test_saved_reels_organize import _cached, _Client, _eval_filter_term, _iso, _place
 
 
 def _now_utc() -> datetime:
@@ -161,6 +161,29 @@ async def test_fake_reclaim_skips_a_null_expiry_like_postgres(fake_client):
 
     assert [row["id"] for row in reclaimed] == ["past-expiry"]
     assert job_status(fake_client, "null-expiry") == "processing"
+
+
+@pytest.mark.asyncio
+async def test_fake_gt_skips_null_columns_like_postgres(fake_client):
+    """`NULL > value` is NULL in Postgres, so the row does NOT match — the mirror of `_lt`.
+
+    `stream_organize_events` pushes a reconnect cursor down as `.gt("sequence", …)`
+    unconditionally now (B6), so this is a real filter. The tempting spelling
+    `row.get(k, 0) > v` makes a row MISSING the column compare against an invented 0, which
+    for the replay cursor means a sequence-less event outranks every cursor and is re-sent on
+    every reconnect.
+    """
+    fake_client.db["organize_jobs"] = [
+        {"id": "no-sequence"},
+        {"id": "null-sequence", "sequence": None},
+        {"id": "below-cursor", "sequence": 1},
+        {"id": "above-cursor", "sequence": 3},
+    ]
+
+    matched = (await fake_client.table("organize_jobs").update({"status": "pending"})
+               .gt("sequence", 2).execute()).data
+
+    assert [row["id"] for row in matched] == ["above-cursor"]
 
 
 @pytest.mark.asyncio
@@ -411,7 +434,7 @@ async def test_claim_mints_a_fresh_token_and_preserves_started_at(fake_client, m
     time: re-stamping it on each retry makes a job that has been grinding for an hour report
     as though it had just begun, hiding the retry loop it is actually stuck in.
     """
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
     seed_claimable_job(fake_client)
     snapshots: list[dict] = []
 
@@ -571,7 +594,7 @@ async def test_lease_expiry_during_a_blocked_provider_call_aborts_the_run(fake_c
     from the beat that the run started on its own.
     """
     monkeypatch.setattr("organizer.ORGANIZE_LEASE_RENEW_S", 0)
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
     seed_two_item_job(fake_client)
 
     renewals: list[bool] = []
@@ -631,7 +654,7 @@ async def test_a_renewal_blip_does_not_abort_a_healthy_run(fake_client, monkeypa
     zero rows, which is the authoritative signal.
     """
     monkeypatch.setattr("organizer.ORGANIZE_LEASE_RENEW_S", 0)
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
     seed_two_item_job(fake_client)
 
     attempts: list[int] = []
@@ -711,7 +734,7 @@ async def test_the_heartbeat_task_does_not_outlive_the_run(fake_client, monkeypa
     an un-awaited task that outlives its parent surfaces as a "Task was destroyed but it is
     pending" warning at shutdown rather than anything a test would catch.
     """
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
     seed_claimable_job(fake_client)
 
     outcomes: list[str] = []
@@ -818,7 +841,7 @@ async def test_a_superseded_worker_cannot_force_fail_the_worker_that_replaced_it
     guaranteed exit one renewal interval after being superseded.
     """
     monkeypatch.setattr("organizer.ORGANIZE_LEASE_RENEW_S", 0)
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
     seed_two_item_job(fake_client)
 
     renewals: list[bool] = []
@@ -884,7 +907,7 @@ async def test_fenced_writer_cannot_finalize_the_job(fake_client, monkeypatch):
     assert job_status(fake_client) == "processing"       # untouched by the fenced writer
 
     monkeypatch.setattr("organizer.ORGANIZE_LEASE_RENEW_S", 0)
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
     client = _Client({"organize_jobs": []})
     seed_claimable_job(client)                           # ONE item, so the loop never gates
     entered, release = asyncio.Event(), asyncio.Event()
@@ -929,7 +952,7 @@ async def test_old_worker_resuming_after_replacement_cannot_finalize_the_job(
     equally consistent with the append silently doing nothing at all.
     """
     monkeypatch.setattr("organizer.ORGANIZE_LEASE_RENEW_S", 0)
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
     caplog.set_level(logging.WARNING, logger="organizer")
     seed_two_item_job(fake_client)
     entered, release = asyncio.Event(), asyncio.Event()
@@ -974,7 +997,7 @@ async def test_a_transient_read_after_success_cannot_flip_the_job_to_failed(
     the terminal row, and the single result event — a fix that guarded only the row would still
     leave two result rows, and `stream_organize_events` replays them.
     """
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
     seed_claimable_job(fake_client)
 
     real_status = organizer.get_organize_status
@@ -1012,7 +1035,7 @@ async def test_a_live_workers_genuine_failure_is_still_recorded(fake_client, mon
     that refused to write on a `processing` job would silently strand every genuine failure as
     `processing` forever — a guard that "passes" by never doing its job.
     """
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
     seed_claimable_job(fake_client)
 
     async def failing_ground(_place_result):
@@ -1109,7 +1132,7 @@ async def test_only_the_worker_that_won_the_claim_emits_events(fake_client, monk
     (an AS409 the wrapper swallowed) — the count catches both, and neither is visible from the
     skip string alone.
     """
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
     seed_two_item_job(fake_client)
 
     first, second = await asyncio.gather(
@@ -1209,7 +1232,7 @@ async def test_an_organize_claim_from_a_slow_host_is_not_reclaimed_by_a_truthful
     per-write CAS keeps one database token through all of that; what it cannot do is stop the
     second worker from doing the work.
     """
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
     seed_claimable_job(fake_client)
     skew = install_host_clock_skew(monkeypatch, organizer)
     entered, release = asyncio.Event(), asyncio.Event()
@@ -1269,7 +1292,7 @@ async def test_an_organize_lease_from_a_fast_host_still_expires_on_the_databases
     minutes instead of five. Skew grows without bound — nothing in the system corrects a host
     clock — so this is "reclaimed late" only in the sense that it is reclaimed at all.
     """
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
     seed_claimable_job(fake_client)
     skew = install_host_clock_skew(monkeypatch, organizer)
     entered, release = asyncio.Event(), asyncio.Event()

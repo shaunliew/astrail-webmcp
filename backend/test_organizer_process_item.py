@@ -13,7 +13,7 @@ from organizer import (
     get_organize_status,
     run_organize_job,
 )
-from test_saved_reels_organize import _Client, _place
+from test_saved_reels_organize import _cached, _Client, _place
 
 
 def _ctx(client, *, ground=None, scrape=None, extract=None) -> _ItemContext:
@@ -140,7 +140,7 @@ async def test_failed_item_still_updates_job_counts(monkeypatch):
 
     monkeypatch.setattr("organizer.reserve_organize_item_analysis", _reserve)
     monkeypatch.setattr("organizer.refund_organize_item_analysis", _refund)
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_a, **_kw: None)
+    monkeypatch.setattr("organizer.get_cached_places", _cached(None))
 
     await run_organize_job("job-1", "user-a", client=client, scrape=_scrape, extract=None)
 

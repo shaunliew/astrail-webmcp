@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import hashlib
-import inspect
 import json
 import logging
 import os
@@ -67,10 +66,6 @@ def _now() -> str:
 def _request_key(user_id: str, saved_reel_ids: list[str]) -> str:
     material = json.dumps([user_id, sorted(set(saved_reel_ids))], separators=(",", ":"))
     return hashlib.sha256(material.encode()).hexdigest()
-
-
-async def _maybe_await(value):
-    return await value if inspect.isawaitable(value) else value
 
 
 async def _find_cache_id(client, normalized_url: str) -> str | None:
@@ -642,7 +637,7 @@ async def _ground_and_persist(
     grounded = [
         resolved
         for place in places
-        if (resolved := await _maybe_await(ctx.ground(place))) is not None
+        if (resolved := await ctx.ground(place)) is not None
     ]
     set_phase("database")
     if not grounded or not cache_id:
@@ -702,7 +697,7 @@ async def _process_item(ctx: _ItemContext, item: dict) -> bool:
     try:
         phase = "database"
         try:
-            places = await _maybe_await(get_cached_places(ctx.client, reel["normalized_url"], EXTRACTOR_VERSION))
+            places = await get_cached_places(ctx.client, reel["normalized_url"], EXTRACTOR_VERSION)
         except Exception as exc:
             # LOG IT. Without this the handler is indistinguishable from a real programming
             # error: a None client (AttributeError) or a renamed column (APIError) degrades
@@ -729,9 +724,9 @@ async def _process_item(ctx: _ItemContext, item: dict) -> bool:
                 quota_state = "reserved"
             try:
                 phase = "apify"
-                scraped = await _maybe_await(ctx.scrape(reel["normalized_url"]))
+                scraped = await ctx.scrape(reel["normalized_url"])
                 phase = "extractor"
-                places = await _maybe_await(ctx.extract(scraped))
+                places = await ctx.extract(scraped)
                 # The cache stores research provenance before provider verification. A
                 # Mapbox retry can therefore reuse research without paying for Apify again.
                 phase = "database"

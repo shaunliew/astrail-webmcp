@@ -65,6 +65,20 @@ def _lt(row, key, value):
     return current is not None and current < value
 
 
+def _gt(row, key, value):
+    """Postgres semantics: `NULL > value` is NULL, so the row does NOT match.
+
+    The mirror of `_lt`, and load-bearing for the same reason. `stream_organize_events` now
+    ALWAYS pushes a reconnect cursor down as `.gt("sequence", …)` instead of first asking the
+    client whether it implements `gt` (B6), so this is real filter evaluation rather than a
+    branch the fake used to skip. The previous spelling, `row.get(key, 0) > value`, invented a
+    0 for a missing column — under which an event carrying no `sequence` outranks every cursor
+    and replays on every reconnect.
+    """
+    current = row.get(key)
+    return current is not None and current > value
+
+
 def _eval_filter_term(row, term):
     """Evaluate one PostgREST filter term (`col.op.value`, or a nested `and(...)`/`or(...)`)."""
     if term.startswith("and(") and term.endswith(")"):
@@ -134,7 +148,7 @@ class _Table:
             row.get(k) in values for k, values in self.in_filters.items()
         ) and all(
             row.get(k) is None for k in self.is_null_filters
-        ) and all(row.get(k, 0) > v for k, v in self.gt_filters.items()) and all(
+        ) and all(_gt(row, k, v) for k, v in self.gt_filters.items()) and all(
             _lt(row, k, v) for k, v in self.lt_filters.items()
         ) and all(
             any(_eval_filter_term(row, term) for term in _split_top_level(expr))
@@ -711,6 +725,27 @@ def _place(name="Tokyo Tower"):
     )
 
 
+# The seams below are ASYNC because the things they stand in for are async (B6). `organizer`
+# awaits `get_cached_places` and the injected `scrape`/`extract`/`ground` directly; it used to
+# funnel them through a `_maybe_await` that accepted either shape, which let sync fakes pass
+# for coroutine functions and hid the difference from every test in this file.
+def _cached(value):
+    """An async stand-in for `pipeline.cache.get_cached_places` returning a fixed result."""
+    async def _get_cached_places(*_args, **_kwargs):
+        return value
+    return _get_cached_places
+
+
+async def _grounds_to_japan(place):
+    """The common `ground` seam: Mapbox verifies every place as being in Japan."""
+    return {"place": place, "country_code": "JP", "country_name": "Japan"}
+
+
+async def _extracts_one_place(_scraped):
+    """The common `extract` seam: the extractor finds exactly one place."""
+    return [_place()]
+
+
 def test_place_only_generate_request_is_valid_and_empty_request_is_rejected():
     request = GenerateTripRequest(
         place_ids=["11111111-1111-1111-1111-111111111111"], start_date="2026-08-01", end_date="2026-08-02"
@@ -979,7 +1014,7 @@ async def test_unexpected_organizer_failure_marks_job_failed_and_emits_result(
             "reel_cache_id": "cache-1", "analysis_status": "queued",
         }],
     })
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
     if failure == "counts":
         async def fail_counts(*_args, **_kwargs):
             raise RuntimeError("count update failed")
@@ -988,7 +1023,7 @@ async def test_unexpected_organizer_failure_marks_job_failed_and_emits_result(
 
     await run_organize_job(
         "job-1", "user-a", client=client,
-        ground=lambda place: {"place": place, "country_code": "JP", "country_name": "Japan"},
+        ground=_grounds_to_japan,
     )
 
     job = client.db["organize_jobs"][0]
@@ -1020,7 +1055,7 @@ async def test_uncached_source_failure_refunds_reserved_analysis(monkeypatch):
     async def extract(*_args, **_kwargs): calls.append("extract")
     monkeypatch.setattr("organizer.reserve_organize_item_analysis", reserve)
     monkeypatch.setattr("organizer.refund_organize_item_analysis", refund)
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("organizer.get_cached_places", _cached(None))
     await run_organize_job("job-1", "user-a", client=client, scrape=scrape, extract=extract)
     assert calls == ["reserve", "scrape", "refund"]
     assert client.db["organize_job_items"][0]["status"] == "failed"
@@ -1036,9 +1071,9 @@ async def test_cached_reel_skips_paid_calls_and_writes_terminal_state(monkeypatc
     })
     calls = []
     async def unexpected(*_args, **_kwargs): calls.append("paid"); raise AssertionError("paid call")
-    def ground(place):
+    async def ground(place):
         return {"place": place, "country_code": "JP", "country_name": "Japan"}
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
     await run_organize_job("job-1", "user-a", client=client, scrape=unexpected, extract=unexpected, ground=ground)
     assert calls == []
     assert client.db["organize_job_items"][0]["status"] == "organized"
@@ -1064,11 +1099,11 @@ async def test_cached_retry_does_not_require_apify_token(monkeypatch):
     async def unexpected_scrape(*_args, **_kwargs):
         raise AssertionError("cache-backed retry must not call Apify")
 
-    def ground(place):
+    async def ground(place):
         return {"place": place, "country_code": "JP", "country_name": "Japan"}
 
     monkeypatch.delenv("APIFY_TOKEN", raising=False)
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
     monkeypatch.setattr("organizer.scrape_reel", unexpected_scrape)
 
     await run_organize_job("job-1", "user-a", client=client, ground=ground)
@@ -1086,6 +1121,36 @@ async def test_organize_event_stream_replays_integer_cursor_and_json_result():
     events = [event async for event in stream_organize_events(client, "job-1", "user-a", poll_s=0)]
     assert events[0].startswith("id: 1\ndata: ")
     assert "\"content\": \"{\\\"status\\\": \\\"succeeded\\\"}\"" in events[1]
+    assert events[-1] == DONE
+
+
+@pytest.mark.asyncio
+async def test_organize_event_stream_resumes_after_a_cursor():
+    """A reconnect with a cursor replays only what the client has not already seen.
+
+    This path had NO coverage while `stream_organize_events` guarded it with
+    `hasattr(query, "gt")`: against a fake without `gt` the filter was silently skipped, so the
+    guard read as "cursors are optional" rather than "this fake is incomplete". The filter is
+    unconditional now, which is what makes this exercise the real query.
+
+    HONEST LIMIT: production ALSO skips `sequence <= cursor_sequence` row by row, so this stays
+    green if the pushed-down `.gt` is broken — the two guards share a predicate. What pins the
+    fake's `gt` itself is `test_fake_gt_skips_null_columns_like_postgres`.
+    """
+    client = _Client({"organize_events": [
+        {"sequence": 1, "job_id": "job-1", "user_id": "user-a", "event_type": "stage",
+         "message": "Queued", "payload": {}},
+        {"sequence": 2, "job_id": "job-1", "user_id": "user-a", "event_type": "stage",
+         "message": "Finding places", "payload": {}},
+        {"sequence": 3, "job_id": "job-1", "user_id": "user-a", "event_type": "result",
+         "message": "Organized", "payload": {"status": "succeeded"}},
+    ]})
+
+    events = [event async for event in stream_organize_events(
+        client, "job-1", "user-a", cursor="1", poll_s=0
+    )]
+
+    assert [event.split("\n", 1)[0] for event in events[:-1]] == ["id: 2", "id: 3"]
     assert events[-1] == DONE
 
 
@@ -1173,11 +1238,11 @@ async def test_refunded_item_gets_fresh_reservation_before_uncached_analysis(mon
 
     monkeypatch.setattr("organizer.reserve_organize_item_analysis", reserve)
     monkeypatch.setattr("organizer.cache_places", cache)
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("organizer.get_cached_places", _cached(None))
 
     await run_organize_job(
         "job-1", "user-a", client=client, scrape=scrape, extract=extract,
-        ground=lambda place: {"place": place, "country_code": "JP", "country_name": "Japan"},
+        ground=_grounds_to_japan,
     )
 
     assert calls[:3] == [("reserve", "item-1", "user-a"), ("scrape", "https://www.instagram.com/reel/A"), ("extract",)]
@@ -1207,11 +1272,11 @@ async def test_cache_retry_consumes_existing_reservation_without_apify(monkeypat
         raise AssertionError("cache retry must not call Apify")
 
     monkeypatch.setattr("organizer.reserve_organize_item_analysis", unexpected_reserve)
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
 
     await run_organize_job(
         "job-1", "user-a", client=client, scrape=unexpected_scrape,
-        ground=lambda place: {"place": place, "country_code": "JP", "country_name": "Japan"},
+        ground=_grounds_to_japan,
     )
 
     assert client.db["organize_job_items"][0]["analysis_charge_state"] == "consumed"
@@ -1236,7 +1301,7 @@ async def test_terminal_items_are_not_replayed_after_requeue(monkeypatch):
     async def unexpected_ground(*_args, **_kwargs):
         raise AssertionError("terminal items must not be replayed")
 
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
 
     await run_organize_job("job-1", "user-a", client=client, ground=unexpected_ground)
 
@@ -1774,7 +1839,7 @@ async def test_poisoned_legacy_mention_is_replaced_by_verified_japan_link(monkey
         country_code="JP", country_name="Japan",
     )
 
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [research])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([research]))
 
     async def ground(place):
         return {"place": place, "country_code": "JP", "country_name": "Japan"}
@@ -1826,7 +1891,7 @@ async def test_country_mismatch_fails_closed_without_destroying_mentions(monkeyp
         confidence=0.8, evidence_quote="Harry Potter Cafe", source_url="https://hpcafe.jp/",
         country_code="JP", country_name="Japan",
     )
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [research])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([research]))
 
     async def mismatch(_place):
         return None
@@ -1875,7 +1940,7 @@ async def test_run_organize_job_persists_verified_country_matrix(
         confidence=0.8, evidence_quote=f"Verified {code}",
         source_url="https://source.test/verified", country_code=code, country_name=name,
     )
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [research])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([research]))
 
     async def ground(place):
         return {"place": place, "country_code": code, "country_name": name}
@@ -1928,7 +1993,7 @@ async def test_uncached_reel_caches_research_output_before_country_verification(
         assert cached == [research]
         return {"place": place, "country_code": "JP", "country_name": "Japan"}
 
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("organizer.get_cached_places", _cached(None))
     monkeypatch.setattr("organizer.cache_places", cache)
 
     await run_organize_job(
@@ -1989,10 +2054,10 @@ async def test_provider_outage_consumes_cached_research_then_retries_without_api
 
     monkeypatch.setattr("organizer.reserve_organize_item_analysis", reserve)
     monkeypatch.setattr("organizer.refund_organize_item_analysis", refund)
-    monkeypatch.setattr(
-        "organizer.get_cached_places",
-        lambda *_args, **_kwargs: list(cached) if cached else None,
-    )
+    async def get_cached_places(*_args, **_kwargs):
+        return list(cached) if cached else None
+
+    monkeypatch.setattr("organizer.get_cached_places", get_cached_places)
     monkeypatch.setattr("organizer.cache_places", cache)
 
     await run_organize_job(
@@ -2042,7 +2107,7 @@ async def test_item_failure_logs_only_fixed_phase_and_job_item_ids(monkeypatch, 
         }],
     })
 
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
 
     async def leak(_place):
         raise RuntimeError("TOKEN=secret https://private.example/reel/A")
@@ -2086,10 +2151,10 @@ async def test_zero_place_job_does_not_report_as_organized(monkeypatch):
         ],
     })
     # One place per Reel, named after it, so the shared `ground` seam can behave per item.
-    monkeypatch.setattr(
-        "organizer.get_cached_places",
-        lambda _client, url, _version: [_place(name=url.rsplit("/", 1)[-1])],
-    )
+    async def get_cached_places(_client, url, _version):
+        return [_place(name=url.rsplit("/", 1)[-1])]
+
+    monkeypatch.setattr("organizer.get_cached_places", get_cached_places)
 
     async def ground(place):
         if place.name == "E":
@@ -2119,11 +2184,11 @@ async def test_organized_job_still_reports_organized(monkeypatch):
                          "reel_cache_id": "cache-1", "analysis_status": "queued"}],
         "reel_cache": [{"id": "cache-1", "normalized_url": "https://www.instagram.com/reel/A"}],
     })
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
 
     await run_organize_job(
         "job-1", "user-a", client=client,
-        ground=lambda place: {"place": place, "country_code": "JP", "country_name": "Japan"},
+        ground=_grounds_to_japan,
     )
 
     job = client.db["organize_jobs"][0]
@@ -2170,8 +2235,8 @@ async def test_extraction_cache_read_blip_is_a_miss_not_an_item_failure(monkeypa
 
     await run_organize_job(
         "job-1", "user-a", client=client, scrape=scrape,
-        extract=lambda _scraped: [_place()],
-        ground=lambda place: {"place": place, "country_code": "JP", "country_name": "Japan"},
+        extract=_extracts_one_place,
+        ground=_grounds_to_japan,
     )
 
     # The blip is a MISS: the item scraped fresh and completed, rather than failing.

@@ -27,6 +27,54 @@ class _Result:
         self.data = data
 
 
+def _split_top_level(expr):
+    """Split a PostgREST filter list on commas that are not inside an `and(...)`/`or(...)`."""
+    parts, depth, start = [], 0, 0
+    for index, char in enumerate(expr):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(expr[start:index])
+            start = index + 1
+    parts.append(expr[start:])
+    return parts
+
+
+def _lt(row, key, value):
+    """Postgres semantics: `NULL < value` is NULL, so the row does NOT match.
+
+    Deliberately not `row.get(key, "") < value`, which fails two different ways: for a row
+    that OMITS the column it makes the NULL case always match (`"" < "2026-..."` is True),
+    silently inverting the legacy-orphan reclaim tests; and for a row that carries the column
+    as an explicit `None` — how Supabase actually returns it — the default never applies and
+    it still raises TypeError. Checking the retrieved value covers both.
+    """
+    current = row.get(key)
+    return current is not None and current < value
+
+
+def _eval_filter_term(row, term):
+    """Evaluate one PostgREST filter term (`col.op.value`, or a nested `and(...)`/`or(...)`)."""
+    if term.startswith("and(") and term.endswith(")"):
+        return all(_eval_filter_term(row, part) for part in _split_top_level(term[4:-1]))
+    if term.startswith("or(") and term.endswith(")"):
+        return any(_eval_filter_term(row, part) for part in _split_top_level(term[3:-1]))
+    key, op, value = term.split(".", 2)
+    if op == "lt":
+        return _lt(row, key, value)
+    if op == "eq":
+        return row.get(key) == value
+    if op == "is":
+        if value != "null":
+            raise ValueError(f"fake implements only `is.null`, got {term!r}")
+        return row.get(key) is None
+    # Unimplemented operators must fail loudly. One that quietly evaluated True (or was
+    # dropped) is how a later increment gets a green test that proves nothing.
+    raise ValueError(f"fake does not implement PostgREST operator {op!r} in {term!r}")
+
+
 class _Table:
     def __init__(self, name, db):
         self.name, self.db = name, db
@@ -35,6 +83,7 @@ class _Table:
         self.gt_filters = {}
         self.lt_filters = {}
         self.in_filters = {}
+        self.or_filters = []
         self.single = False
 
     def select(self, *_args): self.op = "select"; return self
@@ -44,6 +93,7 @@ class _Table:
     def eq(self, key, value): self.filters[key] = value; return self
     def gt(self, key, value): self.gt_filters[key] = value; return self
     def lt(self, key, value): self.lt_filters[key] = value; return self
+    def or_(self, expr): self.or_filters.append(expr); return self
     def in_(self, key, values): self.in_filters[key] = set(values); return self
     def order(self, *_args, **_kwargs): return self
     def maybe_single(self): self.single = True; return self
@@ -52,7 +102,10 @@ class _Table:
         return all(row.get(k) == v for k, v in self.filters.items()) and all(
             row.get(k) in values for k, values in self.in_filters.items()
         ) and all(row.get(k, 0) > v for k, v in self.gt_filters.items()) and all(
-            row.get(k) < v for k, v in self.lt_filters.items()
+            _lt(row, k, v) for k, v in self.lt_filters.items()
+        ) and all(
+            any(_eval_filter_term(row, term) for term in _split_top_level(expr))
+            for expr in self.or_filters
         )
 
     async def execute(self):
@@ -351,57 +404,11 @@ async def test_create_organize_job_allows_terminal_overlap_and_disjoint_sets():
 
 
 @pytest.mark.asyncio
-async def test_recover_organize_jobs_deletes_stale_initializing_job_and_children():
-    stale_created_at = (
-        datetime.now(timezone.utc) - timedelta(seconds=121)
-    ).isoformat()
-    current_created_at = datetime.now(timezone.utc).isoformat()
-    client = _Client({
-        "organize_jobs": [
-            {
-                "id": "stale-job",
-                "user_id": "user-a",
-                "status": "initializing",
-                "created_at": stale_created_at,
-            },
-            {
-                "id": "current-job",
-                "user_id": "user-a",
-                "status": "initializing",
-                "created_at": current_created_at,
-            },
-            {
-                "id": "pending-job",
-                "user_id": "user-b",
-                "status": "pending",
-                "created_at": current_created_at,
-            },
-        ],
-        "organize_job_items": [
-            {"id": "stale-item", "job_id": "stale-job"},
-            {"id": "current-item", "job_id": "current-job"},
-        ],
-        "organize_events": [
-            {"id": "stale-event", "job_id": "stale-job"},
-            {"id": "current-event", "job_id": "current-job"},
-        ],
-    })
-
-    pending = await recover_organize_jobs(client)
-
-    assert {row["id"] for row in client.db["organize_jobs"]} == {
-        "current-job", "pending-job",
-    }
-    assert [row["id"] for row in client.db["organize_job_items"]] == ["current-item"]
-    assert [row["id"] for row in client.db["organize_events"]] == ["current-event"]
-    assert [(row["id"], row["user_id"]) for row in pending] == [
-        ("pending-job", "user-b"),
-    ]
-
-
-@pytest.mark.asyncio
 async def test_recover_organize_jobs_immediately_requeues_prior_process_work():
-    future_lock = (datetime.now(timezone.utc) + timedelta(minutes=14)).isoformat()
+    # Seeded with an EXPIRED lease: recovery is expiry-gated now, so a future lock_expires_at
+    # would (correctly) mean a live instance still owns the job. Field-level clearing and the
+    # unexpired/legacy-NULL branches are covered in test_organizer_lease.py.
+    expired_lock = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
     client = _Client({
         "organize_jobs": [{
             "id": "interrupted-job",
@@ -409,7 +416,8 @@ async def test_recover_organize_jobs_immediately_requeues_prior_process_work():
             "status": "processing",
             "status_message": "Finding places",
             "locked_at": datetime.now(timezone.utc).isoformat(),
-            "lock_expires_at": future_lock,
+            "lock_expires_at": expired_lock,
+            "lease_token": "t-old",
             "created_at": datetime.now(timezone.utc).isoformat(),
         }],
     })

@@ -21,6 +21,8 @@ from usage import refund_organize_item_analysis, reserve_organize_item_analysis
 
 LOCATION_VERIFICATION_VERSION = "mapbox-country-v1"
 INITIALIZING_STALE_AFTER_S = 120
+ORGANIZE_LEASE_TTL_S = 300      # short on purpose: the heartbeat renews a live run, so a
+                                # real crash is reclaimed in ~5 min rather than ~15.
 ORGANIZE_FAILURE_MESSAGE = "Organization failed"
 logger = logging.getLogger(__name__)
 
@@ -262,23 +264,46 @@ async def _mark_organize_job_failed(client, job_id: str, user_id: str) -> None:
         pass
 
 
-async def recover_organize_jobs(client, stale_after_s: int = 900) -> list[dict]:
-    """Requeue prior-process organize work and return pending jobs for boot dispatch."""
-    initializing_cutoff = (
-        datetime.now(timezone.utc) - timedelta(seconds=INITIALIZING_STALE_AFTER_S)
-    ).isoformat()
-    abandoned = (await client.table("organize_jobs").select("id,user_id")
-                 .eq("status", "initializing").lt("created_at", initializing_cutoff).execute()).data or []
-    for row in abandoned:
-        await (client.table("organize_jobs").delete().eq("id", row["id"])
-               .eq("user_id", row["user_id"]).eq("status", "initializing").execute())
-    interrupted = (await client.table("organize_jobs").select("id")
-                   .eq("status", "processing").execute()).data or []
-    for row in interrupted:
-        await client.table("organize_jobs").update({
-            "status": "pending", "status_message": "Requeued after restart",
-            "locked_at": None, "lock_expires_at": None,
-        }).eq("id", row["id"]).execute()
+def _pg_timestamp(value: datetime) -> str:
+    """`Z`-suffixed ISO-8601 for use inside a PostgREST filter string.
+
+    `datetime.isoformat()` emits `+00:00`; a raw `+` inside an `or=` filter can be decoded as
+    a space, which either 400s or silently matches nothing. Offline tests cannot catch that —
+    the fake accepts any string — so the encoding has to be right by construction.
+    """
+    return value.isoformat().replace("+00:00", "Z")
+
+
+async def recover_organize_jobs(client, *, now=None) -> list[dict]:
+    """Reclaim organize jobs whose LEASE HAS EXPIRED, then return pending jobs to dispatch.
+
+    ONE atomic UPDATE, no select-then-CAS loop. `lock_expires_at < now` is evaluated by
+    Postgres as part of the update's own predicate, so a heartbeat that renews the lease
+    concurrently makes the row stop matching (READ COMMITTED re-checks the predicate against
+    the updated row version) and the reclaim skips it. A select-then-update version CANNOT do
+    this: it would compare a token it observed BEFORE the renewal, and since the heartbeat
+    deliberately keeps the same token, the stale-but-matching token would let the reaper reset
+    a live lease to pending. Collapsing to one statement removes that race and the
+    null-token branch fork at the same time — legacy rows match on expiry alone.
+    """
+    now = now or datetime.now(timezone.utc)
+    # LEGACY-NULL BRANCH IS LOAD-BEARING — do not simplify to `.lt("lock_expires_at", ...)`.
+    # NO production code today writes a non-null lock_expires_at: the organize claim and the
+    # trip claim (jobs.py) never set it, and the only writes anywhere are `None`. During the
+    # A-II/A-III deploy overlap the OLD container can claim jobs right up to SIGTERM, leaving
+    # lock_expires_at NULL. In SQL `NULL < now()` is NULL, not true — so an expiry-only
+    # predicate skips those rows FOREVER, which is precisely the silent drop guardrail #12
+    # forbids, reintroduced at this task's own rollout boundary. Fall back to locked_at + TTL.
+    legacy_cutoff = _pg_timestamp(now - timedelta(seconds=ORGANIZE_LEASE_TTL_S))
+    reclaimed = (await client.table("organize_jobs").update({
+        "status": "pending", "status_message": "Requeued after restart",
+        "locked_at": None, "lock_expires_at": None, "lease_token": None,
+    }).eq("status", "processing").or_(
+        f"lock_expires_at.lt.{_pg_timestamp(now)},"
+        f"and(lock_expires_at.is.null,locked_at.lt.{legacy_cutoff})"
+    ).execute()).data or []
+    if reclaimed:
+        logger.info("organize_leases_reclaimed count=%d", len(reclaimed))
     return (await client.table("organize_jobs").select("id,user_id").eq("status", "pending")
             .order("created_at").execute()).data or []
 

@@ -2,8 +2,9 @@
 
 Priority order: **B1, B4, B6, B2, B3, B5, B7**. B1 is **RESOLVED** (live security-adjacent
 log exposure, closed by access-log redaction — see below);
-B4 is restart burst-cost and provider-rate-limit risk; B6 is a cheap correctness
-guard for a currently unreachable UI path; B2/B3 are canonical-data hygiene; B5 is
+B4 is restart burst-cost and provider-rate-limit risk; B6 is **RESOLVED** (the cheap
+correctness guard for a currently unreachable UI path — mixed input is now a 422);
+B2/B3 are canonical-data hygiene; B5 is
 **RESOLVED** (it was never protected by the single-writer invariant claimed below — Arc A's
 lease work replaced that premise with a database row lock); B7 is cosmetic product wording.
 
@@ -150,10 +151,21 @@ limit of three. Split the semaphore only after measured workloads show starvatio
 block each invocation on an event, and assert maximum simultaneous executions never exceeds
 three. Then release them and prove every pending job eventually runs exactly once.
 
-## B6 — Reject mixed Reel URLs and canonical place IDs
+## B6 — Reject mixed Reel URLs and canonical place IDs — **RESOLVED (Arc B)**
 
 **Suggested severity:** P3. The current Saved Reels UI sends only `place_ids`, so the path is
 not reachable from that screen, but an API client can silently lose requested input.
+
+**RESOLUTION (2026-07-20, Arc B / task B1).** The recommendation shipped as written:
+`GenerateTripRequest.require_reel_or_place` (`backend/api/schemas.py`) now also rejects the
+combination, so a request carrying both fields is a 422 from Pydantic — before the handler
+body runs. `backend/pipeline/runner.py::run_generation` is unchanged; no merge contract was
+defined, and none is planned until an approved product requirement for merged sources exists.
+The regression is `test_main.py::test_generate_trip_rejects_mixed_reel_urls_and_place_ids`,
+which asserts the 422 plus zero side effects (no trip row, no job, no quota RPC, no background
+dispatch — the last being the only path to an Apify call or to `authorize_place_ids`), with
+`api/test_schemas.py::test_mixed_reel_urls_and_place_ids_is_rejected` covering the model
+directly. The Reel-only and place-only happy paths keep their own regressions.
 
 **Files and symbols:**
 

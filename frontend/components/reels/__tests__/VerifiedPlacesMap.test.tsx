@@ -84,7 +84,7 @@ describe('VerifiedPlacesMap', () => {
   it('pins exact backend-verified coordinates for Japan, China, and South Korea', () => {
     const view = render(<VerifiedPlacesMap places={[
       proof('jp', 'Tokyo Tower', 'JP', 'Japan', 139.7454, 35.6586),
-      proof('cn', 'The Bund', 'CN', 'China', 121.4906, 31.2410),
+      proof('cn', 'The Bund', 'CN', "People's Republic of China", 121.4906, 31.2410),
       proof('kr', 'Gyeongbokgung Palace', 'KR', 'South Korea', 126.9770, 37.5796),
     ]} />)
 

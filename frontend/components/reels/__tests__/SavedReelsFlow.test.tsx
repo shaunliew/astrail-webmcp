@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 const { push, getAccessToken, listSavedReelCards, startOrganize, streamOrganize, getOrganizeStatus, generateTrip, streamGeneration } = vi.hoisted(() => ({
   push: vi.fn(),
@@ -56,8 +56,31 @@ const mixedOrganizedCards: SavedReelCard[] = [
   },
 ]
 
+async function startSelectedOrganize() {
+  const rendered = render(<SavedReelsFlow />)
+  await screen.findByText(/cache ready/i)
+  fireEvent.click(screen.getByRole('button', { name: /select reels/i }))
+  fireEvent.click(screen.getByRole('checkbox', { name: /select .*AAA/i }))
+  fireEvent.click(screen.getByRole('button', { name: /organize selected/i }))
+  await screen.findByTestId('organize-globe')
+  await waitFor(() => expect(streamOrganize).toHaveBeenCalledTimes(1))
+  return {
+    onEvent: streamOrganize.mock.calls[0][2] as (event: unknown) => void,
+    unmount: rendered.unmount,
+  }
+}
+
+async function flushMicrotasks() {
+  await act(async () => {
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+  })
+}
+
 describe('SavedReelsFlow', () => {
-  afterEach(() => cleanup())
+  afterEach(() => { cleanup(); vi.useRealTimers() })
 
   beforeEach(() => {
     push.mockReset(); getAccessToken.mockResolvedValue('token'); listSavedReelCards.mockReset(); listSavedReelCards.mockResolvedValue(cards)
@@ -213,6 +236,134 @@ describe('SavedReelsFlow', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/could not verify any locations/i)
     expect(screen.queryByRole('button', { name: /plan this trip/i })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: /select reels/i })).toBeInTheDocument()
+  })
+
+  it('starts one durable poll when a stream result says the job is still processing', async () => {
+    getOrganizeStatus.mockResolvedValue({
+      job_id: 'job-1', status: 'processing', status_message: 'Still grounding', total_items: 1, processed_items: 0,
+      organized_items: 0, location_not_found_items: 0, failed_items: 0, items: [],
+    })
+    const { onEvent } = await startSelectedOrganize()
+    vi.useFakeTimers()
+
+    await act(async () => {
+      onEvent({ type: 'result', content: JSON.stringify({ status: 'processing' }) })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(getOrganizeStatus).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(1)
+
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+      await flushMicrotasks()
+    })
+    expect(getOrganizeStatus).toHaveBeenCalledTimes(2)
+  })
+
+  it('clears durable polling before opening trays after a later success', async () => {
+    getOrganizeStatus
+      .mockResolvedValueOnce({
+        job_id: 'job-1', status: 'processing', status_message: 'Still grounding', total_items: 1, processed_items: 0,
+        organized_items: 0, location_not_found_items: 0, failed_items: 0, items: [],
+      })
+      .mockResolvedValueOnce({
+        job_id: 'job-1', status: 'succeeded', status_message: 'Organized', total_items: 1, processed_items: 1,
+        organized_items: 1, location_not_found_items: 0, failed_items: 0,
+        items: [{ saved_reel_id: 'saved-1', status: 'organized', place_count: 1, error_message: null }],
+      })
+    const { onEvent } = await startSelectedOrganize()
+    vi.useFakeTimers()
+    listSavedReelCards.mockResolvedValueOnce(organizedCards)
+
+    await act(async () => {
+      onEvent({ type: 'result', content: JSON.stringify({ status: 'processing' }) })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(getOrganizeStatus).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(1)
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+      await flushMicrotasks()
+    })
+
+    expect(screen.getByRole('heading', { name: 'Japan' })).toBeInTheDocument()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('clears durable polling before returning a later failure to the inbox', async () => {
+    getOrganizeStatus
+      .mockResolvedValueOnce({
+        job_id: 'job-1', status: 'processing', status_message: 'Still grounding', total_items: 1, processed_items: 0,
+        organized_items: 0, location_not_found_items: 0, failed_items: 0, items: [],
+      })
+      .mockResolvedValueOnce({
+        job_id: 'job-1', status: 'failed', status_message: 'Provider unavailable', total_items: 1, processed_items: 1,
+        organized_items: 0, location_not_found_items: 0, failed_items: 1,
+        items: [{ saved_reel_id: 'saved-1', status: 'failed', place_count: 0, error_message: 'provider unavailable' }],
+      })
+    const { onEvent } = await startSelectedOrganize()
+    vi.useFakeTimers()
+
+    await act(async () => {
+      onEvent({ type: 'result', content: JSON.stringify({ status: 'processing' }) })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(getOrganizeStatus).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(1)
+    await act(async () => {
+      vi.advanceTimersByTime(1000)
+      await flushMicrotasks()
+    })
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Provider unavailable')
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('does not create duplicate polls for repeated stream results', async () => {
+    getOrganizeStatus.mockResolvedValue({
+      job_id: 'job-1', status: 'processing', status_message: 'Still grounding', total_items: 1, processed_items: 0,
+      organized_items: 0, location_not_found_items: 0, failed_items: 0, items: [],
+    })
+    const { onEvent } = await startSelectedOrganize()
+    vi.useFakeTimers()
+
+    await act(async () => {
+      onEvent({ type: 'result', content: JSON.stringify({ status: 'processing' }) })
+      onEvent({ type: 'result', content: JSON.stringify({ status: 'processing' }) })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(getOrganizeStatus).toHaveBeenCalledTimes(2)
+    expect(vi.getTimerCount()).toBe(1)
+  })
+
+  it('cancels the stream and durable poll when unmounted during organization', async () => {
+    const cancel = vi.fn()
+    streamOrganize.mockImplementation((_job: string, _token: string, onEvent: (event: unknown) => void) => {
+      onEvent({ type: 'stage', stage: 'grounding', msg: 'Grounding places on the globe' })
+      return { cancel }
+    })
+    getOrganizeStatus.mockResolvedValue({
+      job_id: 'job-1', status: 'processing', status_message: 'Still grounding', total_items: 1, processed_items: 0,
+      organized_items: 0, location_not_found_items: 0, failed_items: 0, items: [],
+    })
+    const { onEvent, unmount } = await startSelectedOrganize()
+    vi.useFakeTimers()
+
+    await act(async () => {
+      onEvent({ type: 'result', content: JSON.stringify({ status: 'processing' }) })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(getOrganizeStatus).toHaveBeenCalledTimes(1)
+    expect(vi.getTimerCount()).toBe(1)
+    unmount()
+
+    expect(cancel).toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it('does not update or stream after unmount during the inbox load', async () => {

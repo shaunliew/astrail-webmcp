@@ -104,9 +104,19 @@ export default function SavedReelsFlow() {
   useEffect(() => {
     if (phase !== 'organizing' || !jobId || !organizeToken) return
     let cancelled = false
+    let finishInFlight = false
+
+    const clearPolling = () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+      }
+    }
 
     const finish = async (status: OrganizeJob) => {
-      if (cancelled || !activeRef.current) return
+      if (cancelled || !activeRef.current || finishInFlight) return
+      finishInFlight = true
+      clearPolling()
       if (status.status === 'failed') {
         setInboxMessage(status.status_message || 'Organization failed. You can retry from the inbox.')
         setPhase('inbox')
@@ -128,15 +138,27 @@ export default function SavedReelsFlow() {
       setPhase('trays')
     }
 
-    const refresh = async () => {
+    const refresh = async (): Promise<boolean> => {
       try {
         const status = await getOrganizeStatus(jobId, organizeToken)
-        if (cancelled || !activeRef.current) return
+        if (cancelled || !activeRef.current) return true
         setOrganizeMessage(status.status_message)
-        if (status.status === 'succeeded' || status.status === 'failed') await finish(status)
+        const terminal = status.status === 'succeeded' || status.status === 'failed'
+        if (terminal) await finish(status)
+        return terminal
       } catch {
         if (!cancelled && activeRef.current) setOrganizeMessage('Reconnecting to your organization job…')
+        return false
       }
+    }
+
+    const startPolling = () => {
+      if (cancelled || !activeRef.current || pollRef.current) return
+      pollRef.current = setInterval(() => { void refresh() }, 1000)
+    }
+
+    const refreshWithFallback = () => {
+      void refresh().then((terminal) => { if (!terminal) startPolling() })
     }
 
     organizeHandleRef.current = streamOrganize(
@@ -146,14 +168,14 @@ export default function SavedReelsFlow() {
         if (cancelled || !activeRef.current) return
         if (event.type === 'stage') setOrganizeMessage(event.msg)
         if (event.type === 'warning' || event.type === 'error') setOrganizeMessage(event.msg)
-        if (event.type === 'result') void refresh()
+        if (event.type === 'result') refreshWithFallback()
       },
       () => { if (!cancelled && activeRef.current) setOrganizeMessage('Reconnected — catching up with the durable job…') },
       () => {
         if (cancelled || !activeRef.current) return
         setOrganizeMessage('Reconnecting to your organization job…')
+        startPolling()
         void refresh()
-        pollRef.current = setInterval(() => { void refresh() }, 1000)
       },
       organizeCursorRef.current,
       (cursor) => { organizeCursorRef.current = cursor },
@@ -163,7 +185,7 @@ export default function SavedReelsFlow() {
       cancelled = true
       organizeHandleRef.current?.cancel()
       organizeHandleRef.current = null
-      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+      clearPolling()
     }
   }, [phase, jobId, organizeToken])
 

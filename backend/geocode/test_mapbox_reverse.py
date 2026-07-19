@@ -64,8 +64,17 @@ def test_parse_reverse_country_response_rejects_malformed_shapes(payload):
         parse_reverse_country_response(payload)
 
 
-def test_parse_reverse_country_response_returns_none_only_for_valid_empty_features():
-    assert parse_reverse_country_response({"type": "FeatureCollection", "features": []}) is None
+def test_parse_empty_feature_collection_raises():
+    """A well-formed but EMPTY FeatureCollection is treated as a provider fault, not an answer.
+
+    It used to return None, which `_ground_place` read as "this place does not verify" and the
+    item settled at `location_not_found` — a terminal state. An empty-but-valid collection is
+    far more likely a Mapbox brownout than a real country-less venue, so raising is the right
+    bias: the item settles at `failed`, which is retryable. Accepted consequence: a genuine
+    open-ocean coordinate now reports `failed` instead of `location_not_found`.
+    """
+    with pytest.raises(RuntimeError):
+        parse_reverse_country_response({"type": "FeatureCollection", "features": []})
 
 
 @pytest.mark.parametrize("payload", [

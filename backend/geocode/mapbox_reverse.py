@@ -25,7 +25,16 @@ def _retry_delay(response: httpx.Response | None, fallback_s: float) -> float:
     return min(max(fallback_s, 0.0), MAX_REVERSE_RETRY_DELAY_S)
 
 
-def parse_reverse_country_response(data: object) -> CountryResult | None:
+def parse_reverse_country_response(data: object) -> CountryResult:
+    """Return the verified country, or raise. It never reports "no country" as a value.
+
+    A well-formed but EMPTY FeatureCollection used to return None, which `_ground_place` read
+    as "this coordinate does not verify" and settled the item at `location_not_found` — a
+    TERMINAL state. An empty-but-valid collection is far more likely a Mapbox brownout than a
+    real country-less venue, so raising is the right bias: the item settles at `failed`, which
+    is retryable, instead of freezing a wrong terminal answer. Accepted consequence: a genuine
+    open-ocean coordinate now reports `failed` rather than `location_not_found`.
+    """
     if not isinstance(data, dict):
         raise RuntimeError("Mapbox reverse-country returned malformed data")
     features = data.get("features")
@@ -33,7 +42,7 @@ def parse_reverse_country_response(data: object) -> CountryResult | None:
         raise RuntimeError("Mapbox reverse-country returned malformed data")
     if not features:
         if data.get("type") == "FeatureCollection":
-            return None
+            raise RuntimeError("Mapbox reverse-country returned no country for coordinate")
         raise RuntimeError("Mapbox reverse-country returned malformed data")
     if not isinstance(features[0], dict):
         raise RuntimeError("Mapbox reverse-country returned malformed data")
@@ -64,7 +73,7 @@ async def reverse_country(
     client: httpx.AsyncClient | None = None,
     timeout_s: int = 15,
     retry_delay_s: float = 0.25,
-) -> CountryResult | None:
+) -> CountryResult:
     params = {
         "longitude": lng,
         "latitude": lat,

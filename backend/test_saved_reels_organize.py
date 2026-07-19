@@ -159,6 +159,8 @@ class _Client:
             return _CreateOrganizeJobRpc(self, params)
         if name == "append_organize_event":
             return _AppendOrganizeEventRpc(self, params)
+        if name == "replace_reel_place_mentions":
+            return _ReplaceReelPlaceMentionsRpc(self, params)
         return _Rpc(self, name)
 
 
@@ -209,6 +211,59 @@ class _AppendOrganizeEventRpc:
             "payload": self.params.get("p_payload") or {},
         })
         return _Result(sequence)
+
+
+class _ReplaceReelPlaceMentionsRpc:
+    """Mirror of `public.replace_reel_place_mentions` (20260720080000_..._user_scope.sql).
+
+    Two properties are load-bearing and both are asserted against this fake in
+    `test_organizer_mention_rewrite.py`: the upsert and the prune are ONE unit (no window in
+    which a concurrent reader sees a half-written set), and the prune is scoped to
+    `p_user_id`, so another owner's rows are unreachable by construction.
+
+    What it CANNOT reproduce: Postgres rejecting a payload that names the same `place_id`
+    twice with "ON CONFLICT DO UPDATE command cannot affect row a second time". A Python dict
+    keyed on the same tuple simply overwrites. The `distinct on (place_id)` that prevents that
+    is therefore pinned in pgTAP (`supabase/tests/007_saved_reels_organize.sql`), NOT here —
+    the duplicate test in the mention-rewrite module pins the call shape only.
+    """
+
+    def __init__(self, client, params): self.client, self.params = client, params
+
+    async def execute(self):
+        params = self.params
+        mentions = params["p_mentions"]
+        if not isinstance(mentions, list):
+            raise _pg_error("AS422", "mentions payload must be a JSON array")
+        user_id, cache_id = params["p_user_id"], params["p_reel_cache_id"]
+        deduped = {}
+        for mention in mentions:            # first occurrence wins, as `distinct on ... order by ord`
+            deduped.setdefault(mention["place_id"], mention)
+        rows = self.client.db.setdefault("reel_place_mentions", [])
+        for place_id, mention in deduped.items():
+            row = next((candidate for candidate in rows
+                        if candidate.get("user_id") == user_id
+                        and candidate.get("reel_cache_id") == cache_id
+                        and candidate.get("place_id") == place_id), None)
+            values = {
+                "user_id": user_id, "reel_cache_id": cache_id, "place_id": place_id,
+                "evidence_quote": mention.get("evidence_quote"),
+                "source_url": mention.get("source_url"),
+                "confidence": mention.get("confidence") or 0,
+                "verification_version": params["p_verification_version"],
+            }
+            if row is None:
+                rows.append({"id": f"reel_place_mentions-{len(rows) + 1}", **values})
+            else:
+                row.update(values)
+        # Prune ONLY this owner's superseded rows for this cache.
+        self.client.db["reel_place_mentions"] = [
+            row for row in rows
+            if not (row.get("user_id") == user_id
+                    and row.get("reel_cache_id") == cache_id
+                    and row.get("place_id") not in deduped)
+        ]
+        return _Result(len(deduped))
 
 
 class _CreateOrganizeJobRpc:
@@ -671,7 +726,7 @@ async def test_organize_event_stream_times_out_with_terminal_result_before_done(
 @pytest.mark.asyncio
 async def test_place_ids_are_owner_scoped_through_organized_reel_proof():
     client = _Client({
-        "reel_place_mentions": [{"place_id": "p1", "reel_cache_id": "cache-a", "evidence_quote": "proof", "source_url": None, "confidence": 0.9, "verification_version": "mapbox-country-v1"}],
+        "reel_place_mentions": [{"user_id": "user-a", "place_id": "p1", "reel_cache_id": "cache-a", "evidence_quote": "proof", "source_url": None, "confidence": 0.9, "verification_version": "mapbox-country-v1"}],
         "saved_reels": [{"id": "r1", "user_id": "user-a", "reel_cache_id": "cache-a", "analysis_status": "organized"}],
         "places": [{"id": "p1", "name": "Canonical A", "place_type": "attraction", "lat": 1.0, "lng": 2.0, "city": "City"}],
     })
@@ -1101,6 +1156,10 @@ async def test_persist_place_repairs_poisoned_country_label_on_near_match():
 async def test_authorize_place_ids_rejects_unstamped_mention():
     client = _Client({
         "reel_place_mentions": [{
+            # OWNED by the requesting user on purpose: without user_id the A3 owner filter
+            # rejects the row first and this test would pass without ever exercising the
+            # verification-version check it exists to pin.
+            "user_id": "user-a",
             "place_id": "p1", "reel_cache_id": "cache-a", "evidence_quote": "proof",
             "source_url": "https://source.test/a", "confidence": 0.9,
             "verification_version": None,
@@ -1141,13 +1200,17 @@ async def test_poisoned_legacy_mention_is_replaced_by_verified_japan_link(monkey
             },
         ],
         "reel_place_mentions": [
+            # Owned by the organizing user — post-A3 every mention has an owner, and the
+            # rewrite replaces exactly that owner's set for the cache.
             {
-                "id": "legacy-mx", "reel_cache_id": "cache-1", "place_id": "place-mx",
+                "id": "legacy-mx", "user_id": "user-a",
+                "reel_cache_id": "cache-1", "place_id": "place-mx",
                 "evidence_quote": "Harry Potter Cafe", "source_url": None, "confidence": 0.6,
                 "verification_version": None,
             },
             {
-                "id": "legacy-us", "reel_cache_id": "cache-1", "place_id": "place-us",
+                "id": "legacy-us", "user_id": "user-a",
+                "reel_cache_id": "cache-1", "place_id": "place-us",
                 "evidence_quote": "Harry Potter Cafe", "source_url": None, "confidence": 0.6,
                 "verification_version": None,
             },
@@ -1179,7 +1242,16 @@ async def test_poisoned_legacy_mention_is_replaced_by_verified_japan_link(monkey
 
 
 @pytest.mark.asyncio
-async def test_country_mismatch_removes_all_poisoned_links_and_fails_closed(monkeypatch):
+async def test_country_mismatch_fails_closed_without_destroying_mentions(monkeypatch):
+    """A country mismatch must fail CLOSED — but no longer by deleting.
+
+    Pre-A3 this test asserted the mentions table was emptied. That deletion was the
+    cross-user destruction Major: it ran before the grounding result was known and was scoped
+    to `reel_cache_id` alone, so a Mapbox brownout wiped every user's verified evidence for
+    the Reel. A3 removes the delete entirely; fail-closed is now carried by the
+    verification-version stamp, which `authorize_place_ids` requires — so the poisoned links
+    survive as rows yet remain unusable, and no other owner's evidence is at risk.
+    """
     client = _Client({
         "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending"}],
         "organize_job_items": [{
@@ -1193,8 +1265,8 @@ async def test_country_mismatch_removes_all_poisoned_links_and_fails_closed(monk
         }],
         "reel_cache": [{"id": "cache-1", "normalized_url": "https://www.instagram.com/reel/A"}],
         "reel_place_mentions": [
-            {"id": "legacy-mx", "reel_cache_id": "cache-1", "place_id": "place-mx"},
-            {"id": "legacy-us", "reel_cache_id": "cache-1", "place_id": "place-us"},
+            {"id": "legacy-mx", "user_id": "user-a", "reel_cache_id": "cache-1", "place_id": "place-mx"},
+            {"id": "legacy-us", "user_id": "user-a", "reel_cache_id": "cache-1", "place_id": "place-us"},
         ],
     })
     research = PlaceResult(
@@ -1214,9 +1286,13 @@ async def test_country_mismatch_removes_all_poisoned_links_and_fails_closed(monk
         "job-1", "user-a", client=client, scrape=unexpected_scrape, ground=mismatch
     )
 
-    assert client.db["reel_place_mentions"] == []
     assert client.db["organize_job_items"][0]["status"] == "location_not_found"
     assert client.db["saved_reels"][0]["analysis_status"] == "location_not_found"
+    # Not destroyed — a failed grounding is a partial failure, not a data-loss event.
+    assert {row["place_id"] for row in client.db["reel_place_mentions"]} == {"place-mx", "place-us"}
+    # ...and still unusable, because neither carries the verification stamp.
+    with pytest.raises(PermissionError):
+        await authorize_place_ids(client, "user-a", ["place-mx"])
 
 
 @pytest.mark.asyncio

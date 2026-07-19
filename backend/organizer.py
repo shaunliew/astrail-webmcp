@@ -130,10 +130,16 @@ async def _record_organize_event(
 
 
 async def authorize_place_ids(client, user_id: str, place_ids: list[str]) -> list[dict]:
-    """Return places only when each has safe evidence through this user's organized Reel."""
+    """Return places only when each has safe evidence through this user's organized Reel.
+
+    `user_id` on the mention is the PRIMARY trust boundary — the table is service-role-only,
+    so RLS cannot scope it, and before A3 it carried no owner at all: any user who had merely
+    organized the same Reel could build a trip from another user's evidence. The
+    `saved_reels` organized-check below stays as defense in depth, not as the boundary.
+    """
     mentions = (await client.table("reel_place_mentions").select(
         "place_id,reel_cache_id,evidence_quote,source_url,confidence,verification_version"
-    ).in_("place_id", place_ids).execute()).data or []
+    ).eq("user_id", user_id).in_("place_id", place_ids).execute()).data or []
     mentions = [
         row for row in mentions
         if row.get("verification_version") == LOCATION_VERIFICATION_VERSION
@@ -238,22 +244,6 @@ async def _persist_place(client, grounded: dict) -> str:
         "city": place.city_or_region_guess,
     }).execute()).data[0]
     return row["id"]
-
-
-async def _persist_mention(client, cache_id: str, place_id: str, place: PlaceResult) -> None:
-    row = {
-        "reel_cache_id": cache_id,
-        "place_id": place_id,
-        "evidence_quote": place.evidence_quote,
-        "source_url": place.source_url,
-        "confidence": place.confidence,
-        "verification_version": LOCATION_VERIFICATION_VERSION,
-    }
-    table = client.table("reel_place_mentions")
-    if hasattr(table, "upsert"):
-        await table.upsert(row, on_conflict="reel_cache_id,place_id").execute()
-    else:
-        await table.insert(row).execute()
 
 
 async def _update_job_counts(client, job_id: str, user_id: str, *, lease_token: str) -> None:
@@ -453,11 +443,15 @@ async def _ground_and_persist(
     Returns `(terminal, place_count)` where terminal is "organized" or
     "location_not_found". `reel` identifies the Saved Reel the mentions belong to.
 
+    The rewrite is the LAST write and replaces exactly `ctx.user_id`'s set for the Reel, in
+    one transaction. Nothing here deletes: a failed grounding returns without touching the
+    table at all, and another owner's evidence is unreachable by construction.
+
     `set_phase` reports which phase we are in so the caller's error log stays accurate.
-    This spans TWO phases, not one: the grounding call is "mapbox", but the mention
-    delete and the persist loop below it are "database". Tagging the whole unit "mapbox"
-    (as the first extraction did) sends an on-call engineer to check Mapbox health for
-    what is actually a Supabase write failure.
+    This spans TWO phases, not one: the grounding call is "mapbox", but the persist loop and
+    the rewrite below it are "database". Tagging the whole unit "mapbox" (as the first
+    extraction did) sends an on-call engineer to check Mapbox health for what is actually a
+    Supabase write failure.
     """
     set_phase = set_phase or (lambda _phase: None)
     set_phase("mapbox")
@@ -467,15 +461,29 @@ async def _ground_and_persist(
         if (resolved := await _maybe_await(ctx.ground(place))) is not None
     ]
     set_phase("database")
-    if cache_id:
-        # A3 scopes this delete to ctx.user_id — today it is cross-user destructive.
-        await (ctx.client.table("reel_place_mentions").delete()
-               .eq("reel_cache_id", cache_id).execute())
     if not grounded or not cache_id:
-        return "location_not_found", len(grounded)
+        # NEVER touch mentions on an empty grounding. The pre-A3 code deleted by
+        # `reel_cache_id` BEFORE this check, so a Mapbox brownout destroyed every user's
+        # verified evidence for the Reel and `authorize_place_ids` then rejected places
+        # they legitimately used — a partial failure turned into a data-loss event
+        # (guardrails #1 and #3).
+        return "location_not_found", 0
+    mentions = []
     for resolved in grounded:
         place_id = await _persist_place(ctx.client, resolved)
-        await _persist_mention(ctx.client, cache_id, place_id, resolved["place"])
+        place = resolved["place"]
+        mentions.append({"place_id": place_id, "evidence_quote": place.evidence_quote,
+                         "source_url": place.source_url, "confidence": place.confidence})
+    # Duplicate place_ids are left in the payload ON PURPOSE — the RPC's DISTINCT ON is the
+    # single place that handles them, so there is no second dedupe to drift out of sync.
+    # ONE transaction: upsert this owner's set and prune only this owner's superseded rows.
+    # A crash before this line leaves the previous verified set fully intact; a crash during
+    # it rolls back. Other users' evidence is out of reach by construction (user_id is in
+    # the PK and in the RPC's delete predicate).
+    await ctx.client.rpc("replace_reel_place_mentions", {
+        "p_user_id": ctx.user_id, "p_reel_cache_id": cache_id,
+        "p_verification_version": LOCATION_VERIFICATION_VERSION, "p_mentions": mentions,
+    }).execute()
     return "organized", len(grounded)
 
 

@@ -153,6 +153,21 @@ timeout 1500 codex exec -m gpt-5.6-sol -c model_reasoning_effort="high" \
 - **Exit code 0 does not mean it did the work.** A hung-then-killed run exits 0 with an empty or
   header-only file. Check the output, not the status.
 
+**Do NOT zombie-check with `ps aux | grep -i codex | wc -l`.** That pattern counts the user's
+running **ChatGPT.app desktop application** (~14 helper processes: renderers, GPU, network,
+Sparkle updater, computer-use service) plus the VS Code ChatGPT extension. On 2026-07-20 it
+reported "20 codex processes" against **zero** orchestration leftovers — and the obvious
+remediation would have been to kill the user's editor and chat app. Match what *you* actually
+spawn:
+
+```bash
+ps -eo pid,etime,command | grep "[c]odex exec" | grep -v "grep"
+```
+
+Anything from `/Applications/ChatGPT.app/`, `.vscode/extensions/`, or `codex app-server` belongs
+to the user's environment — **never kill it.** A genuine leftover is a `codex exec` whose elapsed
+time exceeds the `timeout` you wrapped it in.
+
 ## Subagent result delivery (learned 2026-07-19 — cost ~5 wasted round-trips in one session)
 
 **A background subagent's plain final text is NOT delivered to the orchestrator.** It must call

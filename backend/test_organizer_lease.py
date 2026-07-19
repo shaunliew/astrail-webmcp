@@ -9,12 +9,17 @@ reclaim tests would pass while asserting nothing.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import sys
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import organizer
 from organizer import (
     ORGANIZE_LEASE_TTL_S,
+    LeaseLost,
+    _heartbeat,
     _pg_timestamp,
     recover_organize_jobs,
     run_organize_job,
@@ -370,3 +375,273 @@ async def test_claiming_a_job_another_worker_holds_reports_already_claimed():
     result = await run_organize_job("j1", "u1", client=client, scrape=None, extract=None, ground=None)
 
     assert result == {"skipped": "job already claimed"}
+
+
+# --- heartbeat -----------------------------------------------------------------------------
+
+
+async def _spin_until(predicate, *, ticks: int = 5000) -> None:
+    """Yield to the event loop until `predicate` holds.
+
+    Every heartbeat test drives the beat with a monkeypatched `ORGANIZE_LEASE_RENEW_S` of 0,
+    so progress is measured in event-loop ticks rather than wall-clock time. A real 60s sleep
+    (or even a 0.1s one, multiplied across these tests) is not worth it in a suite that runs
+    in under two seconds.
+    """
+    for _ in range(ticks):
+        if predicate():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError(f"condition never held within {ticks} event-loop ticks")
+
+
+async def _tick(count: int) -> None:
+    """Hand the event loop `count` turns so background tasks can make progress."""
+    for _ in range(count):
+        await asyncio.sleep(0)
+
+
+def _expiry(row: dict) -> datetime:
+    return datetime.fromisoformat(row["lock_expires_at"])
+
+
+async def _grounded(place):
+    return {"place": place, "country_code": "JP", "country_name": "Japan"}
+
+
+def seed_two_item_job(client) -> None:
+    """A claimable job with TWO queued items.
+
+    Two is the minimum that can distinguish "the run stopped" from "the run stopped in the
+    right place": the lease check sits between items, so only a second item can show that the
+    abort happened before it rather than after everything had already been written.
+    """
+    seed_job(client, status="pending", started_at=FIRST_ATTEMPT_STARTED_AT)
+    client.db["organize_job_items"] = [
+        {"id": "i1", "job_id": "j1", "user_id": "u1", "saved_reel_id": "r1", "status": "queued"},
+        {"id": "i2", "job_id": "j1", "user_id": "u1", "saved_reel_id": "r2", "status": "queued"},
+    ]
+    client.db["saved_reels"] = [
+        {"id": "r1", "user_id": "u1", "normalized_url": "https://www.instagram.com/reel/A",
+         "reel_cache_id": "cache-1", "analysis_status": "queued"},
+        {"id": "r2", "user_id": "u1", "normalized_url": "https://www.instagram.com/reel/B",
+         "reel_cache_id": "cache-2", "analysis_status": "queued"},
+    ]
+
+
+def item_row(client, item_id: str) -> dict:
+    return next(row for row in client.db["organize_job_items"] if row["id"] == item_id)
+
+
+def reel_row(client, reel_id: str) -> dict:
+    return next(row for row in client.db["saved_reels"] if row["id"] == reel_id)
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_renews_the_lease_and_detects_loss(fake_client, monkeypatch):
+    """The beat pushes `lock_expires_at` forward, and stops the moment the CAS finds no row.
+
+    Renewal is what makes a 300s TTL safe for a run that legitimately takes longer: without
+    it, `recover_organize_jobs` reclaims a healthy job and two workers run it. Detection is
+    the other half — once a replacement owns the token, our CAS matches zero rows, and the
+    beat must say so rather than looping forever against a job it no longer holds.
+    """
+    monkeypatch.setattr("organizer.ORGANIZE_LEASE_RENEW_S", 0)
+    seed_job(fake_client, status="processing", lease_token="t1", lock_expires_at=minutes_ago(1))
+    lost = asyncio.Event()
+    beat = asyncio.create_task(_heartbeat(fake_client, "j1", "u1", "t1", lost))
+
+    await _spin_until(lambda: _expiry(job_row(fake_client)) > _now_utc())
+    assert not lost.is_set()
+
+    job_row(fake_client)["lease_token"] = "t-replacement"    # reaped, then claimed by another worker
+
+    await _spin_until(lost.is_set)
+    await asyncio.wait_for(beat, timeout=5)
+    assert not beat.cancelled()      # it RETURNED on loss; it did not have to be killed
+
+
+@pytest.mark.asyncio
+async def test_lease_expiry_during_a_blocked_provider_call_aborts_the_run(fake_client, monkeypatch):
+    """THE LIVENESS PROOF. Only a *running* beat can notice a token replaced underneath it.
+
+    A heartbeat is the easiest guard in this task to ship broken and green: a coroutine that
+    is created but never scheduled, or whose task is created and dropped, renews nothing —
+    and every direct `_renew_organize_lease(...)` call still passes, because that proves the
+    function works, not that anything calls it. So this test never calls the renewal itself.
+    It parks the run inside `ground` (where a real Mapbox call would sit), swaps the row's
+    token the way the reaper plus a replacement worker would, and requires the abort to come
+    from the beat that the run started on its own.
+    """
+    monkeypatch.setattr("organizer.ORGANIZE_LEASE_RENEW_S", 0)
+    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    seed_two_item_job(fake_client)
+
+    renewals: list[bool] = []
+    real_renew = organizer._renew_organize_lease
+
+    async def watched_renew(*args):
+        outcome = await real_renew(*args)
+        renewals.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(organizer, "_renew_organize_lease", watched_renew)
+
+    # `LeaseLost` is raised inside the loop and handled by the job-level `except`, so the
+    # only honest place to observe WHICH exception aborted the run is at that boundary.
+    raised: list[BaseException | None] = []
+    real_mark_failed = organizer._mark_organize_job_failed
+
+    async def watched_mark_failed(*args, **kwargs):
+        raised.append(sys.exc_info()[1])
+        return await real_mark_failed(*args, **kwargs)
+
+    monkeypatch.setattr(organizer, "_mark_organize_job_failed", watched_mark_failed)
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def blocking_ground(place):
+        entered.set()
+        await release.wait()
+        return await _grounded(place)
+
+    run = asyncio.create_task(
+        run_organize_job("j1", "u1", client=fake_client, ground=blocking_ground)
+    )
+    await _spin_until(entered.is_set)
+
+    job_row(fake_client)["lease_token"] = "t-replacement"
+    await _spin_until(lambda: False in renewals)     # the RUNNING beat saw the zero-row CAS
+
+    release.set()
+    await asyncio.wait_for(run, timeout=5)
+
+    assert isinstance(raised[0], LeaseLost)
+    item2 = item_row(fake_client, "i2")
+    assert item2["status"] == "queued" and "completed_at" not in item2
+    assert reel_row(fake_client, "r2")["analysis_status"] == "queued"
+
+
+@pytest.mark.asyncio
+async def test_a_renewal_blip_does_not_abort_a_healthy_run(fake_client, monkeypatch):
+    """A transport error is NOT lease loss. Getting this backwards cancels healthy runs.
+
+    Losing a lease is an authoritative statement — a CAS that matched zero rows because
+    somebody else owns the token. A `ConnectionError` says nothing about ownership, so
+    treating it as loss means one flaky moment against PostgREST destroys a run that still
+    holds its job perfectly well. The safe direction is to keep working: if the blips truly
+    persist past the TTL, the reaper reclaims us and the next *successful* renewal returns
+    zero rows, which is the authoritative signal.
+    """
+    monkeypatch.setattr("organizer.ORGANIZE_LEASE_RENEW_S", 0)
+    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    seed_two_item_job(fake_client)
+
+    attempts: list[int] = []
+
+    async def always_blips(*_args):
+        attempts.append(len(attempts))
+        raise ConnectionError("transient PostgREST failure")
+
+    monkeypatch.setattr(organizer, "_renew_organize_lease", always_blips)
+
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def ground_blocking_once(place):
+        if not entered.is_set():
+            entered.set()
+            await release.wait()
+        return await _grounded(place)
+
+    run = asyncio.create_task(
+        run_organize_job("j1", "u1", client=fake_client, ground=ground_blocking_once)
+    )
+    await _spin_until(entered.is_set)
+    await _spin_until(lambda: len(attempts) >= 1)    # the beat is running
+    await _tick(200)                                 # blips pile up while we sit in the provider call
+    release.set()
+
+    status = await asyncio.wait_for(run, timeout=5)
+
+    # The harm this pins is the run itself, not the beat's bookkeeping: read the blip as loss
+    # and this job dies at item 2 having done nothing wrong.
+    assert status["status"] == "succeeded"
+    assert status["organized_items"] == 2
+    assert len(attempts) > 1                         # and the beat kept trying, rather than giving up
+
+
+@pytest.mark.asyncio
+async def test_the_heartbeat_task_does_not_outlive_the_run(fake_client, monkeypatch):
+    """A leaked beat keeps renewing a lease for a run that has already finished.
+
+    The consequence is not cosmetic: the job's own finalization nulls `lock_expires_at`, and
+    a surviving beat would go on CASing against a completed job — and on a real event loop,
+    an un-awaited task that outlives its parent surfaces as a "Task was destroyed but it is
+    pending" warning at shutdown rather than anything a test would catch.
+    """
+    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    seed_claimable_job(fake_client)
+
+    outcomes: list[str] = []
+    real_heartbeat = organizer._heartbeat
+
+    async def watched_heartbeat(*args):
+        try:
+            await real_heartbeat(*args)
+        except asyncio.CancelledError:
+            outcomes.append("cancelled")
+            raise
+        outcomes.append("returned")
+
+    monkeypatch.setattr(organizer, "_heartbeat", watched_heartbeat)
+
+    async def yielding_ground(place):
+        # A real provider call yields; the fake client never does. Without one yield here the
+        # beat would be cancelled before it ever ran, and this test would pass vacuously
+        # against an implementation that leaks a *scheduled* task.
+        await asyncio.sleep(0)
+        return await _grounded(place)
+
+    status = await run_organize_job("j1", "u1", client=fake_client, ground=yielding_ground)
+
+    assert status["status"] == "succeeded"
+    assert outcomes == ["cancelled"]     # the run's `finally` reaped it, and awaited it
+
+
+@pytest.mark.asyncio
+async def test_renewal_cas_is_scoped_to_our_own_live_lease(fake_client, monkeypatch):
+    """The CAS must be predicated on BOTH `status='processing'` and OUR token.
+
+    Dropping the status guard lets a run keep renewing a job that has already been reclaimed
+    to `pending` and re-dispatched; dropping the token guard makes the fence meaningless,
+    since any worker's renewal would match any other worker's row.
+    """
+    monkeypatch.setattr("organizer.ORGANIZE_LEASE_RENEW_S", 0)
+    expired = minutes_ago(1)
+    seed_job(fake_client, status="processing", lease_token="t1", lock_expires_at=expired)
+
+    assert await organizer._renew_organize_lease(fake_client, "j1", "u1", "t-other") is False
+    assert job_row(fake_client)["lock_expires_at"] == expired           # untouched
+
+    job_row(fake_client)["status"] = "pending"
+    assert await organizer._renew_organize_lease(fake_client, "j1", "u1", "t1") is False
+
+    job_row(fake_client)["status"] = "processing"
+    assert await organizer._renew_organize_lease(fake_client, "j1", "u1", "t1") is True
+    assert _expiry(job_row(fake_client)) > _now_utc()
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_stops_when_the_run_signals_it_is_done(fake_client, monkeypatch):
+    """`lost` is also the run's shutdown flag — the loop must honour it, not only cancellation."""
+    monkeypatch.setattr("organizer.ORGANIZE_LEASE_RENEW_S", 0)
+    expired = minutes_ago(1)
+    seed_job(fake_client, status="processing", lease_token="t1", lock_expires_at=expired)
+    lost = asyncio.Event()
+    lost.set()
+
+    beat = asyncio.create_task(_heartbeat(fake_client, "j1", "u1", "t1", lost))
+    with contextlib.suppress(asyncio.CancelledError):
+        await asyncio.wait_for(beat, timeout=5)
+
+    assert job_row(fake_client)["lock_expires_at"] == expired           # never renewed

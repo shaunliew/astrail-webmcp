@@ -1,6 +1,8 @@
 """Durable Saved Reel organizer: cache, extraction, grounding, and safe persistence."""
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import hashlib
 import inspect
 import json
@@ -24,12 +26,18 @@ LOCATION_VERIFICATION_VERSION = "mapbox-country-v1"
 INITIALIZING_STALE_AFTER_S = 120
 ORGANIZE_LEASE_TTL_S = 300      # short on purpose: the heartbeat renews a live run, so a
                                 # real crash is reclaimed in ~5 min rather than ~15.
+ORGANIZE_LEASE_RENEW_S = 60     # comfortably under the TTL: several renewals may blip and be
+                                # retried before the lease is genuinely at risk of expiring.
 ORGANIZE_FAILURE_MESSAGE = "Organization failed"
 logger = logging.getLogger(__name__)
 
 
 class ActiveOrganizeConflict(RuntimeError):
     """The selected Saved Reel is already part of another active job."""
+
+
+class LeaseLost(RuntimeError):
+    """Another worker holds this job's lease; this run must stop writing immediately."""
 
 
 def _now() -> str:
@@ -317,6 +325,45 @@ async def recover_organize_jobs(client, *, now=None) -> list[dict]:
             .order("created_at").execute()).data or []
 
 
+async def _renew_organize_lease(client, job_id: str, user_id: str, lease_token: str) -> bool:
+    """Extend our lease. `False` means we LOST it (reaped, then reclaimed by another worker).
+
+    The CAS is the exact mirror of `recover_organize_jobs`, and the pair cannot both win.
+    Whichever transaction commits first decides, in either order, with no third outcome: if
+    this renewal commits first, `lock_expires_at` is back in the future and the reclaim's
+    predicate no longer matches, so the live lease survives. If the reclaim commits first it
+    nulls `lease_token`, so `.eq("lease_token", ...)` here matches zero rows and the worker
+    learns it has been superseded.
+
+    `status='processing'` is part of the fence, not decoration: a job already reclaimed to
+    `pending` and re-dispatched must not be renewable by the run that lost it.
+    """
+    now = datetime.now(timezone.utc)
+    renewed = await (client.table("organize_jobs").update({
+        "lock_expires_at": (now + timedelta(seconds=ORGANIZE_LEASE_TTL_S)).isoformat(),
+    }).eq("id", job_id).eq("user_id", user_id).eq("status", "processing")
+     .eq("lease_token", lease_token).execute())
+    return bool(renewed.data)
+
+
+async def _heartbeat(client, job_id: str, user_id: str, lease_token: str, lost: asyncio.Event) -> None:
+    """Renew this run's lease on an interval until it is lost, or the run cancels us."""
+    while not lost.is_set():
+        await asyncio.sleep(ORGANIZE_LEASE_RENEW_S)
+        try:
+            if not await _renew_organize_lease(client, job_id, user_id, lease_token):
+                lost.set()          # someone else owns the job now
+                return
+        except Exception:
+            # A renewal BLIP IS NOT A LOST LEASE — keep working. Losing the lease is an
+            # authoritative statement about ownership, and only a zero-row CAS makes it; a
+            # transport error says nothing about who holds the token. Setting `lost` here
+            # would let one flaky moment against PostgREST abort a perfectly healthy run.
+            # If blips persist past the TTL the reaper reclaims us anyway, and the next
+            # renewal that DOES reach Postgres returns zero rows → lost, the honest way.
+            logger.warning("organize_lease_renew_failed job_id=%s", job_id)
+
+
 @dataclass(frozen=True)
 class _ItemContext:
     """Per-job context threaded through the item loop.
@@ -527,10 +574,24 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
             client=client, job_id=job_id, user_id=user_id,
             scrape=scrape, extract=extract, ground=ground, lease_token=lease_token,
         )
-        for item in items:
-            processed = await _process_item(ctx, item)
-            if processed:   # a skipped orphan must not reach counts — pre-refactor this was `continue`
-                await _update_job_counts(client, job_id, user_id)
+        lease_lost = asyncio.Event()
+        beat = asyncio.create_task(_heartbeat(client, job_id, user_id, lease_token, lease_lost))
+        try:
+            for item in items:
+                # Between items, not mid-item: a superseded worker parked inside one provider
+                # call can still land THAT item's terminal write. The blast radius is one
+                # item's status on a job being re-run from Phase 1 anyway; fencing every item
+                # write behind an RPC is deliberately deferred.
+                if lease_lost.is_set():
+                    raise LeaseLost(f"organize job {job_id} lease superseded")
+                processed = await _process_item(ctx, item)
+                if processed:   # a skipped orphan must not reach counts — pre-refactor this was `continue`
+                    await _update_job_counts(client, job_id, user_id)
+        finally:
+            lease_lost.set()
+            beat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await beat
         status = await get_organize_status(client, job_id, user_id)
         final_status = "failed" if status["failed_items"] and not status["organized_items"] and not status["location_not_found_items"] else "succeeded"
         await client.table("organize_jobs").update({

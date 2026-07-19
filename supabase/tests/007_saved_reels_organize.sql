@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(138);
+select plan(140);
 
 insert into auth.users (id, email)
 values
@@ -373,6 +373,16 @@ select ok(
     false
   ),
   'authenticated can execute the verified Saved Reel place predicate'
+);
+select ok(
+  not has_schema_privilege('authenticated', 'private', 'USAGE'),
+  'authenticated cannot use the private schema directly'
+);
+select throws_ok(
+  $$select private.can_select_verified_saved_reel_place('71000000-0000-0000-0000-000000000001'::uuid)$$,
+  '42501',
+  'permission denied for schema private',
+  'authenticated cannot directly qualify the verified Saved Reel place predicate'
 );
 select ok(
   coalesce(

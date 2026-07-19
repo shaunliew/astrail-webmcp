@@ -74,6 +74,22 @@ backend change beyond a trivial one-line fix. When in doubt, follow the loop.
   load-bearing (revert the guard → watch the new test go red → restore).
 - **Both final reviews run** (astrail-reviewer opus whole-branch **AND** gstack `/review` Codex).
 
+## Subagent result delivery (learned 2026-07-19 — cost ~5 wasted round-trips in one session)
+
+**A background subagent's plain final text is NOT delivered to the orchestrator.** It must call
+`SendMessage` with `to: "main"`. Without that the agent finishes its work, produces a report nobody
+receives, and surfaces only as an idle notification — so the orchestrator has to re-prompt it for
+work that is already done. For read-only agents (reviewer, researcher) this is worse: they write no
+files, so the un-sent message was the entire output of the run.
+
+- The three `astrail-*` agent definitions now carry an explicit "HOW TO DELIVER" block. Keep it.
+- **When dispatching a non-`astrail-*` agent** (`general-purpose`, `Explore`, `Plan`, …) you cannot
+  edit its definition — put the instruction in the dispatch prompt: *"When done, call SendMessage
+  to `main` with your report; plain output is not delivered."*
+- **Diagnosing an idle agent:** check for the artifact first (a commit, a written file) before
+  assuming failure. Implementers usually did the work; only the handoff dropped. Read-only agents
+  have no artifact — re-prompt them, and ask for partial results if they did not finish.
+
 ## Model selection (per subagent-driven-development)
 
 **Always specify the model explicitly when dispatching a subagent** — an omitted model inherits the

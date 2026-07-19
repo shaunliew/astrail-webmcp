@@ -1,113 +1,196 @@
-# Astrail Beta Wiring Handoff
+# Astrail Saved Reels Handoff
 
-> Current stop point: 2026-07-15. Tasks 1-7 of the beta wiring plan have shipped on
-> `dev`; automated Task 8 checks passed, but the manual production E2E checklist and
-> reviewed `dev` -> `main` promotion remain open.
-> Previous handoff (DB implementation, 2026-07-02) is superseded; its schema work is merged and live.
+> Current stop point: 2026-07-19. The Saved Reels localhost MVP, global country-verification
+> repair, and Section A reliability fix arc are implemented and verified on `zh` through
+> `0216a0e`. The seven Section B follow-ups remain open in `ISSUES.md`; no deploy should
+> proceed until Render's Mapbox token provenance is confirmed.
+>
+> The 2026-07-15 beta-wiring handoff is superseded. That auth-to-map wiring work is merged
+> and live; this handoff starts from the completed Saved Reels implementation.
 
 ## What this session is building
 
-The beta flow, end-to-end on localhost (deploy-ready): **email sign-up with a 6-digit
-OTP code → one-time preference onboarding → paste Reel URLs → real pipeline with live
-SSE stage events → itinerary rendered on the Mapbox map, saved + reloadable + listed.**
+This session built the real Saved Reels path end to end: **inbox -> select up to five Reels
+-> Organize as a durable job -> verified country trays with exact research pins -> trip
+brief -> place-only trip generation.** Lightweight capture remains extraction-free;
+uncached Organize work uses real Apify + OpenAI extraction, while a current-version cache
+hit skips both and still reruns the Mapbox country check.
 
-Governing documents (all committed on `zh`, all reviewed):
+It also repaired the Tokyo-pinned-in-Mexico failure at the authority boundary. Mapbox
+Search Box is no longer allowed to choose or overwrite organizer geography. The extractor
+proposes sourced coordinates and country, deterministic validation rejects incomplete or
+circular evidence, and Mapbox Geocoding v6 independently checks the coordinate's ISO
+country. Only mentions stamped `verification_version = 'mapbox-country-v1'` can reach a
+Saved Reel card, tray, pin, selected-place authorization, or generated trip. A mismatch or
+provider failure fails closed.
 
-- Spec: `docs/superpowers/specs/2026-07-07-beta-auth-to-map-wiring-design.md`
-- Plan (8 tasks, execute in order): `docs/superpowers/plans/2026-07-07-beta-auth-to-map-wiring.md`
-  — ENG review CLEAR + DESIGN review CLEAR (see its `## GSTACK REVIEW REPORT` final section).
-  The plan contains literal code for every step. Follow it verbatim; deviations require a reason.
+Governing documents:
 
-## Progress: Tasks 1-7 done and committed
+- Design: `docs/superpowers/specs/2026-07-18-saved-reels-trustworthy-location-grounding-design.md`
+- Schema plan: `docs/superpowers/plans/2026-07-18-saved-reels-schema-foundation.md`
+- Localhost MVP plan: `docs/superpowers/plans/2026-07-18-saved-reels-localhost-mvp.md`
+- Global verification plan: `docs/superpowers/plans/2026-07-18-saved-reels-global-location-verification.md`
+- Review/fix tracker: `docs/superpowers/reviews/2026-07-18-saved-reels-fix-tracker.md`
+- Converged fix plan: `docs/superpowers/reviews/2026-07-19-saved-reels-implementation-plan.md`
 
-| Task | Commit | What landed |
-|---|---|---|
-| 1. Backend schema parity + preference merge | `5d47b9e` | `GenerateTripRequest` gains requested_places/budget_level/origin_city/preferences; trips insert persists them + merged `preference_summary`/`preference_sources`; new `backend/preferences.py`; 373 backend tests (7 new incl. old-shape regression) |
-| 2. Frontend type parity + date-gated Generate | `fb18797` | Dates required end-to-end; `canGenerate(items, brief)`; literal test edits; also repaired pre-existing typecheck break (tokyo-trip fixture missing title/summary); 115 frontend tests |
-| 3. Passwordless email OTP auth | `f945cf3` | Sign-in page rewritten (email → 6-digit code, 60s resend cooldown, autofocus/refocus), `SignOutButton`, header links; Google removed (deferred post-beta) |
-| 4. Onboarding save + gate | `42d80fa` | New `frontend/lib/trip/supabase-api.ts` (RLS-direct `saveProfile` upsert), wizard swapped off mock-api with error state, middleware gate redirects un-onboarded users to `/app/onboarding` |
-| 5. Real create flow + SSE | `ab024b6` | `CreateTripFlow` uses the authenticated backend client and live EventSource stream; warnings and reconnect/failure behavior are covered by tests |
-| 6. Real trip reads + list | `f4492e0` | Trip detail and `/app/trips` read Supabase directly under RLS, including generating, failed, empty, and not-found states |
-| 7. Deploy readiness | `9542b1f` | Env-driven backend CORS, env documentation, and Supabase OTP setup landed; later Phase-2 PRs #36-#39 hardened and deployed the backend API |
+## Progress: Saved Reels implementation and Section A fixes done
 
-Verification state at this reconciliation: backend `431 passed, 6 skipped`; frontend
-`32 files / 123 tests` passed; `npm run typecheck` clean. The Render backend is deployed
-and healthy, but production promotion is not complete because `main` and the Vercel
-frontend still trail `dev`.
+### Schema foundation
 
-## Remaining: Task 8 + production promotion
+| Commit | What landed |
+|---|---|
+| `c5018fd` | Added typed Saved Reel capture persistence, canonical URL reuse, and a local-only real RPC integration smoke. |
+| `aaca33a` | Exposed authenticated `POST /saved-reels`; ownership comes from the verified JWT and capture stays extraction-free. |
+| `1eaefc2` | Added frontend Saved Reel, collection, capture-request, and response contracts with TypeScript parity tests. |
+| `cedf1e7` | Recorded the Saved Reels schema-foundation design and implementation receipt. |
 
-- **Task 8 — E2E QA.** Manual + scripted checks. Cold acceptance run uses these two
-  reels (chosen by Zhi Hao, must be uncached):
-  `https://www.instagram.com/reel/DYbmT-SNzVK/` and `https://www.instagram.com/reel/DYM_I5IvLSv/`.
-  Automated checks are recorded in the plan. The remaining production checks are tracked
-  by the GitHub Project card `Both: manual production E2E QA checklist — real OTP, cold
-  multi-Reel run, second-user RLS, reload/listing, restart recovery`.
-- **Production promotion.** Open and review `dev` -> `main`, apply every required
-  Supabase migration, repoint Render to `main`, set Vercel `NEXT_PUBLIC_BACKEND_URL`,
-  keep `NEXT_PUBLIC_MOCK_AUTH` disabled, and redeploy. Do not merge without the repo's
-  review workflow.
+### Organize MVP
 
-## Historical wiring implementation loop
+| Commit | What landed |
+|---|---|
+| `80848ae` | Added durable organize jobs/items/events, safe Saved Reel projections, country fields, usage accounting, trusted mentions, and pgTAP coverage. |
+| `6a83384` | Added the organizer, authenticated status/SSE endpoints, cache and quota handling, reverse-country verification, selected-place authorization, and place-only trip generation. |
+| `175095b` | Added the real inbox -> Organize globe -> country trays/map -> brief -> generation frontend flow and tests. |
 
-Tasks 1-7 are complete. The command below is retained only as historical context for
-the reviewed wiring plan; do not resume at Task 5. New work starts from its GitHub
-Project card and the current repository build loop.
+### Localhost and map fixes
 
-Launch template (one task at a time):
+| Commit | What landed |
+|---|---|
+| `0e821d8` | Anchored trip-map wheel zoom to the map center so the pin no longer appears to follow the cursor. |
+| `2fe51dc` | Made localhost Supabase/CSP behavior safe, retained production HSTS, enabled Mapbox's required WebAssembly evaluation, and added a local OTP template. |
 
-```bash
-cd C:/Github/astrail && codex exec "Read .claude/CLAUDE.md. You are executing the approved plan at docs/superpowers/plans/2026-07-07-beta-auth-to-map-wiring.md. Tasks 1-N are committed (<hashes>). Execute Task <N+1> ONLY. Follow its steps literally, including the exact code. Your sandbox cannot write to .git, so SKIP the git commit step — the orchestrator commits after verifying. Run the task's test/typecheck commands and make them pass. Report: files changed, results, any deviations and why." \
-  -s workspace-write \
-  -c 'sandbox_workspace_write.network_access=true' \
-  -c 'model_reasoning_effort="xhigh"' \
-  --enable web_search_cached < /dev/null
-```
+### Location-verification design, plans, and developer tooling
 
-Standing rules: **always `xhigh` reasoning effort** (Zhi Hao's instruction);
-network_access=true (uv/npm need it); verify Codex's report against the actual diff
-before committing (`git diff`, rerun suites); commit messages follow the plan's, with
-`Co-Authored-By: Codex <noreply@openai.com>`.
+| Commit | What landed |
+|---|---|
+| `2ddf09f` | Recorded the approved global grounding design and the schema, localhost MVP, and verification implementation plans. |
+| `3acc977` | Added the local Graphify viewer launcher and ignored Graphify, gstack, Claude-local, and pytest-generated output. |
+
+### P2-1 through P2-7 and P3 reliability arc
+
+| Commit | What landed |
+|---|---|
+| `9512495` | Revoked authenticated access to the private schema while proving the owner-scoped verified-place RLS path still works. |
+| `3ec73e5` | Added outer organizer terminal cleanup so unexpected failures cannot strand a job in `processing`. |
+| `c282ca2` | Made analysis reserve/refund state atomic and exactly once, persisted the usage date, and stopped replaying terminal items. |
+| `48f8c6a` | Made organize-job creation atomic and rejected a whole overlapping request with HTTP 409 and a specific frontend retry message. |
+| `c8e0581` | Rejected coordinate-echo and Google Maps search evidence URLs, required an independent venue page, and bumped the extractor version. |
+| `5062be1` | Added `has_current_cache` across SQL/TypeScript/UI and locked its extractor-version and trust-stamp parity with tests. |
+| `c6a3c4d` | Added one durable polling fallback after a clean or failed organize stream closes before the job becomes terminal. |
+| `75c9b32` | Closed the P3 batch: Mapbox wheel anchoring, image CSP, 408/429 retry handling, UUID validation, dead stream removal, sanitized logs, and the mock-auth regression gate. |
+| `e7635c1` | Recorded the converged implementation plan and completion tracker for the review arc. |
+
+### Post-review database repair
+
+| Commit | What landed |
+|---|---|
+| `0216a0e` | Claude's code review fixed the current-cache view replacement, pgTAP role context, fixture leakage, and assertion count so clean reset/test/lint actually pass. |
+
+`0216a0e` is a Claude code-review correction, not new Codex feature work. It caught a real
+bug in the earlier migration: `has_current_cache` had been inserted in the middle of a
+`CREATE OR REPLACE VIEW` column list, which Postgres interprets as an illegal rename. It
+also repaired tests that ran under the wrong role and P2-6 fixtures that polluted later
+row-count assertions. The useful process lesson for Shaun is to treat a clean
+`supabase db reset && supabase test db` as a mandatory result, never as an optional or
+environment-only gate; the implementation was not complete until that sequence passed.
+
+## Key decisions that must remain locked
+
+The P2-7 evidence contract uses option B. Coordinate-echo URLs and
+`google.com/maps/search` URLs are rejected; accepted evidence must be a real independent
+venue page such as an official site, Tabelog, TableCheck, or a stable Google Maps `/place/`
+URL. This makes evidence non-circular. It does **not** prove that the extracted coordinate
+belongs to the named venue. Reverse `types=poi` plus name matching, or a second coordinate
+source, remains explicitly deferred and has not started.
+
+The overlap rule is whole-request rejection. If any selected Saved Reel is already in a
+different active organize job, the atomic RPC creates nothing partial and the API returns
+HTTP 409. The frontend shows the agreed retry message rather than a raw status code.
+
+With `NEXT_PUBLIC_MOCK_AUTH=true`, `/app` deliberately renders the existing offline
+`CreateTripFlow`. This arc did not add a mocked Saved Reels inbox.
+
+Mapbox permanent Geocoding v6 entitlement and billing are confirmed on Zhi Hao's account.
+Live permanent reverse probes returned JP for Tokyo, CN for Shanghai, and KR for Seoul.
+The remaining deployment question is whether Render's `MAPBOX_SECRET_TOKEN` belongs to
+that same entitled account.
+
+After `0216a0e`, the full localhost flow was reverified with real OTP sign-in and real
+providers: the Reel was saved, Apify scraped it, OpenAI extracted it, Mapbox reverse-country
+verification produced a Japan tray and Tokyo pin, the evidence `source_url` was a real
+Tabelog listing rather than a coordinate echo, the canonical place reached trip generation,
+and a second Organize used the cache without another scrape, without a second quota charge,
+while still allowing terminal-job reprocessing.
+
+## Verification state at this handoff
+
+Fresh verification run on 2026-07-19 after `0216a0e`:
+
+| Gate | Result |
+|---|---|
+| `backend: uv run pytest -q --basetemp=.pytest-tmp` | **585 passed, 7 skipped**, 3 dependency deprecation warnings |
+| `backend: uv run pytest evals/ -q --basetemp=.pytest-tmp` | **49 passed** |
+| `supabase db reset` | All migrations through `20260719103000` applied successfully |
+| `supabase test db` | **7 files, 398/398 tests passed** |
+| `supabase db lint --local` | **No schema errors found** |
+| `frontend: npm test` | **43 files, 170 tests passed** |
+| `frontend: npm run typecheck` | **Passed** |
+| `frontend: npm run build` | **Passed**, Next.js production build generated all routes |
+
+## Remaining
+
+- The seven agreed Section B follow-ups are documented in root `ISSUES.md`, ordered B1,
+  B4, B6, B2, B3, B5, B7. B1 and B7 require Zhi Hao's product/design decision; B2-B6 are
+  implementation calls for Shaun.
+- Before any deploy, confirm Render's deployed `MAPBOX_SECRET_TOKEN` was issued by the same
+  Mapbox account whose invoice and live probes confirm permanent-geocoding entitlement.
+- Coordinate-to-venue identity verification remains an accepted MVP deferral. Country
+  containment is verified; the exact dot still trusts the research result.
 
 ## Machine/environment quirks (will bite you if forgotten)
 
-- **Backend pytest MUST run with** `PYTEST_ADDOPTS=--basetemp=.pytest-tmp` from
-  `backend/` — the default `%TEMP%\pytest-of-*` dir is permission-locked and causes 5
-  phantom PermissionErrors. `backend/pyproject.toml` also has `norecursedirs` guarding
-  against sandbox-locked `tmpastrail-*` dirs (one such undeletable dir sits at
-  `backend/tmpastrail-pytest-task1/` — ignore it, it's gitignore-invisible and
-  pytest-invisible).
-- Backend deps: `cd backend && uv sync` already done; venv is live.
-- `gh project item-list 1 --owner MalaysiaKaki` fails on this machine ("unknown owner
-  type") — needs `gh auth refresh -s project`; skip board loads during plan execution.
-- Frontend: run all npm commands from `frontend/`.
-- The shared integration baseline is `dev` at `d76cd20`; `main` is intentionally not
-  advanced until the production-promotion review and migration checklist clear.
+- Run backend pytest from `backend/` with `--basetemp=.pytest-tmp`. The normal Windows
+  `%TEMP%\pytest-of-*` location has produced permission failures on this machine.
+- In a restricted Codex sandbox, `uv` may fail to open
+  `%LOCALAPPDATA%\uv\cache\sdists-v9\.git`; rerun the test with permission to use the
+  existing uv cache. This is not a product or test failure.
+- Supabase verification requires Docker Desktop's Linux engine. Docker Desktop needed one
+  reset during the earlier verification session; if reset/test hangs or cannot connect,
+  restart the Linux engine and rerun the entire reset -> test -> lint sequence.
+- `supabase db reset` erases local auth and acceptance fixtures. A later live acceptance
+  run must sign in again and recreate its Saved Reel.
+- Frontend npm commands must run from `frontend/`.
+- Graphify output is ignored and does not update automatically. Refresh with
+  `graphify update backend` and `graphify update frontend` before using its local graph.
 
 ## External state already configured (do NOT redo)
 
-- **Supabase dashboard (done 2026-07-08 by Zhi Hao):** custom SMTP via Resend is
-  active; the Magic link/OTP email template now sends `{{ .Token }}` as a 6-digit code
-  (saved). Remaining dashboard nits: subject line still says "Your sign-in link"
-  (cosmetic), and OTP expiry should be set to 600s (Authentication → Providers →
-  Email → Email OTP expiration) if not already.
-- **Codex CLI** installed (`codex-cli 0.142.5`) and authenticated.
-- Env files exist: `backend/.env`, `frontend/.env.local` (contents not inspected).
+- Mapbox permanent Geocoding v6 is enabled and billed on Zhi Hao's account; local JP/CN/KR
+  probes passed. Only Render token provenance remains open.
+- Local Supabase reset/test/lint is healthy through all Saved Reels migrations.
+- Local `backend/.env` and `frontend/.env.local` exist; their secret contents were not copied
+  into this handoff.
+- Custom email/OTP delivery is already configured; the completed localhost acceptance used
+  a real OTP sign-in.
 
-## Manual QA that only a human can do (end of Task 8)
+## Manual QA that only a human can do
 
-1. Real email OTP round-trip (receive the code, wrong-code error, resend cooldown).
-2. Onboarding gate: new user forced through wizard; returning user skips.
-3. Cold acceptance run with the two reels above → live stages + ⚠ warnings → itinerary
-   on the Mapbox map; verify trips row has budget_level/origin_city/preference_summary
-   (both profile + per-trip merged) and preference_sources={memory,explicit}.
-4. Refresh reload, `/app/trips` listing, second-account RLS invisibility, sign-out,
-   401 on tokenless POST, kill-backend-mid-run → no frozen spinner.
+1. In Render, compare the deployed Mapbox token's account/project with the account carrying
+   permanent-geocoding entitlement before deployment.
+2. After deploying the migrations and backend/frontend together, repeat one real OTP ->
+   Saved Reel -> Organize -> Japan tray/Tokyo pin -> brief -> trip run against production.
+3. Confirm deployed access logs do not expose more bearer-token surface than the B1 decision
+   explicitly accepts.
+4. Decide the B7 CN tray wording in product copy and verify it in the actual UI locale.
 
 ## Session log pointers
 
-- Review artifacts: `~/.gstack/projects/MalaysiaKaki-astrail/` (test plan for /qa,
-  review logs). TODOS.md at repo root has one deferred item (cookie-cache the
-  onboarding gate).
-- Docs commits this session: `112637e` (spec), `342998b` (plan), `238d2b0` +
-  `0d6fc31` (review folds), `5a2cc7e` (SMTP correction), `947a73e` (gitignore).
+- Open implementation follow-ups: `ISSUES.md`.
+- Review source and account entitlement receipt:
+  `docs/superpowers/reviews/2026-07-18-saved-reels-fix-tracker.md`.
+- Executed fix sequence and locked decisions D1-D3:
+  `docs/superpowers/reviews/2026-07-19-saved-reels-implementation-plan.md`.
+- Trust architecture and rollback boundary:
+  `docs/superpowers/specs/2026-07-18-saved-reels-trustworthy-location-grounding-design.md`.
+- Complete implementation range: `de56ac03868bf5ee6dbbe32fbe40f8f280dbea39..0216a0e`.
+- gstack review/QA artifacts remain under `~/.gstack/projects/MalaysiaKaki-astrail/`.

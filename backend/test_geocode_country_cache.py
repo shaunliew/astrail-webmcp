@@ -20,13 +20,13 @@ from __future__ import annotations
 import pytest
 
 from models.geocode import CountryResult
-from organizer import (
+from grounding import (
     GEOCODE_CACHE_TABLE,
     LOCATION_VERIFICATION_VERSION,
     _coord_cache_key,
     _ground_place,
-    run_organize_job,
 )
+from organizer import run_organize_job
 from test_saved_reels_organize import _cached, _Client, _Table, _place
 
 

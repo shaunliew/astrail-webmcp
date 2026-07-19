@@ -12,13 +12,12 @@ from api.schemas import GenerateTripRequest, OrganizeJobStatus, OrganizeSavedRee
 from genagents.place_extractor import EXTRACTOR_VERSION
 from api.streaming import DONE, format_sse, stream_organize_events
 from models.place import PlaceResult
+from grounding import _ground_place, _persist_place
 from pipeline.dedup import DEFAULT_DISTANCE_M
 from pipeline.geo import haversine_m
 from organizer import (
     ActiveOrganizeConflict,
     InvalidOrganizeRequest,
-    _ground_place,
-    _persist_place,
     authorize_place_ids,
     create_organize_job,
     get_organize_status,

@@ -20,10 +20,11 @@ import pytest
 
 BACKEND = Path(__file__).resolve().parent
 
-# Only the two modules the forks lived in. This is NOT a repo-wide ban: `pipeline/persist.py`
-# legitimately uses `hasattr(it, "model_dump")` to accept either a Pydantic model or a plain
-# dict, which is duck-typing over a REAL public API, not over a fake's gaps.
-GUARDED = ("organizer.py", "api/streaming.py")
+# The modules the forks lived in, plus `grounding.py` which B6 split out of `organizer.py` and
+# which drives the same client. This is NOT a repo-wide ban: `pipeline/persist.py` legitimately
+# uses `hasattr(it, "model_dump")` to accept either a Pydantic model or a plain dict, which is
+# duck-typing over a REAL public API, not over a fake's gaps.
+GUARDED = ("organizer.py", "grounding.py", "api/streaming.py")
 
 
 @pytest.mark.parametrize("relative_path", GUARDED)

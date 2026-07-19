@@ -704,6 +704,15 @@ def test_organize_request_is_bounded():
         OrganizeSavedReelsRequest(saved_reel_ids=[f"22222222-2222-2222-2222-{i:012d}" for i in range(6)])
 
 
+def test_organize_request_rejects_duplicate_ids():
+    # The RPC already rejects duplicates, but only with the generic P0001
+    # 'Saved Reel organize request is invalid' -- a message create_organize_job's mapping
+    # does not match, so a direct API client would get a 500. Reject at the boundary.
+    saved_reel_id = "22222222-2222-2222-2222-222222222222"
+    with pytest.raises(ValueError):
+        OrganizeSavedReelsRequest(saved_reel_ids=[saved_reel_id, saved_reel_id])
+
+
 def test_organize_job_status_accepts_initializing():
     status = OrganizeJobStatus(
         job_id="job-1",

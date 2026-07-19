@@ -382,6 +382,43 @@ async def test_saved_reels_organize_stringifies_uuid_ids_before_db_and_backgroun
     assert background_calls == [(("organize-1", "user-1"), {"client": _client})]
 
 
+async def test_saved_reels_organize_rejects_duplicate_ids_before_the_rpc(ctx, monkeypatch):
+    """Duplicate saved_reel_ids must be a 422 at the boundary, not a 500 out of the RPC.
+    The fake mirrors the real guard (20260719102000_saved_reels_active_item_guard.sql): a
+    generic P0001 whose message create_organize_job does NOT map, so reaching it surfaces
+    as an unhandled APIError -> 500. Rejecting in Pydantic means it is never reached."""
+    from postgrest.exceptions import APIError
+
+    _ac, db, _calls, client = ctx
+    background_calls = []
+
+    async def create_job(_client, _user_id, saved_reel_ids):
+        if len(set(saved_reel_ids)) != len(saved_reel_ids):
+            raise APIError({"code": "P0001", "message": "Saved Reel organize request is invalid",
+                            "details": None, "hint": None})
+        return "organize-1"
+
+    monkeypatch.setattr(main, "create_organize_job", create_job)
+    monkeypatch.setattr(main, "run_organize_job",
+                        lambda *args, **kwargs: background_calls.append((args, kwargs)))
+
+    # raise_app_exceptions=False so an unmapped APIError surfaces as the 500 the
+    # unhandled_exception_handler actually returns in production, rather than being
+    # re-raised into the test -- the 422-vs-500 distinction is the whole point here.
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main.app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as ac:
+        response = await ac.post(
+            "/saved-reels/organize", json={"saved_reel_ids": [_SAVED_REEL_ID, _SAVED_REEL_ID]}
+        )
+
+    assert response.status_code == 422
+    assert db == {}
+    assert client.rpc_calls == []
+    assert background_calls == []
+
+
 async def test_saved_reels_organize_active_overlap_is_a_conflict(ctx, monkeypatch):
     from organizer import ActiveOrganizeConflict
 

@@ -34,6 +34,18 @@ def parse_reverse_country_response(data: object) -> CountryResult:
     real country-less venue, so raising is the right bias: the item settles at `failed`, which
     is retryable, instead of freezing a wrong terminal answer. Accepted consequence: a genuine
     open-ocean coordinate now reports `failed` rather than `location_not_found`.
+
+    BLAST RADIUS IS PER-ITEM, NOT PER-PLACE. `_ground_and_persist` grounds a Reel's places in
+    one list comprehension, so this raise aborts the WHOLE item — places in the same Reel that
+    already verified fine are discarded and re-grounded on retry. Pre-A3 an empty collection
+    dropped just that one place and the rest organized normally. This is not a new class of
+    fragility (a network error, a 5xx, and malformed JSON all already raised and aborted the
+    item), but it extends it to a case that used to degrade softly — so on a noisy Mapbox day
+    expect whole items to retry rather than partially organize. Narrowing this to per-place
+    means grounding each place in its own try/except and is deliberately NOT done here:
+    partial-organize is the harder semantic to reason about, and guardrail #3 already accepts
+    a retryable item failure. TRIGGER to revisit: a measured rate of item failures where the
+    empty-collection path is the cause.
     """
     if not isinstance(data, dict):
         raise RuntimeError("Mapbox reverse-country returned malformed data")

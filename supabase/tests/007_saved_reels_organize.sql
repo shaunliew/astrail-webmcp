@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(180);
+select plan(201);
 
 insert into auth.users (id, email)
 values
@@ -115,13 +115,41 @@ select col_not_null('public', 'organize_job_items', 'analysis_charge_state', 'or
 select col_not_null('public', 'organize_events', 'user_id', 'organize event owner is required');
 select col_not_null('public', 'organize_events', 'job_id', 'organize event job is required');
 select col_not_null('public', 'user_daily_usage', 'reel_analysis_count', 'reel analysis count is required');
+-- user_id is supplied so the ONLY null left is verification_version; without it this would
+-- still raise 23502 and would silently stop pinning the stamp it exists to pin.
 select throws_ok(
-  $$insert into public.reel_place_mentions (reel_cache_id, place_id, evidence_quote, source_url) values ('70000000-0000-0000-0000-000000000001', '71000000-0000-0000-0000-000000000001', 'unstamped', 'https://www.instagram.com/reel/ORGANIZE-A')$$,
+  $$insert into public.reel_place_mentions (user_id, reel_cache_id, place_id, evidence_quote, source_url) values ('00000000-0000-0000-0000-000000000701', '70000000-0000-0000-0000-000000000001', '71000000-0000-0000-0000-000000000001', 'unstamped', 'https://www.instagram.com/reel/ORGANIZE-A')$$,
   '23502', null,
   'unstamped mentions are rejected after successful cleanup'
 );
+select throws_ok(
+  $$insert into public.reel_place_mentions (reel_cache_id, place_id, evidence_quote, verification_version) values ('70000000-0000-0000-0000-000000000001', '71000000-0000-0000-0000-000000000001', 'ownerless', 'mapbox-country-v1')$$,
+  '23502', null,
+  'ownerless mentions are rejected — every mention has a user'
+);
 
 select has_pk('public', 'reel_place_mentions', 'mentions have a composite primary key');
+select col_not_null('public', 'reel_place_mentions', 'user_id', 'mention owner is required');
+select col_type_is('public', 'reel_place_mentions', 'user_id', 'uuid', 'mention owner is uuid');
+select ok(
+  (select conkey from pg_constraint where conrelid = 'public.reel_place_mentions'::regclass and contype = 'p')
+  = (select array_agg(attnum order by ord) from unnest(array['user_id','reel_cache_id','place_id']) with ordinality t(col, ord)
+      join pg_attribute on attrelid = 'public.reel_place_mentions'::regclass and attname = t.col),
+  'mentions are keyed (user_id, reel_cache_id, place_id) — the owner is IN the key'
+);
+select ok(
+  exists (
+    select 1
+    from pg_constraint
+    where conrelid = 'public.reel_place_mentions'::regclass
+      and conname = 'reel_place_mentions_user_fkey'
+      and contype = 'f'
+      and confrelid = 'public.users'::regclass
+      and confdeltype = 'c'
+  ),
+  'mention owner cascades from public.users'
+);
+select has_index('public', 'reel_place_mentions', 'reel_place_mentions_cache_place_idx', 'mentions keep a cache/place index for the card join');
 select has_pk('public', 'organize_jobs', 'organize jobs have a primary key');
 select has_pk('public', 'organize_job_items', 'organize items have a primary key');
 select has_pk('public', 'organize_events', 'organize events have a primary key');
@@ -461,6 +489,7 @@ select isnt_empty(
 );
 
 insert into public.reel_place_mentions (
+  user_id,
   reel_cache_id,
   place_id,
   evidence_quote,
@@ -469,6 +498,7 @@ insert into public.reel_place_mentions (
   verification_version
 )
 values (
+  '00000000-0000-0000-0000-000000000701',
   '70000000-0000-0000-0000-000000000001',
   '71000000-0000-0000-0000-000000000001',
   'A proof quote',
@@ -481,6 +511,7 @@ alter table public.reel_place_mentions
   alter column verification_version drop not null;
 set local role service_role;
 insert into public.reel_place_mentions (
+  user_id,
   reel_cache_id,
   place_id,
   evidence_quote,
@@ -488,6 +519,7 @@ insert into public.reel_place_mentions (
   confidence
 )
 values (
+  '00000000-0000-0000-0000-000000000701',
   '70000000-0000-0000-0000-000000000001',
   '71000000-0000-0000-0000-000000000002',
   'Legacy Search Box proof',
@@ -510,10 +542,18 @@ values (
   'mentions_place'
 );
 select throws_ok(
-  $$insert into public.reel_place_mentions (reel_cache_id, place_id, evidence_quote, source_url) values ('70000000-0000-0000-0000-000000000001', '71000000-0000-0000-0000-000000000001', 'duplicate', 'https://www.instagram.com/reel/ORGANIZE-A')$$,
+  $$insert into public.reel_place_mentions (user_id, reel_cache_id, place_id, evidence_quote, source_url) values ('00000000-0000-0000-0000-000000000701', '70000000-0000-0000-0000-000000000001', '71000000-0000-0000-0000-000000000001', 'duplicate', 'https://www.instagram.com/reel/ORGANIZE-A')$$,
   '23505', null,
-  'duplicate cache/place mention is rejected'
+  'duplicate owner/cache/place mention is rejected'
 );
+-- ...but the SAME cache/place for a DIFFERENT owner is not a duplicate. This is the whole
+-- point of the re-key: two users who saved the same Reel each hold their own evidence row.
+select lives_ok(
+  $$insert into public.reel_place_mentions (user_id, reel_cache_id, place_id, evidence_quote, source_url, verification_version) values ('00000000-0000-0000-0000-000000000702', '70000000-0000-0000-0000-000000000001', '71000000-0000-0000-0000-000000000001', 'B proof quote', 'https://www.instagram.com/reel/ORGANIZE-A', 'mapbox-country-v1')$$,
+  'a second owner may hold their own mention for the same cache and place'
+);
+delete from public.reel_place_mentions
+where user_id = '00000000-0000-0000-0000-000000000702';
 
 insert into public.organize_jobs (
   id,
@@ -1003,7 +1043,12 @@ select ok(
     in lower(pg_get_functiondef(to_regprocedure('private.can_select_verified_saved_reel_place(uuid)')))
   ) > 0
   and position(
-    'saved_reels.user_id = (select auth.uid())'
+    'sr.user_id = (select auth.uid())'
+    in lower(pg_get_functiondef(to_regprocedure('private.can_select_verified_saved_reel_place(uuid)')))
+  ) > 0
+  -- A3: the mention must belong to the requesting user, not merely to a Reel they saved.
+  and position(
+    'sr.user_id = m.user_id'
     in lower(pg_get_functiondef(to_regprocedure('private.can_select_verified_saved_reel_place(uuid)')))
   ) > 0,
   'verified Saved Reel place predicate remains trust-gated and owner-scoped'
@@ -1114,6 +1159,103 @@ select results_eq(
   $$values ('[]'::jsonb, 'invalidated-searchbox-2026-07-18'::text)$$,
   'idempotent cleanup leaves the invalidated cache stable'
 );
+
+-- ── saved_reel_cards is owner-scoped too ──────────────────────────────────────────────────
+-- User B saves the very Reel user A organized. Pre-A3 the card joined mentions on
+-- reel_cache_id alone, so B SAW A's pins — pins authorize_place_ids then rejected, failing
+-- generation terminally. B must now see an empty place list until they organize it.
+select isnt_empty(
+  $$select id from public.capture_saved_reel('00000000-0000-0000-0000-000000000702', 'https://www.instagram.com/reel/ORGANIZE-A')$$,
+  'service role captures user B saving the Reel user A organized'
+);
+reset role;
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000702', true);
+select set_config('request.jwt.claims', '{"sub":"00000000-0000-0000-0000-000000000702","role":"authenticated"}', true);
+select results_eq(
+  $$select places from public.saved_reel_cards where normalized_url = 'https://www.instagram.com/reel/ORGANIZE-A'$$,
+  $$values ('[]'::jsonb)$$,
+  'saved_reel_cards hides another owner''s mentions for a Reel this user merely saved'
+);
+reset role;
+set local role service_role;
+
+-- ── replace_reel_place_mentions: the owner-scoped, transactional set replacement ──────────
+select has_function('public', 'replace_reel_place_mentions', array['uuid','uuid','text','jsonb'], 'the mention rewrite RPC exists');
+select ok(
+  (select prosecdef from pg_proc where oid = 'public.replace_reel_place_mentions(uuid,uuid,text,jsonb)'::regprocedure),
+  'the mention rewrite RPC is security definer'
+);
+select ok(
+  (select proconfig from pg_proc where oid = 'public.replace_reel_place_mentions(uuid,uuid,text,jsonb)'::regprocedure)
+    @> array['search_path=""'],
+  'the mention rewrite RPC pins an empty search_path'
+);
+select ok(
+  has_function_privilege('service_role', 'public.replace_reel_place_mentions(uuid,uuid,text,jsonb)', 'execute'),
+  'service_role may execute the mention rewrite RPC'
+);
+select ok(
+  not has_function_privilege('authenticated', 'public.replace_reel_place_mentions(uuid,uuid,text,jsonb)', 'execute')
+  and not has_function_privilege('anon', 'public.replace_reel_place_mentions(uuid,uuid,text,jsonb)', 'execute'),
+  'browser roles may not execute the mention rewrite RPC'
+);
+
+-- THE Major, against a real database: a rewrite for user B must not touch user A's set.
+-- User A currently holds exactly one verified mention for cache-A.
+select is(
+  (select count(*)::integer from public.reel_place_mentions where user_id = '00000000-0000-0000-0000-000000000701'),
+  1,
+  'user A holds one verified mention before the cross-user rewrite'
+);
+select is(
+  public.replace_reel_place_mentions(
+    '00000000-0000-0000-0000-000000000702',
+    '70000000-0000-0000-0000-000000000001',
+    'mapbox-country-v1',
+    '[{"place_id":"71000000-0000-0000-0000-000000000002","evidence_quote":"B proof","confidence":0.8}]'::jsonb
+  ),
+  1,
+  'a rewrite for user B reports its own single mention'
+);
+select is(
+  (select count(*)::integer from public.reel_place_mentions where user_id = '00000000-0000-0000-0000-000000000701'),
+  1,
+  'user B rewriting the same Reel leaves user A''s mentions untouched'
+);
+select results_eq(
+  $$select place_id from public.reel_place_mentions where user_id = '00000000-0000-0000-0000-000000000701'$$,
+  $$values ('71000000-0000-0000-0000-000000000001'::uuid)$$,
+  'user A''s surviving mention is byte-identical, not merely equal in count'
+);
+
+-- A payload naming the same place twice must SUCCEED and write exactly one row. Without the
+-- RPC's `distinct on (place_id)` Postgres rejects the whole statement with 25P02/21000
+-- ("ON CONFLICT DO UPDATE command cannot affect row a second time") and every organize of a
+-- Reel that names one venue twice breaks. The Python fake cannot reproduce this; only here.
+select is(
+  public.replace_reel_place_mentions(
+    '00000000-0000-0000-0000-000000000702',
+    '70000000-0000-0000-0000-000000000001',
+    'mapbox-country-v1',
+    '[{"place_id":"71000000-0000-0000-0000-000000000001","evidence_quote":"first","confidence":0.9},
+      {"place_id":"71000000-0000-0000-0000-000000000001","evidence_quote":"second","confidence":0.1}]'::jsonb
+  ),
+  1,
+  'a payload naming one place twice collapses to a single mention instead of erroring'
+);
+select results_eq(
+  $$select place_id, evidence_quote from public.reel_place_mentions where user_id = '00000000-0000-0000-0000-000000000702'$$,
+  $$values ('71000000-0000-0000-0000-000000000001'::uuid, 'first'::text)$$,
+  'the first occurrence wins deterministically and B''s superseded place is pruned'
+);
+select throws_ok(
+  $$select public.replace_reel_place_mentions('00000000-0000-0000-0000-000000000702', '70000000-0000-0000-0000-000000000001', 'mapbox-country-v1', '{"place_id":"x"}'::jsonb)$$,
+  'AS422', null,
+  'a non-array mentions payload is rejected at the boundary'
+);
+delete from public.reel_place_mentions
+where user_id = '00000000-0000-0000-0000-000000000702';
 
 delete from public.saved_reels
 where user_id = '00000000-0000-0000-0000-000000000701';

@@ -14,8 +14,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from genagents.place_extractor import EXTRACTOR_VERSION, is_placeholder_url
+from models.geocode import CountryResult
 from models.place import PlaceResult
 from postgrest.exceptions import APIError
+from pydantic import ValidationError
 from pipeline.cache import cache_places, get_cached_places
 from pipeline.dedup import DEFAULT_DISTANCE_M
 from pipeline.geo import haversine_m
@@ -23,6 +25,7 @@ from scrape.apify_direct import scrape_reel
 from usage import refund_organize_item_analysis, reserve_organize_item_analysis
 
 LOCATION_VERIFICATION_VERSION = "mapbox-country-v1"
+GEOCODE_CACHE_TABLE = "geocode_country_cache"
 INITIALIZING_STALE_AFTER_S = 120
 ORGANIZE_LEASE_TTL_S = 300      # short on purpose: the heartbeat renews a live run, so a
                                 # real crash is reclaimed in ~5 min rather than ~15.
@@ -183,7 +186,82 @@ async def get_organize_status(client, job_id: str, user_id: str) -> dict:
     }
 
 
-async def _ground_place(place: PlaceResult, *, verify_country=None) -> dict | None:
+def _coord_cache_key(lat: float, lng: float) -> str:
+    """Lossless, stable cache key for one coordinate.
+
+    Python's float `repr` is the shortest string that round-trips exactly, so the key is a
+    faithful record of the coordinate Mapbox was actually asked about, and it is stable across
+    platforms. `+ 0.0` normalizes -0.0 to 0.0 so the two spellings of the same point share a
+    row; every other distinct float gets its own row BY DESIGN.
+
+    Do NOT bucket this (an earlier draft used `round(lat * 1e4)`, ~11 m cells). A hit must mean
+    Mapbox verified THIS coordinate, not a neighbour: two points ~11 m apart can straddle a
+    border, and a cached country that happens to match the extractor's CLAIMED country would
+    then pass `_ground_place`'s fail-closed comparison for a coordinate nobody verified.
+    Rounding also buys ZERO hit rate — the warm path hits on byte-identical coordinates
+    replayed from the extraction cache, not on re-derived ones.
+    """
+    return f"{lat + 0.0!r},{lng + 0.0!r}"
+
+
+async def _lookup_cached_country(client, lat: float, lng: float) -> CountryResult | None:
+    """The verified country for this exact coordinate at THIS verification version, or None.
+
+    Blip-tolerant on purpose: a read failure is a MISS, never an item failure — the caller
+    falls through to the live provider call. The write side (`_store_cached_country`) is the
+    opposite, and that asymmetry is the point: a cache is an optimization on the way in and a
+    durability guarantee on the way out.
+    """
+    try:
+        result = await (client.table(GEOCODE_CACHE_TABLE)
+                        .select("country_code,country_name")
+                        .eq("coord_key", _coord_cache_key(lat, lng))
+                        .eq("verification_version", LOCATION_VERIFICATION_VERSION)
+                        .maybe_single().execute())
+    except Exception as exc:
+        # Type only — never the exception text, which can carry connection strings.
+        logger.warning("geocode_country_cache_read_failed error=%s", type(exc).__name__)
+        return None
+    row = (result.data if result is not None else None) or {}
+    if not row:
+        return None
+    try:
+        return CountryResult(
+            country_code=row.get("country_code"), country_name=row.get("country_name")
+        )
+    except ValidationError:
+        return None     # a malformed cached row is a MISS; re-verify rather than trust it
+
+
+async def _store_cached_country(client, lat: float, lng: float, country: CountryResult) -> None:
+    """Persist one verified coordinate→country answer. RAISES on failure, by design.
+
+    Strict write-through (guardrail #7: persist before returning) — we do not hand back a
+    verified result we could not persist. `cache_places` at the equivalent seam in
+    `_process_item` is likewise unwrapped, so this matches the precedent exactly. Guardrail #3
+    bounds the blast radius: one item fails, it is retryable, and the retry reuses the
+    extraction cache.
+    """
+    await client.table(GEOCODE_CACHE_TABLE).upsert({
+        "coord_key": _coord_cache_key(lat, lng),
+        "verification_version": LOCATION_VERIFICATION_VERSION,
+        "country_code": country.country_code,
+        "country_name": country.country_name,
+    }, on_conflict="coord_key,verification_version").execute()
+
+
+async def _ground_place(client, place: PlaceResult, *, verify_country=None) -> dict | None:
+    """Verify one researched place against Mapbox, reusing a cached answer when we have one.
+
+    Every `reverse_country` call sets `permanent: "true"` — the storable-results tier — and
+    this is its only call site, so an uncached warm organize cost exactly as much as a cold
+    one and was quota-exempt besides (the daily quota charges on extraction-cache MISS). The
+    cache closes both.
+
+    A hit skips ONLY the provider question, which is pure in its inputs: the coordinates come
+    from the extraction cache, frozen per `EXTRACTOR_VERSION`. The load-bearing country
+    comparison below still runs on EVERY organize, on a cached answer as much as a live one.
+    """
     token = os.environ.get("MAPBOX_SECRET_TOKEN")
     if not token:
         raise RuntimeError("Mapbox reverse-country verification is unavailable")
@@ -195,10 +273,16 @@ async def _ground_place(place: PlaceResult, *, verify_country=None) -> dict | No
         or not place.country_name
     ):
         return None
-    if verify_country is None:
-        from geocode.mapbox_reverse import reverse_country
-        verify_country = reverse_country
-    country = await verify_country(place.lat, place.lng, token=token)
+    country = await _lookup_cached_country(client, place.lat, place.lng)
+    if country is None:
+        if verify_country is None:
+            from geocode.mapbox_reverse import reverse_country
+            verify_country = reverse_country
+        country = await verify_country(place.lat, place.lng, token=token)
+        if country is not None:
+            # Only a SUCCESS is cached. A raise never reaches this line, and a `None` — "this
+            # coordinate does not verify" — is not an answer worth freezing for every later run.
+            await _store_cached_country(client, place.lat, place.lng, country)
     if country is None or country.country_code != place.country_code:
         return None
     verified_place = place.model_copy(update={"country_name": country.country_name})
@@ -631,7 +715,9 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
         if extract is None:
             from genagents.place_extractor import extract_places
             extract = extract_places
-        ground = ground or _ground_place
+        # The injectable seam keeps arity `ground(place)`; the default binds this job's client
+        # so `_ground_place` can reach the coordinate→country cache.
+        ground = ground or (lambda place: _ground_place(client, place))
         items = (await client.table("organize_job_items").select("*").eq("job_id", job_id)
                  .eq("user_id", user_id).in_("status", ["queued", "processing"]).execute()).data or []
         # Built ONCE per job: A2 adds the per-attempt lease token here, A3 reads user_id

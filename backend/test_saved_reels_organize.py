@@ -97,10 +97,12 @@ class _Table:
         self.lt_filters = {}
         self.in_filters = {}
         self.or_filters = []
+        self.on_conflict = None
         self.single = False
 
     def select(self, *_args): self.op = "select"; return self
     def insert(self, row): self.op = ("insert", row); return self
+    def upsert(self, row, on_conflict=None): self.op = ("upsert", row); self.on_conflict = on_conflict; return self
     def update(self, row): self.op = ("update", row); return self
     def delete(self): self.op = "delete"; return self
     def eq(self, key, value): self.filters[key] = value; return self
@@ -127,6 +129,21 @@ class _Table:
             row = {"id": f"{self.name}-{len(rows) + 1}", **self.op[1]}
             rows.append(row)
             return _Result([row])
+        if isinstance(self.op, tuple) and self.op[0] == "upsert":
+            # `on_conflict` is REQUIRED, exactly as Postgres requires a matching unique index:
+            # a fake that fell back to plain-insert would let a caller who forgot it duplicate
+            # rows here and fail only against the real database.
+            keys = [key.strip() for key in (self.on_conflict or "").split(",") if key.strip()]
+            if not keys:
+                raise ValueError("fake upsert requires on_conflict")
+            row = self.op[1]
+            existing = next((r for r in rows if all(r.get(k) == row.get(k) for k in keys)), None)
+            if existing is not None:
+                existing.update(row)
+                return _Result([existing])
+            stored = {"id": f"{self.name}-{len(rows) + 1}", **row}
+            rows.append(stored)
+            return _Result([stored])
         if isinstance(self.op, tuple) and self.op[0] == "update":
             matched = [row for row in rows if self._matches(row)]
             for row in matched:
@@ -896,7 +913,7 @@ async def test_ground_place_accepts_matching_research_and_reverse_country(
         country_name=name,
     )
 
-    result = await _ground_place(place, verify_country=verify)
+    result = await _ground_place(_Client({}), place, verify_country=verify)
 
     assert result == {
         "place": place,
@@ -916,7 +933,7 @@ async def test_ground_place_uses_mapbox_name_after_country_code_agrees(monkeypat
     monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
     poisoned = _place().model_copy(update={"country_name": "United States"})
 
-    result = await _ground_place(poisoned, verify_country=verify)
+    result = await _ground_place(_Client({}), poisoned, verify_country=verify)
 
     assert result["country_code"] == "JP"
     assert result["country_name"] == "Japan"
@@ -943,7 +960,7 @@ async def test_ground_place_rejects_country_mismatch(monkeypatch):
         country_name="Japan",
     )
 
-    assert await _ground_place(place, verify_country=verify) is None
+    assert await _ground_place(_Client({}), place, verify_country=verify) is None
 
 
 @pytest.mark.asyncio
@@ -958,7 +975,7 @@ async def test_ground_place_rejects_valid_empty_country_result(monkeypatch):
         country_code="JP", country_name="Japan",
     )
 
-    assert await _ground_place(place, verify_country=verify) is None
+    assert await _ground_place(_Client({}), place, verify_country=verify) is None
 
 
 @pytest.mark.asyncio
@@ -978,7 +995,7 @@ async def test_ground_place_fails_when_mapbox_verification_is_unavailable(monkey
     )
 
     with pytest.raises(RuntimeError, match="verification is unavailable"):
-        await _ground_place(place, verify_country=verify)
+        await _ground_place(_Client({}), place, verify_country=verify)
     assert called is False
 
 
@@ -1011,7 +1028,7 @@ async def test_ground_place_rejects_incomplete_research_without_mapbox_call(monk
         country_name="Japan",
     ).model_copy(update=updates)
 
-    assert await _ground_place(place, verify_country=verify) is None
+    assert await _ground_place(_Client({}), place, verify_country=verify) is None
     assert called is False
 
 
@@ -1034,7 +1051,7 @@ async def test_ground_place_propagates_provider_outage_after_adapter_retry(monke
     )
 
     with pytest.raises(RuntimeError, match="reverse-country"):
-        await _ground_place(place, verify_country=verify)
+        await _ground_place(_Client({}), place, verify_country=verify)
 
 
 @pytest.mark.asyncio

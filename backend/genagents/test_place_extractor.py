@@ -30,8 +30,11 @@ def _place(name, ev, lat=35.6, lng=139.7, url="https://tabelog.com/tokyo/123") -
                        country_code="JP", country_name="Japan")
 
 
-def test_extractor_version_invalidates_pre_country_cache_rows():
-    assert EXTRACTOR_VERSION == "2026-07-19.1"
+def test_extractor_version_is_pinned_so_a_bump_is_deliberate():
+    # A bump invalidates every extraction-cache row (cold Apify + OpenAI run + quota charge per
+    # user per Reel) and requires the view migration + tripwire updates documented above the
+    # constant. Pinning it here makes that a reviewed act rather than a one-character edit.
+    assert EXTRACTOR_VERSION == "2026-07-20.1"
 
 
 def test_extractor_requires_researched_country_pair():
@@ -146,6 +149,31 @@ def test_is_placeholder_url():
 ])
 def test_independent_source_url_matrix(url, expected):
     assert is_independent_source_url(url, 35.6, 139.7) is expected
+
+
+def test_rounded_coordinate_echo_is_rejected():
+    # LLM-style 4-decimal echo of 35.6586,139.7454 — passes a 1e-6 check, which is the point:
+    # a URL rounded to ~10 m is still the coordinates talking back, not independent evidence.
+    assert not is_independent_source_url(
+        "https://venue.example.jp/map?lat=35.6586&lng=139.7454", 35.65861, 139.74543)
+
+
+def test_path_embedded_coordinates_rejected_on_non_google_host():
+    assert not is_independent_source_url(
+        "https://someviewer.com/@35.6586,139.7454,17z", 35.6586, 139.7454)
+
+
+def test_google_place_url_with_embedded_coords_still_accepted():
+    # Google /place/ URLs embed the venue's own coordinates BY DESIGN; the stable place id is
+    # their independence proof (P2-7 option B). Path scanning must not reach this branch.
+    url = ("https://www.google.com/maps/place/Tokyo+Tower/@35.6586,139.7454,17z/"
+           "data=!3m1!4b1!4m6!3m5!1s0x60188bbd9009ec09:0x481a93f0d2a409dd")
+    assert is_independent_source_url(url, 35.6586, 139.7454)
+
+
+def test_far_number_in_path_is_not_a_false_positive():
+    assert is_independent_source_url(
+        "https://tabelog.com/tokyo/A1307/A130701/13024893/", 35.6586, 139.7454)
 
 
 def test_keep_valid_places_rejects_circular_evidence_urls():

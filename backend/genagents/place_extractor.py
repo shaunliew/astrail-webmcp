@@ -26,7 +26,24 @@ FALLBACK_MODEL = "gpt-4o"
 
 # Bump this on ANY change to the extractor (instructions, model, keep_valid_places, or the
 # PlaceResult schema) — the extraction cache keys on it, so a bump auto-invalidates stale entries.
-EXTRACTOR_VERSION = "2026-07-19.1"
+#
+# A bump is FOUR coupled edits, not one. Three of them live outside this file and fail
+# silently if you forget them, which is why they are written down here:
+#   1. This constant.
+#   2. A NEW migration re-creating `public.saved_reel_cards` — the view embeds this literal
+#      to compute `has_current_cache`. Copy the CURRENT definition verbatim (whichever
+#      migration last recreated it) and change ONLY the version literal. Use `drop view` +
+#      `create view`, never `create or replace`: anything but a trailing-column change makes
+#      the replace an illegal rename (the bug 0216a0e had to fix).
+#   3. `backend/test_saved_reels_cache_signal.py::MIGRATION_PATH` → the new migration file.
+#      This is the tripwire that proves #2 happened; left stale it pins a superseded
+#      definition and goes quietly useless.
+#   4. `genagents/test_place_extractor.py::test_extractor_version_invalidates_pre_country_cache_rows`
+#      → the new literal. It exists to make a bump a deliberate, reviewed act.
+#
+# COST: a bump invalidates every extraction-cache row. Each user's next organize per Reel
+# becomes a full cold run — Apify + OpenAI spend AND a fresh quota charge. Time it deliberately.
+EXTRACTOR_VERSION = "2026-07-20.1"
 
 PLACE_EXTRACTOR_INSTRUCTIONS = """\
 You are a travel place-extraction agent. You receive an Instagram reel caption and an \
@@ -89,6 +106,11 @@ _PLACEHOLDER_PATH_RE = re.compile(
 )
 _QUERY_NUMBER_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)")
 _GOOGLE_PLACE_ID_RE = re.compile(r"(?:!1s|(?:^|[?&])place_id=)([A-Za-z0-9_-]{8,})")
+# ~100 m at the equator. An exact (1e-6) match only catches a model that echoes its own
+# coordinates to full precision; the ones that matter round to the 4-5 decimals an LLM
+# actually emits, which is still the coordinates talking back rather than a second source.
+# Both lat AND lng must land inside it, so an unrelated number in a path is not enough.
+_COORD_ECHO_TOLERANCE = 1e-3
 _PROMPT_INJECTION_RE = re.compile(
     r"(?:"
     r"\b(?:ignore|disregard|forget|override)\b.{0,80}"
@@ -123,29 +145,36 @@ def is_placeholder_url(url: str | None) -> bool:
 
 
 def is_independent_source_url(url: str | None, lat: float | None, lng: float | None) -> bool:
-    """Return whether a source URL is independent of the extracted coordinates."""
+    """Return whether a source URL is independent of the extracted coordinates.
+
+    Google hosts and everyone else are judged by different evidence, deliberately:
+    a Google /place/ URL embeds the venue's own coordinates BY DESIGN, so its
+    independence proof is the stable place id, not the absence of coordinates.
+    Scanning a Google path for coordinate echoes would reject every legitimate
+    /place/ URL — exactly the class the P2-7 evidence contract accepts.
+    """
     if lat is None or lng is None or is_placeholder_url(url):
         return False
     parsed = urlparse(url.strip())
     host = (parsed.hostname or "").lower()
-    query = unquote(parsed.query)
-    numbers = [float(value) for value in _QUERY_NUMBER_RE.findall(query)]
-    if (
-        any(abs(value - lat) <= 1e-6 for value in numbers)
-        and any(abs(value - lng) <= 1e-6 for value in numbers)
-    ):
-        return False
 
-    is_google_host = host.startswith("google.") or ".google." in host
-    if not is_google_host:
-        return True
+    if host.startswith("google.") or ".google." in host:
+        path = parsed.path.lower()
+        if "/maps/search" in path:
+            return False
+        if "/maps/place/" not in path:
+            return False
+        return _GOOGLE_PLACE_ID_RE.search(f"{parsed.path}?{parsed.query}") is not None
 
-    path = parsed.path.lower()
-    if "/maps/search" in path:
-        return False
-    if "/maps/place/" not in path:
-        return False
-    return _GOOGLE_PLACE_ID_RE.search(f"{parsed.path}?{parsed.query}") is not None
+    # Non-Google: the coordinates must not appear anywhere in the URL the model built.
+    # Path as well as query — `/@35.6586,139.7454,17z` is the same circular claim as
+    # `?lat=…&lng=…`, just moved one delimiter over.
+    corpus = f"{unquote(parsed.path)} {unquote(parsed.query)}"
+    numbers = [float(value) for value in _QUERY_NUMBER_RE.findall(corpus)]
+    return not (
+        any(abs(value - lat) <= _COORD_ECHO_TOLERANCE for value in numbers)
+        and any(abs(value - lng) <= _COORD_ECHO_TOLERANCE for value in numbers)
+    )
 
 
 def build_extractor_input(reel: ReelData) -> str:

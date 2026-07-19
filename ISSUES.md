@@ -418,3 +418,18 @@ widening the view again means another migration.
 **Regression test:** Seed two users sharing one `reel_cache_id`, only one of them `organized`.
 Assert the non-organizing user's card shows the chosen state (no pins for option 1), and that
 `authorize_place_ids` still rejects their attempt to select those places into a trip.
+
+**Update 2026-07-20 (Arc B, task B3) — STILL YOUR CALL, but the narrowing is now wider.**
+A3 closed the cross-user half of this (a user who merely saved someone else's organized Reel
+owns no mention rows). B3 closed the remaining same-user half: the card view and
+`private.can_select_verified_saved_reel_place` now BOTH require
+`saved_reels.analysis_status = 'organized'`, matching `authorize_place_ids`.
+
+The newly visible consequence, beyond what this item described: a user who organized a Reel
+**successfully once**, then re-organized it into `failed` / `location_not_found`, keeps their
+verified mention rows but their pins **disappear from the card** until the next successful
+organize. That next organize is a cache hit (Mapbox-cached, quota-free), so it is cheap — but
+it is a state where pins vanish from a Reel the user previously saw working, and it needs the
+same empty-state copy option 1 already needs. Still option 1; still yours to confirm or
+override. Overriding after this means another view migration
+(`20260720120000_saved_reels_cache_signal_v2.sql`).

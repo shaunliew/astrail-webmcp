@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(201);
+select plan(204);
 
 insert into auth.users (id, email)
 values
@@ -506,6 +506,14 @@ values (
   0.95,
   'mapbox-country-v1'
 );
+-- Owning verified mentions means the organize SUCCEEDED — the only way to acquire them. The
+-- fixture left the Reel at the 'not_analyzed' default, a state the writer never produces.
+-- The card view and the places predicate now both require 'organized' (matching
+-- authorize_place_ids), so an incoherent fixture would fail for the right reason.
+update public.saved_reels
+set analysis_status = 'organized', analyzed_at = now()
+where user_id = '00000000-0000-0000-0000-000000000701'
+  and normalized_url = 'https://www.instagram.com/reel/ORGANIZE-A';
 reset role;
 alter table public.reel_place_mentions
   alter column verification_version drop not null;
@@ -1050,8 +1058,13 @@ select ok(
   and position(
     'sr.user_id = m.user_id'
     in lower(pg_get_functiondef(to_regprocedure('private.can_select_verified_saved_reel_place(uuid)')))
+  ) > 0
+  -- B3: the read surface must require what authorize_place_ids requires.
+  and position(
+    'sr.analysis_status = ''organized'''
+    in lower(pg_get_functiondef(to_regprocedure('private.can_select_verified_saved_reel_place(uuid)')))
   ) > 0,
-  'verified Saved Reel place predicate remains trust-gated and owner-scoped'
+  'verified Saved Reel place predicate remains trust-gated, owner-scoped and organize-gated'
 );
 set local role authenticated;
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000701', true);
@@ -1179,6 +1192,44 @@ select results_eq(
 );
 reset role;
 set local role service_role;
+
+-- ── the read surface matches authorize_place_ids ─────────────────────────────────────────
+-- The SAME user who organized once, then re-organized into a non-'organized' status, still
+-- OWNS their earlier mention rows — A3's owner scoping does not touch this case. Before this
+-- change they kept seeing pins that authorize_place_ids (which requires
+-- analysis_status = 'organized', backend/organizer.py) rejects, failing generation terminally.
+update public.saved_reels
+set analysis_status = 'failed'
+where user_id = '00000000-0000-0000-0000-000000000701'
+  and normalized_url = 'https://www.instagram.com/reel/ORGANIZE-A';
+select is(
+  (select count(*)::integer from public.reel_place_mentions
+   where user_id = '00000000-0000-0000-0000-000000000701'
+     and verification_version = 'mapbox-country-v1'),
+  1,
+  'the stale-status owner still holds their verified mention row'
+);
+reset role;
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000701', true);
+select set_config('request.jwt.claims', '{"sub":"00000000-0000-0000-0000-000000000701","role":"authenticated"}', true);
+select results_eq(
+  $$select places from public.saved_reel_cards where normalized_url = 'https://www.instagram.com/reel/ORGANIZE-A'$$,
+  $$values ('[]'::jsonb)$$,
+  'saved_reel_cards hides the owner''s own pins once the Reel is no longer organized'
+);
+select is(
+  (select count(*)::integer from public.places where id = '71000000-0000-0000-0000-000000000001'),
+  0,
+  'the verified place predicate rejects a place whose Reel is no longer organized'
+);
+reset role;
+set local role service_role;
+-- Restore the coherent organized state for the assertions that follow.
+update public.saved_reels
+set analysis_status = 'organized', analyzed_at = now()
+where user_id = '00000000-0000-0000-0000-000000000701'
+  and normalized_url = 'https://www.instagram.com/reel/ORGANIZE-A';
 
 -- ── replace_reel_place_mentions: the owner-scoped, transactional set replacement ──────────
 select has_function('public', 'replace_reel_place_mentions', array['uuid','uuid','text','jsonb'], 'the mention rewrite RPC exists');

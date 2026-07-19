@@ -249,6 +249,10 @@ export type GenerateTripRequest = {
   budget_level: BudgetLevel | null
   origin_city: string | null
   preferences: string | null
+  /** Mirrors backend GenerateTripRequest.pace (api/schemas.py). Deliberately `string`, not a
+   *  union: the backend caps length rather than enumerating values, so an unrecognized pace
+   *  is accepted (no breaking 422) — the TS type must not be stricter than the API. */
+  pace?: string
 }
 export type GenerateTripResponse = { trip_id: string }
 

@@ -4,6 +4,7 @@ import type {
 } from './backend-types'
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000'
+export const ACTIVE_ORGANIZE_CONFLICT_MESSAGE = 'One of those Reels is already being organized. Wait for it to finish, or deselect it and organize the others.'
 const SAFE_SAVED_REEL_CARD_COLUMNS = [
   'id', 'user_id', 'normalized_url', 'source_platform', 'reel_cache_id',
   'analysis_status', 'personal_label', 'retry_after', 'analyzed_at',
@@ -19,7 +20,12 @@ async function backendJson<T>(path: string, token: string, init: RequestInit = {
       ...(init.headers ?? {}),
     },
   })
-  if (!response.ok) throw new Error(`Saved Reels request failed: ${response.status}`)
+  if (!response.ok) {
+    if (response.status === 409 && path === '/saved-reels/organize') {
+      throw new Error(ACTIVE_ORGANIZE_CONFLICT_MESSAGE)
+    }
+    throw new Error(`Saved Reels request failed: ${response.status}`)
+  }
   return response.json() as Promise<T>
 }
 

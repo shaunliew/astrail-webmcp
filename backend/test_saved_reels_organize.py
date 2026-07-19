@@ -9,6 +9,7 @@ from api.schemas import GenerateTripRequest, OrganizeJobStatus, OrganizeSavedRee
 from api.streaming import DONE, format_sse, stream_organize_events, stream_organize_status
 from models.place import PlaceResult
 from organizer import (
+    ActiveOrganizeConflict,
     _ground_place,
     _persist_place,
     authorize_place_ids,
@@ -87,12 +88,83 @@ class _Client:
     def table(self, name): return _Table(name, self.db)
     def rpc(self, name, params):
         self.rpc_calls.append((name, params))
+        if name == "create_saved_reels_organize_job":
+            return _CreateOrganizeJobRpc(self, params)
         return _Rpc(self, name)
 
 
 class _Rpc:
     def __init__(self, client, name): self.client, self.name = client, name
     async def execute(self): return _Result(self.client.db.get(f"rpc:{self.name}"))
+
+
+class _CreateOrganizeJobRpc:
+    def __init__(self, client, params): self.client, self.params = client, params
+
+    async def execute(self):
+        from postgrest.exceptions import APIError
+
+        user_id = self.params["p_user_id"]
+        ids = self.params["p_saved_reel_ids"]
+        key = self.params["p_idempotency_key"]
+        active = next((row for row in self.client.db.get("organize_jobs", [])
+                       if row.get("user_id") == user_id
+                       and row.get("idempotency_key") == key
+                       and row.get("status") in {"initializing", "pending", "processing"}), None)
+        if active:
+            return _Result(active["id"])
+        saved = [row for row in self.client.db.get("saved_reels", [])
+                 if row.get("user_id") == user_id and row.get("id") in ids]
+        if len(saved) != len(ids):
+            raise APIError({"code": "P0001", "message": "Saved Reel not found", "details": None, "hint": None})
+        active_item = next((item for item in self.client.db.get("organize_job_items", [])
+                            if item.get("saved_reel_id") in ids
+                            and any(job.get("id") == item.get("job_id")
+                                    and job.get("user_id") == user_id
+                                    and job.get("status") in {"initializing", "pending", "processing"}
+                                    for job in self.client.db.get("organize_jobs", []))), None)
+        if active_item:
+            raise APIError({
+                "code": "P0001",
+                "message": "Saved Reel is already being organized",
+                "details": None,
+                "hint": None,
+            })
+        job = {
+            "id": f"organize_jobs-{len(self.client.db.get('organize_jobs', [])) + 1}",
+            "user_id": user_id,
+            "idempotency_key": key,
+            "request_json": {"saved_reel_ids": ids},
+            "status": "pending",
+            "status_message": "Queued",
+            "total_count": len(ids),
+            "processed_count": 0,
+            "organized_count": 0,
+            "location_not_found_count": 0,
+            "failed_count": 0,
+        }
+        self.client.db.setdefault("organize_jobs", []).append(job)
+        items = self.client.db.setdefault("organize_job_items", [])
+        for row in saved:
+            items.append({
+                "id": f"organize_job_items-{len(items) + 1}",
+                "user_id": user_id,
+                "job_id": job["id"],
+                "saved_reel_id": row["id"],
+                "status": "queued",
+                "place_count": 0,
+                "analysis_charge_state": "not_charged",
+            })
+        self.client.db.setdefault("organize_events", []).append({
+            "id": "organize_events-1",
+            "user_id": user_id,
+            "job_id": job["id"],
+            "sequence": 1,
+            "event_type": "stage",
+            "message": "Queued",
+            "payload": {},
+        })
+        return _Result(job["id"])
 
 
 def _place(name="Tokyo Tower"):
@@ -169,29 +241,50 @@ async def test_create_organize_job_enforces_owner_and_is_idempotent():
 
 
 @pytest.mark.asyncio
-async def test_create_organize_job_reuses_initializing_job_during_item_creation():
-    retry_ids = []
-    observed_statuses = []
+async def test_create_organize_job_uses_atomic_rpc_and_maps_active_conflict():
+    calls = []
 
-    class _InterleavingTable(_Table):
-        async def execute(self):
-            if (
-                self.name == "organize_job_items"
-                and isinstance(self.op, tuple)
-                and self.op[0] == "insert"
-                and not retry_ids
-            ):
-                observed_statuses.append(self.db["organize_jobs"][0]["status"])
-                retry_ids.append(
-                    await create_organize_job(client, "user-a", ["r1", "r2"])
-                )
-            return await super().execute()
+    class _RpcClient:
+        def rpc(self, name, params):
+            calls.append((name, params))
+            return _RpcResult("job-1")
 
-    class _InterleavingClient(_Client):
-        def table(self, name):
-            return _InterleavingTable(name, self.db)
+    class _RpcResult:
+        def __init__(self, value): self.value = value
+        async def execute(self): return _Result(self.value)
 
-    client = _InterleavingClient({
+    client = _RpcClient()
+    assert await create_organize_job(client, "user-a", ["r1", "r2"]) == "job-1"
+    assert calls == [(
+        "create_saved_reels_organize_job",
+        {
+            "p_user_id": "user-a",
+            "p_saved_reel_ids": ["r1", "r2"],
+            "p_idempotency_key": calls[0][1]["p_idempotency_key"],
+        },
+    )]
+
+    from postgrest.exceptions import APIError
+
+    class _ConflictRpcClient:
+        def rpc(self, _name, _params):
+            class _ConflictResult:
+                async def execute(self):
+                    raise APIError({
+                        "code": "P0001",
+                        "message": "Saved Reel is already being organized",
+                        "details": None,
+                        "hint": None,
+                    })
+            return _ConflictResult()
+
+    with pytest.raises(ActiveOrganizeConflict):
+        await create_organize_job(_ConflictRpcClient(), "user-a", ["r1"])
+
+
+@pytest.mark.asyncio
+async def test_create_organize_job_is_initialized_atomically():
+    client = _Client({
         "saved_reels": [
             {"id": "r1", "user_id": "user-a", "normalized_url": "u1"},
             {"id": "r2", "user_id": "user-a", "normalized_url": "u2"},
@@ -200,144 +293,59 @@ async def test_create_organize_job_reuses_initializing_job_during_item_creation(
 
     job_id = await create_organize_job(client, "user-a", ["r1", "r2"])
 
-    assert retry_ids == [job_id]
-    assert observed_statuses == ["initializing"]
-    assert len(client.db["organize_jobs"]) == 1
-    assert len(client.db["organize_job_items"]) == 2
-    assert client.db["organize_events"][0]["message"] == "Queued"
+    assert client.db["organize_jobs"][0]["id"] == job_id
     assert client.db["organize_jobs"][0]["status"] == "pending"
     assert client.db["organize_jobs"][0]["status_message"] == "Queued"
+    assert len(client.db["organize_job_items"]) == 2
+    assert {row["saved_reel_id"] for row in client.db["organize_job_items"]} == {"r1", "r2"}
+    assert client.db["organize_events"][0]["sequence"] == 1
+    assert client.db["organize_events"][0]["message"] == "Queued"
 
 
 @pytest.mark.asyncio
-async def test_create_organize_job_replaces_stale_initializing_job_after_partial_item_failure():
-    class _CrashOnceTable(_Table):
-        def __init__(self, name, db, client):
-            super().__init__(name, db)
-            self.client = client
-
-        async def execute(self):
-            if (
-                self.name == "organize_job_items"
-                and isinstance(self.op, tuple)
-                and self.op[0] == "insert"
-            ):
-                self.client.item_insert_attempts += 1
-                if self.client.item_insert_attempts == 2:
-                    raise RuntimeError("item insert interrupted")
-            return await super().execute()
-
-    class _CrashOnceClient(_Client):
-        def __init__(self, db):
-            super().__init__(db)
-            self.item_insert_attempts = 0
-
-        def table(self, name):
-            return _CrashOnceTable(name, self.db, self)
-
-    client = _CrashOnceClient({
+async def test_create_organize_job_rejects_active_overlap_without_partial_rows():
+    client = _Client({
         "saved_reels": [
             {"id": "r1", "user_id": "user-a", "normalized_url": "u1"},
             {"id": "r2", "user_id": "user-a", "normalized_url": "u2"},
         ],
     })
+    first = await create_organize_job(client, "user-a", ["r1"])
 
-    with pytest.raises(RuntimeError, match="item insert interrupted"):
+    with pytest.raises(ActiveOrganizeConflict):
         await create_organize_job(client, "user-a", ["r1", "r2"])
 
     assert len(client.db["organize_jobs"]) == 1
-    assert client.db["organize_jobs"][0]["status"] == "initializing"
+    assert client.db["organize_jobs"][0]["id"] == first
     assert len(client.db["organize_job_items"]) == 1
-
-    client.db["organize_jobs"][0]["created_at"] = (
-        datetime.now(timezone.utc) - timedelta(seconds=121)
-    ).isoformat()
-
-    job_id = await create_organize_job(client, "user-a", ["r1", "r2"])
-
-    assert job_id == client.db["organize_jobs"][0]["id"]
-    assert len(client.db["organize_jobs"]) == 1
-    assert client.db["organize_jobs"][0]["status"] == "pending"
-    assert len(client.db["organize_job_items"]) == 2
-    assert {row["saved_reel_id"] for row in client.db["organize_job_items"]} == {"r1", "r2"}
     assert len(client.db["organize_events"]) == 1
-    assert client.db["organize_events"][0]["message"] == "Queued"
 
 
 @pytest.mark.asyncio
-async def test_create_organize_job_returns_replacement_when_stale_delete_loses_race():
-    class _DeleteRaceTable(_Table):
-        async def execute(self):
-            if (
-                self.name == "organize_jobs"
-                and self.op == "delete"
-                and self.filters.get("status") == "initializing"
-                and not self.db.get("delete_race_completed")
-            ):
-                stale = next(row for row in self.db["organize_jobs"] if self._matches(row))
-                self.db["organize_jobs"].remove(stale)
-                self.db["organize_jobs"].append({
-                    **stale,
-                    "id": "replacement-job",
-                    "status": "pending",
-                    "created_at": datetime.now(timezone.utc).isoformat(),
-                })
-                self.db["delete_race_completed"] = True
-                return _Result([])
-            return await super().execute()
-
-    class _DeleteRaceClient(_Client):
-        def table(self, name):
-            return _DeleteRaceTable(name, self.db)
-
-    client = _DeleteRaceClient({
-        "saved_reels": [{"id": "r1", "user_id": "user-a", "normalized_url": "u"}],
+async def test_create_organize_job_allows_terminal_overlap_and_disjoint_sets():
+    client = _Client({
+        "saved_reels": [
+            {"id": "r1", "user_id": "user-a", "normalized_url": "u1"},
+            {"id": "r2", "user_id": "user-a", "normalized_url": "u2"},
+        ],
     })
-    stale_job_id = await create_organize_job(client, "user-a", ["r1"])
-    stale = client.db["organize_jobs"][0]
-    stale["status"] = "initializing"
-    stale["created_at"] = (
-        datetime.now(timezone.utc) - timedelta(seconds=121)
-    ).isoformat()
+    first = await create_organize_job(client, "user-a", ["r1"])
+    client.db["organize_jobs"][0]["status"] = "succeeded"
 
-    result = await create_organize_job(client, "user-a", ["r1"])
+    retry = await create_organize_job(client, "user-a", ["r1", "r2"])
 
-    assert result == "replacement-job"
-    assert result != stale_job_id
+    assert retry != first
+    assert len(client.db["organize_jobs"]) == 2
 
-
-@pytest.mark.asyncio
-async def test_create_organize_job_reuses_same_job_when_stale_delete_loses_to_pending_transition():
-    class _PendingRaceTable(_Table):
-        async def execute(self):
-            if (
-                self.name == "organize_jobs"
-                and self.op == "delete"
-                and self.filters.get("status") == "initializing"
-                and not self.db.get("pending_race_completed")
-            ):
-                stale = next(row for row in self.db["organize_jobs"] if self._matches(row))
-                stale["status"] = "pending"
-                stale["created_at"] = datetime.now(timezone.utc).isoformat()
-                self.db["pending_race_completed"] = True
-                return _Result([])
-            return await super().execute()
-
-    class _PendingRaceClient(_Client):
-        def table(self, name):
-            return _PendingRaceTable(name, self.db)
-
-    client = _PendingRaceClient({
-        "saved_reels": [{"id": "r1", "user_id": "user-a", "normalized_url": "u"}],
+    disjoint = _Client({
+        "saved_reels": [
+            {"id": "r1", "user_id": "user-a", "normalized_url": "u1"},
+            {"id": "r2", "user_id": "user-a", "normalized_url": "u2"},
+        ],
     })
-    job_id = await create_organize_job(client, "user-a", ["r1"])
-    stale = client.db["organize_jobs"][0]
-    stale["status"] = "initializing"
-    stale["created_at"] = (
-        datetime.now(timezone.utc) - timedelta(seconds=121)
-    ).isoformat()
-
-    assert await create_organize_job(client, "user-a", ["r1"]) == job_id
+    await create_organize_job(disjoint, "user-a", ["r1"])
+    second = await create_organize_job(disjoint, "user-a", ["r2"])
+    assert second == "organize_jobs-2"
 
 
 @pytest.mark.asyncio
@@ -946,32 +954,12 @@ async def test_create_organize_job_reuses_active_but_reprocesses_terminal_job():
 
 @pytest.mark.asyncio
 async def test_create_organize_job_returns_active_winner_after_unique_race():
-    from postgrest.exceptions import APIError
-
-    class _RaceTable(_Table):
-        async def execute(self):
-            if (
-                self.name == "organize_jobs"
-                and isinstance(self.op, tuple)
-                and self.op[0] == "insert"
-            ):
-                self.db.setdefault("organize_jobs", []).append({
-                    "id": "raced-job", **self.op[1], "status": "processing",
-                })
-                raise APIError({
-                    "code": "23505", "message": "duplicate", "details": None, "hint": None,
-                })
-            return await super().execute()
-
-    class _RaceClient(_Client):
-        def table(self, name):
-            return _RaceTable(name, self.db)
-
-    client = _RaceClient({
+    client = _Client({
         "saved_reels": [{"id": "r1", "user_id": "user-a", "normalized_url": "u"}],
     })
 
-    assert await create_organize_job(client, "user-a", ["r1"]) == "raced-job"
+    assert await create_organize_job(client, "user-a", ["r1"]) == "organize_jobs-1"
+    assert client.rpc_calls[0][0] == "create_saved_reels_organize_job"
 
 
 @pytest.mark.asyncio

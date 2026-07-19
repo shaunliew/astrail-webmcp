@@ -303,6 +303,26 @@ async def test_saved_reels_organize_has_per_user_burst_limit(ctx, monkeypatch):
     assert len(created) == 3
 
 
+async def test_saved_reels_organize_active_overlap_is_a_conflict(ctx, monkeypatch):
+    from organizer import ActiveOrganizeConflict
+
+    async def create_job(*_args, **_kwargs):
+        raise ActiveOrganizeConflict("Saved Reel is already being organized")
+
+    monkeypatch.setattr(main, "create_organize_job", create_job)
+    response = await ctx[0].post(
+        "/saved-reels/organize", json={"saved_reel_ids": ["reel-1"]}
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "error": {
+            "code": "conflict",
+            "message": "Saved Reel is already being organized",
+        }
+    }
+
+
 async def test_saved_reels_organize_requires_auth(monkeypatch):
     called = False
 

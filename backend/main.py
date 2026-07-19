@@ -47,7 +47,13 @@ from rate_limit import (
     refund_daily_quota,
 )
 from saved_reels import capture_saved_reel
-from organizer import create_organize_job, get_organize_status, recover_organize_jobs, run_organize_job
+from organizer import (
+    ActiveOrganizeConflict,
+    create_organize_job,
+    get_organize_status,
+    recover_organize_jobs,
+    run_organize_job,
+)
 from supabase_client import get_supabase_client
 
 _RECOVERY_TASKS: set = set()
@@ -268,6 +274,8 @@ async def organize_saved_reels(
     client = await get_supabase_client()
     try:
         job_id = await create_organize_job(client, user_id, req.saved_reel_ids)
+    except ActiveOrganizeConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=404, detail="Saved Reel not found") from exc
     background.add_task(run_organize_job, job_id, user_id, client=client)

@@ -21,6 +21,10 @@ INITIALIZING_STALE_AFTER_S = 120
 ORGANIZE_FAILURE_MESSAGE = "Organization failed"
 
 
+class ActiveOrganizeConflict(RuntimeError):
+    """The selected Saved Reel is already part of another active job."""
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -55,78 +59,26 @@ async def _find_cache_id(client, normalized_url: str) -> str | None:
 
 
 async def create_organize_job(client, user_id: str, saved_reel_ids: list[str]) -> str:
-    """Validate ownership, create one durable job and its owner-linked items."""
-    ids = list(dict.fromkeys(saved_reel_ids))
+    """Create one complete organize job through the atomic service-role RPC."""
+    ids = list(saved_reel_ids)
     key = _request_key(user_id, ids)
-    existing = await (client.table("organize_jobs").select("id,status,created_at").eq("user_id", user_id)
-                      .eq("idempotency_key", key).in_(
-                          "status", ["initializing", "pending", "processing"]
-                      )
-                      .maybe_single().execute())
-    stale_job_id: str | None = None
-    if existing is not None and existing.data is not None:
-        if _initializing_job_is_stale(existing.data):
-            stale_job_id = existing.data["id"]
-            deleted = await (client.table("organize_jobs").delete().eq("id", existing.data["id"])
-                             .eq("user_id", user_id).eq("status", "initializing").execute())
-            if not deleted.data:
-                replacement = await (client.table("organize_jobs").select("id,status").eq("user_id", user_id)
-                                     .eq("idempotency_key", key).in_(
-                                         "status", ["initializing", "pending", "processing"]
-                                     )
-                                     .maybe_single().execute())
-                if (
-                    replacement is not None
-                    and replacement.data is not None
-                    and (
-                        replacement.data["id"] != stale_job_id
-                        or replacement.data.get("status") in {"pending", "processing"}
-                    )
-                ):
-                    return replacement.data["id"]
-        else:
-            return existing.data["id"]
-    saved = await (client.table("saved_reels").select("id,user_id,normalized_url,reel_cache_id")
-                   .eq("user_id", user_id).in_("id", ids).execute())
-    rows = saved.data or []
-    if len(rows) != len(ids):
-        raise PermissionError("Saved Reel not found")
     try:
-        job = (await client.table("organize_jobs").insert({
-            "user_id": user_id,
-            "idempotency_key": key,
-            "request_json": {"saved_reel_ids": ids},
-            "status": "initializing",
-            "status_message": "Preparing",
-            "total_count": len(ids),
-            "processed_count": 0,
-            "organized_count": 0,
-            "location_not_found_count": 0,
-            "failed_count": 0,
-        }).execute()).data[0]
+        result = await client.rpc(
+            "create_saved_reels_organize_job",
+            {
+                "p_user_id": user_id,
+                "p_saved_reel_ids": ids,
+                "p_idempotency_key": key,
+            },
+        ).execute()
     except APIError as exc:
-        if exc.code != "23505":
-            raise
-        raced = await (client.table("organize_jobs").select("id").eq("user_id", user_id)
-                       .eq("idempotency_key", key).in_(
-                           "status", ["initializing", "pending", "processing"]
-                       )
-                       .maybe_single().execute())
-        if raced is None or raced.data is None:
-            raise
-        if raced.data["id"] == stale_job_id:
-            raise
-        return raced.data["id"]
-    for row in rows:
-        await client.table("organize_job_items").insert({
-            "user_id": user_id, "job_id": job["id"], "saved_reel_id": row["id"],
-            "status": "queued", "place_count": 0, "analysis_charge_state": "not_charged",
-        }).execute()
-    await _record_organize_event(client, job["id"], user_id, "stage", "Queued")
-    await (client.table("organize_jobs").update({
-        "status": "pending", "status_message": "Queued",
-    }).eq("id", job["id"]).eq("user_id", user_id).eq("status", "initializing").execute())
-    return job["id"]
+        message = getattr(exc, "message", str(exc))
+        if exc.code == "P0001" and message == "Saved Reel is already being organized":
+            raise ActiveOrganizeConflict(message) from exc
+        if exc.code == "P0001" and message == "Saved Reel not found":
+            raise PermissionError(message) from exc
+        raise
+    return result.data
 
 
 async def _record_organize_event(client, job_id: str, user_id: str, event_type: str, message: str, payload=None) -> None:

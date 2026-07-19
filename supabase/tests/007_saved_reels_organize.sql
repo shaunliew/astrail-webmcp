@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(166);
+select plan(179);
 
 insert into auth.users (id, email)
 values
@@ -827,6 +827,102 @@ select results_eq(
   $$select analysis_charge_state, analysis_usage_date, analysis_reserved_at, analysis_refunded_at, analysis_consumed_at from public.organize_job_items where id = '73000000-0000-0000-0000-000000000003'$$,
   $$values ('not_charged'::text, null::date, null::timestamptz, null::timestamptz, null::timestamptz)$$,
   'quota rejection leaves the item unchanged'
+);
+
+select ok(
+  not has_function_privilege('authenticated', 'public.create_saved_reels_organize_job(uuid,uuid[],text)', 'EXECUTE'),
+  'authenticated cannot create Saved Reel organize jobs through the RPC'
+);
+select ok(
+  has_function_privilege('service_role', 'public.create_saved_reels_organize_job(uuid,uuid[],text)', 'EXECUTE'),
+  'service role can create Saved Reel organize jobs through the RPC'
+);
+select isnt_empty(
+  $$select id from public.capture_saved_reel('00000000-0000-0000-0000-000000000701', 'https://www.instagram.com/reel/ORGANIZE-A-2')$$,
+  'service role captures a second user A saved reel for overlap tests'
+);
+select isnt_empty(
+  $$select id from public.capture_saved_reel('00000000-0000-0000-0000-000000000701', 'https://www.instagram.com/reel/ORGANIZE-A-3')$$,
+  'service role captures a third user A saved reel for disjoint tests'
+);
+select ok(
+  public.create_saved_reels_organize_job(
+    '00000000-0000-0000-0000-000000000701',
+    array[(select id from public.saved_reels where user_id = '00000000-0000-0000-0000-000000000701' and normalized_url = 'https://www.instagram.com/reel/ORGANIZE-A')]::uuid[],
+    'p2-6-atomic'
+  ) is not null,
+  'atomic RPC creates a pending organize job'
+);
+select is(
+  (select count(*)::integer from public.organize_job_items items
+   join public.organize_jobs jobs on jobs.id = items.job_id
+   where jobs.user_id = '00000000-0000-0000-0000-000000000701' and jobs.idempotency_key = 'p2-6-atomic'),
+  1,
+  'atomic RPC inserts all selected items with the job'
+);
+select results_eq(
+  $$select event_type, sequence from public.organize_events events join public.organize_jobs jobs on jobs.id = events.job_id where jobs.idempotency_key = 'p2-6-atomic'$$,
+  $$values ('stage'::text, 1)$$,
+  'atomic RPC inserts the sequence-one queued event'
+);
+select is(
+  public.create_saved_reels_organize_job(
+    '00000000-0000-0000-0000-000000000701',
+    array[(select id from public.saved_reels where user_id = '00000000-0000-0000-0000-000000000701' and normalized_url = 'https://www.instagram.com/reel/ORGANIZE-A')]::uuid[],
+    'p2-6-atomic'
+  ),
+  (select id from public.organize_jobs where user_id = '00000000-0000-0000-0000-000000000701' and idempotency_key = 'p2-6-atomic'),
+  'identical active idempotency replay returns the same job'
+);
+select throws_ok(
+  $$select public.create_saved_reels_organize_job(
+    '00000000-0000-0000-0000-000000000701',
+    array[
+      (select id from public.saved_reels where user_id = '00000000-0000-0000-0000-000000000701' and normalized_url = 'https://www.instagram.com/reel/ORGANIZE-A'),
+      (select id from public.saved_reels where user_id = '00000000-0000-0000-0000-000000000701' and normalized_url = 'https://www.instagram.com/reel/ORGANIZE-A-2')
+    ]::uuid[],
+    'p2-6-overlap'
+  )$$,
+  'P0001',
+  'Saved Reel is already being organized',
+  'overlapping active organize items are rejected as one request'
+);
+select is(
+  (select count(*)::integer from public.organize_jobs where user_id = '00000000-0000-0000-0000-000000000701' and idempotency_key = 'p2-6-overlap'),
+  0,
+  'active overlap rejection creates no partial job'
+);
+update public.organize_jobs
+set status = 'succeeded'
+where user_id = '00000000-0000-0000-0000-000000000701' and idempotency_key = 'p2-6-atomic';
+select ok(
+  public.create_saved_reels_organize_job(
+    '00000000-0000-0000-0000-000000000701',
+    array[
+      (select id from public.saved_reels where user_id = '00000000-0000-0000-0000-000000000701' and normalized_url = 'https://www.instagram.com/reel/ORGANIZE-A'),
+      (select id from public.saved_reels where user_id = '00000000-0000-0000-0000-000000000701' and normalized_url = 'https://www.instagram.com/reel/ORGANIZE-A-2')
+    ]::uuid[],
+    'p2-6-terminal'
+  ) is not null,
+  'terminal Saved Reel items can be selected in a new active job'
+);
+select ok(
+  public.create_saved_reels_organize_job(
+    '00000000-0000-0000-0000-000000000701',
+    array[(select id from public.saved_reels where user_id = '00000000-0000-0000-0000-000000000701' and normalized_url = 'https://www.instagram.com/reel/ORGANIZE-A-3')]::uuid[],
+    'p2-6-disjoint'
+  ) is not null,
+  'disjoint Saved Reel sets can run concurrently'
+);
+select throws_ok(
+  $$select public.create_saved_reels_organize_job(
+    '00000000-0000-0000-0000-000000000702',
+    array[(select id from public.saved_reels where user_id = '00000000-0000-0000-0000-000000000701' and normalized_url = 'https://www.instagram.com/reel/ORGANIZE-A')]::uuid[],
+    'p2-6-cross-owner'
+  )$$,
+  'P0001',
+  'Saved Reel not found',
+  'cross-owner Saved Reel selection preserves not-found semantics'
 );
 
 reset role;

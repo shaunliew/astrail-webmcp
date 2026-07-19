@@ -68,6 +68,14 @@ describe('saved reels api', () => {
     )
   })
 
+  it('maps an active organize overlap to a friendly inbox message', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(new Response('', { status: 409 }))
+
+    await expect(startOrganize(['saved-1'], 'jwt-token')).rejects.toThrow(
+      'One of those Reels is already being organized. Wait for it to finish, or deselect it and organize the others.',
+    )
+  })
+
   it('reconnects the durable event stream from the last cursor', () => {
     vi.useFakeTimers()
     class FakeEventSource {

@@ -132,6 +132,37 @@ blocked-provider test red.
 
 **Rollback.** Trivial revert; only I5's tests depend on it.
 
+> ### ⛔ I4 IS UNSAFE ALONE — I5 IS LOAD-BEARING, NOT NEXT-IN-SEQUENCE
+>
+> **Empirically reproduced 2026-07-19** (two concurrent `run_organize_job` calls against the real
+> `organizer.py`): a superseded worker's lease-loss abort **force-fails a legitimately-leased
+> replacement**. Observed — worker B claims with a valid token, organizes item 1, then:
+> `status='failed'`, `organized_items=1`, item 2 left `queued`. B's own token was never superseded.
+>
+> Chain: A's `LeaseLost` reaches the outer `except Exception` → `_mark_organize_job_failed`, which
+> is **unfenced** → writes `status='failed'` → B's own renewal CAS requires
+> `.eq("status","processing")` → matches zero rows → B reads it as lease loss → B aborts.
+>
+> Two reasons this is worse than "the same defect with a different value":
+> 1. **New failure channel.** The renewal CAS's `status` predicate turns *any* write to `status` —
+>    including an unrelated unfenced cleanup — into an implicit "you lost your lease" signal for
+>    whoever legitimately holds it. Pre-I4 no worker could reach into another's control flow at all.
+> 2. **I4 makes a theoretical race fire reliably.** A worker stuck in a blocked provider call
+>    previously had *no exit path*, so it never reached any terminal write. I4 gives it a guaranteed
+>    exit one renewal interval after being superseded — so the unfenced write now fires with
+>    near-certainty in exactly the deploy-overlap scenario A2 exists to survive.
+>
+> **I5 closes it completely** (`.eq("lease_token", ...)` makes A's write match zero rows).
+> **Therefore: never merge I4 to `dev` or deploy it independently of I5.** With `autoDeploy: true`
+> on `dev`, merging I4 alone ships it. This belongs verbatim in the A-II PR body.
+>
+> *Minor, same review:* I3's review argued I4 would be orthogonal to its `CancelledError` test
+> because "I4 uses cooperative signalling, not real cancellation". **That premise is now false** —
+> I4 does call `beat.cancel()`. The test still passes, but for a narrower reason: the real
+> cancellation is scoped to the *heartbeat task*, never to the main run's coroutine, so it cannot
+> collide with a `CancelledError` raised synchronously inside `ground()`. Do not lean on the
+> outdated "I4 has no real cancellation" claim in a later increment.
+
 ### I5 — Fenced organize writes + RPC-backed `_record_organize_event`
 
 **Lands.** Final-status update and `_mark_organize_job_failed` gain `.eq("lease_token", ...)` (plus a

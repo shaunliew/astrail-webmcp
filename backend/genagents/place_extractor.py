@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import re
 import sys
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from models.place import ExtractionResult, PlaceResult
 from models.reel import ReelData
@@ -26,7 +26,7 @@ FALLBACK_MODEL = "gpt-4o"
 
 # Bump this on ANY change to the extractor (instructions, model, keep_valid_places, or the
 # PlaceResult schema) — the extraction cache keys on it, so a bump auto-invalidates stale entries.
-EXTRACTOR_VERSION = "2026-07-18.3"
+EXTRACTOR_VERSION = "2026-07-19.1"
 
 PLACE_EXTRACTOR_INSTRUCTIONS = """\
 You are a travel place-extraction agent. You receive an Instagram reel caption and an \
@@ -60,8 +60,11 @@ Step 4 — return ExtractionResult. For each place:
   - confidence: tier value for tagged places; 0.5–0.7 for free-text-only
   - evidence_quote: COPY THE EXACT PHRASE verbatim from the caption or location tag — \
     a literal substring, character for character, including emoji (e.g. "📍Tokyo Dream Park")
-  - source_url: copied verbatim from a real web_search URL, or null. Never fabricate or \
-    template a URL; never use example.com or any placeholder.
+  - source_url: copied verbatim from a real, independent venue page returned by web_search, \
+    or null. Never fabricate or template a URL; never use example.com or any placeholder.
+    Do not use Google Maps search URLs or URLs whose query merely echoes the place's own \
+    coordinates. A Google Maps URL is acceptable only when it is a real /place/ URL with a \
+    stable embedded place id.
 
 Rules:
   - evidence_quote MUST be a verbatim substring of the caption/location tag. No paraphrasing.
@@ -84,6 +87,8 @@ _FAKE_DOMAINS = frozenset({
 _PLACEHOLDER_PATH_RE = re.compile(
     r"placeholder|example|your[-_]?(url|link|website)|insert[-_]?(url|link)", re.IGNORECASE
 )
+_QUERY_NUMBER_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)")
+_GOOGLE_PLACE_ID_RE = re.compile(r"(?:!1s|(?:^|[?&])place_id=)([A-Za-z0-9_-]{8,})")
 _PROMPT_INJECTION_RE = re.compile(
     r"(?:"
     r"\b(?:ignore|disregard|forget|override)\b.{0,80}"
@@ -117,6 +122,32 @@ def is_placeholder_url(url: str | None) -> bool:
     return False
 
 
+def is_independent_source_url(url: str | None, lat: float | None, lng: float | None) -> bool:
+    """Return whether a source URL is independent of the extracted coordinates."""
+    if lat is None or lng is None or is_placeholder_url(url):
+        return False
+    parsed = urlparse(url.strip())
+    host = (parsed.hostname or "").lower()
+    query = unquote(parsed.query)
+    numbers = [float(value) for value in _QUERY_NUMBER_RE.findall(query)]
+    if (
+        any(abs(value - lat) <= 1e-6 for value in numbers)
+        and any(abs(value - lng) <= 1e-6 for value in numbers)
+    ):
+        return False
+
+    is_google_host = host.startswith("google.") or ".google." in host
+    if not is_google_host:
+        return True
+
+    path = parsed.path.lower()
+    if "/maps/search" in path:
+        return False
+    if "/maps/place/" not in path:
+        return False
+    return _GOOGLE_PLACE_ID_RE.search(f"{parsed.path}?{parsed.query}") is not None
+
+
 def build_extractor_input(reel: ReelData) -> str:
     """The extractor's user message: location tag (highest-confidence) then caption."""
     parts: list[str] = []
@@ -139,6 +170,8 @@ def keep_valid_places(places: list[PlaceResult], reel: ReelData) -> list[PlaceRe
         if not p.evidence_quote or p.evidence_quote.lower() not in corpus:
             continue
         if is_placeholder_url(p.source_url):
+            continue
+        if not is_independent_source_url(p.source_url, p.lat, p.lng):
             continue
         if p.country_code is None or p.country_name is None:
             continue

@@ -10,6 +10,7 @@ from genagents.place_extractor import (
     build_extractor,
     build_extractor_input,
     extract_places,
+    is_independent_source_url,
     is_placeholder_url,
     keep_valid_places,
     _count_web_searches,
@@ -30,7 +31,7 @@ def _place(name, ev, lat=35.6, lng=139.7, url="https://tabelog.com/tokyo/123") -
 
 
 def test_extractor_version_invalidates_pre_country_cache_rows():
-    assert EXTRACTOR_VERSION == "2026-07-18.3"
+    assert EXTRACTOR_VERSION == "2026-07-19.1"
 
 
 def test_extractor_requires_researched_country_pair():
@@ -39,6 +40,8 @@ def test_extractor_requires_researched_country_pair():
     assert "ISO 3166-1 alpha-2" in PLACE_EXTRACTOR_INSTRUCTIONS
     assert "web_search" in PLACE_EXTRACTOR_INSTRUCTIONS
     assert "at most 10 places" in PLACE_EXTRACTOR_INSTRUCTIONS
+    assert "independent venue page" in PLACE_EXTRACTOR_INSTRUCTIONS
+    assert "coordinate" in PLACE_EXTRACTOR_INSTRUCTIONS
 
 
 @pytest.mark.parametrize("overrides", [
@@ -128,6 +131,33 @@ def test_is_placeholder_url():
     assert is_placeholder_url("") is True
     assert is_placeholder_url(None) is True
     assert is_placeholder_url("https://tabelog.com/tokyo/123") is False
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("", False),
+    ("ftp://tabelog.com/tokyo/123", False),
+    ("https://official-venue.example/visit", True),
+    ("https://tabelog.com/tokyo/123", True),
+    ("https://www.tablecheck.com/en/shops/venue/reserve", True),
+    ("https://www.google.com/maps/search/?api=1&query=35.6,139.7", False),
+    ("https://www.google.com/maps/place/Tokyo+Tower/@35.6,139.7,17z/data=!3m1!4b1!4m6!3m5!1sChIJ1234567890!8m2!3d35.6!4d139.7!16s%2Fg%2F123456", True),
+    ("https://www.google.com/maps/place/Tokyo+Tower/@35.6,139.7,17z", False),
+    ("https://official-venue.example/visit?lat=35.6&lng=139.7", False),
+])
+def test_independent_source_url_matrix(url, expected):
+    assert is_independent_source_url(url, 35.6, 139.7) is expected
+
+
+def test_keep_valid_places_rejects_circular_evidence_urls():
+    reel = _reel()
+    places = [
+        _place("Coordinate echo", "\U0001f4cdCafe Alpha", url="https://official-venue.jp/?lat=35.6&lng=139.7"),
+        _place("Google search", "\U0001f4cdCafe Alpha", url="https://www.google.com/maps/search/?api=1&query=35.6,139.7"),
+        _place("Google no id", "\U0001f4cdCafe Alpha", url="https://www.google.com/maps/place/Cafe+Alpha/@35.6,139.7,17z"),
+        _place("Official venue", "\U0001f4cdCafe Alpha", url="https://official-venue.jp/cafe-alpha"),
+    ]
+
+    assert [place.name for place in keep_valid_places(places, reel)] == ["Official venue"]
 
 
 class _Raw:

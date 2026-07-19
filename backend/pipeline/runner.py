@@ -73,7 +73,8 @@ async def _set_status(client, trip_id, user_id, status) -> None:
     await client.table("trips").update({"status": status}).eq("id", trip_id).eq("user_id", user_id).execute()
 
 
-async def _fail(client, trip_id, user_id, job_id, stage, message, *, lease_token=None) -> dict:
+async def _fail(client, trip_id, user_id, job_id, stage, message, *, lease_token=None,
+                lease_lost=None) -> dict:
     """Best-effort terminal failure write: each write is independent so one Supabase
     error (e.g. the original failure was connectivity) doesn't block the others — the
     terminal `result` event and the job-failed mark are the load-bearing ones.
@@ -83,15 +84,26 @@ async def _fail(client, trip_id, user_id, job_id, stage, message, *, lease_token
     replacement's live run. Such a row is left to the reaper, which is the component that
     owns it. That is safer than an unfenced write and less code than threading an optional
     token down into `mark_job_done`, where it would be a standing fencing bypass.
+
+    `lease_lost` gates the UNFENCED writes. `trips.status` has no CAS to reject a stale
+    write, so a superseded worker reaching here would stamp `failed` over a replacement's
+    `complete` — and unlike the job row and the event stream, nothing ever corrects it.
+    Bounding the window is not enough: a worker parked in a call with no timeout (extraction's
+    agent loop over `web_search` — the reason the heartbeat exists) can finish aborting AFTER
+    the replacement has finished, so the stale write lands last. The job row is safe either way
+    (`complete_trip_run`'s CAS rejects it) and the stray `error` event is unreachable
+    (`api/streaming.py` returns on the first `result`), so `trips.status` was the only leak.
     """
-    try:
-        await record_event(client, trip_id, event_type="error", stage=stage, message=message)
-    except Exception:
-        pass
-    try:
-        await _set_status(client, trip_id, user_id, "failed")
-    except Exception:
-        pass
+    superseded = lease_lost is not None and lease_lost.is_set()
+    if not superseded:
+        try:
+            await record_event(client, trip_id, event_type="error", stage=stage, message=message)
+        except Exception:
+            pass
+        try:
+            await _set_status(client, trip_id, user_id, "failed")
+        except Exception:
+            pass
     if job_id is None:
         # No durable job to fence against — the terminal result is still REQUIRED, because
         # the SSE stream ends on it.
@@ -465,7 +477,7 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
         if client is None:
             raise  # never got a client → BackgroundTasks logs it; startup recovery sweep re-picks the still-pending job
         return await _fail(client, trip_id, user_id, job_id, "save", "unexpected generation error",
-                           lease_token=lease_token)
+                           lease_token=lease_token, lease_lost=lease_lost)
     finally:
         # A leaked beat would go on renewing the lease of a run that has already finished,
         # holding a completed job against the reaper. `lease_lost` doubles as the beat's

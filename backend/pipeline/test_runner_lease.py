@@ -9,11 +9,14 @@ superseded, and the replacement's genuine result is never delivered. `mark_job_d
 alone does not stop that: it guards the JOB row, not the EVENT. `complete_trip_run` makes
 them one transaction, so "no job write => no event write" is true rather than probable.
 
-What these tests deliberately do NOT assert: that a superseded worker moved no `trips` row.
-The trip status and the normalized-persistence block are GATED (an in-process `lease_lost`
-check before the save block and before the terminal status write), not fenced. That bounds
-the window to one renewal interval; it does not close it. Asserting otherwise would pin a
-guarantee this task does not ship.
+`trips.status` is GATED, not fenced — and the gate now covers `_fail` too. It has no CAS to
+reject a stale write, and no read of it gates a decision anywhere in the backend, so it was
+argued as "bounded". That was half right: bounding the window only helps if the superseded
+worker aborts BEFORE the replacement finishes. A worker parked in a call with no timeout
+(extraction's agent loop over `web_search` — the reason the heartbeat exists) can finish
+aborting AFTER, stamping `failed` over a completed trip with nothing to correct it. `_fail`
+now takes `lease_lost` and skips its unfenced writes when set. The normalized-persistence
+block remains gated-not-fenced, which this file still does not assert a guarantee about.
 """
 from __future__ import annotations
 
@@ -379,3 +382,44 @@ async def test_no_heartbeat_is_started_for_a_run_that_lost_the_claim():
     assert out == {"skipped": "job already claimed by another run"}
     assert job_row(client)["lease_token"] == "someone-else"
     assert client.rpc_calls == []
+
+
+async def test_a_superseded_worker_does_not_stamp_failed_over_a_completed_trip():
+    """`trips.status` has no CAS — the gate is the only thing protecting it.
+
+    Reverse-ordering race: the replacement finishes and writes `complete`, and only THEN does
+    the superseded worker's blocking call return and carry it into `_fail`. "Bounded to one
+    renewal interval" does not help here — the stale write simply lands last, and unlike the
+    job row (rejected by `complete_trip_run`'s CAS) and the stray `error` event (unreachable,
+    `api/streaming.py` returns on the first `result`), nothing ever corrects `trips.status`.
+
+    Asserted on `trip_updates` — the writes the code actually issues. An earlier draft of this
+    test asserted a `client.trips` list nothing writes to, so it passed vacuously.
+    """
+    client = seeded_client()
+    token = await jobs.mark_job_running(client, "job-1")
+    job_row(client)["lease_token"] = "someone-else"       # reaped, then claimed by a replacement
+
+    lease_lost = asyncio.Event()
+    lease_lost.set()                                      # our beat already observed the loss
+
+    out = await runner._fail(client, "trip-1", "user-1", "job-1", "save", "boom",
+                             lease_token=token, lease_lost=lease_lost)
+
+    assert out == {"error": "boom"}
+    assert client.trip_updates == [], \
+        "a superseded worker must issue NO trips write — there is no CAS to reject it"
+    assert results(client) == []                          # terminal result still fenced
+
+
+async def test_a_live_worker_still_writes_its_own_failure():
+    """The gate must not silence a legitimate failure — that would hide every real error."""
+    client = seeded_client()
+    token = await jobs.mark_job_running(client, "job-1")
+
+    out = await runner._fail(client, "trip-1", "user-1", "job-1", "save", "boom",
+                             lease_token=token, lease_lost=asyncio.Event())   # NOT set
+
+    assert out == {"error": "boom"}
+    assert any(u.get("status") == "failed" for u in client.trip_updates), \
+        "a live worker's own failure must still reach trips.status"

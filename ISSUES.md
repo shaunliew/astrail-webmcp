@@ -1,7 +1,8 @@
 # Saved Reels Follow-up Issues
 
-Priority order: **B1, B4, B6, B2, B3, B5, B7**. B1 is live security-adjacent log
-exposure; B4 is restart burst-cost and provider-rate-limit risk; B6 is a cheap correctness
+Priority order: **B1, B4, B6, B2, B3, B5, B7**. B1 is **RESOLVED** (live security-adjacent
+log exposure, closed by access-log redaction — see below);
+B4 is restart burst-cost and provider-rate-limit risk; B6 is a cheap correctness
 guard for a currently unreachable UI path; B2/B3 are canonical-data hygiene; B5 is
 **RESOLVED** (it was never protected by the single-writer invariant claimed below — Arc A's
 lease work replaced that premise with a database row lock); B7 is cosmetic product wording.
@@ -35,27 +36,59 @@ All of B1–B7 are now planned in **`docs/superpowers/plans/2026-07-19-saved-ree
 
 **→ NEW: B8 below needs your decision, Zhi Hao.** It is the only item blocking on you.
 
-## B1 — Stop bearer tokens from leaking into stream access logs
+## B1 — Stop bearer tokens from leaking into stream access logs — **RESOLVED (Branch A)**
 
-**Suggested severity:** P2. This is an observed credential-exposure surface in normal live
-operation, even though ownership is still checked correctly.
+**Suggested severity:** P2. This was an observed credential-exposure surface in normal live
+operation, even though ownership was still checked correctly.
 
-**Owner/decision:** Zhi Hao must choose the stream-auth design; Shaun implements the chosen
-backend path. Do not resolve this without the product/security decision.
+**RESOLUTION (2026-07-19, Arc A / task A5).** Option 2 — access-log redaction — shipped:
+`backend/log_redaction.py` installs a filter on the `uvicorn.access` logger from
+`backend/main.py` at import, rewriting `token=<JWT>` to `token=REDACTED` while leaving the
+rest of the access line (method, path, protocol, status) intact. `Dockerfile:25` runs uvicorn
+with default access logging, so that filter is the entire mechanism. The dead
+`sentry-sdk[fastapi]` dependency and its `SENTRY_DSN` config were removed in the same change:
+`sentry_sdk.init` was called nowhere, and its FastAPI integration captures full request URLs,
+so wiring it later would have reopened this leak by another route.
+
+**Why the decision was safe to make without a further product call.** A sentinel probe against
+the live service (`srv-d976aess728c738pskk0`, starter plan) on 2026-07-19T09:34:17Z classified
+every sink:
+
+| Sink | Sentinel | Verdict |
+|---|---|---|
+| `--type app` (uvicorn access log, in-container) | **PRESENT** — `"GET /saved-reels/organize/…/stream?token=… HTTP/1.1" 401` | the leak Branch A closes |
+| `--type request` (Render platform/edge) | **ABSENT — no request-type logs exist at all** | nothing outside app control to redact |
+
+Absence of evidence was ruled out: a `--type request` query with no text filter returned
+empty, and sampling 200 recent entries with no type filter returned `type=app` × 200. Reproduce
+with `render logs -r srv-d976aess728c738pskk0 --type request --limit 3 -o json --confirm`.
+Branch A therefore closes every sink observable on this service.
+
+**What Branch A does NOT fix, and when Branch B (one-time stream tokens) becomes mandatory.**
+Redaction removes the credential from the logs; the Supabase JWT still travels in the URL and
+so still lands in browser history, and absence from the Render CLI proves Render does not
+*expose* request logs to us, not that nothing records them. Branch B (short-lived, single-use,
+ownership-bound stream tokens — fully specified in
+`docs/superpowers/plans/2026-07-19-saved-reels-followups.md` § Task A5) stays deferred behind
+an explicit trigger: **whichever comes first of (a) public beta, (b) any external party gaining
+log access, (c) a Render plan/tier change that surfaces platform request logs — re-run the
+sentinel probe after any such change.**
 
 **Files and symbols:**
 
+- `backend/log_redaction.py` (the fix) · `backend/main.py::_install_log_redaction` (the wiring)
+- `backend/test_log_redaction.py` (regression)
 - `frontend/lib/reels/api.ts::streamOrganize`
 - `frontend/lib/trip/api.ts::streamGeneration`
 - `backend/auth.py::get_user_id_from_query_or_header`
 - `backend/main.py::organize_stream`
 - `backend/main.py::stream` (the trip stream route)
 
-**Problem:** Browser `EventSource` cannot set an `Authorization` header, so both frontend
-streams append the full Supabase JWT as `?token=<JWT>`. FastAPI authenticates it correctly,
-but Uvicorn/Render access logs record the request URL. Anyone with log access may therefore
-receive a live bearer credential. Query parameters can also pass through intermediary
-request telemetry.
+**Problem (as originally reported):** Browser `EventSource` cannot set an `Authorization`
+header, so both frontend streams append the full Supabase JWT as `?token=<JWT>`. FastAPI
+authenticates it correctly, but Uvicorn/Render access logs record the request URL. Anyone with
+log access may therefore receive a live bearer credential. Query parameters can also pass
+through intermediary request telemetry.
 
 **Scoped options:**
 
@@ -67,15 +100,18 @@ request telemetry.
    the observed log leak, but the Supabase JWT still exists in the browser URL and may be
    visible to infrastructure outside the application logger.
 
-**Recommendation/open question:** Zhi Hao must decide whether the release requirement is
-to eliminate the Supabase JWT from URLs entirely (option 1) or to accept URL transport while
-guaranteeing access-log redaction (option 2). At minimum, do not deploy with the current
-unredacted Render access logs.
+**Decision (settled — no longer open):** option 2 now, option 1 behind the trigger above. The
+probe made this a measurement rather than a judgement call: option 1's extra surface (issuance,
+expiry, consumption, replay prevention, reconnect semantics) buys nothing against any sink that
+is observable today, and option 2 removes the credential from the one sink that *is*.
 
-**Regression test:** Start each stream with a sentinel JWT, capture application and access
-logs, and assert the sentinel and `token=` never appear. For one-time tokens, additionally
-prove expiry, single use, ownership binding, reconnect behavior, and rejection after
-consumption.
+**Regression test (shipped):** `backend/test_log_redaction.py` emits a JWT-shaped sentinel
+through the real `uvicorn.access` logger after importing `main`, and asserts neither the
+sentinel nor a bare `token=` survives while the access-line shape does. It is deliberately two
+layers — the direct-filter tests stay green if the wiring is deleted, so a separate `caplog`
+test covers the install, and that asymmetry was verified by fault injection. It also pins
+`api/errors.py` logging `request.url.path` (no query string). If Branch B is ever built, add:
+expiry, single use, ownership binding, reconnect behaviour, and rejection after consumption.
 
 ## B4 — Bound organize-job recovery concurrency at startup
 

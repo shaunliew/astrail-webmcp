@@ -9,7 +9,8 @@ to the winner's trip_id WITHOUT dispatching a second run_generation.
 
 GET /generate-trip/stream/{trip_id} authenticates via a ?token= query param
 (browser EventSource cannot set headers, with a header fallback), verifies
-trip ownership (guardrail #6), and streams generation_events as SSE.
+trip ownership (guardrail #6), and streams generation_events as SSE. That token
+is redacted out of the access log by log_redaction (ISSUES-B1).
 """
 from __future__ import annotations
 
@@ -40,6 +41,7 @@ from api.streaming import stream_organize_events, stream_trip_events
 from auth import get_current_user_id, get_user_id_from_query_or_header
 from config_validation import validate_required_secrets
 from jobs import compute_idempotency_key, enqueue_job, reclaim_expired_jobs
+from log_redaction import install as _install_log_redaction
 from pipeline.runner import record_event, run_generation
 from preferences import compose_preference_summary, fetch_traveler_profile
 from rate_limit import (
@@ -65,6 +67,11 @@ _RECOVERY_SEM = asyncio.Semaphore(3)   # bound boot fan-out so a backlog doesn't
 REAP_INTERVAL_S = 120
 
 logger = logging.getLogger(__name__)
+
+# ISSUES-B1: strip `?token=<JWT>` out of uvicorn's access log. At import, because Dockerfile:25
+# starts uvicorn with DEFAULT access logging (no --no-access-log, no --log-config) — this filter
+# is the whole mechanism, and module import completes before the first request is served.
+_install_log_redaction()
 
 
 def _spawn(coro) -> asyncio.Task:

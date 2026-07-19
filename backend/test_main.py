@@ -207,6 +207,24 @@ async def test_generate_trip_rejects_malformed_place_id_before_db_or_background(
     assert client.rpc_calls == []
 
 
+async def test_generate_trip_rejects_mixed_reel_urls_and_place_ids(ctx):
+    """ISSUES-B6: both fields populated -> 422 with ZERO side effects. Pydantic rejects
+    before the handler body runs, so nothing downstream is reachable: no trip row, no job,
+    no quota RPC, and no background dispatch (which is the only path to an Apify call or
+    to authorize_place_ids -- both live inside run_generation)."""
+    ac, db, calls, client = ctx
+    response = await ac.post(
+        "/generate-trip",
+        json={"reel_urls": ["https://ig/r1"], "place_ids": [_PLACE_ID],
+              "start_date": "2026-08-01", "end_date": "2026-08-02"},
+    )
+
+    assert response.status_code == 422
+    assert db == {}
+    assert calls == []
+    assert client.rpc_calls == []
+
+
 async def test_generate_trip_stringifies_uuid_place_ids_before_db_and_background(ctx):
     ac, db, calls, _client = ctx
     response = await ac.post(

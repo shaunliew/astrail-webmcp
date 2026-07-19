@@ -31,6 +31,8 @@ class GenerateTripRequest(BaseModel):
     def require_reel_or_place(self):
         if not self.reel_urls and not self.place_ids:
             raise ValueError("At least one Reel URL or canonical place ID is required")
+        if self.reel_urls and self.place_ids:
+            raise ValueError("Provide either Reel URLs or canonical place IDs, not both")
         return self
 
 

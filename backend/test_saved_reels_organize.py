@@ -42,6 +42,11 @@ def _split_top_level(expr):
     return parts
 
 
+# DEFERRED, with a trigger: comma-splitting above is parenthesis-depth-aware but NOT
+# quote-aware, so `name.eq."a,b"` mis-splits on the embedded comma. No predicate in the repo
+# constructs a quoted value containing a comma, so this is unreachable today. TRIGGER: make
+# the splitter quote-aware the first time any predicate quotes a value — I5 and A-III both
+# add predicates against this fake, and a mis-split term fails toward green.
 def _lt(row, key, value):
     """Postgres semantics: `NULL < value` is NULL, so the row does NOT match.
 

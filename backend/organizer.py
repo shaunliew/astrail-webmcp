@@ -270,7 +270,15 @@ def _pg_timestamp(value: datetime) -> str:
     `datetime.isoformat()` emits `+00:00`; a raw `+` inside an `or=` filter can be decoded as
     a space, which either 400s or silently matches nothing. Offline tests cannot catch that —
     the fake accepts any string — so the encoding has to be right by construction.
+
+    The tz assertion is what makes "by construction" actually true. The `.replace()` only fires
+    on a UTC-aware value; hand this a naive or non-UTC-offset datetime and it becomes a silent
+    no-op, reintroducing the exact raw-`+` bug this function exists to prevent. Today's only
+    callers pass `datetime.now(timezone.utc)`, but A-III's reaper injects its own `now` — fail
+    loudly there rather than shipping a mis-encoded filter that offline tests cannot see.
     """
+    if value.tzinfo is None or value.utcoffset() != timedelta(0):
+        raise ValueError(f"_pg_timestamp requires a UTC-aware datetime, got {value!r}")
     return value.isoformat().replace("+00:00", "Z")
 
 

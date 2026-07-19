@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from organizer import ORGANIZE_LEASE_TTL_S, recover_organize_jobs
+from organizer import ORGANIZE_LEASE_TTL_S, _pg_timestamp, recover_organize_jobs
 from test_saved_reels_organize import _Client, _eval_filter_term
 
 
@@ -232,3 +232,23 @@ def test_fake_rejects_a_malformed_filter_group_instead_of_evaluating_it_true(mal
     """
     with pytest.raises(ValueError):
         _eval_filter_term({"lock_expires_at": None, "locked_at": "2026-07-19T00:00:00Z"}, malformed)
+
+
+@pytest.mark.parametrize("bad", [
+    datetime(2026, 7, 19, 12, 0, 0),                                          # naive
+    datetime(2026, 7, 19, 12, 0, 0, tzinfo=timezone(timedelta(hours=8))),     # non-UTC offset
+])
+def test_pg_timestamp_rejects_a_non_utc_datetime(bad):
+    """The Z-suffix guarantee only holds for UTC-aware input — enforce it.
+
+    `.replace("+00:00", "Z")` is a no-op on a naive or +08:00 datetime, so the raw `+` this
+    function exists to eliminate would survive into the `or=` filter. Offline tests cannot
+    catch that (the fake accepts any string), and A-III's reaper injects its own `now`.
+    """
+    with pytest.raises(ValueError):
+        _pg_timestamp(bad)
+
+
+def test_pg_timestamp_emits_a_z_suffix_for_utc():
+    stamped = _pg_timestamp(datetime(2026, 7, 19, 12, 0, 0, tzinfo=timezone.utc))
+    assert stamped.endswith("Z") and "+" not in stamped

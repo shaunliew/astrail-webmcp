@@ -64,6 +64,7 @@ export type SavedReelPlaceProof = {
 export type SavedReelCard = SavedReel & {
   caption: string | null
   thumbnail_url: string | null
+  has_current_cache: boolean
   places: SavedReelPlaceProof[]
 }
 

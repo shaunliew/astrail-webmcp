@@ -107,7 +107,7 @@ export default function SavedReelsInbox({
         {cards.length ? (
           <ul className="grid gap-3 sm:grid-cols-2">
             {cards.map((card) => {
-              const cached = Boolean(card.reel_cache_id)
+              const cached = card.has_current_cache
               return (
                 <li key={card.id} className="surface flex min-h-36 gap-3 p-3">
                   {selectionMode ? <input type="checkbox" aria-label={`Select ${card.normalized_url}`} checked={selected.includes(card.id)} onChange={() => toggle(card.id)} className="mt-1 h-5 w-5 shrink-0 accent-[var(--brass)]" /> : null}

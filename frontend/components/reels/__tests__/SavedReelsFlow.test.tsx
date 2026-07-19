@@ -24,13 +24,13 @@ import type { SavedReelCard } from '@/lib/reels/backend-types'
 const cards: SavedReelCard[] = [
   {
     id: 'saved-1', user_id: 'user-1', normalized_url: 'https://www.instagram.com/reel/AAA/',
-    source_platform: 'instagram', reel_cache_id: 'cache-1', analysis_status: 'not_analyzed',
+    source_platform: 'instagram', reel_cache_id: 'cache-1', has_current_cache: true, analysis_status: 'not_analyzed',
     personal_label: null, retry_after: null, analyzed_at: null, created_at: '2026-07-18T00:00:00Z', updated_at: '2026-07-18T00:00:00Z',
     caption: 'Tokyo Tower at sunset', thumbnail_url: 'https://cdn.example/tower.jpg', places: [],
   },
   {
     id: 'saved-2', user_id: 'user-1', normalized_url: 'https://www.instagram.com/reel/BBB/',
-    source_platform: 'instagram', reel_cache_id: null, analysis_status: 'not_analyzed',
+    source_platform: 'instagram', reel_cache_id: 'stale-cache', has_current_cache: false, analysis_status: 'not_analyzed',
     personal_label: null, retry_after: null, analyzed_at: null, created_at: '2026-07-18T00:00:00Z', updated_at: '2026-07-18T00:00:00Z',
     caption: null, thumbnail_url: null, places: [],
   },

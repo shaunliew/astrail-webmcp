@@ -45,6 +45,7 @@ describe('saved reels api', () => {
     expect(getSession).toHaveBeenCalledTimes(1)
     expect(from).toHaveBeenCalledWith('saved_reel_cards')
     expect(query.select).toHaveBeenCalledWith(expect.stringContaining('caption'))
+    expect(query.select).toHaveBeenCalledWith(expect.stringContaining('has_current_cache'))
     expect(query.select.mock.calls[0][0]).not.toContain('raw_payload')
     expect(query.select.mock.calls[0][0]).not.toContain('transcript')
   })

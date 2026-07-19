@@ -7,6 +7,7 @@ import type {
   ReelSourcePlatform,
   SavedReel,
   SavedReelAnalysisStatus,
+  SavedReelCard,
 } from '@/lib/reels/backend-types'
 
 const savedReel = {
@@ -70,6 +71,7 @@ describe('saved reel backend-types contract', () => {
     expectTypeOf<SavedReel['source_platform']>().toEqualTypeOf<ReelSourcePlatform>()
     expectTypeOf<SavedReel['analysis_status']>().toEqualTypeOf<SavedReelAnalysisStatus>()
     expectTypeOf<SavedReel['reel_cache_id']>().toEqualTypeOf<string | null>()
+    expectTypeOf<SavedReelCard['has_current_cache']>().toEqualTypeOf<boolean>()
     expectTypeOf<SavedReel['retry_after']>().toEqualTypeOf<string | null>()
     expectTypeOf<SavedReel['created_at']>().toEqualTypeOf<string>()
     expectTypeOf<ReelCollection['sort_order']>().toEqualTypeOf<number>()

@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(179);
+select plan(181);
 
 insert into auth.users (id, email)
 values
@@ -79,6 +79,7 @@ select has_table('public', 'organize_job_items', 'organize_job_items exists');
 select has_table('public', 'organize_events', 'organize_events exists');
 select has_view('public', 'saved_reel_cards', 'saved_reel_cards exists');
 select has_column('public', 'saved_reel_cards', 'places', 'saved_reel_cards exposes aggregated safe places');
+select has_column('public', 'saved_reel_cards', 'has_current_cache', 'saved_reel_cards exposes current cache state');
 select has_column('public', 'places', 'country_code', 'places.country_code exists');
 select has_column('public', 'places', 'country_name', 'places.country_name exists');
 select has_column('public', 'user_daily_usage', 'reel_analysis_count', 'reel_analysis_count exists');
@@ -332,6 +333,7 @@ select ok(
 select ok(
   position('raw_payload' in lower(pg_get_viewdef('public.saved_reel_cards'::regclass, true))) = 0
   and position('transcript' in lower(pg_get_viewdef('public.saved_reel_cards'::regclass, true))) = 0
+  and position('has_current_cache' in lower(pg_get_viewdef('public.saved_reel_cards'::regclass, true))) > 0
   and position('auth.uid()' in lower(pg_get_viewdef('public.saved_reel_cards'::regclass, true))) > 0,
   'saved_reel_cards explicitly filters by auth.uid without unsafe cache fields'
 );

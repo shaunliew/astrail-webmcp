@@ -8,7 +8,7 @@ export const ACTIVE_ORGANIZE_CONFLICT_MESSAGE = 'One of those Reels is already b
 const SAFE_SAVED_REEL_CARD_COLUMNS = [
   'id', 'user_id', 'normalized_url', 'source_platform', 'reel_cache_id',
   'analysis_status', 'personal_label', 'retry_after', 'analyzed_at',
-  'created_at', 'updated_at', 'caption', 'thumbnail_url', 'places',
+  'created_at', 'updated_at', 'caption', 'thumbnail_url', 'has_current_cache', 'places',
 ].join(',')
 
 async function backendJson<T>(path: string, token: string, init: RequestInit = {}): Promise<T> {

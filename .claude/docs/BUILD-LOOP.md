@@ -74,6 +74,28 @@ backend change beyond a trivial one-line fix. When in doubt, follow the loop.
   load-bearing (revert the guard → watch the new test go red → restore).
 - **Both final reviews run** (astrail-reviewer opus whole-branch **AND** gstack `/review` Codex).
 
+## NEVER `git add -A` while a subagent is working (learned 2026-07-19, the hard way)
+
+Subagents share the orchestrator's working tree. An orchestrator running `git add -A && git commit`
+to land its own docs **sweeps the subagent's in-progress source files into that commit** — the
+developer then finds its work already committed under someone else's message.
+
+**Rule: stage explicit paths, always.**
+
+```bash
+git add docs/superpowers/reviews/my-doc.md          # yes
+git add -A                                           # NO, not while any subagent is live
+```
+
+If it happens anyway, the repair that preserves everyone's authorship is:
+`git reset <last-good>` → `git commit -C <bad-sha>` with only the intended paths staged (keeps the
+original message/author/date) → let the subagent commit its own work separately. Verify with
+`git diff <bad-sha> HEAD` — **empty means byte-identical, only the commit boundary moved.**
+Nothing is lost; the old SHA stays in the reflog.
+
+Related: check `git status --short` before committing. A file you did not touch appearing there is
+the tell that a subagent is mid-write.
+
 ## Calling Codex without hanging (learned 2026-07-19 — cost ~20 min twice)
 
 `codex exec "<prompt>"` **hangs** when stdin is a non-TTY pipe with nothing written to it: it

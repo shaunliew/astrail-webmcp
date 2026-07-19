@@ -99,6 +99,63 @@ numbered itinerary with verbatim reel-quote provenance.
 3. **Land the three named fixes** — label hierarchy in `TripBriefForm.tsx` and `SettingsView.tsx`,
    and a composed empty state for the trips list.
 
+## Second pass — the native shape, grounded in backend code
+
+The method was verified against the live page (WebFetch fails — it's a Google Nemo SPA behind two
+nested iframes; gstack `/browse` with two frame-switches got the real text). The prompt Shaun pasted
+is **verbatim correct**. The page also offers a heavier path — `stitch-skills` as a Claude Code
+plugin (`extract-design-md`, `code-to-design`). **Skip it**, now on correct grounds: its two relevant
+capabilities are scanning for *scattered* undocumented tokens (Astrail's are already centralized in
+one clean `globals.css` `:root` block) and uploading into a Stitch project for screen generation
+(Astrail has a hand-built Next.js app). `voltagent/awesome-design-md` is a useful tone reference only.
+
+**Astrail's native shape is codified in the backend, not a matter of taste:**
+
+- `backend/models/place.py:21-49` — `PlaceResult.evidence_quote` is a **required** field. Every place
+  in the system is structurally an evidence-carrying node.
+- `backend/models/evidence.py:12-24` — `EvidenceKind` enumerates `reel_quote, requested_by_you,
+  research, mapbox_route, open_meteo, travala_hotel_search, **memory_preference**, inferred_default,
+  suggested_by_astrail`. **`memory_preference` sits in the same enum as `reel_quote`** — the backend
+  already treats mem0 personalization as a *sibling kind of evidence*, not separate settings data.
+- `docs/PRD.md` §3 mandates the shape in plain text: `scattered inspiration → verified places →
+  connected route → saved trail`, and adds: **"Use this metaphor in interaction, not just decoration."**
+
+So the shape is an **ordered, evidence-linked sequence**. The real question is which screens organize
+around it and which impose a generic skeleton on top:
+
+- **`06-trip-detail.png` already nails it** — numbered legs on the map, Day pills, `FROM REEL` tags
+  with verbatim quotes, Upside/Tradeoff cards tied to specific route decisions. Its layout *is* the
+  data's shape.
+- **`TripBriefForm.tsx:15` does not.** One constant —
+  `labelClass = 'type-label text-[11px] uppercase tracking-wide text-[var(--muted)]'` — applied
+  uniformly to every field, Reel-paste box and origin-city input alike. No live preview of places
+  accumulating as Reels are pasted. It is organized as a generic contact form, not as step one of the
+  pipeline the PRD names.
+- **`SettingsView.tsx`** renders "Astrail learned:" as a plain bulleted list, visually identical to
+  static preference data — inventing a third visual language for something the backend already
+  classifies as evidence. It should borrow the citation/chip treatment used for reel evidence.
+
+## Sequencing is load-bearing: DESIGN.md FIRST, then `/design-review`
+
+`/design-review` audits the rendered app against a craft checklist — *"is this page built well?"*
+The DESIGN.md pass fixes the premise — *"is this the right page?"* `TripBriefForm.tsx` could pass
+every craft check (correct contrast, consistent radius, focus rings — it probably already does) while
+remaining premise-wrong. **A craft pass alone would just make the wrong page prettier.**
+
+And per `design-review/SKILL.md:830-832`, once `DESIGN.md` exists it rates deviations from it *higher
+severity* — so writing "screens organize around the ordered evidence-sequence, not a section
+template" into its Layout/IA section makes the second pass flag `TripBriefForm.tsx` as a real finding
+rather than a taste opinion.
+
+**Path decision:** write **repo-root `DESIGN.md`** — that is where all four gstack skills look, and
+what `DESIGN-DRAFT.md`'s own header calls canonical. Not `.stitch/DESIGN.md` (only relevant when
+uploading to Stitch) and not `frontend/DESIGN.md` (outside the skills' search path).
+
+**EMDEE question — RESOLVED 2026-07-19.** `DESIGN-DRAFT.md`'s header defers to an EMDEE
+`astrail/DESIGN.md`. EMDEE is reachable (`search("astrail")` returns the roadmap cluster) and
+`search("astrail DESIGN")` returns **empty**. No such doc exists. The local draft is the source of
+truth and can be transcribed without risk of divergence.
+
 ## Not verified
 
 - `docs/spec.md` (the full DESIGN.md spec) not fetched — the README + PHILOSOPHY.md agreed and were

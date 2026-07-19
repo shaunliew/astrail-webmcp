@@ -38,7 +38,7 @@ backend change beyond a trivial one-line fix. When in doubt, follow the loop.
    `.superpowers/sdd/progress.md`. Never run two implementers in parallel. Amendments in the plan supersede
    inline task code — tell the developer which.
 
-5. **Final whole-branch review (opus).** One **`astrail-reviewer`** over the WHOLE arc diff, `model: opus` —
+5. **Final whole-branch review (fable).** One **`astrail-reviewer`** over the WHOLE arc diff, `model: fable` —
    verifies every guardrail end-to-end against the code + migration DDL + FE contract, and triages the
    accumulated deferred Minors.
 
@@ -76,10 +76,22 @@ backend change beyond a trivial one-line fix. When in doubt, follow the loop.
 
 ## Model selection (per subagent-driven-development)
 
-Cheapest tier for transcription-from-plan implementers + single-file mechanical fixes; **sonnet** for
-integration tasks + most per-task reviews; **opus** for the final whole-branch review and the highest-risk
-per-task diffs (durable spine, idempotency, concurrency, recovery). **Always specify the model explicitly
-when dispatching a subagent** — an omitted model inherits the session's (often the most expensive).
+**Always specify the model explicitly when dispatching a subagent** — an omitted model inherits the
+session's (often the most expensive).
+
+Current tiering (**revised 2026-07-19**; supersedes the earlier opus-implements/opus-final-review split):
+
+| Step | Model | Why |
+|---|---|---|
+| Plan (step 2) + reviewing a large merged diff that feeds a plan | **fable** | Highest-leverage thinking. Quota-limited — batch many issues into ONE plan pass rather than one pass per issue. |
+| Implement (step 4, `astrail-developer`) | **opus** | Plentiful relative to fable; strong at faithful transcription-from-plan + TDD. |
+| Per-task review gate (step 4, `astrail-reviewer`) | **sonnet** | ~7+ passes per arc. Never spend fable here — it exhausts the quota before step 5. |
+| Final whole-branch review (step 5) | **fable** | The single review with the most to catch. Fable replaces opus for this pass. |
+| Research (step 1) | **sonnet** | Read-only fan-out; cheap. |
+| Cross-model outside voice (steps 3 + 6) | **`gpt-5.6-sol`** via Codex | Different-vendor blind spots. Call `codex exec -m gpt-5.6-sol` directly (NOT the shared runtime — it hangs on long reviews); raise `-c model_reasoning_effort="high"` for reviews, since the user's `~/.codex/config.toml` defaults to `low`. |
+
+**Fable budget discipline:** roughly 3 fable passes per arc (plan, merged-diff review if any, final review).
+If an arc needs more, batch harder — merge related issues into one plan — rather than raising the count.
 
 ## Why this loop (evidence)
 

@@ -282,18 +282,28 @@ async def recover_organize_jobs(client, stale_after_s: int = 900) -> list[dict]:
 
 
 async def _ground_and_persist(
-    client, reel: dict, cache_id: str | None, places: list[PlaceResult], *, ground
+    client, reel: dict, cache_id: str | None, places: list[PlaceResult], *, ground,
+    set_phase=None,
 ) -> tuple[str, int]:
     """Verify researched places and rewrite this Reel's canonical mentions.
 
     Returns `(terminal, place_count)` where terminal is "organized" or
     "location_not_found". `reel` identifies the Saved Reel the mentions belong to.
+
+    `set_phase` reports which phase we are in so the caller's error log stays accurate.
+    This spans TWO phases, not one: the grounding call is "mapbox", but the mention
+    delete and the persist loop below it are "database". Tagging the whole unit "mapbox"
+    (as the first extraction did) sends an on-call engineer to check Mapbox health for
+    what is actually a Supabase write failure.
     """
+    set_phase = set_phase or (lambda _phase: None)
+    set_phase("mapbox")
     grounded = [
         resolved
         for place in places
         if (resolved := await _maybe_await(ground(place))) is not None
     ]
+    set_phase("database")
     if cache_id:
         await (client.table("reel_place_mentions").delete()
                .eq("reel_cache_id", cache_id).execute())
@@ -305,15 +315,29 @@ async def _ground_and_persist(
     return "organized", len(grounded)
 
 
-async def _process_item(client, job_id: str, user_id: str, item: dict, *, scrape, extract, ground) -> None:
-    """Organize one Saved Reel. Failures stay inside this item (guardrail #3)."""
+async def _process_item(client, job_id: str, user_id: str, item: dict, *, scrape, extract, ground) -> bool:
+    """Organize one Saved Reel. Failures stay inside this item (guardrail #3).
+
+    Returns True if the item was processed, False if it was SKIPPED because its
+    `saved_reels` row is gone. The caller must not run `_update_job_counts` for a
+    skipped item: pre-refactor this path was a bare `continue`, which skipped both the
+    item and the trailing counts call. Calling counts here changes no committed value
+    (it recomputes from live status columns), but it lets a transient DB error on an
+    ORPHANED item propagate to the job-level handler and fail the WHOLE job — a
+    scenario that previously never reached that line.
+    """
     phase = "database"
+
+    def _set_phase(new_phase: str) -> None:
+        nonlocal phase
+        phase = new_phase
+
     reel_result = await (client.table("saved_reels").select(
         "id,normalized_url,reel_cache_id"
     ).eq("id", item["saved_reel_id"]).eq("user_id", user_id).maybe_single().execute())
     reel = reel_result.data if reel_result is not None else None
     if reel is None:
-        return
+        return False
     await client.table("organize_job_items").update({"status": "processing"}).eq("id", item["id"]).eq("user_id", user_id).execute()
     cache_id = reel.get("reel_cache_id")
     if cache_id is None:
@@ -360,9 +384,8 @@ async def _process_item(client, job_id: str, user_id: str, item: dict, *, scrape
         phase = "database"
         if cache_id is None:
             cache_id = await _find_cache_id(client, reel["normalized_url"])
-        phase = "mapbox"
         terminal, place_count = await _ground_and_persist(
-            client, reel, cache_id, places, ground=ground
+            client, reel, cache_id, places, ground=ground, set_phase=_set_phase
         )
         phase = "database"
         await client.table("organize_job_items").update({
@@ -385,6 +408,7 @@ async def _process_item(client, job_id: str, user_id: str, item: dict, *, scrape
             "analysis_status": "failed", "retry_after": None,
         }).eq("id", reel["id"]).eq("user_id", user_id).execute()
         await _record_organize_event(client, job_id, user_id, "error", "Reel organization failed", {"saved_reel_id": reel["id"]})
+    return True
 
 
 async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=None, extract=None, ground=None) -> dict:
@@ -418,8 +442,9 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
         items = (await client.table("organize_job_items").select("*").eq("job_id", job_id)
                  .eq("user_id", user_id).in_("status", ["queued", "processing"]).execute()).data or []
         for item in items:
-            await _process_item(client, job_id, user_id, item, scrape=scrape, extract=extract, ground=ground)
-            await _update_job_counts(client, job_id, user_id)
+            processed = await _process_item(client, job_id, user_id, item, scrape=scrape, extract=extract, ground=ground)
+            if processed:   # a skipped orphan must not reach counts — pre-refactor this was `continue`
+                await _update_job_counts(client, job_id, user_id)
         status = await get_organize_status(client, job_id, user_id)
         final_status = "failed" if status["failed_items"] and not status["organized_items"] and not status["location_not_found_items"] else "succeeded"
         await client.table("organize_jobs").update({

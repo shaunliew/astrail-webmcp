@@ -203,7 +203,7 @@ On match: append new evidence quote, increment `timesReferenced`. On miss: creat
 19. Trip persistence + trip list
 20. Landing page, settings
 21. Wire memory (mem0), guardrails, rate limiting (slowapi + per-user quota), and result caching
-22. Observability: Langfuse + Sentry + UptimeRobot; product analytics: PostHog
+22. Observability: Langfuse + UptimeRobot; product analytics: PostHog. (Sentry removed 2026-07-19 — never wired, and its default request-URL capture would re-open ISSUES-B1. Re-add only with a `before_send` URL scrubber; see STACK.md.)
 23. CI/CD: GitHub Actions → Vercel + Render; Supabase migrations applied on merge to `main`
 24. Deploy: Vercel + Render + Supabase
 25. Open beta

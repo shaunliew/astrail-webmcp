@@ -42,7 +42,7 @@
 | Hotel search | Travala Travel MCP (`travala/travel-mcp`) for `travala_search_hotel` and optional `travala_search_package` only — **no booking/payment tools in v1** |
 | Images | Supabase Storage (S3-compatible) — only the URL string lives in Postgres |
 | Rate limiting / abuse | Per-user daily trip quota in Postgres (the hard cap) + slowapi (in-memory request limiting) + result cache keyed by reel+prefs hash + OpenAI budget alerts (auto-recharge **off**) |
-| Observability | Langfuse Cloud Hobby (traces + golden eval dataset + LLM-as-judge) + Sentry (errors) + UptimeRobot (`/health`) |
+| Observability | Langfuse Cloud Hobby (traces + golden eval dataset + LLM-as-judge) + UptimeRobot (`/health`). **Sentry REMOVED 2026-07-19** — it was declared but never wired (`sentry_sdk` was never imported in any backend file, in the whole of git history), and an unwired error tracker whose default behaviour captures request URLs is a standing re-open of ISSUES-B1, which put the Supabase JWT in `?token=`. **Re-add only with a `before_send` URL scrubber** — Sentry ships URLs to its own backend over HTTPS, entirely outside Python's `logging`, so `backend/log_redaction.py` structurally cannot cover it. |
 | Product analytics | PostHog (free tier) — activation, D1/D7/D30 retention, reel→itinerary funnel, cost-per-trip (feeds the Decision Gate) |
 | CI/CD | GitHub Actions → Vercel + Render; Supabase migrations in Git applied on merge to `main`; separate dev/prod Supabase projects; forward-only additive migrations |
 | Python package manager | `uv` (`backend/pyproject.toml` — backend deps, NOT repo root) |

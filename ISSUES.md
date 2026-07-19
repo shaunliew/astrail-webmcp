@@ -50,6 +50,13 @@ with default access logging, so that filter is the entire mechanism. The dead
 `sentry_sdk.init` was called nowhere, and its FastAPI integration captures full request URLs,
 so wiring it later would have reopened this leak by another route.
 
+**⚠ NOT YET CONFIRMED IN THE DEPLOYED CONTAINER.** Redaction is proven in-process (unit tests
+plus a reproduction of uvicorn's real startup and access-log call shape), but the running
+service has not been re-probed. **Arc A closeout step 4** owns this: after the branch deploys,
+re-run `curl ".../saved-reels/organize/<uuid>/stream?token=SENTINEL-B1-PROBE"` then
+`render logs -r srv-d976aess728c738pskk0 --type app` and confirm the line reads
+`token=REDACTED`. Until that runs, treat B1 as resolved-in-code, not resolved-in-production.
+
 **Why the decision was safe to make without a further product call.** A sentinel probe against
 the live service (`srv-d976aess728c738pskk0`, starter plan) on 2026-07-19T09:34:17Z classified
 every sink:

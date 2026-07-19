@@ -1974,7 +1974,8 @@ it now ships as part of the lease design because the fence needed the same row l
    mid-organize and confirm the job is reclaimed and re-run, not dropped.
 4. Re-run the ISSUES-B1 sentinel probe against the redacted deployment (A5) — it must now be
    ABSENT from the `--type app` sink it was previously present in.
-5. Re-evaluate `organizer.py` against the 800-line ceiling (deferral register).
+5. Re-evaluate `organizer.py` against the 800-line ceiling (deferral register). **Outcome: it
+   hit 900 lines and was split in Arc B (B6) — see the register row, which is now RESOLVED.**
 6. Fast-forward `shaun` to `dev`.
 
 ---
@@ -2546,7 +2547,7 @@ mention replacement with a true atomic swap. All are Arc A, tasks A2 and A3.
 | Env-parameterized analysis quota (SQL literal `5`) | Product changes the reel-analysis quota or adds tiers |
 | Legacy null-country batch backfill | Production `country_code IS NULL` count > ~200 |
 | Locale-aware country display names | A second locale ships |
-| `organizer.py` package split | **Never for v1** — review verdict: not warranted (421 lines, in budget). Note A1's extraction and A2's lease code push it past 500; re-evaluate against the 800-line ceiling at Arc A closeout, not before |
+| `organizer.py` package split | **RESOLVED — condition fired, split executed in Arc B (B6).** The original verdict was "not warranted *at 421 lines*; re-evaluate against the 800-line ceiling at Arc A closeout" — a conditional deferral, never a permanent no. A1/A2 pushed the file to 900 lines, so it fired as written: split along the grounding seam into `organizer.py` (710) + `grounding.py` (209), one-way dependency, pure moves |
 | Direct `reel_urls` trip path gets Mapbox country verification | Out of Saved-Reels scope by design (extractor-claimed country is trusted there); revisit when reel-path trips surface a wrong-country place in evals or live QA |
 
 ---

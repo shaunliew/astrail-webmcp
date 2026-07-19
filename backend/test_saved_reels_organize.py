@@ -15,6 +15,7 @@ from models.place import PlaceResult
 from grounding import _ground_place, _persist_place
 from pipeline.dedup import DEFAULT_DISTANCE_M
 from pipeline.geo import haversine_m
+import organizer
 from organizer import (
     ActiveOrganizeConflict,
     InvalidOrganizeRequest,
@@ -1110,6 +1111,73 @@ async def test_cached_retry_does_not_require_apify_token(monkeypatch):
 
     assert client.db["organize_job_items"][0]["status"] == "organized"
     assert client.db["saved_reels"][0]["analysis_status"] == "organized"
+
+
+@pytest.mark.asyncio
+async def test_default_scrape_seam_fails_closed_without_an_apify_token(monkeypatch):
+    """The ONLY test that invokes `run_organize_job`'s default (un-injected) Apify seam.
+
+    Every other organize test passes `scrape=`. The one that does not,
+    `test_cached_retry_does_not_require_apify_token` above, is a cache HIT — it CONSTRUCTS the
+    default closure and never CALLS it. Defining a nested function resolves none of the names
+    in its body; that lookup happens at call time. So when B6's split left `import os` off
+    organizer.py, the closure's `os.environ` was a latent NameError and all 727 tests stayed
+    green. Only a cache MISS executes the body, which is what this test drives.
+
+    `scrape_reel` is stubbed to raise rather than merely left alone: that is the assertion
+    that the token guard short-circuits BEFORE the provider call, so reordering those two
+    lines fails loudly here instead of quietly dialling Apify from a unit test.
+    """
+    client = _Client({
+        "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending"}],
+        "organize_job_items": [{
+            "id": "item-1", "job_id": "job-1", "user_id": "user-a",
+            "saved_reel_id": "r1", "status": "queued", "analysis_charge_state": "not_charged",
+        }],
+        "saved_reels": [{
+            "id": "r1", "user_id": "user-a",
+            "normalized_url": "https://www.instagram.com/reel/A",
+            "reel_cache_id": "cache-1", "analysis_status": "queued",
+        }],
+        "rpc:reserve_organize_item_analysis": "2026-07-19",
+        "rpc:refund_organize_item_analysis": True,
+    })
+    seams, past_the_seam = [], []
+    real_item_context = organizer._ItemContext
+
+    def _capture_seam(**fields):
+        # Pure observation — the job still runs on a real `_ItemContext`. Holding the closure
+        # is what lets us assert WHICH error it raises: `_process_item` swallows the exception
+        # and records a deliberately generic `error_message`, which cannot tell the intended
+        # RuntimeError from the NameError a missing import would produce.
+        ctx = real_item_context(**fields)
+        seams.append(ctx.scrape)
+        return ctx
+
+    async def unexpected_scrape_reel(*_args, **_kwargs):
+        raise AssertionError("the no-token path must fail before calling Apify")
+
+    async def unexpected_stage(*_args, **_kwargs):
+        past_the_seam.append("called")
+
+    # MANDATORY, not decorative: conftest loads backend/.env under --run-live, so a real
+    # APIFY_TOKEN can genuinely be in the environment.
+    monkeypatch.delenv("APIFY_TOKEN", raising=False)
+    monkeypatch.setattr(organizer, "_ItemContext", _capture_seam)
+    monkeypatch.setattr("organizer.get_cached_places", _cached(None))
+    monkeypatch.setattr("organizer.scrape_reel", unexpected_scrape_reel)
+
+    await run_organize_job(
+        "job-1", "user-a", client=client, extract=unexpected_stage, ground=unexpected_stage
+    )
+
+    assert client.db["organize_job_items"][0]["status"] == "failed"
+    # The USER-facing message stays generic — the provider detail below is operator-facing and
+    # never reaches the item row.
+    assert client.db["organize_job_items"][0]["error_message"] == "Reel organization failed"
+    assert past_the_seam == []
+    with pytest.raises(RuntimeError, match="Reel extraction is unavailable"):
+        await seams[0]("https://www.instagram.com/reel/A")
 
 
 @pytest.mark.asyncio

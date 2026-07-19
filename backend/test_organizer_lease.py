@@ -21,6 +21,8 @@ from postgrest.exceptions import APIError
 import organizer
 from organizer import (
     ORGANIZE_LEASE_TTL_S,
+    _update_job_counts,
+    get_organize_status,
     LeaseLost,
     _heartbeat,
     _mark_organize_job_failed,
@@ -864,3 +866,52 @@ async def test_old_worker_resuming_after_replacement_cannot_finalize_the_job(
     assert [event["sequence"] for event in events] == list(range(1, len(events) + 1))
     assert [event["message"] for event in events].count(organizer.ORGANIZE_FAILURE_MESSAGE) == 0
     assert "organize_event_lease_superseded" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_workers_stale_counts_write_cannot_land():
+    """The counts aggregate is decision-bearing, so it must be fenced like the terminal writes.
+
+    `get_organize_status` reads the aggregate COLUMNS rather than re-deriving from
+    `organize_job_items`, and `run_organize_job` computes `final_status` from that read. An
+    unfenced counts write from a superseded worker, landing after the live worker's, therefore
+    makes the LIVE worker persist `failed` on a job whose items all succeeded — the same
+    false-terminal outcome the rest of I5 prevents, via a different write path.
+
+    The seeded divergence (stored counts say 2 organized, items say 1 organized + 1 failed)
+    stands in for temporal skew: the live worker has already written its final counts, and the
+    superseded worker is about to write the ones IT computed from an earlier read. Reproducing
+    the skew literally is not possible through this helper, which couples its SELECT and UPDATE
+    — so the test pins the property that matters instead: a write bearing a stale token must
+    not land, whatever it computed.
+    """
+    def _client():
+        return _Client({
+            "organize_jobs": [{
+                "id": "j1", "user_id": "u1", "status": "processing",
+                "lease_token": "live-token",
+                "processed_count": 2, "organized_count": 2,
+                "location_not_found_count": 0, "failed_count": 0,
+            }],
+            "organize_job_items": [
+                {"id": "i1", "job_id": "j1", "user_id": "u1", "status": "organized"},
+                {"id": "i2", "job_id": "j1", "user_id": "u1", "status": "failed"},
+            ],
+        })
+
+    stale = _client()
+    await _update_job_counts(stale, "j1", "u1", lease_token="superseded-token")
+    job = stale.db["organize_jobs"][0]
+    assert (job["organized_count"], job["failed_count"]) == (2, 0), \
+        "a stale worker's counts must not overwrite the live worker's"
+
+    status = await get_organize_status(stale, "j1", "u1")
+    decided = "failed" if status["failed_items"] and not status["organized_items"] else "succeeded"
+    assert decided == "succeeded", "a job the live worker organized must not report failed"
+
+    # ...and the fence must not block the LIVE worker, or counts would freeze entirely
+    live = _client()
+    await _update_job_counts(live, "j1", "u1", lease_token="live-token")
+    job = live.db["organize_jobs"][0]
+    assert (job["organized_count"], job["failed_count"]) == (1, 1), \
+        "the lease holder's own recompute must land"

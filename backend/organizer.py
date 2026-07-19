@@ -256,7 +256,25 @@ async def _persist_mention(client, cache_id: str, place_id: str, place: PlaceRes
         await table.insert(row).execute()
 
 
-async def _update_job_counts(client, job_id: str, user_id: str) -> None:
+async def _update_job_counts(client, job_id: str, user_id: str, *, lease_token: str) -> None:
+    """Recompute the aggregate counts, FENCED on our lease.
+
+    An earlier draft left this unfenced on the reasoning that it "recomputes from live status,
+    so a stale write is self-correcting". That holds at SELECT time and NOT against two workers
+    reordering: this is a blind SELECT-then-UPDATE with no version guard, so a superseded
+    worker's earlier-issued write can land AFTER the live worker's.
+
+    That is not a cosmetic counter. `get_organize_status` reads these aggregate COLUMNS rather
+    than re-deriving from `organize_job_items`, and `run_organize_job` computes `final_status`
+    from that read — so a stale counts write landing in the window between the live worker's
+    own counts write and its own status read makes the LIVE worker persist `failed` on a job
+    whose items all succeeded. Reproduced: A's stale write lands last -> organized_items=0,
+    failed_items=1, while the item rows read [('i1','organized'), ('i2','organized')].
+
+    Per-item writes stay deliberately unfenced — item status does not feed `final_status` and
+    is independently re-derivable. The counts aggregate is the one "bounded" write that is
+    decision-bearing, which is why it gets the fence and they do not.
+    """
     rows = (await client.table("organize_job_items").select("status").eq("job_id", job_id)
             .eq("user_id", user_id).execute()).data or []
     counts = {
@@ -265,7 +283,9 @@ async def _update_job_counts(client, job_id: str, user_id: str) -> None:
         "location_not_found_count": sum(r.get("status") == "location_not_found" for r in rows),
         "failed_count": sum(r.get("status") == "failed" for r in rows),
     }
-    await client.table("organize_jobs").update(counts).eq("id", job_id).eq("user_id", user_id).execute()
+    await (client.table("organize_jobs").update(counts)
+           .eq("id", job_id).eq("user_id", user_id)
+           .eq("lease_token", lease_token).execute())
 
 
 async def _consume_organize_item_analysis(client, item_id: str, user_id: str) -> None:
@@ -624,7 +644,7 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
                     raise LeaseLost(f"organize job {job_id} lease superseded")
                 processed = await _process_item(ctx, item)
                 if processed:   # a skipped orphan must not reach counts — pre-refactor this was `continue`
-                    await _update_job_counts(client, job_id, user_id)
+                    await _update_job_counts(client, job_id, user_id, lease_token=lease_token)
         finally:
             lease_lost.set()
             beat.cancel()

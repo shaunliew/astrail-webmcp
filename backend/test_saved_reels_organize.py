@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+from uuid import UUID
 
 import pytest
 
 from api.schemas import GenerateTripRequest, OrganizeJobStatus, OrganizeSavedReelsRequest
-from api.streaming import DONE, format_sse, stream_organize_events, stream_organize_status
+from api.streaming import DONE, format_sse, stream_organize_events
 from models.place import PlaceResult
 from organizer import (
     ActiveOrganizeConflict,
@@ -177,7 +178,7 @@ def _place(name="Tokyo Tower"):
 
 def test_place_only_generate_request_is_valid_and_empty_request_is_rejected():
     request = GenerateTripRequest(
-        place_ids=["place-1"], start_date="2026-08-01", end_date="2026-08-02"
+        place_ids=["11111111-1111-1111-1111-111111111111"], start_date="2026-08-01", end_date="2026-08-02"
     )
     assert request.reel_urls == []
     with pytest.raises(ValueError):
@@ -185,11 +186,12 @@ def test_place_only_generate_request_is_valid_and_empty_request_is_rejected():
 
 
 def test_organize_request_is_bounded():
-    assert OrganizeSavedReelsRequest(saved_reel_ids=["a"]).saved_reel_ids == ["a"]
+    saved_reel_id = "22222222-2222-2222-2222-222222222222"
+    assert OrganizeSavedReelsRequest(saved_reel_ids=[saved_reel_id]).saved_reel_ids == [UUID(saved_reel_id)]
     with pytest.raises(ValueError):
         OrganizeSavedReelsRequest(saved_reel_ids=[])
     with pytest.raises(ValueError):
-        OrganizeSavedReelsRequest(saved_reel_ids=[str(i) for i in range(6)])
+        OrganizeSavedReelsRequest(saved_reel_ids=[f"22222222-2222-2222-2222-{i:012d}" for i in range(6)])
 
 
 def test_organize_job_status_accepts_initializing():
@@ -567,21 +569,6 @@ async def test_cached_retry_does_not_require_apify_token(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_organize_stream_is_result_json_then_done():
-    states = iter([
-        {"job_id": "job-1", "status": "processing", "status_message": "Finding places"},
-        {"job_id": "job-1", "status": "succeeded", "status_message": "Organized"},
-    ])
-    async def load(_client, _job_id, _user_id): return next(states)
-    events = [event async for event in stream_organize_status(object(), "job-1", "user-a", poll_s=0, status_loader=load)]
-    assert events[-1] == DONE
-    result = json.loads(events[-2][len("data: "):])
-    assert result["type"] == "result"
-    assert isinstance(result["content"], str)
-    assert events[-1] == "data: [DONE]\n\n"
-
-
-@pytest.mark.asyncio
 async def test_organize_event_stream_replays_integer_cursor_and_json_result():
     client = _Client({"organize_events": [
         {"sequence": 1, "job_id": "job-1", "user_id": "user-a", "event_type": "stage", "message": "Queued", "payload": {}},
@@ -590,6 +577,17 @@ async def test_organize_event_stream_replays_integer_cursor_and_json_result():
     events = [event async for event in stream_organize_events(client, "job-1", "user-a", poll_s=0)]
     assert events[0].startswith("id: 1\ndata: ")
     assert "\"content\": \"{\\\"status\\\": \\\"succeeded\\\"}\"" in events[1]
+    assert events[-1] == DONE
+
+
+@pytest.mark.asyncio
+async def test_organize_event_stream_times_out_with_terminal_result_before_done():
+    events = [event async for event in stream_organize_events(
+        _Client({"organize_events": []}), "job-1", "user-a", poll_s=0, max_polls=1
+    )]
+    result = json.loads(events[-2][len("data: "):])
+    assert result["type"] == "result"
+    assert json.loads(result["content"])["error"] == "organize stream timed out"
     assert events[-1] == DONE
 
 
@@ -1323,3 +1321,32 @@ async def test_provider_outage_consumes_cached_research_then_retries_without_api
 
     assert client.db["organize_job_items"][1]["status"] == "organized"
     assert calls == ["reserve", "scrape", "extract", "cache", "outage", "verified"]
+
+
+@pytest.mark.asyncio
+async def test_item_failure_logs_only_fixed_phase_and_job_item_ids(monkeypatch, caplog):
+    client = _Client({
+        "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending"}],
+        "organize_job_items": [{
+            "id": "item-1", "job_id": "job-1", "user_id": "user-a",
+            "saved_reel_id": "r1", "status": "queued", "analysis_charge_state": "not_charged",
+        }],
+        "saved_reels": [{
+            "id": "r1", "user_id": "user-a", "normalized_url": "https://www.instagram.com/reel/A",
+            "reel_cache_id": "cache-1",
+        }],
+    })
+
+    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+
+    async def leak(_place):
+        raise RuntimeError("TOKEN=secret https://private.example/reel/A")
+
+    with caplog.at_level("ERROR", logger="organizer"):
+        await run_organize_job("job-1", "user-a", client=client, ground=leak)
+
+    assert "phase=mapbox" in caplog.text
+    assert "job_id=job-1" in caplog.text
+    assert "item_id=item-1" in caplog.text
+    assert "secret" not in caplog.text
+    assert "private.example" not in caplog.text

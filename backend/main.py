@@ -161,9 +161,10 @@ async def generate_trip(
     user_id: str = Depends(get_current_user_id_stashed),  #   _inject_headers(None, ...) breaks every call.
 ) -> GenerateTripResponse:                               # (the dep stashes request.state.user_id for key_func)
     client = await get_supabase_client()
+    place_ids = [str(place_id) for place_id in req.place_ids]
     idem = compute_idempotency_key(user_id, req.reel_urls, req.start_date, req.end_date,
                                    preferences=req.preferences, pace=req.pace,
-                                   destination_hint=req.destination_hint, place_ids=req.place_ids)
+                                   destination_hint=req.destination_hint, place_ids=place_ids)
 
     # Idempotent replay: a retried POST (same request-derived key) returns the
     # SAME trip instead of creating a duplicate — WITHOUT consuming daily quota.
@@ -218,7 +219,7 @@ async def generate_trip(
                 "preferences": req.preferences,
                 "destination_hint": req.destination_hint,
                 "requested_places": req.requested_places,
-                "place_ids": req.place_ids,
+                "place_ids": place_ids,
             },
         )
         job_id, winning_trip_id = await enqueue_job(trip_id, user_id, idem)
@@ -253,7 +254,7 @@ async def generate_trip(
         run_generation, trip_id, user_id, req.reel_urls, req.start_date, req.end_date,
         job_id=job_id, pace=req.pace, preferences=req.preferences,
         destination_hint=req.destination_hint,
-        place_ids=req.place_ids,
+        place_ids=place_ids,
     )
     return GenerateTripResponse(trip_id=trip_id)
 
@@ -272,8 +273,9 @@ async def organize_saved_reels(
     user_id: str = Depends(get_current_user_id_stashed),
 ) -> OrganizeSavedReelsResponse:
     client = await get_supabase_client()
+    saved_reel_ids = [str(saved_reel_id) for saved_reel_id in req.saved_reel_ids]
     try:
-        job_id = await create_organize_job(client, user_id, req.saved_reel_ids)
+        job_id = await create_organize_job(client, user_id, saved_reel_ids)
     except ActiveOrganizeConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except PermissionError as exc:

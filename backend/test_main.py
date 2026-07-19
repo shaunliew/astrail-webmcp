@@ -27,6 +27,8 @@ from rate_limit import get_current_user_id_stashed  # noqa: E402
 
 # Sentinel: configure a fake RPC to raise on .execute() (refund-failure paths).
 _RAISE = object()
+_PLACE_ID = "11111111-1111-1111-1111-111111111111"
+_SAVED_REEL_ID = "22222222-2222-2222-2222-222222222222"
 
 
 class _Result:
@@ -191,6 +193,32 @@ def _reset_limiter():
 _PAYLOAD = {"reel_urls": ["https://ig/r1"], "start_date": "2026-08-01", "end_date": "2026-08-02"}
 
 
+async def test_generate_trip_rejects_malformed_place_id_before_db_or_background(ctx):
+    ac, db, calls, client = ctx
+    response = await ac.post(
+        "/generate-trip",
+        json={"reel_urls": [], "place_ids": ["not-a-uuid"], "start_date": "2026-08-01", "end_date": "2026-08-02"},
+    )
+
+    assert response.status_code == 422
+    assert db == {}
+    assert calls == []
+    assert client.rpc_calls == []
+
+
+async def test_generate_trip_stringifies_uuid_place_ids_before_db_and_background(ctx):
+    ac, db, calls, _client = ctx
+    response = await ac.post(
+        "/generate-trip",
+        json={"reel_urls": [], "place_ids": [_PLACE_ID], "start_date": "2026-08-01", "end_date": "2026-08-02"},
+    )
+
+    assert response.status_code == 200
+    event = next(event for event in db["generation_events"] if event["stage"] == "create_trip")
+    assert event["payload"]["place_ids"] == [_PLACE_ID]
+    assert calls[0][1]["place_ids"] == [_PLACE_ID]
+
+
 async def test_generate_trip_creates_trip_and_persists_create_trip_event(ctx):
     ac, db, calls, client = ctx
     r = await ac.post("/generate-trip", json=_PAYLOAD)
@@ -291,16 +319,48 @@ async def test_saved_reels_organize_has_per_user_burst_limit(ctx, monkeypatch):
 
     for _ in range(3):
         response = await ac.post(
-            "/saved-reels/organize", json={"saved_reel_ids": ["reel-1"]}
+            "/saved-reels/organize", json={"saved_reel_ids": [_SAVED_REEL_ID]}
         )
         assert response.status_code == 200
     response = await ac.post(
-        "/saved-reels/organize", json={"saved_reel_ids": ["reel-1"]}
+        "/saved-reels/organize", json={"saved_reel_ids": [_SAVED_REEL_ID]}
     )
 
     assert response.status_code == 429
     assert response.json()["error"]["code"] == "rate_limited"
     assert len(created) == 3
+
+
+async def test_saved_reels_organize_rejects_malformed_id_before_db_or_background(ctx, monkeypatch):
+    ac, db, _calls, client = ctx
+    background_calls = []
+    monkeypatch.setattr(main, "run_organize_job", lambda *args, **kwargs: background_calls.append((args, kwargs)))
+
+    response = await ac.post("/saved-reels/organize", json={"saved_reel_ids": ["not-a-uuid"]})
+
+    assert response.status_code == 422
+    assert db == {}
+    assert client.rpc_calls == []
+    assert background_calls == []
+
+
+async def test_saved_reels_organize_stringifies_uuid_ids_before_db_and_background(ctx, monkeypatch):
+    ac, _db, _calls, _client = ctx
+    created = []
+    background_calls = []
+
+    async def create_job(_client, _user_id, saved_reel_ids):
+        created.append(saved_reel_ids)
+        return "organize-1"
+
+    monkeypatch.setattr(main, "create_organize_job", create_job)
+    monkeypatch.setattr(main, "run_organize_job", lambda *args, **kwargs: background_calls.append((args, kwargs)))
+
+    response = await ac.post("/saved-reels/organize", json={"saved_reel_ids": [_SAVED_REEL_ID]})
+
+    assert response.status_code == 200
+    assert created == [[_SAVED_REEL_ID]]
+    assert background_calls == [(("organize-1", "user-1"), {"client": _client})]
 
 
 async def test_saved_reels_organize_active_overlap_is_a_conflict(ctx, monkeypatch):
@@ -311,7 +371,7 @@ async def test_saved_reels_organize_active_overlap_is_a_conflict(ctx, monkeypatc
 
     monkeypatch.setattr(main, "create_organize_job", create_job)
     response = await ctx[0].post(
-        "/saved-reels/organize", json={"saved_reel_ids": ["reel-1"]}
+        "/saved-reels/organize", json={"saved_reel_ids": [_SAVED_REEL_ID]}
     )
 
     assert response.status_code == 409
@@ -336,7 +396,7 @@ async def test_saved_reels_organize_requires_auth(monkeypatch):
 
     async with _async_client() as ac:
         response = await ac.post(
-            "/saved-reels/organize", json={"saved_reel_ids": ["reel-1"]}
+            "/saved-reels/organize", json={"saved_reel_ids": [_SAVED_REEL_ID]}
         )
 
     assert response.status_code == 401

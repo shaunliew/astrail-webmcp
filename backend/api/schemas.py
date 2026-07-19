@@ -3,13 +3,14 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
 
 
 class GenerateTripRequest(BaseModel):
     reel_urls: list[str] = Field(default_factory=list, max_length=5)
-    place_ids: list[str] = Field(default_factory=list, max_length=5)
+    place_ids: list[UUID] = Field(default_factory=list, max_length=5)
     start_date: str
     end_date: str
     destination_hint: str | None = None
@@ -63,7 +64,7 @@ class CaptureSavedReelResponse(BaseModel):
 
 
 class OrganizeSavedReelsRequest(BaseModel):
-    saved_reel_ids: list[str] = Field(min_length=1, max_length=5)
+    saved_reel_ids: list[UUID] = Field(min_length=1, max_length=5)
 
 
 class OrganizeSavedReelsResponse(BaseModel):

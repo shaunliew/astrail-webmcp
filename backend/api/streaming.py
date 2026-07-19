@@ -73,49 +73,6 @@ async def stream_trip_events(
     yield DONE
 
 
-async def stream_organize_status(
-    client, job_id: str, user_id: str, *, poll_s: float = 0.5, max_polls: int = 600,
-    status_loader=None,
-) -> AsyncIterator[str]:
-    """Refresh-safe status stream using the durable organize job as its cursor."""
-    if status_loader is None:
-        from organizer import get_organize_status
-        status_loader = get_organize_status
-    seen: str | None = None
-    for _ in range(max_polls):
-        try:
-            status = await status_loader(client, job_id, user_id)
-        except Exception:
-            status = None
-        if status is not None:
-            serialized = json.dumps(status, sort_keys=True)
-            if serialized != seen:
-                seen = serialized
-                terminal = status["status"] in {"succeeded", "failed"}
-                if terminal:
-                    yield format_sse({
-                        "type": "result",
-                        "stage": "organize",
-                        "msg": status.get("status_message", "Organization complete"),
-                        "content": serialized,
-                    })
-                    yield DONE
-                    return
-                yield format_sse({
-                    "type": "stage", "stage": "organize",
-                    "msg": status.get("status_message", "Finding places"),
-                    "content": status,
-                })
-        if poll_s:
-            yield ": heartbeat\n\n"
-            await asyncio.sleep(poll_s)
-    yield format_sse({
-        "type": "result", "stage": "organize", "msg": "stream timed out",
-        "content": json.dumps({"error": "organize stream timed out"}),
-    })
-    yield DONE
-
-
 async def stream_organize_events(
     client, job_id: str, user_id: str, *, cursor: str | None = None,
     poll_s: float = 0.5, max_polls: int = 600,

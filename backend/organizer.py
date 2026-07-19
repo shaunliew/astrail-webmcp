@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -19,6 +20,7 @@ from usage import refund_organize_item_analysis, reserve_organize_item_analysis
 LOCATION_VERIFICATION_VERSION = "mapbox-country-v1"
 INITIALIZING_STALE_AFTER_S = 120
 ORGANIZE_FAILURE_MESSAGE = "Organization failed"
+logger = logging.getLogger(__name__)
 
 
 class ActiveOrganizeConflict(RuntimeError):
@@ -310,6 +312,7 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
         items = (await client.table("organize_job_items").select("*").eq("job_id", job_id)
                  .eq("user_id", user_id).in_("status", ["queued", "processing"]).execute()).data or []
         for item in items:
+            phase = "database"
             reel_result = await (client.table("saved_reels").select(
                 "id,normalized_url,reel_cache_id"
             ).eq("id", item["saved_reel_id"]).eq("user_id", user_id).maybe_single().execute())
@@ -319,20 +322,26 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
             await client.table("organize_job_items").update({"status": "processing"}).eq("id", item["id"]).eq("user_id", user_id).execute()
             cache_id = reel.get("reel_cache_id")
             if cache_id is None:
+                phase = "database"
                 cache_id = await _find_cache_id(client, reel["normalized_url"])
             try:
+                phase = "database"
                 places = await _maybe_await(get_cached_places(client, reel["normalized_url"], EXTRACTOR_VERSION))
                 if places is None:
                     quota_state = item.get("analysis_charge_state", "not_charged")
                     if quota_state in {"not_charged", "refunded"}:
+                        phase = "quota"
                         if await reserve_organize_item_analysis(client, item["id"], user_id) is None:
                             raise RuntimeError("analysis quota reached")
                         quota_state = "reserved"
                     try:
+                        phase = "apify"
                         scraped = await _maybe_await(scrape(reel["normalized_url"]))
+                        phase = "extractor"
                         places = await _maybe_await(extract(scraped))
                         # The cache stores research provenance before provider verification. A
                         # Mapbox retry can therefore reuse research without paying for Apify again.
+                        phase = "database"
                         await cache_places(
                             client,
                             reel["normalized_url"],
@@ -341,8 +350,10 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
                             EXTRACTOR_VERSION,
                         )
                         if quota_state == "reserved":
+                            phase = "quota"
                             await _consume_organize_item_analysis(client, item["id"], user_id)
                             quota_state = "consumed"
+                        phase = "mapbox"
                         grounded = [
                             resolved
                             for place in places
@@ -350,12 +361,16 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
                         ]
                     except Exception:
                         if quota_state == "reserved":
+                            phase = "quota"
                             await refund_organize_item_analysis(client, item["id"], user_id)
                         raise
                 else:
                     if item.get("analysis_charge_state") == "reserved":
+                        phase = "quota"
                         await _consume_organize_item_analysis(client, item["id"], user_id)
+                    phase = "mapbox"
                     grounded = [resolved for place in places if (resolved := await _maybe_await(ground(place))) is not None]
+                phase = "database"
                 if cache_id is None:
                     cache_id = await _find_cache_id(client, reel["normalized_url"])
                 if cache_id:
@@ -377,6 +392,10 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
                 }).eq("id", reel["id"]).eq("user_id", user_id).execute()
                 await _record_organize_event(client, job_id, user_id, "stage", "Reel organized", {"saved_reel_id": reel["id"], "place_count": len(grounded)})
             except Exception:
+                logger.error(
+                    "saved_reel_organize_item_failed phase=%s job_id=%s item_id=%s",
+                    phase, job_id, item["id"],
+                )
                 await client.table("organize_job_items").update({
                     "status": "failed", "error_message": "Reel organization failed", "completed_at": _now()
                 }).eq("id", item["id"]).eq("user_id", user_id).execute()

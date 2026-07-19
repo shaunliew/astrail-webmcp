@@ -91,6 +91,7 @@ describe('VerifiedPlacesMap', () => {
     expect(MapCtor).toHaveBeenCalledWith(expect.objectContaining({
       style: 'mapbox://styles/mapbox/standard',
       projection: 'globe',
+      scrollZoom: { around: 'center' },
       center: [139.7454, 35.6586],
     }))
     expect(markerInstances.map((marker) => marker.setLngLat.mock.calls[0][0])).toEqual([

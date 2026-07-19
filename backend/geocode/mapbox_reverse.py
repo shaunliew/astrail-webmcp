@@ -10,6 +10,19 @@ from models.geocode import CountryResult
 
 _REVERSE_URL = "https://api.mapbox.com/search/geocode/v6/reverse"
 _MAX_REVERSE_ATTEMPTS = 2
+MAX_REVERSE_RETRY_DELAY_S = 2.0
+_RETRYABLE_STATUS_CODES = {408, 429}
+
+
+def _retry_delay(response: httpx.Response | None, fallback_s: float) -> float:
+    if response is not None:
+        retry_after = response.headers.get("Retry-After")
+        if retry_after is not None:
+            try:
+                return min(max(float(retry_after), 0.0), MAX_REVERSE_RETRY_DELAY_S)
+            except ValueError:
+                pass
+    return min(max(fallback_s, 0.0), MAX_REVERSE_RETRY_DELAY_S)
 
 
 def parse_reverse_country_response(data: object) -> CountryResult | None:
@@ -69,13 +82,14 @@ async def reverse_country(
                 response = await http.get(_REVERSE_URL, params=params, timeout=timeout_s)
             except httpx.RequestError as exc:
                 if attempt == 0:
-                    await asyncio.sleep(retry_delay_s)
+                    await asyncio.sleep(_retry_delay(None, retry_delay_s))
                     continue
                 raise RuntimeError(
                     f"Mapbox reverse-country error: {type(exc).__name__}"
                 ) from None
-            if response.status_code // 100 == 5 and attempt == 0:
-                await asyncio.sleep(retry_delay_s)
+            retryable = response.status_code in _RETRYABLE_STATUS_CODES or response.status_code // 100 == 5
+            if retryable and attempt == 0:
+                await asyncio.sleep(_retry_delay(response, retry_delay_s))
                 continue
             if response.status_code // 100 != 2:
                 raise RuntimeError(

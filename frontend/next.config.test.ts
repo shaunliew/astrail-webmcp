@@ -8,5 +8,7 @@ describe('production security headers', () => {
     const csp = routes?.[0]?.headers.find((header) => header.key === 'Content-Security-Policy')?.value
 
     expect(csp).toContain("script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'")
+    expect(csp).toContain('https://*.cdninstagram.com')
+    expect(csp).toContain('https://*.fbcdn.net')
   })
 })

@@ -23,6 +23,7 @@ export default function VerifiedPlacesMap({ places }: { places: SavedReelPlacePr
       center: first ? [first.lng, first.lat] : [0, 20],
       zoom: first ? 8 : 1.4,
       pitch: 0,
+      scrollZoom: { around: 'center' },
     })
     mapRef.current = map
 

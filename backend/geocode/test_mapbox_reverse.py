@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from urllib.parse import parse_qs, urlparse
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
-from geocode.mapbox_reverse import parse_reverse_country_response, reverse_country
+from geocode.mapbox_reverse import MAX_REVERSE_RETRY_DELAY_S, parse_reverse_country_response, reverse_country
 
 
 _JP_RESPONSE = {
@@ -160,4 +162,67 @@ async def test_reverse_country_retries_then_raises_on_5xx():
     with pytest.raises(RuntimeError, match="503"):
         await reverse_country(35.67311, 139.73625, token="SECRET", client=client, retry_delay_s=0)
     assert attempts == 2
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_reverse_country_retries_429_once_using_capped_retry_after(monkeypatch):
+    attempts = 0
+    sleep = AsyncMock()
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+
+    def handler(_request):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(429, headers={"Retry-After": "9"})
+        return httpx.Response(200, json=_JP_RESPONSE)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    result = await reverse_country(35.67311, 139.73625, token="SECRET", client=client)
+
+    assert attempts == 2
+    sleep.assert_awaited_once_with(MAX_REVERSE_RETRY_DELAY_S)
+    assert result is not None and result.country_code == "JP"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_reverse_country_408_uses_retry_delay_when_retry_after_is_absent(monkeypatch):
+    attempts = 0
+    sleep = AsyncMock()
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+
+    def handler(_request):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(408)
+        return httpx.Response(200, json=_JP_RESPONSE)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    result = await reverse_country(
+        35.67311, 139.73625, token="SECRET", client=client, retry_delay_s=0.4
+    )
+
+    assert attempts == 2
+    sleep.assert_awaited_once_with(0.4)
+    assert result is not None and result.country_code == "JP"
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_reverse_country_repeated_429_error_is_status_only(monkeypatch):
+    sleep = AsyncMock()
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda _request: httpx.Response(429, text="SECRET https://private.example")
+    ))
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await reverse_country(35.67311, 139.73625, token="SECRET", client=client)
+
+    assert "429" in str(exc_info.value)
+    assert "SECRET" not in str(exc_info.value)
+    assert "http" not in str(exc_info.value).lower()
     await client.aclose()

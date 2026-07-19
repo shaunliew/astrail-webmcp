@@ -156,6 +156,26 @@ blocked-provider test red.
 > **Therefore: never merge I4 to `dev` or deploy it independently of I5.** With `autoDeploy: true`
 > on `dev`, merging I4 alone ships it. This belongs verbatim in the A-II PR body.
 >
+> **Reachability — what actually has to hold.** A plain crash (OOM, SIGKILL) does **NOT** trigger
+> this: it stops the heartbeat instantly, so by the time anyone reclaims there is no zombie left to
+> race. It needs a *survives-past-supersession* zombie, which in practice means a Render rolling
+> deploy: the old container takes SIGTERM, its organize run (a FastAPI `BackgroundTasks` task,
+> `main.py:283`) keeps executing through the grace period, is genuinely mid a slow provider call
+> (Apify / Mapbox / OpenAI all plausibly run tens of seconds), *and* its heartbeat has been quiet
+> long enough that the new container's boot sweep sees `lock_expires_at` already expired. A real but
+> non-trivial conjunction. At zero traffic it mostly threatens a dev's own smoke test straddling a
+> deploy; post-onboarding it scales with `deploy frequency × concurrent organizes × P(slow provider
+> call in flight)` — and this repo's own history documents Apify as flaky/slow under load, which
+> raises that last term.
+>
+> **Which user-facing surfaces actually show the false failure.** A client *already streaming*
+> disconnects on W2's genuine "Organized" event, because `stream_organize_events`
+> (`api/streaming.py:101-107`) returns on the FIRST `result`-type event by `sequence` — so it never
+> renders W1's later "Organization failed". But a **new connection, a page refresh, or the polling
+> `GET /saved-reels/organize/{job_id}`** (which reads the job row directly, not the event log) all
+> show `failed` for a job that succeeded. (Sequence assignment is itself `max(existing)+1`
+> select-then-insert, non-atomic — separately I5's to fix.)
+>
 > *Minor, same review:* I3's review argued I4 would be orthogonal to its `CancelledError` test
 > because "I4 uses cooperative signalling, not real cancellation". **That premise is now false** —
 > I4 does call `beat.cancel()`. The test still passes, but for a narrower reason: the real

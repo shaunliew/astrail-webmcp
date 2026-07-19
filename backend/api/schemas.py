@@ -68,10 +68,10 @@ class CaptureSavedReelResponse(BaseModel):
 class OrganizeSavedReelsRequest(BaseModel):
     saved_reel_ids: list[UUID] = Field(min_length=1, max_length=5)
 
-    # The RPC rejects duplicates too, but with a generic P0001 that create_organize_job's
-    # message-string mapping does not match -- so without this a direct API client gets a
-    # 500 instead of a 422. (That mapping's fragility is B5's to fix; this stops the bad
-    # input reaching it. Neither replaces the other.)
+    # The RPC rejects duplicates too (now as AS422 -> InvalidOrganizeRequest -> 422, since
+    # B5(d)). This validator stops the bad input reaching the RPC at all; the SQLSTATE
+    # mapping makes the RPC's own rejection read correctly if it ever does. Neither
+    # replaces the other.
     @model_validator(mode="after")
     def reject_duplicate_ids(self):
         if len(set(self.saved_reel_ids)) != len(self.saved_reel_ids):

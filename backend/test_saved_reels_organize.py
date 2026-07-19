@@ -15,6 +15,7 @@ from models.place import PlaceResult
 from pipeline.geo import haversine_m
 from organizer import (
     ActiveOrganizeConflict,
+    InvalidOrganizeRequest,
     _ground_place,
     _persist_place,
     authorize_place_ids,
@@ -651,7 +652,7 @@ class _CreateOrganizeJobRpc:
         saved = [row for row in self.client.db.get("saved_reels", [])
                  if row.get("user_id") == user_id and row.get("id") in ids]
         if len(saved) != len(ids):
-            raise APIError({"code": "P0001", "message": "Saved Reel not found", "details": None, "hint": None})
+            raise APIError({"code": "AS404", "message": "Saved Reel not found", "details": None, "hint": None})
         active_item = next((item for item in self.client.db.get("organize_job_items", [])
                             if item.get("saved_reel_id") in ids
                             and any(job.get("id") == item.get("job_id")
@@ -660,7 +661,7 @@ class _CreateOrganizeJobRpc:
                                     for job in self.client.db.get("organize_jobs", []))), None)
         if active_item:
             raise APIError({
-                "code": "P0001",
+                "code": "AS409",
                 "message": "Saved Reel is already being organized",
                 "details": None,
                 "hint": None,
@@ -816,7 +817,7 @@ async def test_create_organize_job_uses_atomic_rpc_and_maps_active_conflict():
             class _ConflictResult:
                 async def execute(self):
                     raise APIError({
-                        "code": "P0001",
+                        "code": "AS409",
                         "message": "Saved Reel is already being organized",
                         "details": None,
                         "hint": None,
@@ -2177,3 +2178,50 @@ async def test_extraction_cache_read_blip_is_a_miss_not_an_item_failure(monkeypa
     assert scraped == ["https://www.instagram.com/reel/A"]
     assert client.db["organize_job_items"][0]["status"] == "organized"
     assert client.db["organize_jobs"][0]["status"] == "succeeded"
+
+
+# ---------------------------------------------------------------------------
+# B5(d): organize-job errors map by SQLSTATE, never by message text.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code,expected", [
+    ("AS409", ActiveOrganizeConflict),
+    ("AS404", PermissionError),
+    ("AS422", InvalidOrganizeRequest),
+])
+async def test_organize_job_errors_map_by_sqlstate_through_a_reworded_message(code, expected):
+    """The WHOLE point of (d): the message text is deliberately NOT the current wording.
+
+    Matching on `exc.message` meant a copy-edit in the SQL — or Postgres surfacing the text
+    differently — silently downgraded a 409 to a 500, and no test could see it because both
+    sides shared one literal. Asserting against prose nobody would ever write is what proves
+    the mapping no longer depends on prose at all.
+    """
+    class _RewordedRpcClient:
+        def rpc(self, _name, _params):
+            class _Raiser:
+                async def execute(self):
+                    raise _pg_error(code, "totally different wording, copy-edited later")
+            return _Raiser()
+
+    with pytest.raises(expected):
+        await create_organize_job(_RewordedRpcClient(), "user-a", ["r1"])
+
+
+@pytest.mark.asyncio
+async def test_unmapped_organize_job_sqlstate_still_propagates():
+    """P0001 is now "some other validation the RPC rejects" — it must NOT be silently
+    absorbed into one of the three mapped outcomes."""
+    class _UnmappedRpcClient:
+        def rpc(self, _name, _params):
+            class _Raiser:
+                async def execute(self):
+                    raise _pg_error("P0001", "Saved Reel is already being organized")
+            return _Raiser()
+
+    from postgrest.exceptions import APIError
+
+    with pytest.raises(APIError):
+        await create_organize_job(_UnmappedRpcClient(), "user-a", ["r1"])

@@ -41,8 +41,24 @@ class ActiveOrganizeConflict(RuntimeError):
     """The selected Saved Reel is already part of another active job."""
 
 
+class InvalidOrganizeRequest(ValueError):
+    """The RPC rejected the request itself (empty, oversized, null or duplicated ids)."""
+
+
 class LeaseLost(RuntimeError):
     """Another worker holds this job's lease; this run must stop writing immediately."""
+
+
+# SQLSTATE -> outcome, per 20260720130000_organize_job_error_codes.sql. Codes, never message
+# text: the prose in that migration is presentation, and an editor who reworded it used to
+# turn a 409 into a 500 with nothing able to catch it. P0001 is deliberately absent — after
+# this mapping it means "some other validation the RPC rejects", which must surface as a 500
+# rather than be absorbed into one of these three.
+_ORGANIZE_JOB_ERRORS: dict[str, type[Exception]] = {
+    "AS409": ActiveOrganizeConflict,
+    "AS404": PermissionError,
+    "AS422": InvalidOrganizeRequest,
+}
 
 
 def _now() -> str:
@@ -92,12 +108,10 @@ async def create_organize_job(client, user_id: str, saved_reel_ids: list[str]) -
             },
         ).execute()
     except APIError as exc:
-        message = getattr(exc, "message", str(exc))
-        if exc.code == "P0001" and message == "Saved Reel is already being organized":
-            raise ActiveOrganizeConflict(message) from exc
-        if exc.code == "P0001" and message == "Saved Reel not found":
-            raise PermissionError(message) from exc
-        raise
+        error = _ORGANIZE_JOB_ERRORS.get(exc.code)
+        if error is None:
+            raise
+        raise error(getattr(exc, "message", str(exc))) from exc
     return result.data
 
 

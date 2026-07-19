@@ -945,7 +945,7 @@ select throws_ok(
     ]::uuid[],
     'p2-6-overlap'
   )$$,
-  'P0001',
+  'AS409',
   'Saved Reel is already being organized',
   'overlapping active organize items are rejected as one request'
 );
@@ -982,7 +982,7 @@ select throws_ok(
     array[(select id from public.saved_reels where user_id = '00000000-0000-0000-0000-000000000701' and normalized_url = 'https://www.instagram.com/reel/ORGANIZE-A')]::uuid[],
     'p2-6-cross-owner'
   )$$,
-  'P0001',
+  'AS404',
   'Saved Reel not found',
   'cross-owner Saved Reel selection preserves not-found semantics'
 );

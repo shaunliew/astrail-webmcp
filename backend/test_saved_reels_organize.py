@@ -417,6 +417,77 @@ async def test_recover_organize_jobs_immediately_requeues_prior_process_work():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["initial_event", "items_load", "counts", "finalization"])
+async def test_unexpected_organizer_failure_marks_job_failed_and_emits_result(
+    monkeypatch, failure
+):
+    class _FaultTable(_Table):
+        async def execute(self):
+            if failure == "initial_event" and self.name == "organize_events":
+                if (
+                    isinstance(self.op, tuple)
+                    and self.op[0] == "insert"
+                    and self.op[1].get("message") == "Finding places"
+                ):
+                    raise RuntimeError("initial event write failed")
+            if failure == "items_load" and self.name == "organize_job_items":
+                if self.op == "select" and self.filters.get("job_id") == "job-1":
+                    raise RuntimeError("item load failed")
+            if failure == "finalization" and self.name == "organize_jobs":
+                if (
+                    isinstance(self.op, tuple)
+                    and self.op[0] == "update"
+                    and "completed_at" in self.op[1]
+                    and not self.db.get("finalization_failed")
+                ):
+                    self.db["finalization_failed"] = True
+                    raise RuntimeError("finalization failed")
+            return await super().execute()
+
+    class _FaultClient(_Client):
+        def table(self, name):
+            return _FaultTable(name, self.db)
+
+    client = _FaultClient({
+        "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending"}],
+        "organize_job_items": [{
+            "id": "item-1", "job_id": "job-1", "user_id": "user-a",
+            "saved_reel_id": "r1", "status": "queued",
+        }],
+        "saved_reels": [{
+            "id": "r1", "user_id": "user-a",
+            "normalized_url": "https://www.instagram.com/reel/A",
+            "reel_cache_id": "cache-1", "analysis_status": "queued",
+        }],
+    })
+    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    if failure == "counts":
+        async def fail_counts(*_args, **_kwargs):
+            raise RuntimeError("count update failed")
+
+        monkeypatch.setattr("organizer._update_job_counts", fail_counts)
+
+    await run_organize_job(
+        "job-1", "user-a", client=client,
+        ground=lambda place: {"place": place, "country_code": "JP", "country_name": "Japan"},
+    )
+
+    job = client.db["organize_jobs"][0]
+    assert job["status"] == "failed"
+    assert job["status_message"] == "Organization failed"
+    assert job["completed_at"]
+    assert job["locked_at"] is None
+    assert job["lock_expires_at"] is None
+    result_events = [event for event in client.db.get("organize_events", []) if event["event_type"] == "result"]
+    assert len(result_events) == 1
+    assert result_events[0]["payload"] == {"status": "failed"}
+    stream = [event async for event in stream_organize_events(client, "job-1", "user-a", poll_s=0)]
+    streamed_result = json.loads(stream[-2].split("data: ", 1)[1])
+    assert json.loads(streamed_result["content"]) == {"status": "failed"}
+    assert stream[-1] == DONE
+
+
+@pytest.mark.asyncio
 async def test_uncached_source_failure_refunds_reserved_analysis(monkeypatch):
     client = _Client({
         "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending"}],

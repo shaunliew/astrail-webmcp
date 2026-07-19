@@ -18,6 +18,7 @@ from usage import refund_daily_reel_analysis, reserve_daily_reel_analysis
 
 LOCATION_VERIFICATION_VERSION = "mapbox-country-v1"
 INITIALIZING_STALE_AFTER_S = 120
+ORGANIZE_FAILURE_MESSAGE = "Organization failed"
 
 
 def _now() -> str:
@@ -277,6 +278,26 @@ async def _update_job_counts(client, job_id: str, user_id: str) -> None:
     await client.table("organize_jobs").update(counts).eq("id", job_id).eq("user_id", user_id).execute()
 
 
+async def _mark_organize_job_failed(client, job_id: str, user_id: str) -> None:
+    """Best-effort terminal cleanup for errors outside the per-item boundary."""
+    try:
+        await (client.table("organize_jobs").update({
+            "status": "failed",
+            "status_message": ORGANIZE_FAILURE_MESSAGE,
+            "completed_at": _now(),
+            "locked_at": None,
+            "lock_expires_at": None,
+        }).eq("id", job_id).eq("user_id", user_id).execute())
+    except Exception:
+        pass
+    try:
+        await _record_organize_event(
+            client, job_id, user_id, "result", ORGANIZE_FAILURE_MESSAGE, {"status": "failed"}
+        )
+    except Exception:
+        pass
+
+
 async def recover_organize_jobs(client, stale_after_s: int = 900) -> list[dict]:
     """Requeue prior-process organize work and return pending jobs for boot dispatch."""
     initializing_cutoff = (
@@ -309,111 +330,118 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
     now = datetime.now(timezone.utc)
     claimed = await (client.table("organize_jobs").update({
         "status": "processing", "status_message": "Finding places", "locked_at": now.isoformat(),
-        "lock_expires_at": (now + timedelta(minutes=15)).isoformat(), "started_at": now.isoformat(),
+        "started_at": now.isoformat(),
         "attempt_count": attempt_count,
     }).eq("id", job_id).eq("user_id", user_id).eq("status", "pending").execute())
     if not claimed.data:
         return {"skipped": "job already claimed"}
-    await _record_organize_event(client, job_id, user_id, "stage", "Finding places")
-    if scrape is None:
-        async def scrape(url):
-            token = os.environ.get("APIFY_TOKEN")
-            if not token:
-                raise RuntimeError("Reel extraction is unavailable")
-            return await scrape_reel(url, token=token)
-    if extract is None:
-        from genagents.place_extractor import extract_places
-        extract = extract_places
-    ground = ground or _ground_place
-    items = (await client.table("organize_job_items").select("*").eq("job_id", job_id)
-             .eq("user_id", user_id).execute()).data or []
-    for item in items:
-        reel_result = await (client.table("saved_reels").select(
-            "id,normalized_url,reel_cache_id"
-        ).eq("id", item["saved_reel_id"]).eq("user_id", user_id).maybe_single().execute())
-        reel = reel_result.data if reel_result is not None else None
-        if reel is None:
-            continue
-        await client.table("organize_job_items").update({"status": "processing"}).eq("id", item["id"]).eq("user_id", user_id).execute()
-        cache_id = reel.get("reel_cache_id")
-        if cache_id is None:
-            cache_id = await _find_cache_id(client, reel["normalized_url"])
-        try:
-            places = await _maybe_await(get_cached_places(client, reel["normalized_url"], EXTRACTOR_VERSION))
-            if places is None:
-                quota_state = item.get("analysis_charge_state", "not_charged")
-                if quota_state == "not_charged":
-                    if not await reserve_daily_reel_analysis(client, user_id):
-                        raise RuntimeError("analysis quota reached")
-                    quota_state = "reserved"
-                    await client.table("organize_job_items").update({
-                        "analysis_charge_state": quota_state, "analysis_reserved_at": _now(),
-                    }).eq("id", item["id"]).eq("user_id", user_id).execute()
-                try:
-                    scraped = await _maybe_await(scrape(reel["normalized_url"]))
-                    places = await _maybe_await(extract(scraped))
-                    # The cache stores research provenance before provider verification. A
-                    # Mapbox retry can therefore reuse research without paying for Apify again.
-                    await cache_places(
-                        client,
-                        reel["normalized_url"],
-                        scraped,
-                        places,
-                        EXTRACTOR_VERSION,
-                    )
-                    quota_state = "consumed"
-                    await client.table("organize_job_items").update({
-                        "analysis_charge_state": quota_state, "analysis_consumed_at": _now(),
-                    }).eq("id", item["id"]).eq("user_id", user_id).execute()
-                    grounded = [
-                        resolved
-                        for place in places
-                        if (resolved := await _maybe_await(ground(place))) is not None
-                    ]
-                except Exception:
-                    if quota_state == "reserved":
-                        await refund_daily_reel_analysis(client, user_id)
-                        await client.table("organize_job_items").update({
-                            "analysis_charge_state": "refunded", "analysis_refunded_at": _now(),
-                        }).eq("id", item["id"]).eq("user_id", user_id).execute()
-                    raise
-            else:
-                grounded = [resolved for place in places if (resolved := await _maybe_await(ground(place))) is not None]
+    try:
+        await _record_organize_event(client, job_id, user_id, "stage", "Finding places")
+        if scrape is None:
+            async def scrape(url):
+                token = os.environ.get("APIFY_TOKEN")
+                if not token:
+                    raise RuntimeError("Reel extraction is unavailable")
+                return await scrape_reel(url, token=token)
+        if extract is None:
+            from genagents.place_extractor import extract_places
+            extract = extract_places
+        ground = ground or _ground_place
+        items = (await client.table("organize_job_items").select("*").eq("job_id", job_id)
+                 .eq("user_id", user_id).execute()).data or []
+        for item in items:
+            reel_result = await (client.table("saved_reels").select(
+                "id,normalized_url,reel_cache_id"
+            ).eq("id", item["saved_reel_id"]).eq("user_id", user_id).maybe_single().execute())
+            reel = reel_result.data if reel_result is not None else None
+            if reel is None:
+                continue
+            await client.table("organize_job_items").update({"status": "processing"}).eq("id", item["id"]).eq("user_id", user_id).execute()
+            cache_id = reel.get("reel_cache_id")
             if cache_id is None:
                 cache_id = await _find_cache_id(client, reel["normalized_url"])
-            if cache_id:
-                await (client.table("reel_place_mentions").delete()
-                       .eq("reel_cache_id", cache_id).execute())
-            if not grounded or not cache_id:
-                terminal = "location_not_found"
-            else:
-                for resolved in grounded:
-                    place_id = await _persist_place(client, resolved)
-                    await _persist_mention(client, cache_id, place_id, resolved["place"])
-                terminal = "organized"
-            await client.table("organize_job_items").update({
-                "status": terminal, "place_count": len(grounded), "error_message": None, "completed_at": _now()
-            }).eq("id", item["id"]).eq("user_id", user_id).execute()
-            await client.table("saved_reels").update({
-                "reel_cache_id": cache_id, "analysis_status": terminal,
-                "analyzed_at": _now(), "retry_after": None,
-            }).eq("id", reel["id"]).eq("user_id", user_id).execute()
-            await _record_organize_event(client, job_id, user_id, "stage", "Reel organized", {"saved_reel_id": reel["id"], "place_count": len(grounded)})
+            try:
+                places = await _maybe_await(get_cached_places(client, reel["normalized_url"], EXTRACTOR_VERSION))
+                if places is None:
+                    quota_state = item.get("analysis_charge_state", "not_charged")
+                    if quota_state == "not_charged":
+                        if not await reserve_daily_reel_analysis(client, user_id):
+                            raise RuntimeError("analysis quota reached")
+                        quota_state = "reserved"
+                        await client.table("organize_job_items").update({
+                            "analysis_charge_state": quota_state, "analysis_reserved_at": _now(),
+                        }).eq("id", item["id"]).eq("user_id", user_id).execute()
+                    try:
+                        scraped = await _maybe_await(scrape(reel["normalized_url"]))
+                        places = await _maybe_await(extract(scraped))
+                        # The cache stores research provenance before provider verification. A
+                        # Mapbox retry can therefore reuse research without paying for Apify again.
+                        await cache_places(
+                            client,
+                            reel["normalized_url"],
+                            scraped,
+                            places,
+                            EXTRACTOR_VERSION,
+                        )
+                        quota_state = "consumed"
+                        await client.table("organize_job_items").update({
+                            "analysis_charge_state": quota_state, "analysis_consumed_at": _now(),
+                        }).eq("id", item["id"]).eq("user_id", user_id).execute()
+                        grounded = [
+                            resolved
+                            for place in places
+                            if (resolved := await _maybe_await(ground(place))) is not None
+                        ]
+                    except Exception:
+                        if quota_state == "reserved":
+                            await refund_daily_reel_analysis(client, user_id)
+                            await client.table("organize_job_items").update({
+                                "analysis_charge_state": "refunded", "analysis_refunded_at": _now(),
+                            }).eq("id", item["id"]).eq("user_id", user_id).execute()
+                        raise
+                else:
+                    grounded = [resolved for place in places if (resolved := await _maybe_await(ground(place))) is not None]
+                if cache_id is None:
+                    cache_id = await _find_cache_id(client, reel["normalized_url"])
+                if cache_id:
+                    await (client.table("reel_place_mentions").delete()
+                           .eq("reel_cache_id", cache_id).execute())
+                if not grounded or not cache_id:
+                    terminal = "location_not_found"
+                else:
+                    for resolved in grounded:
+                        place_id = await _persist_place(client, resolved)
+                        await _persist_mention(client, cache_id, place_id, resolved["place"])
+                    terminal = "organized"
+                await client.table("organize_job_items").update({
+                    "status": terminal, "place_count": len(grounded), "error_message": None, "completed_at": _now()
+                }).eq("id", item["id"]).eq("user_id", user_id).execute()
+                await client.table("saved_reels").update({
+                    "reel_cache_id": cache_id, "analysis_status": terminal,
+                    "analyzed_at": _now(), "retry_after": None,
+                }).eq("id", reel["id"]).eq("user_id", user_id).execute()
+                await _record_organize_event(client, job_id, user_id, "stage", "Reel organized", {"saved_reel_id": reel["id"], "place_count": len(grounded)})
+            except Exception:
+                await client.table("organize_job_items").update({
+                    "status": "failed", "error_message": "Reel organization failed", "completed_at": _now()
+                }).eq("id", item["id"]).eq("user_id", user_id).execute()
+                await client.table("saved_reels").update({
+                    "analysis_status": "failed", "retry_after": None,
+                }).eq("id", reel["id"]).eq("user_id", user_id).execute()
+                await _record_organize_event(client, job_id, user_id, "error", "Reel organization failed", {"saved_reel_id": reel["id"]})
+            await _update_job_counts(client, job_id, user_id)
+        status = await get_organize_status(client, job_id, user_id)
+        final_status = "failed" if status["failed_items"] and not status["organized_items"] and not status["location_not_found_items"] else "succeeded"
+        await client.table("organize_jobs").update({
+            "status": final_status,
+            "status_message": "Organization failed" if final_status == "failed" else "Organized",
+            "completed_at": _now(), "locked_at": None, "lock_expires_at": None,
+        }).eq("id", job_id).eq("user_id", user_id).execute()
+        await _record_organize_event(client, job_id, user_id, "result", "Organization failed" if final_status == "failed" else "Organized", {"status": final_status})
+        return await get_organize_status(client, job_id, user_id)
+    except Exception:
+        await _mark_organize_job_failed(client, job_id, user_id)
+        try:
+            return await get_organize_status(client, job_id, user_id)
         except Exception:
-            await client.table("organize_job_items").update({
-                "status": "failed", "error_message": "Reel organization failed", "completed_at": _now()
-            }).eq("id", item["id"]).eq("user_id", user_id).execute()
-            await client.table("saved_reels").update({
-                "analysis_status": "failed", "retry_after": None,
-            }).eq("id", reel["id"]).eq("user_id", user_id).execute()
-            await _record_organize_event(client, job_id, user_id, "error", "Reel organization failed", {"saved_reel_id": reel["id"]})
-        await _update_job_counts(client, job_id, user_id)
-    status = await get_organize_status(client, job_id, user_id)
-    final_status = "failed" if status["failed_items"] and not status["organized_items"] and not status["location_not_found_items"] else "succeeded"
-    await client.table("organize_jobs").update({
-        "status": final_status,
-        "status_message": "Organization failed" if final_status == "failed" else "Organized",
-        "completed_at": _now(), "locked_at": None, "lock_expires_at": None,
-    }).eq("id", job_id).eq("user_id", user_id).execute()
-    await _record_organize_event(client, job_id, user_id, "result", "Organization failed" if final_status == "failed" else "Organized", {"status": final_status})
-    return await get_organize_status(client, job_id, user_id)
+            return {"job_id": job_id, "status": "failed", "status_message": ORGANIZE_FAILURE_MESSAGE}

@@ -4,7 +4,8 @@ Priority order: **B1, B4, B6, B2, B3, B5, B7**. B1 is **RESOLVED** (live securit
 log exposure, closed by access-log redaction — see below);
 B4 is restart burst-cost and provider-rate-limit risk; B6 is **RESOLVED** (the cheap
 correctness guard for a currently unreachable UI path — mixed input is now a 422);
-B2/B3 are canonical-data hygiene; B5 is
+B2/B3 are canonical-data hygiene, and B2 is **RESOLVED** (null-country legacy rows are now
+reused and backfilled at the write boundary, still behind the 500-metre gate); B5 is
 **RESOLVED** (it was never protected by the single-writer invariant claimed below — Arc A's
 lease work replaced that premise with a database row lock); B7 is cosmetic product wording.
 
@@ -189,10 +190,36 @@ expanding the pipeline.
 trip row, job, quota increment, background task, Apify call, or place authorization occurs.
 Keep separate regressions showing Reel-only and place-only requests still pass.
 
-## B2 — Reuse verified legacy places whose country code is null
+## B2 — Reuse verified legacy places whose country code is null — **RESOLVED (Arc B)**
 
 **Suggested severity:** P3. This creates duplicate canonical rows and weakens data hygiene,
 but it does not expose an unverified place or break the current trip flow.
+
+**RESOLUTION (2026-07-20, Arc B / task B2).** The recommendation shipped as written:
+null-aware reuse at the write boundary, no batch backfill. The reuse predicate lives in
+`public.find_or_create_place` (Arc A moved it there in 20260720160000 to serialize the
+find-or-create behind an advisory lock), and 20260720180000 widens it from
+`country_code = p_country_code` to `country_code = p_country_code or country_code is null`.
+`order by (country_code is null), id` then makes the choice deterministic when both shapes sit
+inside the gate: an already-Mapbox-verified row beats a legacy one, and the lowest id breaks
+the remaining tie, so a re-organize resolves to the same canonical place every run. Reuse is
+still licensed by coordinates alone — the unchanged 500-metre haversine gate decides — and the
+function's existing update on the chosen row is what backfills the verified
+`country/country_code/country_name`. Country is never inferred from the name, and only the
+chosen row is written. Regressions in `backend/test_saved_reels_organize.py`:
+`..._reuses_and_backfills_a_near_null_country_legacy_row`,
+`..._does_not_reuse_a_far_null_country_row` (the anti-corruption case — same name, different
+venue, stays two rows and is not stamped with an unverified country),
+`..._prefers_the_country_code_match_over_a_null_country_row` and
+`..._breaks_a_same_country_tie_by_lowest_id`; at the SQL level in
+`supabase/tests/012_serialized_place_find_or_create.sql`.
+
+**Still deferred, with triggers.** A separate audited batch backfill of legacy null-country
+rows: when a production count shows `places.country_code IS NULL` rows above roughly 200. The
+select-then-insert TOCTOU is closed for THIS caller by the advisory lock, but the lock is a
+convention rather than a constraint: `pipeline/persist.py::_find_or_create_place` still reaches
+`places` directly and keeps its own deferral, since its match rule is by name/alias rather than
+name/country. Trigger for porting it: observed duplicate canonical rows in production.
 
 **Files and symbols:**
 

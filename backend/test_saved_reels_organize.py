@@ -98,6 +98,7 @@ class _Table:
         self.gt_filters = {}
         self.lt_filters = {}
         self.in_filters = {}
+        self.is_null_filters = set()
         self.or_filters = []
         self.on_conflict = None
         self.single = False
@@ -111,6 +112,16 @@ class _Table:
     def gt(self, key, value): self.gt_filters[key] = value; return self
     def lt(self, key, value): self.lt_filters[key] = value; return self
     def or_(self, expr): self.or_filters.append(expr); return self
+
+    def is_(self, key, value):
+        # postgrest normalizes `None` to `"null"` (base_request_builder.is_), so both spellings
+        # reach the same filter and the fake must accept both. Anything else — `is.true`,
+        # `is.unknown` — is unimplemented and fails loudly rather than filtering on nothing.
+        if value not in (None, "null"):
+            raise ValueError(f"fake implements only `is.null`, got .is_({key!r}, {value!r})")
+        self.is_null_filters.add(key)
+        return self
+
     def in_(self, key, values): self.in_filters[key] = set(values); return self
     def order(self, *_args, **_kwargs): return self
     def maybe_single(self): self.single = True; return self
@@ -118,6 +129,8 @@ class _Table:
     def _matches(self, row):
         return all(row.get(k) == v for k, v in self.filters.items()) and all(
             row.get(k) in values for k, values in self.in_filters.items()
+        ) and all(
+            row.get(k) is None for k in self.is_null_filters
         ) and all(row.get(k, 0) > v for k, v in self.gt_filters.items()) and all(
             _lt(row, k, v) for k, v in self.lt_filters.items()
         ) and all(
@@ -450,7 +463,7 @@ _LEASE_RPCS = {
 
 
 class _FindOrCreatePlaceRpc:
-    """Mirror of `public.find_or_create_place` (20260720160000_serialized_...).
+    """Mirror of `public.find_or_create_place` (20260720160000, widened by 20260720180000).
 
     ATOMIC ON PURPOSE — the body below contains no `await`, so no other coroutine can run
     between the lookup and the insert. That is not the fake being convenient: it is what the
@@ -461,29 +474,38 @@ class _FindOrCreatePlaceRpc:
     What it CANNOT reproduce is the lock itself — whether two separate BACKENDS are serialized
     is a property of Postgres, not of Python, so it is proven against real concurrent
     connections in `supabase/tests/012_serialized_place_find_or_create.sql`. This mirror pins
-    the reuse rule the callers depend on: same name, same verified country, inside the gate.
+    the reuse rule the callers depend on: same name, a country that matches the verified one or
+    is not set yet, inside the gate, verified rows preferred and lowest id breaking the tie.
     """
 
     def __init__(self, client, params): self.client, self.params = client, params
 
     def _match(self):
         params = self.params
-        # Insertion order, which for this fake's sequential ids IS `order by id` — the tie-break
-        # the function uses so several eligible rows resolve the same way every run.
         rows = self.client.db.setdefault("places", [])
-        for row in rows:
-            if (
-                row.get("name") == params["p_name"]
-                and row.get("country_code") == params["p_country_code"]
-                and params["p_lat"] is not None
-                and params["p_lng"] is not None
-                and row.get("lat") is not None
-                and row.get("lng") is not None
-                and haversine_m(params["p_lat"], params["p_lng"], row["lat"], row["lng"])
-                < params["p_max_distance_m"]
-            ):
-                return row
-        return None
+        eligible = [
+            row for row in rows
+            if row.get("name") == params["p_name"]
+            # `country_code = p_country_code or country_code is null` (20260720180000). A row
+            # predating the country migration carries no country, and an equality predicate
+            # would exclude it structurally — which is how the organizer ended up inserting a
+            # duplicate for a venue it already had (ISSUES-B2).
+            and row.get("country_code") in (params["p_country_code"], None)
+            and params["p_lat"] is not None
+            and params["p_lng"] is not None
+            and row.get("lat") is not None
+            and row.get("lng") is not None
+            and haversine_m(params["p_lat"], params["p_lng"], row["lat"], row["lng"])
+            < params["p_max_distance_m"]
+        ]
+        # `order by (country_code is null), id`. Both keys are load-bearing and neither can be
+        # left to insertion order: a verified row beats a legacy one because it is already
+        # Mapbox-grounded, and `id` then makes the winner among equally-eligible rows total, so
+        # a re-organize resolves to the same canonical place every run. Seeding order must NOT
+        # satisfy either — `test_persist_place_breaks_a_same_country_tie_by_lowest_id` seeds the
+        # lower id second precisely so a fake that iterated the list would fail it.
+        eligible.sort(key=lambda row: (row.get("country_code") is None, row["id"]))
+        return eligible[0] if eligible else None
 
     async def execute(self):
         params = self.params
@@ -1568,6 +1590,87 @@ async def test_persist_place_repairs_poisoned_country_label_on_near_match():
     assert client.db["places"][0]["country_code"] == "JP"
     assert client.db["places"][0]["country"] == "Japan"
     assert client.db["places"][0]["country_name"] == "Japan"
+
+
+def _legacy_null_country_row(place_id, lat, lng):
+    """A canonical row created BEFORE the country migration: name + coords, no country.
+
+    Written with explicit `None`s rather than omitted keys because that is how Supabase
+    actually returns a nullable column, and the two differ under `row.get(key, default)`.
+    """
+    return {"id": place_id, "name": "Harry Potter Cafe", "lat": lat, "lng": lng,
+            "country": None, "country_code": None, "country_name": None}
+
+
+@pytest.mark.asyncio
+async def test_persist_place_reuses_and_backfills_a_near_null_country_legacy_row():
+    """ISSUES-B2: `.eq("country_code", ...)` structurally excludes pre-migration rows, so the
+    organizer inserted a SECOND canonical row for a venue it already had. Coordinates — not the
+    name — are what license the reuse, and the verified country is written onto the reused row.
+    """
+    client = _Client({"places": [_legacy_null_country_row("place-legacy", 35.67311, 139.73625)]})
+    place = PlaceResult(
+        name="Harry Potter Cafe", category="restaurant", lat=35.67320, lng=139.73630,
+        confidence=0.8, evidence_quote="Harry Potter Cafe", source_url="https://hpcafe.jp/",
+        country_code="JP", country_name="Japan",
+    )
+
+    place_id = await _persist_place(client, {
+        "place": place, "country_code": "JP", "country_name": "Japan",
+    })
+
+    assert place_id == "place-legacy"
+    assert len(client.db["places"]) == 1, "reuse must not also insert a duplicate"
+    assert client.db["places"][0]["country_code"] == "JP"
+    assert client.db["places"][0]["country"] == "Japan"
+    assert client.db["places"][0]["country_name"] == "Japan"
+
+
+@pytest.mark.asyncio
+async def test_persist_place_does_not_reuse_a_far_null_country_row():
+    """The distance gate is what keeps null-aware matching from being data corruption: two
+    genuinely different venues sharing a name must stay two rows, and the far row must NOT be
+    stamped with a country it was never verified against.
+    """
+    client = _Client({"places": [_legacy_null_country_row("place-osaka", 34.6937, 135.5023)]})
+    place = PlaceResult(
+        name="Harry Potter Cafe", category="restaurant", lat=35.67320, lng=139.73630,
+        confidence=0.8, evidence_quote="Harry Potter Cafe", source_url="https://hpcafe.jp/",
+        country_code="JP", country_name="Japan",
+    )
+
+    place_id = await _persist_place(client, {
+        "place": place, "country_code": "JP", "country_name": "Japan",
+    })
+
+    assert place_id != "place-osaka"
+    assert len(client.db["places"]) == 2
+    assert client.db["places"][0]["country_code"] is None, "the far row must stay untouched"
+    assert client.db["places"][-1]["lat"] == 35.67320
+
+
+@pytest.mark.asyncio
+async def test_persist_place_prefers_the_country_code_match_over_a_null_country_row():
+    """Both rows are inside the gate, so both are reusable — the choice must be deterministic
+    and must pick the row whose country is already verified, not whichever came back first.
+    """
+    client = _Client({"places": [
+        _legacy_null_country_row("place-legacy", 35.67311, 139.73625),
+        {"id": "place-verified", "name": "Harry Potter Cafe", "lat": 35.67315,
+         "lng": 139.73628, "country": "Japan", "country_code": "JP", "country_name": "Japan"},
+    ]})
+    place = PlaceResult(
+        name="Harry Potter Cafe", category="restaurant", lat=35.67320, lng=139.73630,
+        confidence=0.8, evidence_quote="Harry Potter Cafe", source_url="https://hpcafe.jp/",
+        country_code="JP", country_name="Japan",
+    )
+
+    place_id = await _persist_place(client, {
+        "place": place, "country_code": "JP", "country_name": "Japan",
+    })
+
+    assert place_id == "place-verified"
+    assert client.db["places"][0]["country_code"] is None, "the unchosen row stays untouched"
 
 
 @pytest.mark.asyncio

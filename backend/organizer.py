@@ -326,10 +326,16 @@ async def _persist_place(client, grounded: dict) -> str:
     # venue to an arbitrary one of the duplicates. Fencing the mention row cannot help; it only
     # decides which duplicate gets referenced.
     #
-    # The reuse rule (same name, same verified country, inside DEFAULT_DISTANCE_M, repairing
-    # the reused row's country labels) moved into the function unchanged. It stays a distance
+    # The reuse rule lives inside the function: same name, a country that either MATCHES the
+    # freshly verified one or is still NULL (ISSUES-B2 — rows predating the country migration,
+    # which an equality predicate structurally excludes, so the organizer kept inserting a
+    # second canonical row for a venue it already had), inside DEFAULT_DISTANCE_M, repairing the
+    # reused row's country labels. Coordinates and never the name license the reuse: the 500 m
+    # gate is what stops two different venues sharing a name from being merged, and the country
+    # is only ever filled in from the Mapbox-verified result (guardrail #1). It stays a distance
     # gate rather than a unique constraint because no constraint can express "within 500 m" —
-    # see the migration for why an advisory lock is the route and what it does not cover.
+    # see 20260720160000 for why an advisory lock is the route and what it does not cover, and
+    # 20260720180000 for the null-country widening and the ordering that keeps it deterministic.
     return (await client.rpc("find_or_create_place", {
         "p_name": place.name,
         "p_place_type": place_type,

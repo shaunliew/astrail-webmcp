@@ -217,9 +217,12 @@ async def readiness():
 
 
 @app.post("/saved-reels", response_model=CaptureSavedReelResponse)
+@limiter.limit(BURST_LIMIT)
 async def create_saved_reel(
+    request: Request,                                     # required by slowapi; must be named `request`
+    response: Response,                                   # REQUIRED with headers_enabled=True (see generate_trip)
     req: _CaptureSavedReelRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_current_user_id_stashed),  # stashes request.state.user_id for key_func
 ) -> CaptureSavedReelResponse:
     client = await get_supabase_client()
     try:

@@ -10,10 +10,20 @@ import pytest
 os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "service-role-key")
 
-import auth  # noqa: E402
 import main  # noqa: E402
+import rate_limit  # noqa: E402
 from api.schemas import CaptureSavedReelRequest, CaptureSavedReelResponse, SavedReel
+from fastapi import Request  # noqa: E402
+from rate_limit import get_current_user_id_stashed  # noqa: E402
 from saved_reels import capture_saved_reel
+
+
+@pytest.fixture(autouse=True)
+def _reset_limiter():
+    """slowapi's burst counts are process-global; capture is now burst-limited, so one
+    test's calls would otherwise bleed into the next test's budget."""
+    rate_limit.limiter.reset()
+    yield
 
 
 class _RpcCall:
@@ -123,7 +133,8 @@ async def test_saved_reel_route_returns_the_exact_typed_response(monkeypatch):
     client = object()
     captured: list[tuple[object, str, str]] = []
 
-    async def _current_user_id():
+    async def _current_user_id(request: Request):
+        request.state.user_id = "authenticated-user-id"
         return "authenticated-user-id"
 
     async def _get_client():
@@ -133,7 +144,7 @@ async def test_saved_reel_route_returns_the_exact_typed_response(monkeypatch):
         captured.append((actual_client, user_id, url))
         return _ROW
 
-    main.app.dependency_overrides[auth.get_current_user_id] = _current_user_id
+    main.app.dependency_overrides[get_current_user_id_stashed] = _current_user_id
     monkeypatch.setattr(main, "get_supabase_client", _get_client)
     monkeypatch.setattr(main, "capture_saved_reel", _capture, raising=False)
     try:
@@ -152,11 +163,50 @@ async def test_saved_reel_route_returns_the_exact_typed_response(monkeypatch):
     ]
 
 
-async def test_saved_reel_route_rejects_invalid_url_with_the_standard_422_envelope(monkeypatch):
-    async def _current_user_id():
+async def test_saved_reel_route_has_per_user_burst_limit(monkeypatch):
+    """Capture creates an authenticated row per call, so it carries BURST_LIMIT (3/minute)
+    like every other mutating endpoint. The 4th call in the window is rejected BEFORE the
+    handler body — `captured` proving the limiter fires ahead of the persistence seam."""
+    captured: list[str] = []
+
+    async def _stashed(request: Request):
+        request.state.user_id = "authenticated-user-id"
         return "authenticated-user-id"
 
-    main.app.dependency_overrides[auth.get_current_user_id] = _current_user_id
+    async def _get_client():
+        return object()
+
+    async def _capture(_client, _user_id, url):
+        captured.append(url)
+        return _ROW
+
+    main.app.dependency_overrides[get_current_user_id_stashed] = _stashed
+    monkeypatch.setattr(main, "get_supabase_client", _get_client)
+    monkeypatch.setattr(main, "capture_saved_reel", _capture, raising=False)
+    try:
+        async with _route_client() as ac:
+            for _ in range(3):
+                allowed = await ac.post(
+                    "/saved-reels", json={"url": "https://www.instagram.com/reel/ABC123"}
+                )
+                assert allowed.status_code == 200
+            limited = await ac.post(
+                "/saved-reels", json={"url": "https://www.instagram.com/reel/ABC123"}
+            )
+    finally:
+        main.app.dependency_overrides.clear()
+
+    assert limited.status_code == 429
+    assert limited.json()["error"]["code"] == "rate_limited"
+    assert len(captured) == 3
+
+
+async def test_saved_reel_route_rejects_invalid_url_with_the_standard_422_envelope(monkeypatch):
+    async def _current_user_id(request: Request):
+        request.state.user_id = "authenticated-user-id"
+        return "authenticated-user-id"
+
+    main.app.dependency_overrides[get_current_user_id_stashed] = _current_user_id
     try:
         async with _route_client() as ac:
             response = await ac.post("/saved-reels", json={"url": "https://www.instagram.com/p/ABC123"})
@@ -191,7 +241,8 @@ async def test_saved_reel_route_requires_authentication():
 async def test_saved_reel_route_reuses_the_atomic_row_without_background_work(monkeypatch):
     calls: list[tuple[object, str, str]] = []
 
-    async def _current_user_id():
+    async def _current_user_id(request: Request):
+        request.state.user_id = "authenticated-user-id"
         return "authenticated-user-id"
 
     async def _get_client():
@@ -204,7 +255,7 @@ async def test_saved_reel_route_reuses_the_atomic_row_without_background_work(mo
     async def _unexpected(*_args, **_kwargs):
         raise AssertionError("capture must not consume trip quota or dispatch generation work")
 
-    main.app.dependency_overrides[auth.get_current_user_id] = _current_user_id
+    main.app.dependency_overrides[get_current_user_id_stashed] = _current_user_id
     monkeypatch.setattr(main, "get_supabase_client", _get_client)
     monkeypatch.setattr(main, "capture_saved_reel", _capture, raising=False)
     monkeypatch.setattr(main, "check_and_increment_daily_quota", _unexpected)
@@ -226,7 +277,8 @@ async def test_saved_reel_route_reuses_the_atomic_row_without_background_work(mo
 
 @pytest.mark.parametrize("failure", [RuntimeError("database unavailable"), RuntimeError("exactly one row")])
 async def test_saved_reel_route_hides_persistence_failures(monkeypatch, failure):
-    async def _current_user_id():
+    async def _current_user_id(request: Request):
+        request.state.user_id = "authenticated-user-id"
         return "authenticated-user-id"
 
     async def _get_client():
@@ -235,7 +287,7 @@ async def test_saved_reel_route_hides_persistence_failures(monkeypatch, failure)
     async def _capture(*_args, **_kwargs):
         raise failure
 
-    main.app.dependency_overrides[auth.get_current_user_id] = _current_user_id
+    main.app.dependency_overrides[get_current_user_id_stashed] = _current_user_id
     monkeypatch.setattr(main, "get_supabase_client", _get_client)
     monkeypatch.setattr(main, "capture_saved_reel", _capture, raising=False)
     try:
@@ -254,10 +306,11 @@ async def test_saved_reel_route_hides_persistence_failures(monkeypatch, failure)
 
 @pytest.mark.parametrize("extra_field", ["user_id", "analysis_status", "reel_cache_id"])
 async def test_saved_reel_route_rejects_client_owned_backend_fields(monkeypatch, extra_field):
-    async def _current_user_id():
+    async def _current_user_id(request: Request):
+        request.state.user_id = "authenticated-user-id"
         return "authenticated-user-id"
 
-    main.app.dependency_overrides[auth.get_current_user_id] = _current_user_id
+    main.app.dependency_overrides[get_current_user_id_stashed] = _current_user_id
     try:
         async with _route_client() as ac:
             response = await ac.post(

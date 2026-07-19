@@ -2052,3 +2052,76 @@ async def test_item_failure_logs_only_fixed_phase_and_job_item_ids(monkeypatch, 
     assert "item_id=item-1" in caplog.text
     assert "secret" not in caplog.text
     assert "private.example" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_zero_place_job_does_not_report_as_organized(monkeypatch):
+    """4 failed + 1 location_not_found is `succeeded` with ZERO places — it must not say
+    "Organized".
+
+    `final_status` is deliberately unchanged (it is the frontend contract, and one
+    location_not_found among failures is still a completed run, not a crashed one). The
+    MESSAGE is what a user reads, and "Organized" on a job that produced no place is a lie
+    the status endpoint and the terminal SSE event both repeat.
+    """
+    client = _Client({
+        "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending"}],
+        "organize_job_items": [
+            {"id": f"item-{key}", "job_id": "job-1", "user_id": "user-a",
+             "saved_reel_id": f"r{key}", "status": "queued"}
+            for key in "ABCDE"
+        ],
+        "saved_reels": [
+            {"id": f"r{key}", "user_id": "user-a",
+             "normalized_url": f"https://www.instagram.com/reel/{key}",
+             "reel_cache_id": f"cache-{key}", "analysis_status": "queued"}
+            for key in "ABCDE"
+        ],
+        "reel_cache": [
+            {"id": f"cache-{key}", "normalized_url": f"https://www.instagram.com/reel/{key}"}
+            for key in "ABCDE"
+        ],
+    })
+    # One place per Reel, named after it, so the shared `ground` seam can behave per item.
+    monkeypatch.setattr(
+        "organizer.get_cached_places",
+        lambda _client, url, _version: [_place(name=url.rsplit("/", 1)[-1])],
+    )
+
+    async def ground(place):
+        if place.name == "E":
+            return None                             # grounds to nothing -> location_not_found
+        raise RuntimeError("mapbox unavailable")    # -> failed
+
+    await run_organize_job("job-1", "user-a", client=client, ground=ground)
+
+    status = await get_organize_status(client, "job-1", "user-a")
+    assert (status["failed_items"], status["location_not_found_items"], status["organized_items"]) == (4, 1, 0)
+    job = client.db["organize_jobs"][0]
+    assert job["status"] == "succeeded"
+    assert job["status_message"] == "No locations found"
+    result_events = [e for e in client.db["organize_events"] if e["event_type"] == "result"]
+    assert [e["message"] for e in result_events] == ["No locations found"]
+
+
+@pytest.mark.asyncio
+async def test_organized_job_still_reports_organized(monkeypatch):
+    """The honest-message change must not relabel a job that DID produce places."""
+    client = _Client({
+        "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending"}],
+        "organize_job_items": [{"id": "item-1", "job_id": "job-1", "user_id": "user-a",
+                                "saved_reel_id": "r1", "status": "queued"}],
+        "saved_reels": [{"id": "r1", "user_id": "user-a",
+                         "normalized_url": "https://www.instagram.com/reel/A",
+                         "reel_cache_id": "cache-1", "analysis_status": "queued"}],
+        "reel_cache": [{"id": "cache-1", "normalized_url": "https://www.instagram.com/reel/A"}],
+    })
+    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+
+    await run_organize_job(
+        "job-1", "user-a", client=client,
+        ground=lambda place: {"place": place, "country_code": "JP", "country_name": "Japan"},
+    )
+
+    job = client.db["organize_jobs"][0]
+    assert (job["status"], job["status_message"]) == ("succeeded", "Organized")

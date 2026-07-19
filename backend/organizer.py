@@ -32,6 +32,8 @@ ORGANIZE_LEASE_TTL_S = 300      # short on purpose: the heartbeat renews a live 
 ORGANIZE_LEASE_RENEW_S = 60     # comfortably under the TTL: several renewals may blip and be
                                 # retried before the lease is genuinely at risk of expiring.
 ORGANIZE_FAILURE_MESSAGE = "Organization failed"
+ORGANIZE_SUCCESS_MESSAGE = "Organized"
+ORGANIZE_NO_LOCATIONS_MESSAGE = "No locations found"     # succeeded, but zero places found
 logger = logging.getLogger(__name__)
 
 
@@ -795,6 +797,18 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
                 await beat
         status = await get_organize_status(client, job_id, user_id)
         final_status = "failed" if status["failed_items"] and not status["organized_items"] and not status["location_not_found_items"] else "succeeded"
+        # The MESSAGE carries a third case the two-valued `final_status` cannot. A run of
+        # 4 failed + 1 location_not_found is `succeeded` — one item reached a terminal answer,
+        # so the job completed rather than crashed — but it produced no place, and calling
+        # that "Organized" is a lie the user reads twice (the polling status row and the
+        # terminal SSE event both carry this string). `final_status` itself is untouched: it
+        # is the frontend contract, and message content is non-breaking.
+        if final_status == "failed":
+            status_message = ORGANIZE_FAILURE_MESSAGE
+        elif not status["organized_items"]:
+            status_message = ORGANIZE_NO_LOCATIONS_MESSAGE
+        else:
+            status_message = ORGANIZE_SUCCESS_MESSAGE
         # FENCED. The loop's `lease_lost` gate sits BEFORE each item, so a superseded worker
         # parked in its LAST item never reaches a gate — the loop just ends and it arrives
         # here. Without the token predicate it would stamp its own terminal state over the
@@ -802,10 +816,10 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
         # status endpoint reads this row, not the event log).
         await client.table("organize_jobs").update({
             "status": final_status,
-            "status_message": "Organization failed" if final_status == "failed" else "Organized",
+            "status_message": status_message,
             "completed_at": _now(), "locked_at": None, "lock_expires_at": None,
         }).eq("id", job_id).eq("user_id", user_id).eq("lease_token", lease_token).execute()
-        await _record_organize_event(client, job_id, user_id, "result", "Organization failed" if final_status == "failed" else "Organized", {"status": final_status}, lease_token=lease_token)
+        await _record_organize_event(client, job_id, user_id, "result", status_message, {"status": final_status}, lease_token=lease_token)
         return await get_organize_status(client, job_id, user_id)
     except Exception:
         await _mark_organize_job_failed(client, job_id, user_id, lease_token=lease_token)

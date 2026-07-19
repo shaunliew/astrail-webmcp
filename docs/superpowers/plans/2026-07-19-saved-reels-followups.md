@@ -916,22 +916,44 @@ W1 writing the *job* row, but nothing stops it writing the *event*.
 pair.** Atomic and lease-validated together, so the two cannot disagree:
 
 ```sql
+-- CORRECTED 2026-07-19 after the A2 runbook pass. The first draft of this RPC (written in
+-- response to Codex round 3, i.e. AFTER the last review gate, so nothing reviewed it) had
+-- three errors that would each fail at FIRST EXECUTION:
+--   1. `p_lease_token text` compared against `jobs.lease_token uuid` -> "operator does not
+--      exist: uuid = text". plpgsql defers this to runtime, so `supabase db reset` alone does
+--      NOT catch it — only a pgTAP execution test does.
+--   2. Inserted a `user_id` column into `generation_events`, which HAS NO SUCH COLUMN
+--      (verified: 20260701151718_trip_job_backbone.sql:55-62 — trip_id, event_type, stage,
+--      message, payload, created_at only).
+--   3. Missing `set search_path = ''` and the revoke/grant block that append_organize_event
+--      correctly has — `supabase db lint` flags mutable search_path on security definer, and
+--      it is a real privilege gap.
+-- SHIPS IN A-II's migration, not A-III: the arc table says A-III carries no DDL, and this is
+-- additive and uncalled by old code, so folding it forward costs nothing.
 create or replace function public.complete_trip_run(
-  p_job_id uuid, p_trip_id uuid, p_user_id uuid, p_lease_token text,
+  p_job_id uuid, p_trip_id uuid, p_lease_token uuid,
   p_status text, p_stage text, p_message text, p_payload jsonb
-) returns boolean language plpgsql security definer as $$
-declare v_won boolean;
+)
+returns boolean
+language plpgsql security definer set search_path = ''
+as $$
 begin
-  -- Fence FIRST: claim the terminal transition. A superseded worker fails here and writes NOTHING.
+  -- Fence FIRST: claim the terminal transition in one statement. A superseded worker fails
+  -- here and writes NOTHING — that is what makes "no job write => no event write" true
+  -- rather than merely probable.
   update public.jobs set status = p_status, completed_at = now()
-   where id = p_job_id and lease_token = p_lease_token and status = 'running'
-  returning true into v_won;
+   where id = p_job_id and lease_token = p_lease_token and status = 'running';
   if not found then return false; end if;
 
-  insert into public.generation_events (trip_id, user_id, event_type, stage, message, payload)
-  values (p_trip_id, p_user_id, 'result', p_stage, p_message, p_payload);
+  insert into public.generation_events (trip_id, event_type, stage, message, payload)
+  values (p_trip_id, 'result', p_stage, p_message, p_payload);
   return true;
 end $$;
+
+revoke all on function public.complete_trip_run(uuid, uuid, uuid, text, text, text, jsonb)
+  from public, anon, authenticated;
+grant execute on function public.complete_trip_run(uuid, uuid, uuid, text, text, text, jsonb)
+  to service_role;
 ```
 
 `runner.py` calls it on BOTH terminal paths (success at :363, failure at :64) instead of the

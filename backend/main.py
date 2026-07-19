@@ -35,7 +35,7 @@ from api.schemas import (
 )
 from api.streaming import stream_organize_events, stream_trip_events
 from auth import get_current_user_id, get_user_id_from_query_or_header
-from jobs import compute_idempotency_key, enqueue_job, recover_inflight_jobs
+from jobs import compute_idempotency_key, enqueue_job, reclaim_expired_jobs
 from pipeline.runner import record_event, run_generation
 from preferences import compose_preference_summary, fetch_traveler_profile
 from rate_limit import (
@@ -69,7 +69,7 @@ async def lifespan(app: FastAPI):
     pending jobs."""
     try:
         client = await get_supabase_client()
-        for job in await recover_inflight_jobs(client=client):
+        for job in await reclaim_expired_jobs(client=client):
             task = asyncio.create_task(_redispatch(client, job))
             _RECOVERY_TASKS.add(task)                     # retain ref so it isn't GC'd mid-flight
             task.add_done_callback(_RECOVERY_TASKS.discard)

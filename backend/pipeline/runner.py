@@ -48,10 +48,17 @@ async def _set_status(client, trip_id, user_id, status) -> None:
     await client.table("trips").update({"status": status}).eq("id", trip_id).eq("user_id", user_id).execute()
 
 
-async def _fail(client, trip_id, user_id, job_id, stage, message) -> dict:
+async def _fail(client, trip_id, user_id, job_id, stage, message, *, lease_token=None) -> dict:
     """Best-effort terminal failure write: each write is independent so one Supabase
     error (e.g. the original failure was connectivity) doesn't block the others — the
-    terminal `result` event and the job-failed mark are the load-bearing ones."""
+    terminal `result` event and the job-failed mark are the load-bearing ones.
+
+    A run that died BEFORE `mark_job_running` returned holds no token, and a run that never
+    owned the job MUST NOT write the job's terminal state: it would stamp `failed` over a
+    replacement's live run. Such a row is left to the reaper, which is the component that
+    owns it. That is safer than an unfenced write and less code than threading an optional
+    token down into `mark_job_done`, where it would be a standing fencing bypass.
+    """
     try:
         await record_event(client, trip_id, event_type="error", stage=stage, message=message)
     except Exception:
@@ -65,9 +72,9 @@ async def _fail(client, trip_id, user_id, job_id, stage, message) -> dict:
                             message="generation failed", payload={"error": message})
     except Exception:
         pass
-    if job_id:
+    if job_id and lease_token is not None:
         try:
-            await mark_job_done(client, job_id, status="failed")
+            await mark_job_done(client, job_id, status="failed", lease_token=lease_token)
         except Exception:
             pass
     return {"error": message}
@@ -79,6 +86,7 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                           client=None, scrape=None, extract=None, mem0=_UNSET,
                           weather=None, transport=None, restaurant=None, narrator=None, hotel=None) -> dict:
     """Run the deterministic spine; own the job lifecycle; always write a terminal result."""
+    lease_token = None      # in scope for the pre-claim failure path, which must NOT finalize
     try:
         if client is None:
             client = await get_supabase_client()
@@ -96,8 +104,11 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
 
         # Atomic claim guard (amendment §C): abort BEFORE any work if another instance
         # already owns this job (double-run guard on recovery + original dispatch racing).
-        if job_id and not await mark_job_running(client, job_id):
-            return {"skipped": "job already claimed by another run"}
+        # The claim mints this attempt's lease token — every terminal write is fenced on it.
+        if job_id:
+            lease_token = await mark_job_running(client, job_id)
+            if lease_token is None:
+                return {"skipped": "job already claimed by another run"}
 
         await _set_status(client, trip_id, user_id, "generating")
         degraded = False
@@ -191,7 +202,7 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
             places = [p for r in results if r for p in r]
         if not places:
             return await _fail(client, trip_id, user_id, job_id, "extract",
-                                "no verified places after extraction")
+                                "no verified places after extraction", lease_token=lease_token)
 
         await record_event(client, trip_id, event_type="stage", stage="dedup",
                             message=f"deduping {len(places)} place(s)")
@@ -364,7 +375,7 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                             message="generation complete", payload=payload)
         if job_id:
             try:
-                await mark_job_done(client, job_id, status="succeeded")
+                await mark_job_done(client, job_id, status="succeeded", lease_token=lease_token)
             except Exception:
                 try:
                     await record_event(client, trip_id, event_type="warning", stage="save",
@@ -397,4 +408,5 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
         # Any unexpected error → terminal result, failed status, failed job (never hang the stream).
         if client is None:
             raise  # never got a client → BackgroundTasks logs it; startup recovery sweep re-picks the still-pending job
-        return await _fail(client, trip_id, user_id, job_id, "save", "unexpected generation error")
+        return await _fail(client, trip_id, user_id, job_id, "save", "unexpected generation error",
+                           lease_token=lease_token)

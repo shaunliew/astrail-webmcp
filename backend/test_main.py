@@ -578,13 +578,13 @@ async def test_boot_time_recovery_failure_does_not_down_the_app(monkeypatch):
     the lifespan must not raise, and /health must still serve (Fix 2)."""
 
     async def _get_client():
-        return object()  # never touched further; recover_inflight_jobs raises first
+        return object()  # never touched further; reclaim_expired_jobs raises first
 
     async def _failing_recover(**_kwargs):
         raise RuntimeError("boot-time db blip")
 
     monkeypatch.setattr(main, "get_supabase_client", _get_client)
-    monkeypatch.setattr(main, "recover_inflight_jobs", _failing_recover)
+    monkeypatch.setattr(main, "reclaim_expired_jobs", _failing_recover)
 
     # The lifespan startup must swallow the recovery error (not propagate it).
     async with main.lifespan(main.app):

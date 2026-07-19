@@ -171,11 +171,11 @@ async def test_enqueue_non_duplicate_api_error_reraises():
 async def test_mark_running_then_done():
     c = _Client()
     job_id, _ = await jobs.enqueue_job("trip-1", "user-1", "idem-1", client=c)
-    won = await jobs.mark_job_running(c, job_id)
-    assert won is True
+    token = await jobs.mark_job_running(c, job_id)
+    assert token is not None
     assert c.store["idem-1"]["status"] == "running"
     assert c.store["idem-1"]["locked_at"] is not None
-    await jobs.mark_job_done(c, job_id, status="succeeded")
+    assert await jobs.mark_job_done(c, job_id, status="succeeded", lease_token=token) is True
     assert c.store["idem-1"]["status"] == "succeeded"
     assert c.store["idem-1"]["completed_at"] is not None
 
@@ -186,5 +186,5 @@ async def test_mark_running_loses_cas_when_already_running():
     job_id, _ = await jobs.enqueue_job("trip-1", "user-1", "idem-1", client=c)
     first = await jobs.mark_job_running(c, job_id)
     second = await jobs.mark_job_running(c, job_id)  # already running -> CAS must lose
-    assert first is True
-    assert second is False
+    assert first is not None
+    assert second is None                            # no second token: no second owner

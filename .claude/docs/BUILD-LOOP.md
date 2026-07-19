@@ -74,6 +74,26 @@ backend change beyond a trivial one-line fix. When in doubt, follow the loop.
   load-bearing (revert the guard → watch the new test go red → restore).
 - **Both final reviews run** (astrail-reviewer opus whole-branch **AND** gstack `/review` Codex).
 
+## Calling Codex without hanging (learned 2026-07-19 — cost ~20 min twice)
+
+`codex exec "<prompt>"` **hangs** when stdin is a non-TTY pipe with nothing written to it: it
+prints `Reading additional input from stdin...` and waits forever. This is NOT the shared-runtime
+hang — it happens to direct `codex exec` too, and it is easy to misattribute. Always redirect:
+
+```bash
+timeout 1500 codex exec -m gpt-5.6-sol -c model_reasoning_effort="high" \
+  --sandbox read-only --skip-git-repo-check "<prompt>" \
+  < /dev/null > /path/to/out.txt 2>&1
+```
+
+- `< /dev/null` is the fix — immediate EOF, so Codex uses the prompt argument.
+- Redirect to a **file**; do NOT pipe to `tail`/`head` (they buffer to completion, so you get no
+  incremental output and cannot tell progress from a hang).
+- `-c model_reasoning_effort="high"` matters: the user's `~/.codex/config.toml` defaults to `low`,
+  which is too weak for a plan or migration review.
+- **Exit code 0 does not mean it did the work.** A hung-then-killed run exits 0 with an empty or
+  header-only file. Check the output, not the status.
+
 ## Subagent result delivery (learned 2026-07-19 — cost ~5 wasted round-trips in one session)
 
 **A background subagent's plain final text is NOT delivered to the orchestrator.** It must call

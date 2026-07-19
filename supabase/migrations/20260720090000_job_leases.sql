@@ -7,6 +7,22 @@ alter table public.jobs
 
 -- Existing in-flight rows predate leases: give them a computed expiry so the reaper can
 -- reclaim them (lease_token stays NULL; the reclaim CAS has an explicit `is null` branch).
+--
+-- The two statements differ deliberately, for a reason that is NOT obvious:
+--   * organize_jobs.lock_expires_at ALREADY EXISTED (added 20260718130000), so a row may
+--     carry a real value worth preserving -> coalesce(existing, computed).
+--   * jobs.lock_expires_at is created by THIS migration, so it is guaranteed NULL on every
+--     row here; coalescing against it would be a no-op. Its final `now()` fallback covers
+--     `locked_at IS NULL AND status = 'running'`, which makes such a row immediately
+--     reclaimable rather than stranded forever.
+--
+-- That fallback is unreachable under current code and is defence-in-depth only: every writer
+-- of either status sets locked_at in the SAME statement -- jobs via mark_job_running
+-- (backend/jobs.py:69-73), organize_jobs via run_organize_job's claim (backend/organizer.py:
+-- 447-451). `private.claim_next_generation_job()` (20260701151718:146-163) also sets it
+-- atomically and has zero Python callers. If a future writer ever sets status without
+-- locked_at, prefer the `now()` shape: stranding an in-flight row forever is the guardrail-#12
+-- silent drop this whole arc exists to eliminate.
 update public.organize_jobs
    set lock_expires_at = coalesce(lock_expires_at, locked_at + interval '300 seconds')
  where status = 'processing';

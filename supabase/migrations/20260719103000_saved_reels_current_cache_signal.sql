@@ -7,7 +7,6 @@ select
   saved_reels.normalized_url,
   saved_reels.source_platform,
   saved_reels.reel_cache_id,
-  coalesce(reel_cache.extractor_version = '2026-07-19.1', false) as has_current_cache,
   saved_reels.analysis_status,
   saved_reels.personal_label,
   saved_reels.retry_after,
@@ -32,7 +31,8 @@ select
       ) order by places.name
     ) filter (where reel_place_mentions.place_id is not null),
     '[]'::jsonb
-  ) as places
+  ) as places,
+  coalesce(reel_cache.extractor_version = '2026-07-19.1', false) as has_current_cache
 from public.saved_reels
 left join public.reel_cache
   on reel_cache.id = saved_reels.reel_cache_id

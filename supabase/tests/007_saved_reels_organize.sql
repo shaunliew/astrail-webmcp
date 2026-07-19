@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(181);
+select plan(180);
 
 insert into auth.users (id, email)
 values
@@ -382,12 +382,17 @@ select ok(
   not has_schema_privilege('authenticated', 'private', 'USAGE'),
   'authenticated cannot use the private schema directly'
 );
+-- The prior assertions only check metadata (has_schema_privilege/has_function_privilege),
+-- which run fine as the superuser connection. Actually calling the qualified name must
+-- run AS authenticated, or the superuser bypasses the revoke and no error is raised.
+set local role authenticated;
 select throws_ok(
   $$select private.can_select_verified_saved_reel_place('71000000-0000-0000-0000-000000000001'::uuid)$$,
   '42501',
   'permission denied for schema private',
   'authenticated cannot directly qualify the verified Saved Reel place predicate'
 );
+reset role;
 select ok(
   coalesce(
     has_function_privilege(
@@ -831,6 +836,13 @@ select results_eq(
   'quota rejection leaves the item unchanged'
 );
 
+-- The P2-2/P2-4 fixture job above left ORGANIZE-A inside an active ('processing')
+-- job. Retire it before the P2-6 active-item-guard tests reuse that same reel,
+-- or the atomic RPC correctly (and here, unintentionally) rejects the overlap.
+update public.organize_jobs
+set status = 'succeeded'
+where id = '72000000-0000-0000-0000-000000000001';
+
 select ok(
   not has_function_privilege('authenticated', 'public.create_saved_reels_organize_job(uuid,uuid[],text)', 'EXECUTE'),
   'authenticated cannot create Saved Reel organize jobs through the RPC'
@@ -927,6 +939,20 @@ select throws_ok(
   'cross-owner Saved Reel selection preserves not-found semantics'
 );
 
+-- Retire every P2-6-only fixture artifact (no later assertion references them —
+-- verified above). The RLS/safe-projection tests below were written against the
+-- single pre-existing job/item/event/saved-reel fixture and still expect exactly
+-- that shape.
+delete from public.organize_jobs
+where user_id = '00000000-0000-0000-0000-000000000701'
+  and idempotency_key in ('p2-6-atomic', 'p2-6-terminal', 'p2-6-disjoint');
+delete from public.saved_reels
+where user_id = '00000000-0000-0000-0000-000000000701'
+  and normalized_url in (
+    'https://www.instagram.com/reel/ORGANIZE-A-2',
+    'https://www.instagram.com/reel/ORGANIZE-A-3'
+  );
+
 reset role;
 set local role authenticated;
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000701', true);
@@ -965,6 +991,12 @@ select is(
   1,
   'authenticated places policy delegates service-only reads to the private predicate'
 );
+-- Introspecting a private-schema function's source also requires schema USAGE,
+-- which authenticated correctly no longer has after the P2-1 lockdown. This
+-- assertion checks the predicate's source text, not an authenticated-caller
+-- permission boundary (already covered above), so it runs with schema visibility
+-- and then restores the authenticated session for the RLS tests that follow.
+reset role;
 select ok(
   position(
     'verification_version = ''mapbox-country-v1'''
@@ -976,6 +1008,9 @@ select ok(
   ) > 0,
   'verified Saved Reel place predicate remains trust-gated and owner-scoped'
 );
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000701', true);
+select set_config('request.jwt.claims', '{"sub":"00000000-0000-0000-0000-000000000701","role":"authenticated"}', true);
 select lives_ok(
   $$select count(*) from public.places where id in ('71000000-0000-0000-0000-000000000001', '71000000-0000-0000-0000-000000000002')$$,
   'authenticated place selection evaluates without direct mention-table privilege'

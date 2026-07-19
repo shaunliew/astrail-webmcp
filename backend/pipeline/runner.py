@@ -27,7 +27,7 @@ from pipeline.geo import centroid
 from pipeline.offline_harness import _date_range, assemble_itinerary
 from pipeline.persist import persist_hotels, persist_itinerary, persist_narration, persist_restaurants, persist_tradeoffs, persist_transport, persist_weather
 from pipeline.tradeoffs import build_hotel_comparisons, warnings_to_notes
-from jobs import _heartbeat, mark_job_done, mark_job_running
+from jobs import _heartbeat, mark_job_running
 from organizer import LeaseLost, authorize_place_ids
 from supabase_client import get_supabase_client
 

@@ -193,10 +193,15 @@ async def reclaim_expired_jobs(*, client=None, now=None) -> list[dict]:
     # `is null` conjunct keeps it gated: a long run whose heartbeat holds a future expiry has
     # a stale `locked_at` too, and must NOT be reclaimed on age alone.
     legacy_cutoff = _pg_timestamp(now - timedelta(seconds=JOB_LEASE_TTL_S))
-    # Clear the lease fields — do NOT leave the stale token in place. A row that kept its
-    # token would let an expired-but-still-alive old worker whose `_fail` fires between this
-    # reclaim and the redispatch's claim pass `mark_job_done`'s token fence (which has no
-    # status guard) and flip `retryable` -> `failed`, cancelling the retry just scheduled.
+    # Clear the lease fields — do NOT leave the stale token in place. `mark_job_done` fences
+    # on the token with NO status guard, so a row that kept its token would let an
+    # expired-but-still-alive old worker firing between this reclaim and the redispatch's
+    # claim flip `retryable` -> `failed` and cancel the retry just scheduled.
+    #
+    # Scope, stated honestly: the runner's own terminal path goes through `complete_trip_run`,
+    # whose predicate ALSO requires `status = 'running'`, so that path is already excluded on
+    # a reclaimed row; likewise `_renew_job_lease`. Nulling therefore protects the
+    # `mark_job_done` primitive specifically, and is defense in depth for the rest.
     reclaimed = (await client.table("jobs").update({
         "status": "retryable", "lease_token": None,
         "lock_expires_at": None, "locked_at": None,

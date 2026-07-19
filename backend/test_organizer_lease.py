@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from organizer import ORGANIZE_LEASE_TTL_S, recover_organize_jobs
-from test_saved_reels_organize import _Client
+from test_saved_reels_organize import _Client, _eval_filter_term
 
 
 def _iso(value: datetime) -> str:
@@ -213,3 +213,22 @@ async def test_reclaim_honours_an_injected_now(fake_client):
     assert await recover_organize_jobs(fake_client, now=_now_utc()) == []
     assert [j["id"] for j in
             await recover_organize_jobs(fake_client, now=_now_utc() + timedelta(minutes=10))] == ["j1"]
+
+
+@pytest.mark.parametrize("malformed", [
+    "and(lock_expires_at.is.null",           # unbalanced — the dangerous one
+    "or(locked_at.lt.2026-07-19T00:00:00Z",  # unbalanced or-group
+    "lock_expires_at.is.null)",              # stray close paren
+])
+def test_fake_rejects_a_malformed_filter_group_instead_of_evaluating_it_true(malformed):
+    """A malformed group must RAISE, never silently satisfy the filter.
+
+    Without the paren guard these fall through to `term.split(".", 2)`:
+    `"and(lock_expires_at.is.null"` parses as key=`"and(lock_expires_at"`, op=`is`,
+    value=`null` — and that key is absent from every row, so `is null` holds and the term
+    evaluates TRUE. A typo'd predicate in any later increment would then match every row,
+    and every test built on it would pass while asserting nothing. Fails toward green is
+    the one direction test infrastructure must never fail in.
+    """
+    with pytest.raises(ValueError):
+        _eval_filter_term({"lock_expires_at": None, "locked_at": "2026-07-19T00:00:00Z"}, malformed)

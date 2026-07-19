@@ -61,6 +61,14 @@ def _eval_filter_term(row, term):
         return all(_eval_filter_term(row, part) for part in _split_top_level(term[4:-1]))
     if term.startswith("or(") and term.endswith(")"):
         return any(_eval_filter_term(row, part) for part in _split_top_level(term[3:-1]))
+    if "(" in term or ")" in term:
+        # A term carrying parens that did NOT match the and(...)/or(...) shapes above is
+        # malformed — usually an unbalanced paren. Without this guard it falls through to the
+        # split below and evaluates TRUE by accident: `"and(lock_expires_at.is.null"` parses as
+        # key=`"and(lock_expires_at"`, op=`is`, value=`null`, and that key is absent from every
+        # row, so `is null` holds. A typo'd predicate would then satisfy every filter and each
+        # test built on it would pass while asserting nothing.
+        raise ValueError(f"fake got a malformed/unbalanced filter group: {term!r}")
     key, op, value = term.split(".", 2)
     if op == "lt":
         return _lt(row, key, value)

@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(48);
+select plan(50);
 
 insert into auth.users (id, email)
 values
@@ -10,7 +10,11 @@ values
   ('00000000-0000-0000-0000-000000000802', 'lease-b@example.com');
 
 insert into public.trips (id, user_id, status, destination_hint)
-values ('75000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000801', 'generating', 'Tokyo');
+values
+  ('75000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000801', 'generating', 'Tokyo'),
+  -- second running trip, reserved for the null-payload coalesce assertion (the ...0001 job is
+  -- already terminal by the time that runs, so it cannot be reused)
+  ('75000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000801', 'generating', 'Osaka');
 
 insert into public.jobs (id, trip_id, user_id, idempotency_key, status, lease_token, lock_expires_at)
 values (
@@ -20,6 +24,17 @@ values (
   'lease-trip-a',
   'running',
   '77000000-0000-0000-0000-00000000000a',
+  now() + interval '5 minutes'
+);
+
+insert into public.jobs (id, trip_id, user_id, idempotency_key, status, lease_token, lock_expires_at)
+values (
+  '76000000-0000-0000-0000-000000000002',
+  '75000000-0000-0000-0000-000000000002',
+  '00000000-0000-0000-0000-000000000801',
+  'lease-trip-b',
+  'running',
+  '77000000-0000-0000-0000-000000000002',
   now() + interval '5 minutes'
 );
 
@@ -332,6 +347,24 @@ select results_eq(
   $$select status from public.jobs where id = '76000000-0000-0000-0000-000000000001'$$,
   $$values ('succeeded'::text)$$,
   'a refused replay leaves the terminal job status intact'
+);
+
+-- A null payload must be coalesced, not rejected. generation_events.payload is NOT NULL and
+-- the INSERT names the column, so the DEFAULT never applies — without coalesce this raises
+-- 23502. append_organize_event coalesces; this asserts complete_trip_run matches it.
+select lives_ok(
+  $$select public.complete_trip_run(
+      '76000000-0000-0000-0000-000000000002'::uuid,
+      '75000000-0000-0000-0000-000000000002'::uuid,
+      '77000000-0000-0000-0000-000000000002'::uuid,
+      'succeeded', 'save', 'generation complete', null)$$,
+  'a null payload is coalesced, not a not-null violation'
+);
+select results_eq(
+  $$select payload from public.generation_events
+     where trip_id = '75000000-0000-0000-0000-000000000002'$$,
+  $$values ('{}'::jsonb)$$,
+  'a coalesced null payload is stored as an empty object'
 );
 
 reset role;

@@ -682,9 +682,18 @@ begin
   if not found then
     raise exception 'Organize job not found' using errcode = 'AS404';
   end if;
-  -- FENCE: a caller holding a superseded lease is not allowed to write. p_lease_token null
-  -- means "unfenced caller" (boot paths that legitimately have no lease yet).
-  if p_lease_token is not null and v_lease is distinct from p_lease_token then
+  -- FENCE: p_lease_token is REQUIRED — there is no unfenced form.
+  -- An earlier draft allowed `p_lease_token is null` as an "unfenced caller (boot paths that
+  -- legitimately have no lease yet)". No such caller exists: EVERY event writer runs after the
+  -- claim returns (verified — organizer.py:422, :434, :455, :485, and _mark_organize_job_failed
+  -- from run_organize_job's outer except; the claim early-returns at `if not claimed.data`).
+  -- It was the same speculative unfenced form already deleted from mark_job_done, and left in
+  -- it would be a standing bypass: a caller with no token writing to a row with no token
+  -- (null IS NOT DISTINCT FROM null) sails straight through.
+  if p_lease_token is null then
+    raise exception 'Organize event requires a lease token' using errcode = 'AS400';
+  end if;
+  if v_lease is distinct from p_lease_token then
     raise exception 'Organize job lease superseded' using errcode = 'AS409';
   end if;
   select coalesce(max(sequence), 0) + 1 into v_sequence
@@ -926,8 +935,10 @@ pair.** Atomic and lease-validated together, so the two cannot disagree:
 --      (verified: 20260701151718_trip_job_backbone.sql:55-62 — trip_id, event_type, stage,
 --      message, payload, created_at only).
 --   3. Missing `set search_path = ''` and the revoke/grant block that append_organize_event
---      correctly has — `supabase db lint` flags mutable search_path on security definer, and
---      it is a real privilege gap.
+--      correctly has. NOTE — an earlier draft of this comment claimed `supabase db lint` flags
+--      mutable search_path on security definer. It does NOT: verified 2026-07-19 by removing
+--      `set search_path = ''` and running `supabase db lint --local`, which reported "No schema
+--      errors found". Only the pgTAP assertion catches it. Do not rely on lint for this.
 -- SHIPS IN A-II's migration, not A-III: the arc table says A-III carries no DDL, and this is
 -- additive and uncalled by old code, so folding it forward costs nothing.
 create or replace function public.complete_trip_run(

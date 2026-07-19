@@ -95,8 +95,12 @@ begin
    where id = p_job_id and lease_token = p_lease_token and status = 'running';
   if not found then return false; end if;
 
+  -- coalesce is load-bearing, matching append_organize_event. generation_events.payload is
+  -- `not null default '{}'::jsonb`, and naming the column explicitly in the INSERT means the
+  -- DEFAULT never applies — an explicit null raises 23502 at runtime. runner.py always passes
+  -- a payload today, so without this it is a latent trap for the first caller that does not.
   insert into public.generation_events (trip_id, event_type, stage, message, payload)
-  values (p_trip_id, 'result', p_stage, p_message, p_payload);
+  values (p_trip_id, 'result', p_stage, p_message, coalesce(p_payload, '{}'::jsonb));
   return true;
 end $$;
 

@@ -1674,6 +1674,34 @@ async def test_persist_place_prefers_the_country_code_match_over_a_null_country_
 
 
 @pytest.mark.asyncio
+async def test_persist_place_omits_embedding_deliberately():
+    """CHARACTERIZATION (ISSUES-B3) — pins today's behaviour; there was no red phase.
+
+    A null `embedding` is a DECISION, not an oversight. Organizer places join the pgvector
+    flywheel through the future shared embedding producer, never through a blocking OpenAI
+    call on the organize critical path. The whole system is consistent here: no production
+    embedding writer exists repo-wide, and `pipeline/dedup.py` matches without embeddings
+    too. If this assertion bothers you, you are building that producer — see the trigger in
+    `ISSUES.md` B3, and change BOTH writers together.
+    """
+    client = _Client({})
+    place = PlaceResult(
+        name="Harry Potter Cafe", category="restaurant", lat=35.67320, lng=139.73630,
+        confidence=0.8, evidence_quote="Harry Potter Cafe", source_url="https://hpcafe.jp/",
+        country_code="JP", country_name="Japan",
+    )
+
+    await _persist_place(client, {
+        "place": place, "country_code": "JP", "country_name": "Japan",
+    })
+
+    inserted = client.db["places"][-1]
+    assert "embedding" not in inserted, (
+        "an embedding written here would be a new blocking OpenAI call on the organize path"
+    )
+
+
+@pytest.mark.asyncio
 async def test_authorize_place_ids_rejects_unstamped_mention():
     client = _Client({
         "reel_place_mentions": [{

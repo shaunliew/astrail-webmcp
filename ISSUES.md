@@ -4,8 +4,9 @@ Priority order: **B1, B4, B6, B2, B3, B5, B7**. B1 is **RESOLVED** (live securit
 log exposure, closed by access-log redaction — see below);
 B4 is restart burst-cost and provider-rate-limit risk; B6 is **RESOLVED** (the cheap
 correctness guard for a currently unreachable UI path — mixed input is now a 422);
-B2/B3 are canonical-data hygiene, and B2 is **RESOLVED** (null-country legacy rows are now
-reused and backfilled at the write boundary, still behind the 500-metre gate); B5 is
+B2/B3 are canonical-data hygiene, and both are **RESOLVED** — B2 in code (null-country legacy
+rows are now reused and backfilled at the write boundary, still behind the 500-metre gate), B3
+by decision (null embeddings accepted as a documented, tested MVP state, with a trigger); B5 is
 **RESOLVED** (it was never protected by the single-writer invariant claimed below — Arc A's
 lease work replaced that premise with a database row lock); B7 is cosmetic product wording.
 
@@ -244,7 +245,33 @@ country from the place name alone.
 persist a Mapbox-verified candidate, and assert the existing ID is reused and receives the
 verified country. Also prove a far null-country row is not reused.
 
-## B3 — Define how organizer places enter the pgvector flywheel
+## B3 — Define how organizer places enter the pgvector flywheel — **RESOLVED as ACCEPTED (Arc B)**
+
+**Status:** closed by decision, not by code. Null embeddings are now a *documented, tested*
+MVP state rather than an undocumented gap. Nothing about the insert changed — what changed is
+that the omission is asserted, so a future edit has to argue with it instead of drifting past it.
+
+**Why accept rather than fix.** The recommendation below was already "do not add a blocking
+OpenAI call to the organizer critical path for this", and verification during Arc B widened it:
+there is **no production embedding writer anywhere in the repo**. `pipeline/persist.py::
+_find_or_create_place` omits `embedding` exactly as the organizer does, and `pipeline/dedup.py`
+states outright that its matching is "Pure + offline — no embeddings, no Supabase". So null is
+the consistent state of the entire system, not an organizer oversight — which also means the fix
+is a shared producer, never a one-line addition to one insert. `places_embedding_hnsw_idx` is
+partial (`where embedding is not null`), so the null rows cost the index nothing meanwhile.
+
+**What landed:** a documentation block at the insert site (`organizer.py::_persist_place`), a
+corrected flywheel section in `.claude/docs/ARCHITECTURE.md` (it previously claimed inserts
+create the record "with embedding" — untrue), and a characterization test,
+`test_persist_place_omits_embedding_deliberately`. That test pins an absence, so it had no red
+phase; its fault-injection is inverted — adding `"embedding": [0.0]` to the insert payload
+reddens it, confirmed.
+
+**TRIGGER to build the producer + bounded backfill:** when **semantic place matching is
+scheduled on the board** — i.e. the first feature that actually queries
+`places_embedding_hnsw_idx`. Build it as a shared producer used by **both**
+`organizer._persist_place` and `persist._find_or_create_place`, never inline in the organize
+loop. Not before that trigger: an embedding written today serves no query.
 
 **Suggested severity:** P3. The rows remain usable by exact-name and geographic matching;
 the gap affects future semantic reuse rather than current correctness.

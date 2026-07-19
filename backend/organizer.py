@@ -336,6 +336,10 @@ async def _persist_place(client, grounded: dict) -> str:
     # gate rather than a unique constraint because no constraint can express "within 500 m" —
     # see 20260720160000 for why an advisory lock is the route and what it does not cover, and
     # 20260720180000 for the null-country widening and the ordering that keeps it deterministic.
+    #
+    # The insert's omitted `embedding` moved into the function with the rest (ISSUES-B3): it is
+    # a decision, not an oversight, and the migration's column list is now where that contract
+    # lives. `test_persist_place_omits_embedding_deliberately` is what reddens if it changes.
     return (await client.rpc("find_or_create_place", {
         "p_name": place.name,
         "p_place_type": place_type,

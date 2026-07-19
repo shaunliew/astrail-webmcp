@@ -31,6 +31,11 @@ declare
   v_job_id uuid;
   v_owned_ids uuid[];
 begin
+  -- SQLSTATE SCHEME — do not invent a new one below this line. Custom codes are `AS` + the
+  -- HTTP status the API maps them to; 20260720090000_job_leases.sql established AS400/AS404/
+  -- AS409 and this migration adds AS422 by the same rule. Python matches on the CODE
+  -- (`organizer._ORGANIZE_JOB_ERRORS`), so these messages are free to be reworded and a NEW
+  -- code is a two-sided change: add it there in the same PR or it surfaces as a 500.
   if p_saved_reel_ids is null
      or cardinality(p_saved_reel_ids) < 1
      or cardinality(p_saved_reel_ids) > 5

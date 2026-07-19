@@ -89,6 +89,28 @@ backend change beyond a trivial one-line fix. When in doubt, follow the loop.
   load-bearing (revert the guard → watch the new test go red → restore).
 - **Both final reviews run** (astrail-reviewer opus whole-branch **AND** gstack `/review` Codex).
 
+## Two traps that produce confusing-but-harmless-looking states (learned 2026-07-19/20)
+
+**An editor can reformat files you edit.** No formatter hook exists in any `settings.json`, but
+VS Code's format-on-save applies **Prettier defaults** (double quotes, semicolons) to frontend
+files that are open in the editor — against this repo's single-quote / no-semicolon style. A
+frontend Edit came back with 39/-27 of pure style churn. Symptoms: a diff far larger than the
+change you made. Workaround: revert, then write frontend files via `Bash` heredoc/`python3`
+rather than `Edit`, and check `git diff --stat` before committing any frontend change.
+
+**Clear `__pycache__` when you fault-inject an imported module.** CPython invalidates a `.pyc`
+by comparing the source's mtime **and size**, and restoring a file from a backup can leave the
+cache looking current — so the interpreter keeps running the FAULTED bytecode while
+`git status` reports a clean tree and the source reads correctly. Every signal says fine; tests
+fail anyway. Add `find . -name __pycache__ -type d -not -path "./.venv/*" -exec rm -rf {} +` to
+the restore step.
+
+**The eval anchor is a pytest assertion, not the CLI's headline number.**
+`uv run python -m evals.run_eval` prints `mean_intra_day_travel_m = 8163.7`; the frozen `#16`
+anchor is `6229.0`, asserted on a fixture case inside `evals/test_run_eval.py:82`. They are
+different subjects. **`uv run pytest evals/ -q` is the gate** — do not chase the CLI number as a
+regression.
+
 ## NEVER `git add -A` while a subagent is working (learned 2026-07-19, the hard way)
 
 Subagents share the orchestrator's working tree. An orchestrator running `git add -A && git commit`

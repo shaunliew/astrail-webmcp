@@ -35,6 +35,7 @@ from api.schemas import (
 )
 from api.streaming import stream_organize_events, stream_trip_events
 from auth import get_current_user_id, get_user_id_from_query_or_header
+from config_validation import validate_required_secrets
 from jobs import compute_idempotency_key, enqueue_job, reclaim_expired_jobs
 from pipeline.runner import record_event, run_generation
 from preferences import compose_preference_summary, fetch_traveler_profile
@@ -67,6 +68,11 @@ async def lifespan(app: FastAPI):
     A boot-time DB blip must DEGRADE, not crash startup: the app must still start and
     serve /health even if Supabase is unreachable; the next restart's sweep re-picks
     pending jobs."""
+    # BEFORE the broad `try` — deliberately. Inside it, `except Exception: pass` would
+    # swallow a missing secret and boot a broken app. A config error must be fatal; a DB
+    # blip must not be. See config_validation for why an unbootable app beats the
+    # deterministic pre-claim retry loop that `_fail`'s token skip would otherwise open.
+    validate_required_secrets()
     try:
         client = await get_supabase_client()
         for job in await reclaim_expired_jobs(client=client):

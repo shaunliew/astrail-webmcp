@@ -430,11 +430,29 @@ names both sides and what would change.
 **G1 — The signature moment is specified but not implemented.**
 `docs/DESIGN-DRAFT.md:18-21` calls the night→dawn relight the product's signature moment, and
 §6.3 specs a *"2s map relight night → dawn"*. In shipped code there is no transition:
-`GenerationScene.tsx:50` sets `lightPreset: 'night'` on load, `TripMap.tsx:46` sets `'dawn'` on
-load, and they are **two separate Mapbox instances swapped by a route/component change**. The
-lighting states are correct per PRD §13; the animated relight between them does not exist.
-Resolving it means either building the transition in a single persistent map instance, or
-striking the "2s relight" language and documenting the swap as the intended behavior.
+`components/create/GenerationScene.tsx:50` sets `lightPreset: 'night'` on load,
+`components/map/TripMap.tsx:46` sets `'dawn'` on load, and they are **two separate Mapbox
+instances swapped by a route/component change**. The lighting states are correct per PRD §13; the
+animated relight between them does not exist. Resolving it means either building the transition in
+a single persistent map instance, or striking the "2s relight" language and documenting the swap
+as the intended behavior.
+
+*What the Mapbox API supports* (checked against the Standard style guide, 2026-07-20): changing
+the preset at runtime on a **live** instance is the documented, supported call —
+`map.setConfigProperty('basemap', 'lightPreset', 'dawn')` — and the guide's own embedded demo
+switches lighting on one instance interactively. So the blocker is **not** the Mapbox API; it is
+the architecture. Two instances means there is nothing to animate: the night map is destroyed
+before the dawn map exists, and no transition can bridge an unmount. The relight therefore
+requires a map instance that **survives** the generation → result handoff, with a single
+`setConfigProperty` call fired on the SSE `result` event.
+
+One unknown remains, cheap to settle once the instance is unified: whether Mapbox eases the
+preset change over a duration or snaps to it. The docs describe the runtime update without
+guaranteeing an animation curve. If it snaps, the 2s beat needs an explicit cross-fade on top.
+
+**Not attempted here.** This is an architectural change to the generation→result flow — the
+highest-risk path in the app and Zhi Hao's ownership area. It is the largest *shippable* gap in
+this document (G6 is larger but is a creative decision, not an implementation).
 
 **G2 — Reel quotes: spec says serif, code ships sans.**
 `docs/DESIGN-DRAFT.md:88-89` specs reel quotes as *"italic serif with a brass quote-bar — the

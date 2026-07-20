@@ -126,7 +126,7 @@ export default function CreateTripFlow() {
           <TripBriefForm brief={brief} onChange={setBrief} />
 
           {submitError ? (
-            <p className="type-body text-xs text-red-400" role="alert">{submitError}</p>
+            <p className="type-body text-xs text-[var(--fail)]" role="alert">{submitError}</p>
           ) : null}
 
           <button

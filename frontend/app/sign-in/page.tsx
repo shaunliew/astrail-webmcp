@@ -148,7 +148,7 @@ export default function SignInPage() {
         )}
 
         {notice ? <p className="type-body text-xs text-[var(--muted)]">{notice}</p> : null}
-        {error ? <p className="type-body text-xs text-red-400" role="alert">{error}</p> : null}
+        {error ? <p className="type-body text-xs text-[var(--fail)]" role="alert">{error}</p> : null}
       </section>
     </main>
   )

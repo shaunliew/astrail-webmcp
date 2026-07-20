@@ -26,7 +26,7 @@ export default function AgentDecisionRail({ events }: { events: GenerationEvent[
             <div className="flex items-center gap-2">
               <span className="type-label text-[10px] uppercase tracking-wide text-[var(--faint)]">{ev.stage}</span>
               {ev.event_type === 'warning' ? (
-                <span className="type-label text-[9px] uppercase tracking-wide text-[var(--brass)]">warning</span>
+                <span className="type-label text-[9px] uppercase tracking-wide text-[var(--warn)]">warning</span>
               ) : null}
             </div>
             <p className="type-body text-xs text-[var(--muted)]">{ev.message}</p>

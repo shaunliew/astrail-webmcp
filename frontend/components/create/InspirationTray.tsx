@@ -129,7 +129,7 @@ export default function InspirationTray({
           </span>
         </div>
         {atMax ? (
-          <p className="type-label text-[10px] uppercase tracking-wide text-[var(--brass)]">
+          <p className="type-label text-[10px] uppercase tracking-wide text-[var(--warn)]">
             Max {MAX_REELS} Reels reached.
           </p>
         ) : null}

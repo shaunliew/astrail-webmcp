@@ -97,7 +97,7 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
         <p className="type-body max-w-md text-center text-sm text-[var(--muted)]">
           Astrail couldn&apos;t build this trip. Start a new one — repeat Reels are cached, so retrying is fast.
         </p>
-        <a href="/app" className="type-label text-xs uppercase tracking-wide text-[var(--brass)] underline-offset-2 hover:underline">
+        <a href="/app" className="type-label text-xs uppercase tracking-wide text-[var(--brass-bright)] underline-offset-2 hover:underline">
           Plan a new trip
         </a>
       </main>
@@ -113,7 +113,7 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
           <button
             type="button"
             onClick={() => window.location.reload()}
-            className="type-label text-xs uppercase tracking-wide text-[var(--brass)] underline-offset-2 hover:underline"
+            className="type-label text-xs uppercase tracking-wide text-[var(--brass-bright)] underline-offset-2 hover:underline"
           >
             Refresh
           </button>

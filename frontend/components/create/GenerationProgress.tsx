@@ -42,7 +42,7 @@ export default function GenerationProgress({ events }: { events: StreamEvent[] }
             }
             if (event.type === 'result') {
               return (
-                <li key={i} className="type-body flex items-center gap-2 text-sm text-[var(--brass)]">
+                <li key={i} className="type-body flex items-center gap-2 text-sm text-[var(--brass-bright)]">
                   <span aria-hidden>✓</span> Trip ready — opening your trip…
                 </li>
               )

@@ -503,6 +503,49 @@ async def test_runner_persists_weather_on_trip_days():
 
 
 @pytest.mark.asyncio
+async def test_weather_failure_is_logged_not_only_evented(caplog):
+    """A swallowed weather failure must reach the LOGS, not only `generation_events`.
+
+    The overwhelmingly common cause is not a bug: Open-Meteo's forecast API has a rolling
+    ~16-day horizon and returns HTTP 400 past it, and `fetch_weather` makes ONE call spanning
+    the whole trip — so a start date beyond the horizon fails EVERY day at once. That is the
+    default for any trip planned more than two weeks ahead, which makes a null
+    `weather_summary` the COMMON path rather than an edge case.
+
+    Guardrail #3 means the trip must still complete, so the failure is invisible by design.
+    Before this log the only trace was a `generation_events` row, and the symptom in Render's
+    logs was indistinguishable from the weather agent never running at all — which is exactly
+    the wrong conclusion, and one that was actually drawn from a production trip.
+
+    Asserts the TYPE is logged and the exception TEXT is not: a provider error body can echo
+    the request back.
+    """
+    import logging
+    caplog.set_level(logging.WARNING, logger="pipeline.runner")
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "status": "pending", "attempt_count": 0, "started_at": None}])
+
+    async def scrape(url):
+        return _reel(url)
+
+    async def extract(reel):
+        return [_place("Tokyo Tower")]
+
+    async def weather(lat, lng, dates):
+        raise RuntimeError("out of allowed range from 2026-04-18 to 2026-08-04")
+
+    await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-09-15", "2026-09-17",
+                                job_id="job-1", client=c, scrape=scrape, extract=extract, mem0=None, weather=weather,
+                                transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
+
+    assert "weather_unavailable" in caplog.text, "a swallowed weather failure must be visible in logs"
+    assert "RuntimeError" in caplog.text, "the error TYPE names what failed"
+    assert "out of allowed range" not in caplog.text, "the provider's message can echo the request; log the type only"
+    # guardrail #3: the trip still completes, and the durable event is still written
+    assert any(e["stage"] == "weather" and e["event_type"] == "warning" for e in c.events)
+    assert c.trip_updates[-1]["status"] in ("complete", "saved_with_gaps")
+
+
+@pytest.mark.asyncio
 async def test_runner_skips_weather_when_all_places_lack_coords():
     c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "status": "pending", "attempt_count": 0, "started_at": None}])
 

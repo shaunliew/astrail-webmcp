@@ -49,6 +49,21 @@ backend change beyond a trivial one-line fix. When in doubt, follow the loop.
    Fix its findings + re-verify. **Run BOTH step 5 and step 6** — they have different blind spots; one is not a
    substitute for the other.
 
+   **Why it works, and how to prompt it (learned 2026-07-20 — it returned DO-NOT-MERGE on two arcs that
+   three Claude reviewers had already passed).** The value is not extra reasoning depth. Every Claude pass
+   reviews **the change**; the defects Codex found lived in the relationship between the change and
+   **what is already deployed** — a different question, which a reviewer only asks if you make it part of
+   the review surface. On Arc B it caught that the PR's own merge instruction would have taken production
+   down: the migration changes the raised SQLSTATE from `P0001` to `AS4xx`, and `dev`'s running code
+   matches `P0001`, so *both* orderings return 500. Three prior reviewers read the diff and agreed with it.
+
+   So **put the deployment reality in the prompt**, not just the diff: what is running right now, how code
+   and schema ship (separately, here), what the rollback does, and any scope limit you have already
+   accepted — then ask explicitly for consequences *beyond* that limit. Codex correctly found a case that
+   went past a boundary I told it was deliberate. Also tell it to say plainly when it finds nothing at a
+   severity; every agent this session found at least one thing the previous reviewer had over- or
+   understated, and "nothing here" is more useful than invented filler.
+
 7. **Live-verify.** A real smoke against the live stack (`backend/scripts/live_run.py` or a focused script) —
    prove the feature works end-to-end, not just in unit tests. For **UI / auth / SSE / Mapbox / full-flow**
    changes, gstack **`/qa`** evidence is required. Credit-spending or live-DB runs: get the user's go first.
@@ -131,6 +146,55 @@ files, so the un-sent message was the entire output of the run.
 - **Diagnosing an idle agent:** check for the artifact first (a commit, a written file) before
   assuming failure. Implementers usually did the work; only the handoff dropped. Read-only agents
   have no artifact — re-prompt them, and ask for partial results if they did not finish.
+
+## Tests that cannot fail — the six ways found so far (learned 2026-07-20, all in one session)
+
+Fault injection is already a non-negotiable above. This is *where to point it*: six real cases from
+one session where a test looked like coverage and asserted nothing. **None were found by reading
+tests.** Every one was found by deleting the production code and watching what failed to redden.
+
+1. **A closure constructed but never invoked.** `run_organize_job`'s default Apify seam was built by
+   one test and *called* by none. Defining a nested function resolves none of the names in its body —
+   lookup happens at call time — so a `NameError` sat in the production path while 727 tests passed.
+2. **A fixture already in the asserted order.** The SSE cursor test seeded events `1, 2` and asserted
+   `1, 2`, so it passed with `.order("sequence")` deleted outright. **If the fixture's natural state
+   satisfies the assertion, the assertion tests nothing.**
+3. **An assertion that runs before the mutation it should catch.** A guard checked the stored value
+   *before* calling the function that would have corrupted it.
+4. **A fake whose method is a no-op.** `_Table.order` was `return self`. Three production call sites
+   relied on `.order()`, and no test could ever have detected its removal. Fakes must implement the
+   real interface — a partial fake plus a `hasattr` fork in production is the same bug wearing a hat.
+5. **A React unmount that proves nothing.** A full-tree unmount "proving" a provider outlives its
+   consumer passes vacuously, because React destroys the parent first. Model the actual route change.
+   (Same shape: `rerender` reconciles the same element and never re-runs the effect — use distinct keys.)
+6. **A fixture missing a field, so an earlier gate short-circuits.** A country-predicate test seeded
+   its row with no lat/lng, so the distance gate skipped it and the predicate under test never ran.
+   It passed with the country check deleted. This one had been in the repo for a long time.
+
+**The rule that catches all six:** before trusting any test, state *what specifically makes it red
+when the guard is removed* — then delete the guard and prove it. Clear `__pycache__` first
+(`find . -name __pycache__ -type d -not -path "./.venv/*" -exec rm -rf {} +`); restoring a file can
+leave stale bytecode so every signal reads clean while the interpreter runs faulted code.
+
+**And check whether the instrument itself can see the change.** A static `mapbox-gl` import put 1.7MB
+into a shared chunk and `next build`'s size table reported every route as *unchanged*; it took
+diffing `app-build-manifest.json` to see it. `/health` returns green against the wrong schema.
+`supabase test db` cannot reach `supabase/migrations/rollback/` at all, so a rollback test must run
+host-side — and testing a *copy* of the script is how a divergent script ships green.
+
+## Look for absences, not just defects (learned 2026-07-20)
+
+Two of the session's most valuable findings were things that did not exist, and **no code review can
+find those** — an absent file has no line number, fails no test, and appears in no diff. Both came
+from reading the spec and asking *which described behaviours have no host surface*:
+
+- The app had **no `error.tsx` and no `not-found.tsx` anywhere**, so Next.js was serving stock error
+  screens — found by looking for where `DESIGN-DRAFT.md` §7 said the mascot should appear.
+- `TripDay.title/summary/weather_summary` — the **narrator and weather agents' output** — shipped in
+  every bundle and rendered nowhere. The backend paid for narration on every run and discarded it.
+
+So run one pass code-first (is what exists correct?) and one pass spec-first (does everything
+described have somewhere to live?). They find different classes of defect.
 
 ## Model selection (per subagent-driven-development)
 

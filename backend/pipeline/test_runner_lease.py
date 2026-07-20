@@ -28,7 +28,7 @@ import pytest
 
 import jobs
 from organizer import LeaseLost
-from pipeline import runner
+from pipeline import persist, runner
 from pipeline.test_runner import (
     _Client,
     _no_hotel,
@@ -95,7 +95,10 @@ async def test_the_terminal_result_and_the_job_status_land_together_through_one_
     assert out["itinerary"]["days"][0]["place_names"] == ["Tokyo Tower"]
     assert [event["message"] for event in results(client)] == ["generation complete"]
     assert job_row(client)["status"] == "succeeded"
-    assert [name for name, _params in client.rpc_calls] == ["complete_trip_run"]
+    # BOTH fenced writes, in order: the itinerary rewrite is a destructive delete-reinsert and
+    # goes through its own fence, not just the terminal one.
+    assert [name for name, _params in client.rpc_calls] == [
+        "replace_trip_itinerary", "complete_trip_run"]
 
 
 async def test_a_run_without_a_job_id_still_writes_its_terminal_result():
@@ -410,6 +413,232 @@ async def test_a_superseded_worker_does_not_stamp_failed_over_a_completed_trip()
     assert client.trip_updates == [], \
         "a superseded worker must issue NO trips write — there is no CAS to reject it"
     assert results(client) == []                          # terminal result still fenced
+
+
+# --- the destructive write ----------------------------------------------------------------
+
+
+def sharing(client: _Client) -> _Client:
+    """A second worker's client over the SAME rows.
+
+    Separate `rpc_calls` per worker is the point: both workers legitimately call
+    `replace_trip_itinerary`, so a shared call list could not tell whose write was attempted.
+    """
+    other = _Client()
+    other.db = client.db
+    return other
+
+
+def parked_at_first_place_lookup(entered: asyncio.Event, release: asyncio.Event):
+    """Park the FIRST worker to reach the save path, inside `persist_itinerary`.
+
+    That is the window this file did not previously cover: past the pre-save gate, before the
+    rewrite. `_find_or_create_place` is a real per-place round trip, so it is where a worker
+    actually sits — produced rather than hand-forged. One-shot, so the replacement's own
+    lookups run free instead of deadlocking against a barrier meant for the old worker.
+    """
+    real = persist._find_or_create_place
+    armed = [True]
+
+    async def hook(client, place):
+        if armed[0]:
+            armed[0] = False
+            entered.set()
+            await release.wait()
+        return await real(client, place)
+
+    return hook
+
+
+def place_names_on(client: _Client) -> list[str]:
+    by_id = {row["id"]: row["name"] for row in client.db.get("places", [])}
+    return sorted(by_id[tp["place_id"]] for tp in client.db.get("trip_places", []))
+
+
+async def test_a_superseded_worker_cannot_overwrite_the_replacements_itinerary(monkeypatch):
+    """THE UNBOUNDED OVERWRITE. `persist_itinerary` delete-reinserts the whole trip.
+
+    Arc A's accepted scope limit is "a worker parked in one provider call still lands THAT
+    item" — bounded, additive, one item. This was neither: past the single pre-save gate came
+    a destructive rewrite of every trip_places/trip_days row, four enrich stages, and an
+    unbounded narration call. A worker superseded anywhere in there deleted the replacement's
+    itinerary and inserted its own, and nothing anywhere corrects that — not
+    `complete_trip_run`'s CAS (it guards the JOB row) and not `api/streaming.py` (it guards
+    the event stream).
+
+    Two contrivance-avoidances make this test load-bearing rather than decorative:
+
+    1. The renewal is stubbed to keep succeeding, so `lease_lost` NEVER fires. The in-process
+       race cannot fire either, and the old worker walks all the way to the write. Only the
+       DB-side fence can stop it here — which is exactly the state a worker whose heartbeat
+       cannot reach Postgres arrives in.
+    2. The replacement is deliberately left MID-RUN, parked in narration. With it already
+       finished the job row would read `succeeded` and the RPC's `status = 'running'`
+       predicate would reject the stale write on its own — so the lease-token predicate could
+       be deleted outright and this test would still pass. Held mid-run, the row is `running`
+       carrying the replacement's token, and the token is the only thing telling them apart.
+
+    The two workers extract DIFFERENT places so the surviving rows identify their author.
+    """
+    client = seeded_client()
+    old_entered, old_release = asyncio.Event(), asyncio.Event()
+    narrating, finish_narration = asyncio.Event(), asyncio.Event()
+
+    async def never_notices(*_args):
+        return True                     # the beat's CAS never reaches Postgres
+
+    monkeypatch.setattr(jobs, "_renew_job_lease", never_notices)
+    monkeypatch.setattr(persist, "_find_or_create_place",
+                        parked_at_first_place_lookup(old_entered, old_release))
+
+    async def extract_tokyo_tower(_reel_data):
+        return [_place("Tokyo Tower", lat=35.6586, lng=139.7454)]
+
+    async def extract_sensoji(_reel_data):
+        return [_place("Senso-ji", lat=35.7148, lng=139.7967)]
+
+    async def parked_narrator(*_args, **_kwargs):
+        narrating.set()
+        await finish_narration.wait()
+        return await _no_narrator()
+
+    old = asyncio.create_task(run(client, extract=extract_tokyo_tower))
+    await _spin_until(old_entered.is_set)        # the old worker is INSIDE the save path
+    old_token = job_row(client)["lease_token"]
+
+    # The reaper finds the lease expired and a replacement claims — the deploy-overlap
+    # sequence in full, driven through the real reclaim rather than by editing the row.
+    replacement_client = sharing(client)
+    assert [job["id"] for job in await jobs.reclaim_expired_jobs(
+        client=replacement_client, now=_now_utc() + timedelta(minutes=10))] == ["job-1"]
+    new = asyncio.create_task(run(replacement_client, extract=extract_sensoji,
+                                  narrator=parked_narrator))
+    await _spin_until(narrating.is_set)          # it has PERSISTED and is still running
+    new_token = job_row(client)["lease_token"]
+    assert new_token and new_token != old_token
+    assert place_names_on(client) == ["Senso-ji"]
+
+    old_release.set()
+    out = await asyncio.wait_for(old, timeout=5)
+
+    # THE ASSERTION THIS TEST EXISTS FOR, first so a regression names the damage it caused.
+    assert place_names_on(client) == ["Senso-ji"], \
+        "the superseded worker deleted or overwrote the replacement's itinerary"
+    assert [row["day_number"] for row in client.db["trip_days"]] == [1]
+    # And it is not vacuous: the old worker DID run its entire save path and reach the write —
+    # only the fence refused it, which is also why it ends in the error branch.
+    assert "replace_trip_itinerary" in [name for name, _p in client.rpc_calls]
+    assert out == {"error": "unexpected generation error"}
+    assert results(client) == []
+
+    finish_narration.set()
+    replacement = await asyncio.wait_for(new, timeout=5)
+
+    # The replacement finishes on its own terms, with its own itinerary intact.
+    assert replacement["itinerary"]["days"][0]["place_names"] == ["Senso-ji"]
+    assert place_names_on(client) == ["Senso-ji"]
+    assert job_row(client)["status"] == "succeeded"
+
+
+async def test_losing_the_lease_mid_save_cancels_the_worker_before_it_writes(monkeypatch):
+    """The RACE: a lost lease must stop the save path where it stands, not at the far end.
+
+    A single `if lease_lost.is_set()` in front of the save block is a TOCTOU — the check
+    passes and then the rewrite, four enrich stages and an unbounded narration call follow.
+    The worker here is parked INSIDE `persist_itinerary` when the beat observes the loss, and
+    it must unwind from there: nothing released it, and it must not need releasing.
+
+    That is what makes this test discriminate. Swap the race back for the pre-save gate and
+    the worker sits parked until something releases it — nothing does — and then walks on to
+    attempt the write. The fence would still refuse that write, which is precisely why the
+    surviving-rows assertion cannot carry this test: the observable has to be that the attempt
+    was never made, and that the run ended without one.
+
+    Also asserts the run does not report success. `CancelledError` is a BaseException, so the
+    save block's `except Exception` cannot swallow it into `saved_with_gaps` — but that is a
+    property of the code as written, not a guarantee, and a `except BaseException` slipped in
+    anywhere in that block would turn an abort into a silently "saved" trip.
+    """
+    monkeypatch.setattr(jobs, "JOB_LEASE_RENEW_S", 0)
+    client = seeded_client()
+    entered, release = asyncio.Event(), asyncio.Event()
+    monkeypatch.setattr(persist, "_find_or_create_place",
+                        parked_at_first_place_lookup(entered, release))
+
+    renewals: list[bool] = []
+    real_renew = jobs._renew_job_lease
+
+    async def watched_renew(*args):
+        outcome = await real_renew(*args)
+        renewals.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(jobs, "_renew_job_lease", watched_renew)
+
+    task = asyncio.create_task(run(client, extract=_extract))
+    await _spin_until(entered.is_set)                # parked INSIDE the save path
+
+    job_row(client)["lease_token"] = "t-replacement"
+    await _spin_until(lambda: False in renewals)     # the RUNNING beat saw the zero-row CAS
+
+    out = await asyncio.wait_for(task, timeout=5)    # unwinds with NOTHING releasing it
+
+    assert not release.is_set()
+    assert out == {"error": "unexpected generation error"}       # not a payload, not "saved"
+    assert "replace_trip_itinerary" not in [name for name, _params in client.rpc_calls], \
+        "a cancelled worker must not have attempted the destructive rewrite"
+    assert client.db.get("trip_places") is None                  # no half-written state
+    assert client.db.get("trip_days") is None
+    # `_fail` still runs its FENCED terminal (that is its job) — and the fence refuses it,
+    # which is what keeps "aborted" from surfacing to the user as a real outcome.
+    assert results(client) == []
+
+
+async def test_a_worker_whose_heartbeat_cannot_reach_postgres_stops(monkeypatch):
+    """Sustained unreachability must abort the run, not be swallowed into "keep working".
+
+    The runner-level half of
+    `test_a_heartbeat_that_cannot_reach_postgres_past_the_ttl_declares_the_lease_lost`. The
+    beat is the only component that can tell a parked worker it has been superseded, so a beat
+    that swallows every error forever leaves the worker running with `lease_lost` clear — past
+    the gate, past the race, into the save path — on a job the reaper has already handed on.
+    Here nothing edits the row and no CAS returns zero: the ONLY signal is that renewal cannot
+    reach Postgres at all, and the run must still stop.
+    """
+    monkeypatch.setattr(jobs, "JOB_LEASE_RENEW_S", 0)
+    monkeypatch.setattr(jobs, "JOB_LEASE_TTL_S", 0)      # every attempt lands past the deadline
+    client = seeded_client()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    attempts: list[int] = []
+
+    async def unreachable(*_args):
+        attempts.append(len(attempts))
+        raise ConnectionError("PostgREST is unreachable")
+
+    monkeypatch.setattr(jobs, "_renew_job_lease", unreachable)
+
+    async def parked_extract(reel_data):
+        entered.set()
+        await release.wait()
+        return await _extract(reel_data)
+
+    task = asyncio.create_task(run(client, extract=parked_extract))
+    await _spin_until(entered.is_set)
+    await _spin_until(lambda: len(attempts) >= 1)
+
+    release.set()
+    out = await asyncio.wait_for(task, timeout=5)
+
+    assert out == {"error": "unexpected generation error"}
+    assert client.db.get("trip_places") is None      # the save block never ran
+    # No replacement has claimed yet — the reaper has not run — so the row still carries OUR
+    # token and the terminal CAS legitimately matches. That is the fence working, not leaking:
+    # had a replacement claimed, the token would differ and this worker would write nothing.
+    # It also matters that SOMETHING terminal lands, because the SSE stream ends on it
+    # (guardrail #12: re-queued or explicitly failed, never silently dropped).
+    assert [event["message"] for event in results(client)] == ["generation failed"]
+    assert job_row(client)["status"] == "failed"
 
 
 async def test_a_live_worker_still_writes_its_own_failure():

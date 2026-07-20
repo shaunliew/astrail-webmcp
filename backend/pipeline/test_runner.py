@@ -143,6 +143,43 @@ class _CompleteTripRunRpc:
         return _Result(True)
 
 
+class _ReplaceTripItineraryRpc:
+    """Mirror of `public.replace_trip_itinerary` (20260720150000).
+
+    The fence and the delete-reinsert are ONE unit here for the same reason they are one
+    transaction there: a superseded worker must destroy NEITHER the replacement's trip_places
+    NOR its trip_days. A fake that deleted first and only then checked the lease — or that
+    ignored the lease entirely — would leave the caller's `LeaseLost` branch dead under test
+    while the real fence could be missing, and every fencing test in `test_runner_lease.py`
+    would pass while proving nothing.
+
+    The predicate mirrors the SQL exactly, `trip_id` included: a lease on job X may only
+    rewrite job X's own trip.
+    """
+
+    def __init__(self, client, params):
+        self.client, self.params = client, params
+
+    async def execute(self):
+        params = self.params
+        job = next((row for row in self.client.db.get("jobs", [])
+                    if row.get("id") == params["p_job_id"]
+                    and row.get("trip_id") == params["p_trip_id"]
+                    and row.get("lease_token") == params["p_lease_token"]
+                    and row.get("status") == "running"), None)
+        if job is None:
+            return _Result(False)
+        trip_id = params["p_trip_id"]
+        for table in ("trip_places", "trip_days"):
+            rows = self.client.db.setdefault(table, [])
+            self.client.db[table] = [r for r in rows if r.get("trip_id") != trip_id]
+        for table, key in (("trip_places", "p_places"), ("trip_days", "p_days")):
+            rows = self.client.db.setdefault(table, [])
+            for row in params.get(key) or []:
+                rows.append({"id": f"{table}-{len(rows) + 1}", "trip_id": trip_id, **row})
+        return _Result(True)
+
+
 class _Client:
     def __init__(self, jobs=None):
         self.db: dict = {"jobs": jobs or []}
@@ -155,6 +192,8 @@ class _Client:
         self.rpc_calls.append((name, params))
         if name == "complete_trip_run":
             return _CompleteTripRunRpc(self, params)
+        if name == "replace_trip_itinerary":
+            return _ReplaceTripItineraryRpc(self, params)
         raise AssertionError(f"fake does not implement rpc {name!r}")
 
     @property
@@ -221,7 +260,7 @@ class _AddRaisingMem0:
 
 @pytest.mark.asyncio
 async def test_happy_path_completes_marks_job_and_emits_result():
-    c = _Client(jobs=[{"id": "job-1", "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "status": "pending"}])
 
     async def scrape(url):
         return _reel(url)
@@ -242,7 +281,7 @@ async def test_happy_path_completes_marks_job_and_emits_result():
 
 @pytest.mark.asyncio
 async def test_place_only_trip_uses_authorized_canonical_place_without_scrape(monkeypatch):
-    c = _Client(jobs=[{"id": "job-1", "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "status": "pending"}])
 
     async def authorize(_client, _user_id, _place_ids):
         return [{
@@ -265,7 +304,7 @@ async def test_place_only_trip_uses_authorized_canonical_place_without_scrape(mo
 
 @pytest.mark.asyncio
 async def test_one_reel_fails_saves_with_gaps():
-    c = _Client(jobs=[{"id": "job-1", "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "status": "pending"}])
 
     async def scrape(url):
         if url.endswith("bad"):
@@ -287,7 +326,7 @@ async def test_one_reel_fails_saves_with_gaps():
 
 @pytest.mark.asyncio
 async def test_all_reels_fail_is_critical_failure():
-    c = _Client(jobs=[{"id": "job-1", "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "status": "pending"}])
 
     async def scrape(url):
         raise RuntimeError("Apify scrape failed (HTTP 500)")
@@ -306,7 +345,7 @@ async def test_all_reels_fail_is_critical_failure():
 
 @pytest.mark.asyncio
 async def test_unexpected_exception_still_writes_terminal_result():
-    c = _Client(jobs=[{"id": "job-1", "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "status": "pending"}])
 
     async def scrape(url):
         return _reel(url)
@@ -324,7 +363,7 @@ async def test_unexpected_exception_still_writes_terminal_result():
 
 @pytest.mark.asyncio
 async def test_blank_day_reports_saved_with_gaps():
-    c = _Client(jobs=[{"id": "job-1", "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "status": "pending"}])
 
     async def scrape(url):
         return _reel(url)
@@ -344,7 +383,7 @@ async def test_blank_day_reports_saved_with_gaps():
 
 @pytest.mark.asyncio
 async def test_runner_persists_normalized_rows_on_success():
-    c = _Client(jobs=[{"id": "job-1", "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "status": "pending"}])
 
     async def scrape(url):
         return _reel(url)
@@ -364,7 +403,7 @@ async def test_runner_persists_normalized_rows_on_success():
 
 @pytest.mark.asyncio
 async def test_runner_degrades_to_saved_with_gaps_when_persist_fails(monkeypatch):
-    c = _Client(jobs=[{"id": "job-1", "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "status": "pending"}])
 
     async def scrape(url):
         return _reel(url)
@@ -387,7 +426,7 @@ async def test_runner_degrades_to_saved_with_gaps_when_persist_fails(monkeypatch
 
 @pytest.mark.asyncio
 async def test_runner_degrades_when_persist_drops_a_place():
-    c = _Client(jobs=[{"id": "job-1", "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "status": "pending"}])
 
     async def scrape(url):
         return _reel(url)
@@ -410,7 +449,7 @@ async def test_runner_degrades_when_persist_drops_a_place():
 
 @pytest.mark.asyncio
 async def test_cas_abort_skips_when_job_already_claimed():
-    c = _Client(jobs=[{"id": "job-1", "status": "running"}])  # already claimed by another run
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "status": "running"}])  # already claimed by another run
 
     async def scrape(url):
         raise AssertionError("scrape must not run when the CAS claim is lost")
@@ -429,7 +468,7 @@ async def test_cas_abort_skips_when_job_already_claimed():
 
 @pytest.mark.asyncio
 async def test_runner_persists_weather_on_trip_days():
-    c = _Client(jobs=[{"id": "job-1", "status": "pending", "attempt_count": 0, "started_at": None}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "status": "pending", "attempt_count": 0, "started_at": None}])
 
     async def scrape(url):
         return _reel(url)
@@ -453,7 +492,7 @@ async def test_runner_persists_weather_on_trip_days():
 
 @pytest.mark.asyncio
 async def test_runner_skips_weather_when_all_places_lack_coords():
-    c = _Client(jobs=[{"id": "job-1", "status": "pending", "attempt_count": 0, "started_at": None}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "status": "pending", "attempt_count": 0, "started_at": None}])
 
     async def scrape(url):
         return _reel(url)
@@ -478,7 +517,7 @@ async def test_runner_skips_weather_when_all_places_lack_coords():
 
 @pytest.mark.asyncio
 async def test_runner_weather_failure_is_non_critical():
-    c = _Client(jobs=[{"id": "job-1", "status": "pending", "attempt_count": 0, "started_at": None}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "status": "pending", "attempt_count": 0, "started_at": None}])
 
     async def scrape(url):
         return _reel(url)
@@ -500,7 +539,7 @@ async def test_runner_weather_failure_is_non_critical():
 
 @pytest.mark.asyncio
 async def test_runner_persists_transport_legs():
-    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     async def scrape(url): return _reel(url)
     async def extract(reel): return [_place("A", lat=35.60, lng=139.70), _place("B", lat=35.62, lng=139.72)]
     async def transport(coords, *, profile="walking"):
@@ -515,7 +554,7 @@ async def test_runner_persists_transport_legs():
 
 @pytest.mark.asyncio
 async def test_runner_transport_failure_is_non_critical():
-    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     async def scrape(url): return _reel(url)
     async def extract(reel): return [_place("A", lat=35.60, lng=139.70), _place("B", lat=35.62, lng=139.72)]
     async def transport(coords, *, profile="walking"): raise RuntimeError("mapbox down")
@@ -533,7 +572,7 @@ async def test_runner_transport_missing_token_is_non_critical(monkeypatch):
     # transport NOT injected -> the REAL fetch_directions_legs runs and reads
     # os.environ["MAPBOX_SECRET_TOKEN"] -> KeyError (before any network) -> absorbed -> warning + complete.
     monkeypatch.delenv("MAPBOX_SECRET_TOKEN", raising=False)
-    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     async def scrape(url): return _reel(url)
     async def extract(reel): return [_place("A", lat=35.60, lng=139.70), _place("B", lat=35.62, lng=139.72)]
     out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
@@ -548,7 +587,7 @@ async def test_runner_transport_missing_token_is_non_critical(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_runner_persists_restaurant_suggestions():
-    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     async def scrape(url): return _reel(url)
     async def extract(reel): return [_place("A", lat=35.60, lng=139.70), _place("B", lat=35.62, lng=139.72)]
     async def restaurant(places, *, city=None, preference_block=None):
@@ -569,7 +608,7 @@ async def test_runner_persists_restaurant_suggestions():
 
 @pytest.mark.asyncio
 async def test_runner_restaurant_failure_is_non_critical():
-    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     async def scrape(url): return _reel(url)
     async def extract(reel): return [_place("A", lat=35.60, lng=139.70), _place("B", lat=35.62, lng=139.72)]
     async def restaurant(places, *, city=None, preference_block=None): raise RuntimeError("mapbox/openai down")
@@ -584,7 +623,7 @@ async def test_runner_restaurant_failure_is_non_critical():
 
 @pytest.mark.asyncio
 async def test_runner_persists_narration():
-    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     async def scrape(url): return _reel(url)
     async def extract(reel): return [_place("Tokyo Tower")]
     async def narrator(days, *, city=None, preference_block=None):
@@ -605,7 +644,7 @@ async def test_runner_persists_narration():
 
 @pytest.mark.asyncio
 async def test_runner_narration_failure_is_non_critical():
-    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     async def scrape(url): return _reel(url)
     async def extract(reel): return [_place("Tokyo Tower")]
     async def narrator(days, *, city=None, preference_block=None): raise RuntimeError("openai down")
@@ -625,7 +664,7 @@ async def test_runner_uses_extraction_cache_skips_scrape_and_extract():
     # HIT: scrape+extract are NEVER called, a `cache_hit` event fires, and the cached place is used.
     from genagents.place_extractor import EXTRACTOR_VERSION
     reel_url = "https://www.instagram.com/reel/ABC123/"
-    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     c.db["reel_cache"] = [{"id": "rc-1", "normalized_url": "https://www.instagram.com/reel/ABC123",
                            "extractor_version": EXTRACTOR_VERSION,
                            "extracted_places": [_place("Tokyo Tower").model_dump()]}]
@@ -644,7 +683,7 @@ async def test_runner_uses_extraction_cache_skips_scrape_and_extract():
 
 @pytest.mark.asyncio
 async def test_runner_persists_hotel_suggestions():
-    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     # persist_hotels READS the trips row (dates/occupancy) — the runner only UPDATEs trips, never
     # inserts, so seed it. destination_hint is the location fallback (the fake places carry no city).
     c.db["trips"] = [{"id": "trip-1", "user_id": "user-1", "start_date": "2026-08-01",
@@ -667,7 +706,7 @@ async def test_runner_persists_hotel_suggestions():
 
 @pytest.mark.asyncio
 async def test_runner_hotel_failure_is_non_critical():
-    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     c.db["trips"] = [{"id": "trip-1", "user_id": "user-1", "start_date": "2026-08-01",
                       "end_date": "2026-08-01", "adult_count": 1, "room_count": 1,
                       "destination_hint": "Tokyo"}]
@@ -686,7 +725,7 @@ async def test_runner_hotel_failure_is_non_critical():
 
 @pytest.mark.asyncio
 async def test_runner_records_preferences_stage_and_mem0_failure_is_non_critical():
-    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
 
     async def scrape(url): return _reel(url)
     async def extract(reel): return [_place("Tokyo Tower")]
@@ -713,7 +752,7 @@ async def test_runner_forwards_preference_block_to_restaurant_and_narrator():
     # restaurant/narrator fakes. If `preference_block=pref_block` were ever dropped from
     # either runner._stage_* call, the fake would receive the kwarg's default (None) and
     # this test would fail on the `is not None` assertion below.
-    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     captured: dict[str, str | None] = {}
 
     async def scrape(url): return _reel(url)
@@ -744,7 +783,7 @@ async def test_runner_write_back_failure_is_non_critical():
     # mem0.add must not fail the already-saved trip, and a memory_events "failed" row
     # is the observability receipt (persist_trip_memory swallows the error internally;
     # test_write_back_swallows_add_error in test_preferences.py covers the unit itself).
-    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
 
     async def scrape(url): return _reel(url)
     async def extract(reel): return [_place("Tokyo Tower")]
@@ -776,7 +815,7 @@ async def test_runner_write_back_raise_does_not_double_result_or_flip_status(mon
 
     monkeypatch.setattr(prefs_mod, "trip_synopsis", _boom_synopsis)
 
-    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
 
     async def scrape(url): return _reel(url)
     async def extract(reel): return [_place("Tokyo Tower")]
@@ -804,7 +843,7 @@ async def test_run_persists_tradeoff_notes_and_comparisons():
     # Integration proof that BOTH tradeoff halves are wired: notes from feasibility
     # warnings (computed pre-gather) and comparisons from persisted hotel rows
     # (computed post-gather), written together in ONE persist_tradeoffs call.
-    c = _Client(jobs=[{"id": "job-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     # LOAD-BEARING: persist_hotels (persist.py:498-503) reads the trips row for dates +
     # a location and returns 0 (never calling the hotel fake) if the row is missing. The
     # runner only UPDATEs trips, never inserts — so SEED the row first, exactly like

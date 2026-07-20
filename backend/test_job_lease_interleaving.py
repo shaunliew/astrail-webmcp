@@ -260,6 +260,40 @@ async def test_a_trip_renewal_blip_does_not_abort_a_healthy_run(fake_client, mon
         await beat
 
 
+async def test_a_heartbeat_that_cannot_reach_postgres_past_the_ttl_declares_the_lease_lost(
+    fake_client, monkeypatch
+):
+    """FAIL SAFE, not fail open — the other half of the blip rule above.
+
+    Tolerating blips was right; tolerating them FOREVER was not. The swallow rested on "the
+    next renewal that DOES reach Postgres returns zero rows → lost, the honest way", which
+    silently assumes a next renewal gets through. When Postgres stays unreachable there is no
+    such renewal: the reaper reclaims on schedule, a replacement starts rebuilding the trip,
+    and this worker runs on with `lost` never set — sailing past every in-process gate, with
+    only the DB-side fences between it and the replacement's data.
+
+    Past the TTL our lease has certainly expired, so "we still own this" is no longer a claim
+    the worker is entitled to make. The pairing with the test above is the whole point: under
+    the TTL a blip must NOT abort a healthy run, past it the run must stop. A guard that fires
+    on the first error would fail that test; one that never fires fails this one.
+    """
+    monkeypatch.setattr(jobs, "JOB_LEASE_RENEW_S", 0)
+    monkeypatch.setattr(jobs, "JOB_LEASE_TTL_S", 0)      # every attempt lands past the deadline
+    seed_trip_job(fake_client, status="running", lease_token="t1", lock_expires_at=minutes_ago(1))
+
+    async def unreachable(*_args):
+        raise ConnectionError("PostgREST is unreachable")
+
+    monkeypatch.setattr(jobs, "_renew_job_lease", unreachable)
+    lost = asyncio.Event()
+    beat = asyncio.create_task(_heartbeat(fake_client, "j1", "t1", lost))
+
+    await asyncio.wait_for(beat, timeout=5)
+
+    assert lost.is_set()              # the run is told to stop
+    assert not beat.cancelled()       # it RETURNED on its own; nothing had to kill it
+
+
 # --- reclaim semantics -----------------------------------------------------------------------
 
 

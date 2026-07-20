@@ -1,6 +1,113 @@
 # Astrail Saved Reels Handoff
 
-> Current stop point: 2026-07-19. The Saved Reels localhost MVP, global country-verification
+> **Current stop point: 2026-07-20 — the backend is DEPLOYED, MIGRATED and SMOKE-VERIFIED in
+> production.** All seven Section B follow-ups are closed, plus six defects a cross-model review
+> found that no one had listed. `dev` is at `12b5839`; the live service runs it. The 2026-07-19
+> handoff below is superseded from "no deploy should proceed" onward — the deploy happened.
+>
+> **Zhi Hao: read "Backend release 2026-07-20" next. Three frontend PRs are waiting for you and
+> the merge ORDER matters.**
+
+## Backend release 2026-07-20 (Shaun)
+
+### The headline you need
+
+**The organize feature had never once worked in production.** `20260718130000_saved_reels_organize`
+was written on 2026-07-18 and never applied, so `organize_jobs`, `organize_job_items`,
+`organize_events` and `reel_place_mentions` did not exist on the deployed database. Every organize
+attempt failed against missing tables, and `/health` stayed green throughout — it performs no schema
+check.
+
+The deployed DB was **seven migrations behind `dev`**, not level with it. Seventeen migrations were
+applied in one run; local and remote are now identical at all 27.
+
+Verified live, after the deploy, with a real Instagram Reel:
+
+```
+organize job f61709fc  ->  succeeded, 2 places, 0 failed
+  'Harry Potter Cafe'  35.6735692, 139.7367042   JP / Japan
+  'Akasaka Station'    35.67222,   139.73639     JP / Japan
+  reel_place_mentions: user_id populated, verification_version = mapbox-country-v1
+```
+
+Also verified: burst limit returns **429** on the 4th request in a minute; a conflicting organize
+returns **409**; an unowned Reel id returns **404**. None of these return 500 — that mattered,
+because a migration in this batch changed the raised SQLSTATE from `P0001` to `AS4xx`.
+
+### ⚠️ What changed that affects YOUR workflow
+
+**`autoDeploy` is now OFF on the Render service.** Merging to `dev` no longer deploys the backend.
+This was not a preference — with it on, merge *was* deploy, which made the standard "apply schema →
+verify → merge" protocol impossible to execute, because there was no gap between the last two steps
+to verify in. Deploy manually:
+
+```bash
+render deploys create srv-d976aess728c738pskk0 --wait --confirm
+```
+
+To re-enable it, something must first run migrations before the deploy — Render's
+`--pre-deploy-command` running `supabase migration up` is the natural fit. Until that exists,
+deploys stay manual. Full sequence: `docs/superpowers/plans/2026-07-20-saved-reels-release-runbook.md`.
+
+**Frontend deploys are unaffected** — Vercel, separate pipeline.
+
+### ⚠️ Merging stacked PRs — this bit us, twice
+
+`gh pr merge 45` reported **✓ Merged** and merged Arc B into the wrong branch. #45's base was still
+`feat/saved-reels-arc-a-reliability`, and GitHub had not yet retargeted it to `dev` after #44 merged
+seconds earlier. The result was `dev` carrying code that could not speak to its own migrated schema —
+caught only by verifying the outcome (`git merge-base --is-ancestor`) rather than trusting the
+success message, and fixed by PR #49.
+
+**Your three frontend PRs are stacked the same way.** Merge them in order, and *wait for each
+retarget* before the next:
+
+```
+#46  Arc C          -> dev          DESIGN.md, CN->China, night->dawn relight
+#47  Mascot         -> #46          astronaut + composed 404/error screens
+#48  Design pass    -> #47          G2/G3/G4/G7 + the narration nobody could see
+```
+
+### What is waiting for you specifically
+
+1. **Live-verify the night→dawn relight.** It has never been *seen* running — there was no Mapbox
+   token in the worktree, so it is unit- and source-verified only. Mapbox does animate the preset
+   change (~300ms default, `Transitionable` machinery); the specced 2s comes from
+   `map.style?.setTransition({duration:2000})`. Watch one real generation complete.
+2. **One glance at `/app/trips` in paper scope** after login. The mascot's paper rendering was
+   verified against a token harness, not the real authenticated surface.
+3. **ISSUES.md B8** — narrowing `saved_reel_cards` visibility is a visible frontend change and was
+   deliberately left as your decision, not landed silently in a backend PR.
+4. **`CN → China` wording.** `ISSUES.md` said this was yours to choose; the approved plan specified
+   "China" so that shipped, structured as one entry in one `Record` so reversing it is a one-line
+   change. `frontend/lib/reels/organize.ts`.
+
+### Two findings in #48 that are not design nits
+
+- **`TripDay.title`, `summary` and `weather_summary` — the narrator and weather agents' output —
+  shipped in every bundle and rendered nowhere.** The backend paid for narration on every run and
+  discarded it. New `DayOverview` renders them.
+- **Small text in raw `--brass` sits at roughly 2.2:1 on paper**, because `--brass` does not remap in
+  `.paper-scope`. Fixed across 8 files.
+
+### Known, documented, NOT fixed
+
+- **Pre-existing duplicate canonical places** (e.g. `Tokyo Dream Park` ×2) predate the fix that now
+  prevents them. An advisory lock serialises `find_or_create_place` going forward; it cannot merge
+  rows that already exist.
+- **User-isolation smoke check not run** — it needs a second account and I would not use yours.
+- The frontend has **no `error.tsx`/`not-found.tsx`** on `dev` yet; #47 adds them. Until it merges,
+  production serves stock Next.js error screens.
+
+### Where the reasoning lives
+
+- Release sequence + the ten-migration table: `docs/superpowers/plans/2026-07-20-saved-reels-release-runbook.md`
+- What cross-model review caught and why: `.claude/docs/BUILD-LOOP.md` (step 6, and "the six ways a test can't fail")
+- Design system, now canonical: `DESIGN.md` at repo root — gstack design skills read it, and its §12 lists every remaining spec/ship gap
+
+---
+
+> Superseded stop point: 2026-07-19. The Saved Reels localhost MVP, global country-verification
 > repair, and Section A reliability fix arc are implemented and verified on `zh` through
 > `0216a0e`. The seven Section B follow-ups remain open in `ISSUES.md`; no deploy should
 > proceed until Render's Mapbox token provenance is confirmed.
@@ -139,13 +246,22 @@ Fresh verification run on 2026-07-19 after `0216a0e`:
 
 ## Remaining
 
-- The seven agreed Section B follow-ups are documented in root `ISSUES.md`, ordered B1,
-  B4, B6, B2, B3, B5, B7. B1 and B7 require Zhi Hao's product/design decision; B2-B6 are
-  implementation calls for Shaun.
-- Before any deploy, confirm Render's deployed `MAPBOX_SECRET_TOKEN` was issued by the same
-  Mapbox account whose invoice and live probes confirm permanent-geocoding entitlement.
-- Coordinate-to-venue identity verification remains an accepted MVP deferral. Country
-  containment is verified; the exact dot still trusts the research result.
+**Updated 2026-07-20 — the Section B list below is CLOSED.** All seven landed in PRs #44/#45
+(merged) and #46–#48 (open, frontend). B7's wording shipped as "China" per the approved plan and
+stays a one-line change if Zhi Hao wants otherwise. What is actually left is in
+"Backend release 2026-07-20" at the top of this file.
+
+- ~~The seven agreed Section B follow-ups… B1, B4, B6, B2, B3, B5, B7.~~ **Done.**
+- ~~Before any deploy, confirm Render's deployed `MAPBOX_SECRET_TOKEN`…~~ The deploy has happened
+  and a real Reel geocoded correctly in production (`JP / Japan`, exact Tokyo coordinates), so the
+  deployed token demonstrably carries working geocoding. If the *entitlement* question was about
+  billing tier rather than function, it is still worth confirming — the smoke run proves it works,
+  not that it is on the plan you intend to pay for.
+- **Coordinate-to-venue identity verification remains an accepted MVP deferral.** Unchanged and
+  still true: country containment is verified, the exact dot still trusts the research result.
+- **Duplicate canonical `places` rows created before 2026-07-20 are not merged.** The advisory lock
+  in `20260720160000` prevents new ones; existing pairs (e.g. `Tokyo Dream Park` ×2) need a
+  deliberate merge pass if they matter.
 
 ## Machine/environment quirks (will bite you if forgotten)
 
@@ -175,13 +291,26 @@ Fresh verification run on 2026-07-19 after `0216a0e`:
 
 ## Manual QA that only a human can do
 
-1. In Render, compare the deployed Mapbox token's account/project with the account carrying
-   permanent-geocoding entitlement before deployment.
-2. After deploying the migrations and backend/frontend together, repeat one real OTP ->
-   Saved Reel -> Organize -> Japan tray/Tokyo pin -> brief -> trip run against production.
-3. Confirm deployed access logs do not expose more bearer-token surface than the B1 decision
-   explicitly accepts.
-4. Decide the B7 CN tray wording in product copy and verify it in the actual UI locale.
+**Updated 2026-07-20.** Items 1 and 2 are largely satisfied by the release smoke run — a real Reel
+was captured, organized and geocoded against production, and its places persisted with `user_id`
+scoping and `mapbox-country-v1` verification. What genuinely still needs a human:
+
+1. ~~Compare the deployed Mapbox token's account/project…~~ Geocoding demonstrably works in
+   production. Re-check only if the concern was billing tier rather than function.
+2. **Partially done.** The Saved Reel → Organize → verified Tokyo pin half ran green against
+   production. **The brief → trip-generation half did not** — that exercises the *other* durable
+   path, the one Arc A's itinerary-fencing RPC and database-clock leases protect. Run one real trip
+   generation end to end.
+3. **Still open.** Confirm deployed access logs do not expose more bearer-token surface than the B1
+   decision accepts. A redaction filter ships (`backend/log_redaction.py`) but has not been checked
+   against real Render logs.
+4. ~~Decide the B7 CN tray wording…~~ Shipped as "China"; verify it reads correctly in the live UI
+   once #46 merges, and change the single `COUNTRY_DISPLAY_OVERRIDES` entry if you disagree.
+5. **New — the night→dawn relight has never been seen running.** No Mapbox token was available where
+   it was built. Watch one real generation complete after #46 merges.
+6. **New — check a warm re-organize skips Apify.** Organize a Reel you have already organized and
+   confirm it returns fast. A cache miss on the warm path means every re-organize spends real money,
+   and the only symptom is the bill.
 
 ## Session log pointers
 

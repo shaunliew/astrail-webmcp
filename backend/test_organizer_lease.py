@@ -617,6 +617,41 @@ async def test_a_renewal_blip_does_not_abort_a_healthy_run(fake_client, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_a_heartbeat_that_cannot_reach_postgres_past_the_ttl_declares_the_lease_lost(
+    fake_client, monkeypatch
+):
+    """FAIL SAFE, not fail open — the other half of the blip rule above.
+
+    Tolerating blips was right; tolerating them FOREVER was not. The swallow rested on "the
+    next renewal that DOES reach Postgres returns zero rows → lost, the honest way", which
+    silently assumes a next renewal gets through. When Postgres stays unreachable there is no
+    such renewal: `recover_organize_jobs` reclaims on schedule, a replacement claims the job,
+    and this worker runs on with `lost` never set — sailing past the loop's between-items gate
+    with only the per-write token fences between it and the replacement's work.
+
+    Past the TTL our lease has certainly expired, so "we still own this" is no longer a claim
+    the worker is entitled to make. The pairing with the test above is the whole point: under
+    the TTL a blip must NOT abort a healthy run, past it the run must stop. A guard that fires
+    on the first error would fail that test; one that never fires fails this one.
+    """
+    monkeypatch.setattr("organizer.ORGANIZE_LEASE_RENEW_S", 0)
+    monkeypatch.setattr("organizer.ORGANIZE_LEASE_TTL_S", 0)   # every attempt lands past the deadline
+    seed_job(fake_client, status="processing", lease_token="t1", lock_expires_at=minutes_ago(1))
+
+    async def unreachable(*_args):
+        raise ConnectionError("PostgREST is unreachable")
+
+    monkeypatch.setattr(organizer, "_renew_organize_lease", unreachable)
+    lost = asyncio.Event()
+    beat = asyncio.create_task(_heartbeat(fake_client, "j1", "u1", "t1", lost))
+
+    await asyncio.wait_for(beat, timeout=5)
+
+    assert lost.is_set()              # the run is told to stop
+    assert not beat.cancelled()       # it RETURNED on its own; nothing had to kill it
+
+
+@pytest.mark.asyncio
 async def test_the_heartbeat_task_does_not_outlive_the_run(fake_client, monkeypatch):
     """A leaked beat keeps renewing a lease for a run that has already finished.
 

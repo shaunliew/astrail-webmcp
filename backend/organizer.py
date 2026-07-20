@@ -8,6 +8,7 @@ import inspect
 import json
 import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -495,21 +496,42 @@ async def _renew_organize_lease(client, job_id: str, user_id: str, lease_token: 
 
 
 async def _heartbeat(client, job_id: str, user_id: str, lease_token: str, lost: asyncio.Event) -> None:
-    """Renew this run's lease on an interval until it is lost, or the run cancels us."""
+    """Renew this run's lease on an interval until it is lost, or the run cancels us.
+
+    FAILS SAFE past the TTL. A blip is tolerated; sustained unreachability is not. The earlier
+    version swallowed every renewal error on the reasoning that "the next renewal that DOES
+    reach Postgres returns zero rows → lost, the honest way" — which assumes a next renewal
+    ever gets through. When it does not, `recover_organize_jobs` reclaims us on schedule, a
+    replacement claims the job, and this worker keeps running with `lost` never set: it sails
+    through the item loop's between-items gate and only the per-write token fences stand
+    between it and the replacement's work. Once `deadline` has passed our lease has certainly
+    expired, so continuing is indistinguishable from running without one.
+    """
+    # We hold the lease until here: the claim in `run_organize_job` set exactly this expiry
+    # moments ago. `monotonic`, not wall-clock — a clock step must not fabricate or mask a loss.
+    deadline = time.monotonic() + ORGANIZE_LEASE_TTL_S
     while not lost.is_set():
         await asyncio.sleep(ORGANIZE_LEASE_RENEW_S)
         try:
-            if not await _renew_organize_lease(client, job_id, user_id, lease_token):
-                lost.set()          # someone else owns the job now
-                return
+            renewed = await _renew_organize_lease(client, job_id, user_id, lease_token)
         except Exception:
             # A renewal BLIP IS NOT A LOST LEASE — keep working. Losing the lease is an
             # authoritative statement about ownership, and only a zero-row CAS makes it; a
-            # transport error says nothing about who holds the token. Setting `lost` here
-            # would let one flaky moment against PostgREST abort a perfectly healthy run.
-            # If blips persist past the TTL the reaper reclaims us anyway, and the next
-            # renewal that DOES reach Postgres returns zero rows → lost, the honest way.
-            logger.warning("organize_lease_renew_failed job_id=%s", job_id)
+            # transport error says nothing about who holds the token. Aborting here would let
+            # one flaky moment against PostgREST kill a healthy run, which is why the TTL —
+            # not the first error — is the threshold.
+            if time.monotonic() < deadline:
+                logger.warning("organize_lease_renew_failed job_id=%s", job_id)
+                continue
+            # Past the TTL with no renewal through: the reaper has had its window, so assume
+            # we no longer own the job rather than assuming we still do.
+            logger.warning("organize_lease_unrenewable_past_ttl job_id=%s", job_id)
+            lost.set()
+            return
+        if not renewed:
+            lost.set()              # someone else owns the job now
+            return
+        deadline = time.monotonic() + ORGANIZE_LEASE_TTL_S
 
 
 @dataclass(frozen=True)

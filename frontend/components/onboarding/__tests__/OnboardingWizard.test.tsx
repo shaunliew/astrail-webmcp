@@ -43,6 +43,15 @@ describe('OnboardingWizard', () => {
     expect(screen.getByRole('button', { name: /finish/i })).toBeDisabled()
   })
 
+  it('shows the decorative astronaut on the final review step only', () => {
+    const { container } = render(<OnboardingWizard />)
+    expect(container.querySelector('[data-mascot="astronaut"]')).toBeNull()
+    for (let i = 0; i < 4; i++) clickNext() // advance to the review step
+    const mascot = container.querySelector('[data-mascot="astronaut"]')
+    expect(mascot).not.toBeNull()
+    expect(mascot).toHaveAttribute('aria-hidden', 'true')
+  })
+
   it('toggles a chip aria-pressed on click', () => {
     render(<OnboardingWizard />)
     clickNext() // to the style step

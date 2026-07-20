@@ -22,10 +22,16 @@ describe('TripsList', () => {
     expect(await screen.findByRole('link', { name: /tokyo/i })).toHaveAttribute('href', `/app/trip/${TOKYO_TRIP.trip.id}`)
   })
 
-  it('shows an empty state when there are no trips', async () => {
+  it('shows a composed, illustrated empty state when there are no trips', async () => {
     listTrips.mockResolvedValueOnce([])
-    render(<TripsList />)
-    expect(await screen.findByText('No trails yet. Your saved trips will land here.')).toBeInTheDocument()
+    const { container } = render(<TripsList />)
+    const copy = await screen.findByText('No trails yet. Your saved trips will land here.')
     expect(screen.getByRole('link', { name: /plan your first trip/i })).toHaveAttribute('href', '/app')
+    // Composed per DESIGN.md: centered and illustrated, with a decorative mascot.
+    expect(copy.closest('div')).toHaveClass('items-center', 'text-center')
+    const mascot = container.querySelector('[data-mascot="astronaut"]')
+    expect(mascot).not.toBeNull()
+    expect(mascot).toHaveAttribute('aria-hidden', 'true')
+    expect(mascot).not.toHaveClass('astronaut-trail--waiting')
   })
 })

@@ -514,6 +514,18 @@ button:focus-visible {
   }
 }
 
+/* Astronaut mascot (DESIGN.md G6): waiting is the only live state — the trail
+   dots flow toward the star. Idle, empty, and error instances hold still. */
+.astronaut-trail--waiting {
+  animation: astronaut-trail-flow 1.8s linear infinite;
+}
+
+@keyframes astronaut-trail-flow {
+  to {
+    stroke-dashoffset: -11.2;
+  }
+}
+
 /* Status dot: color carries the state's tone; ONLY live states animate —
    a glowing pulse on a finished trip is motion telling a lie. */
 .pulse-dot {
@@ -568,7 +580,8 @@ button:focus-visible {
   .pain-local-shards .motion-shard,
   .how-section-route .motion-route__draw,
   .pin-land,
-  .pulse-dot--live {
+  .pulse-dot--live,
+  .astronaut-trail--waiting {
     animation: none;
   }
 

@@ -1,12 +1,76 @@
 # Astrail Saved Reels Handoff
 
-> **Current stop point: 2026-07-20 — the backend is DEPLOYED, MIGRATED and SMOKE-VERIFIED in
+> **Current stop point: 2026-07-20 — backend AND frontend are deployed, migrated and verified in
 > production.** All seven Section B follow-ups are closed, plus six defects a cross-model review
-> found that no one had listed. `dev` is at `12b5839`; the live service runs it. The 2026-07-19
-> handoff below is superseded from "no deploy should proceed" onward — the deploy happened.
+> found that nobody had listed, plus three more found by exercising the live API afterwards. `dev`
+> carries everything; the live service runs it. The 2026-07-19 handoff below is superseded from
+> "no deploy should proceed" onward — the deploy happened, twice.
 >
-> **Zhi Hao: read "Backend release 2026-07-20" next. Three frontend PRs are waiting for you and
-> the merge ORDER matters.**
+> **Zhi Hao: the two questions immediately below are the ones you were going to ask.** The
+> Mexico-pin bug is fixed and verified in production; a null `weather_summary` is almost certainly
+> not a bug. Frontend PRs #46/#47/#48 and #50 are all merged — nothing is waiting on you to merge.
+>
+> **Proven end to end in production:** a real Reel captured, organized, geocoded to Tokyo, persisted
+> with owner scoping — then a trip generated from those places with real narration and real weather.
+
+## Two questions you will ask — answered here first (Zhi Hao)
+
+### "Is the Tokyo-pinned-in-Mexico bug actually fixed?"
+
+**Yes. Verified in production 2026-07-20** with the exact Reel you tested:
+
+```
+'Harry Potter Cafe'  35.6735692, 139.7367042  ->  JP / Japan
+'Akasaka Station'    35.67222,   139.73639    ->  JP / Japan
+verification_version = mapbox-country-v1
+```
+
+**Why it cannot recur.** The fix inverted *who has authority over geography*. Before, Mapbox
+forward-geocoded the LLM's English place name — and "Harry Potter Cafe" as an English string matches
+a café in Mexico as well as one in Tokyo. Mapbox was **choosing** the location.
+
+Now, per `20260718190000`'s own first line — *"Trust only research coordinates independently
+country-verified by Mapbox"*:
+
+1. The **extractor proposes** coordinates sourced from the Reel's own evidence
+2. **Mapbox only verifies** — it reverse-geocodes those coordinates and checks the ISO country
+3. A mismatch **fails closed** — the place is dropped, never silently relocated
+4. Only mentions stamped `verification_version = 'mapbox-country-v1'` reach a card, tray, pin or trip
+
+**A coordinate has no language.** Your English-caption problem was fatal under forward geocoding and
+is irrelevant under reverse verification.
+
+Two things worth knowing anyway:
+
+- **You were testing against a database that never had the fix.** `20260718130000` and
+  `20260718190000` were written on 2026-07-18 and never applied to production — `reel_place_mentions`
+  did not exist there. Any retest before 2026-07-20 saw the old behaviour regardless of the code.
+- **`name_local` now persists** (`20260720190000`). It was extracted and used for matching but never
+  stored, so a place *reused* from the canonical table lost its local name and fell back to English —
+  reintroducing exactly this failure on the warm path while passing every test that extracts fresh.
+
+### "Why is `weather_summary` null on my trip?"
+
+**Almost certainly not a bug.** Open-Meteo's forecast API has a rolling **~16-day horizon** and
+returns HTTP 400 beyond it. `fetch_weather` makes **one** call spanning the whole trip, so a start
+date past the horizon fails **every day at once**.
+
+Proven both ways on 2026-07-20, same code, same places, only the date changed:
+
+| Trip start | Generated | Result |
+|---|---|---|
+| 2026-08-14 (25 days out) | 2026-07-20 | `weather_summary` **null on all 3 days** |
+| 2026-07-28 (8 days out) | 2026-07-20 | `Thunderstorm, 25-32°C` · `Drizzle, 24-31°C` · `Drizzle, 25-34°C` |
+
+Since people plan trips months ahead, **null is the common path, not an edge case.** Guardrail #3
+means it degrades silently — the trip still saves and narrates.
+
+**This matters for your `DayOverview`** (PR #48): its empty `weather_summary` state is the *usual*
+view, not a rare one. Worth making it look deliberate.
+
+When weather *is* available the narrator uses it — the near-term trip above produced the day title
+*"Akasaka Arrival in Stormy Weather"*. Resolving the horizon itself (climate normals? an explicit
+"forecast not yet available"? per-day calls?) is a product decision, not a bug fix, and is unclaimed.
 
 ## Backend release 2026-07-20 (Shaun)
 
@@ -98,6 +162,28 @@ retarget* before the next:
 - **User-isolation smoke check not run** — it needs a second account and I would not use yours.
 - The frontend has **no `error.tsx`/`not-found.tsx`** on `dev` yet; #47 adds them. Until it merges,
   production serves stock Next.js error screens.
+
+### Second deploy, same day — three 500s that should not have been
+
+Found by *exercising* `/generate-trip` against production after the first release, not by review.
+Shipped in PR #51 with migration `20260720190000`; deployed and verified live.
+
+- **An invalid `budget_level` returned 500.** Pydantic typed it `str | None`, so the value reached
+  Postgres, violated `trips_budget_level_check`, and a broad `except` turned SQLSTATE `23514` into a
+  server error. Now a `Literal` matching the TS union and the SQL CHECK — **verified in production:
+  `budget_level: "mid"` returns 422**. `pace` was deliberately left permissive; it has no DB
+  constraint, so tolerance there costs nothing. The asymmetry is commented so nobody "fixes" it.
+- **The enqueue handler logged nothing** — Render showed only `POST /generate-trip 500` with no
+  traceback, and the cause had to be found by reproducing the code path locally against production.
+- **The weather swallow logged nothing** — its failure was indistinguishable in logs from the agent
+  never running, which is the wrong conclusion and one that was actually drawn.
+
+⚠️ **`20260720190000` was deploy-skew fatal in both directions**, and the reason generalises: in
+Postgres, *adding a parameter creates a new function rather than modifying the old one*. Deployed
+code called the 9-arg `find_or_create_place`; the migration dropped it and created a 10-arg version,
+so apply-then-merge and merge-then-apply both broke. Worse, a bare `create or replace` would have
+left the 9-arg overload alive and still granted, silently writing no local name while every test
+passed. The migration drops it explicitly and pgTAP `015` asserts its absence.
 
 ### Where the reasoning lives
 

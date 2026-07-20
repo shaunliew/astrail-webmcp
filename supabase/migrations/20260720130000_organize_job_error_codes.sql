@@ -11,7 +11,7 @@
 --   AS404  not found       -> PermissionError        -> HTTP 404
 --   AS422  invalid request -> InvalidOrganizeRequest -> HTTP 422
 -- The message text is now presentation only. Pinned by
--- supabase/tests/011_organize_job_error_codes.sql (real Postgres) and
+-- supabase/tests/014_organize_job_error_codes.sql (real Postgres) and
 -- backend/test_saved_reels_organize.py's reworded-message tests (the mapping).
 --
 -- Body copied verbatim from 20260719102000_saved_reels_active_item_guard.sql; the ONLY

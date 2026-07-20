@@ -20,7 +20,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 create extension if not exists dblink with schema extensions;
 
-select plan(20);
+select plan(27);
 
 -- Shape and privileges, mirroring 008_job_leases.sql and 011_fenced_trip_itinerary_replace.sql.
 select ok(
@@ -256,6 +256,87 @@ select is(
     where id = (select id from found_place where label = 'tokyo')),
   'Japan/Japan',
   'reuse repairs the poisoned country labels'
+);
+
+-- THE NULL-COUNTRY WIDENING (20260720180000, ISSUES-B2), against real Postgres.
+--
+-- This half cannot be delegated to the Python mirror in `test_saved_reels_organize.py`. That
+-- mirror is a hand-written transcription of this function: if the SQL predicate were still
+-- `country_code = p_country_code`, every Python null-country test would still pass, because the
+-- mirror implements the widening independently. Only a real call can tell the two apart.
+--
+-- `country_code IS NULL` is the shape of every row created before the country migration, and
+-- `= p_country_code` excludes it structurally — so the organizer inserted a second canonical
+-- row for a venue it demonstrably already had, on the HAPPY path rather than only under a race.
+create temporary table legacy_place (label text primary key, id uuid);
+
+insert into public.places (id, name, place_type, lat, lng, country, country_code, country_name)
+values
+  -- Inside the 500 m gate, no country: the row the widening exists to reach.
+  ('00000000-0000-4000-8000-0000000000a1', 'Legacy Cafe', 'restaurant', 35.67311, 139.73625,
+   null, null, null),
+  -- Same name, ~400 km away, no country: two different venues that happen to share a name.
+  ('00000000-0000-4000-8000-0000000000a2', 'Faraway Cafe', 'restaurant', 34.69370, 135.50230,
+   null, null, null),
+  -- A verified row and a legacy row BOTH inside the gate, so the ordering has to choose. The
+  -- null-country row is inserted FIRST, and its id sorts LOWER, so `order by id` alone would
+  -- pick it: only the `(country_code is null)` key ahead of it can produce the right answer.
+  ('00000000-0000-4000-8000-0000000000b1', 'Contested Cafe', 'restaurant', 35.67311, 139.73625,
+   null, null, null),
+  ('00000000-0000-4000-8000-0000000000b2', 'Contested Cafe', 'restaurant', 35.67315, 139.73628,
+   'Japan', 'JP', 'Japan'),
+  -- Two equally eligible verified rows, the LOWER id inserted second, so insertion order and
+  -- id order disagree and only a real `order by id` resolves them the same way twice.
+  ('00000000-0000-4000-8000-0000000000c2', 'Tie Cafe', 'restaurant', 35.67315, 139.73628,
+   'Japan', 'JP', 'Japan'),
+  ('00000000-0000-4000-8000-0000000000c1', 'Tie Cafe', 'restaurant', 35.67311, 139.73625,
+   'Japan', 'JP', 'Japan');
+
+insert into legacy_place values
+  ('legacy_near', public.find_or_create_place(
+     'Legacy Cafe', 'restaurant', 35.67320, 139.73630, 'Japan', 'JP', 'Japan', 'Tokyo', 500)),
+  ('legacy_far', public.find_or_create_place(
+     'Faraway Cafe', 'restaurant', 35.67320, 139.73630, 'Japan', 'JP', 'Japan', 'Tokyo', 500)),
+  ('contested', public.find_or_create_place(
+     'Contested Cafe', 'restaurant', 35.67320, 139.73630, 'Japan', 'JP', 'Japan', 'Tokyo', 500)),
+  ('tie', public.find_or_create_place(
+     'Tie Cafe', 'restaurant', 35.67320, 139.73630, 'Japan', 'JP', 'Japan', 'Tokyo', 500));
+
+select is(
+  (select id from legacy_place where label = 'legacy_near'),
+  '00000000-0000-4000-8000-0000000000a1'::uuid,
+  'a null-country legacy row inside the gate is REUSED, not duplicated'
+);
+select is(
+  (select country_code || '/' || country || '/' || country_name from public.places
+    where id = '00000000-0000-4000-8000-0000000000a1'),
+  'JP/Japan/Japan',
+  'the reused legacy row is backfilled with the verified country'
+);
+select isnt(
+  (select id from legacy_place where label = 'legacy_far'),
+  '00000000-0000-4000-8000-0000000000a2'::uuid,
+  'a null-country row OUTSIDE the gate is not reused — the distance gate still decides'
+);
+select ok(
+  (select country_code is null from public.places
+    where id = '00000000-0000-4000-8000-0000000000a2'),
+  'the far legacy row is NOT stamped with a country nobody verified it against'
+);
+select is(
+  (select id from legacy_place where label = 'contested'),
+  '00000000-0000-4000-8000-0000000000b2'::uuid,
+  'a country-matched row beats a null-country row inside the same gate'
+);
+select ok(
+  (select country_code is null from public.places
+    where id = '00000000-0000-4000-8000-0000000000b1'),
+  'the row that lost the ordering is left untouched — only the chosen row is written'
+);
+select is(
+  (select id from legacy_place where label = 'tie'),
+  '00000000-0000-4000-8000-0000000000c1'::uuid,
+  'two equally eligible rows resolve to the LOWEST id, every run'
 );
 
 select * from finish();

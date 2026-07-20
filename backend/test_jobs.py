@@ -1,7 +1,10 @@
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from postgrest.exceptions import APIError
 
 import jobs
+from test_saved_reels_organize import _LEASE_RPCS
 
 
 def test_idempotency_key_is_request_derived_and_stable():
@@ -128,9 +131,24 @@ class _Table:
 class _Client:
     def __init__(self):
         self.store: dict = {}
+        self.clock_skew = timedelta(0)
+
+    def db_now(self) -> datetime:
+        """The DATABASE's clock. Every lease instant is `clock_timestamp()` inside Postgres,
+        so the mirrors must read this rather than this process's wall clock."""
+        return datetime.now(timezone.utc) + self.clock_skew
 
     def table(self, name):
         return _Table(self.store)
+
+    def rpc(self, name, params):
+        # The SHARED mirrors, over this fake's differently-shaped store. Copying the claim
+        # predicate into a second local mirror is how two fakes drift apart and one of them
+        # starts proving nothing; the mirrors take their rows as an argument for exactly this.
+        if name in _LEASE_RPCS:
+            mirror, _table = _LEASE_RPCS[name]
+            return mirror(self, params, list(self.store.values()))
+        raise AssertionError(f"fake does not implement rpc {name!r}")
 
 
 @pytest.mark.asyncio
@@ -171,11 +189,11 @@ async def test_enqueue_non_duplicate_api_error_reraises():
 async def test_mark_running_then_done():
     c = _Client()
     job_id, _ = await jobs.enqueue_job("trip-1", "user-1", "idem-1", client=c)
-    won = await jobs.mark_job_running(c, job_id)
-    assert won is True
+    token = await jobs.mark_job_running(c, job_id)
+    assert token is not None
     assert c.store["idem-1"]["status"] == "running"
     assert c.store["idem-1"]["locked_at"] is not None
-    await jobs.mark_job_done(c, job_id, status="succeeded")
+    assert await jobs.mark_job_done(c, job_id, status="succeeded", lease_token=token) is True
     assert c.store["idem-1"]["status"] == "succeeded"
     assert c.store["idem-1"]["completed_at"] is not None
 
@@ -186,5 +204,5 @@ async def test_mark_running_loses_cas_when_already_running():
     job_id, _ = await jobs.enqueue_job("trip-1", "user-1", "idem-1", client=c)
     first = await jobs.mark_job_running(c, job_id)
     second = await jobs.mark_job_running(c, job_id)  # already running -> CAS must lose
-    assert first is True
-    assert second is False
+    assert first is not None
+    assert second is None                            # no second token: no second owner

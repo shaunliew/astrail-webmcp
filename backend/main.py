@@ -9,11 +9,14 @@ to the winner's trip_id WITHOUT dispatching a second run_generation.
 
 GET /generate-trip/stream/{trip_id} authenticates via a ?token= query param
 (browser EventSource cannot set headers, with a header fallback), verifies
-trip ownership (guardrail #6), and streams generation_events as SSE.
+trip ownership (guardrail #6), and streams generation_events as SSE. That token
+is redacted out of the access log by log_redaction (ISSUES-B1).
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -35,7 +38,9 @@ from api.schemas import (
 )
 from api.streaming import stream_organize_events, stream_trip_events
 from auth import get_current_user_id, get_user_id_from_query_or_header
-from jobs import compute_idempotency_key, enqueue_job, recover_inflight_jobs
+from config_validation import validate_required_secrets
+from jobs import compute_idempotency_key, enqueue_job, reclaim_expired_jobs
+from log_redaction import install as _install_log_redaction
 from pipeline.runner import record_event, run_generation
 from preferences import compose_preference_summary, fetch_traveler_profile
 from rate_limit import (
@@ -58,33 +63,106 @@ from supabase_client import get_supabase_client
 
 _RECOVERY_TASKS: set = set()
 _RECOVERY_SEM = asyncio.Semaphore(3)   # bound boot fan-out so a backlog doesn't stampede Apify/OpenAI/DB
+REAP_INTERVAL_S = 120
+
+logger = logging.getLogger(__name__)
+
+# ISSUES-B1: strip `?token=<JWT>` out of uvicorn's access log. At import, because Dockerfile:25
+# starts uvicorn with DEFAULT access logging (no --no-access-log, no --log-config) — this filter
+# is the whole mechanism, and module import completes before the first request is served.
+_install_log_redaction()
+
+
+def _spawn(coro) -> asyncio.Task:
+    """Create a background task and RETAIN a reference to it until it finishes.
+
+    `asyncio.create_task` returns the only strong reference — the event loop does not keep
+    one — so a fire-and-forget task can be garbage-collected mid-flight and simply stop, with
+    no error anywhere. For a recovery re-dispatch that is a silently dropped run; for the
+    reaper it is the end of all periodic reclaim. The done-callback discards the reference so
+    the set cannot grow without bound.
+    """
+    task = asyncio.create_task(coro)
+    _RECOVERY_TASKS.add(task)
+    task.add_done_callback(_RECOVERY_TASKS.discard)
+    return task
+
+
+async def _redispatch_organize(client, job: dict) -> None:
+    """Bound organize re-dispatch with the same recovery semaphore as trips (ISSUES-B4).
+
+    Without it a boot backlog of reclaimed organize jobs fans out all at once and stampedes
+    Apify/OpenAI/Mapbox and the DB — exactly what the trip-side bound already prevents.
+    """
+    async with _RECOVERY_SEM:
+        await run_organize_job(job["id"], job["user_id"], client=client)
+
+
+async def _reap_loop(client) -> None:
+    """Reclaim expired leases on a timer, not only at boot.
+
+    Boot-time recovery alone leaves a guardrail #12 silent drop: a job that crashed with an
+    UNEXPIRED lease is skipped at boot — correctly, since at that instant it is
+    indistinguishable from one a live instance owns — and nothing ever rechecked it, so it
+    stayed `running` forever with no terminal event and no retry.
+
+    Concurrent reapers across instances are safe: every reclaim is one atomic UPDATE whose
+    predicate re-evaluates against the current row, and every claim after it is a CAS.
+
+    NO `clock` SEAM. Both sweeps now compare against `clock_timestamp()` inside Postgres, so
+    this process's own clock has no bearing on which leases are expired — which is the point:
+    a reaper here injecting an instant is exactly how a skewed instance used to reclaim leases
+    another instance was still holding. Tests drive expiry by moving the fake DATABASE's clock.
+    """
+    while True:
+        await asyncio.sleep(REAP_INTERVAL_S)
+        try:
+            for job in await reclaim_expired_jobs(client=client):
+                _spawn(_redispatch(client, job))
+            for job in await recover_organize_jobs(client):
+                _spawn(_redispatch_organize(client, job))
+        except Exception:
+            # A DB blip must NEVER kill the reaper — a reaper that dies on its first
+            # transient error is worse than none, because nothing after it says so.
+            logger.warning("reap_loop_iteration_failed", exc_info=True)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Guardrail #12: on boot, re-queue and re-run anything a crash left mid-flight
-    (restart-with-cache-reuse, NOT resume — a reclaimed job re-executes from Phase 1).
+    (restart-with-cache-reuse, NOT resume — a reclaimed job re-executes from Phase 1), then
+    keep reclaiming on a timer so a crash inside the TTL is picked up rather than dropped.
     A boot-time DB blip must DEGRADE, not crash startup: the app must still start and
-    serve /health even if Supabase is unreachable; the next restart's sweep re-picks
-    pending jobs."""
+    serve /health even if Supabase is unreachable; the next sweep re-picks pending jobs."""
+    # BEFORE the broad `try` — deliberately. Inside it, `except Exception: pass` would
+    # swallow a missing secret and boot a broken app. A config error must be fatal; a DB
+    # blip must not be. See config_validation for why an unbootable app beats the
+    # deterministic pre-claim retry loop that `_fail`'s token skip would otherwise open.
+    validate_required_secrets()
+    reaper = None
     try:
         client = await get_supabase_client()
-        for job in await recover_inflight_jobs(client=client):
-            task = asyncio.create_task(_redispatch(client, job))
-            _RECOVERY_TASKS.add(task)                     # retain ref so it isn't GC'd mid-flight
-            task.add_done_callback(_RECOVERY_TASKS.discard)
+        # Started BEFORE the boot sweeps: a sweep blip (the likely boot failure) must not
+        # cost this process its periodic reclaim for the rest of its life.
+        reaper = _spawn(_reap_loop(client))
+        for job in await reclaim_expired_jobs(client=client):
+            _spawn(_redispatch(client, job))
         for job in await recover_organize_jobs(client):
-            task = asyncio.create_task(run_organize_job(job["id"], job["user_id"], client=client))
-            _RECOVERY_TASKS.add(task)
-            task.add_done_callback(_RECOVERY_TASKS.discard)
+            _spawn(_redispatch_organize(client, job))
         try:
             from mem0_client import get_mem0_client
             await get_mem0_client()   # warm once so the first trip skips the blocking ping
         except Exception:
             pass   # memory is best-effort; a warm failure must never down the app
     except Exception:
-        pass   # boot-time DB blip must not down the app; the next restart's sweep will re-pick pending jobs
-    yield
+        pass   # boot-time DB blip must not down the app; the reaper re-picks pending jobs
+    try:
+        yield
+    finally:
+        if reaper is not None:
+            reaper.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reaper
 
 
 app = FastAPI(title="Astrail Backend", lifespan=lifespan)

@@ -22,6 +22,7 @@ os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "service-role-key")
 
 import main  # noqa: E402
 import rate_limit  # noqa: E402
+from config_validation import REQUIRED_SECRETS  # noqa: E402
 from fastapi import Request  # noqa: E402
 from rate_limit import get_current_user_id_stashed  # noqa: E402
 
@@ -576,15 +577,20 @@ async def test_generate_trip_old_shape_payload_still_succeeds(ctx):
 async def test_boot_time_recovery_failure_does_not_down_the_app(monkeypatch):
     """A DB blip during the startup recovery sweep must DEGRADE, not crash the app —
     the lifespan must not raise, and /health must still serve (Fix 2)."""
+    # `lifespan` now validates required secrets BEFORE its broad try, so entering it needs a
+    # complete config. Only tests that ENTER the lifespan need this — importing `main` stays
+    # credential-free, which the whole offline suite and the #16 eval depend on.
+    for name in REQUIRED_SECRETS:
+        monkeypatch.setenv(name, "set")
 
     async def _get_client():
-        return object()  # never touched further; recover_inflight_jobs raises first
+        return object()  # never touched further; reclaim_expired_jobs raises first
 
     async def _failing_recover(**_kwargs):
         raise RuntimeError("boot-time db blip")
 
     monkeypatch.setattr(main, "get_supabase_client", _get_client)
-    monkeypatch.setattr(main, "recover_inflight_jobs", _failing_recover)
+    monkeypatch.setattr(main, "reclaim_expired_jobs", _failing_recover)
 
     # The lifespan startup must swallow the recovery error (not propagate it).
     async with main.lifespan(main.app):

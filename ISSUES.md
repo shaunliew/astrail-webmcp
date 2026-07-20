@@ -1,31 +1,101 @@
 # Saved Reels Follow-up Issues
 
-Priority order: **B1, B4, B6, B2, B3, B5, B7**. B1 is live security-adjacent log
-exposure; B4 is restart burst-cost and provider-rate-limit risk; B6 is a cheap correctness
+Priority order: **B1, B4, B6, B2, B3, B5, B7**. B1 is **RESOLVED** (live security-adjacent
+log exposure, closed by access-log redaction — see below);
+B4 is restart burst-cost and provider-rate-limit risk; B6 is a cheap correctness
 guard for a currently unreachable UI path; B2/B3 are canonical-data hygiene; B5 is
-currently protected by a single-writer invariant; B7 is cosmetic product wording.
+**RESOLVED** (it was never protected by the single-writer invariant claimed below — Arc A's
+lease work replaced that premise with a database row lock); B7 is cosmetic product wording.
 
-## B1 — Stop bearer tokens from leaking into stream access logs
+---
 
-**Suggested severity:** P2. This is an observed credential-exposure surface in normal live
-operation, even though ownership is still checked correctly.
+## STATUS UPDATE — 2026-07-19 (Shaun). Read this before picking anything up.
 
-**Owner/decision:** Zhi Hao must choose the stream-auth design; Shaun implements the chosen
-backend path. Do not resolve this without the product/security decision.
+All of B1–B7 are now planned in **`docs/superpowers/plans/2026-07-19-saved-reels-followups.md`**
+(3 arcs; Arc A ships as a 5-PR stack). Implementation started on branch
+`feat/saved-reels-arc-a-reliability`. What changed since this file was written:
+
+- **Two P1 defects were found that are NOT in this list**, both in `organizer.py`, both now Arc A
+  tasks. (1) `recover_organize_jobs` accepts `stale_after_s` and never uses it, so every
+  zero-downtime Render deploy requeues in-flight jobs and **double-executes** them — and the trip
+  side has its own variant that resurrects `succeeded` as `retryable`. (2) The mention rewrite at
+  `organizer.py:377` deletes by `reel_cache_id` with no user scope, so one user's failed
+  re-grounding **destroys another user's verified places**. Full evidence:
+  `docs/superpowers/reviews/2026-07-19-saved-reels-merged-diff-review.md`.
+- **B1 is RESOLVED in favour of log redaction.** The sentinel probe was run against the live
+  service (`srv-d976aess728c738pskk0`): the token appears in `type=app` (uvicorn access) logs, and
+  **no `type=request` platform logs exist at all** on the starter plan. One-time stream tokens stay
+  deferred, with "before public beta" as a mandatory gate.
+- **B7 decided:** presentation-layer map `CN → China`; the stored canonical Mapbox name is left
+  untouched and `CN` stays the grouping key.
+- **B5's premise here is wrong — and B5 is now RESOLVED.** "Currently protected by a single-writer
+  invariant" never held: recovery erased the very claim the CAS depended on, so two writers were
+  reachable. Arc A did not settle for documenting that weaker truth — it removed the dependency on
+  single-writer execution altogether (see the corrected B5 section below).
+- **B4 is materially larger than described** — it merges with the double-execution defect above.
+
+**→ NEW: B8 below needs your decision, Zhi Hao.** It is the only item blocking on you.
+
+## B1 — Stop bearer tokens from leaking into stream access logs — **RESOLVED (Branch A)**
+
+**Suggested severity:** P2. This was an observed credential-exposure surface in normal live
+operation, even though ownership was still checked correctly.
+
+**RESOLUTION (2026-07-19, Arc A / task A5).** Option 2 — access-log redaction — shipped:
+`backend/log_redaction.py` installs a filter on the `uvicorn.access` logger from
+`backend/main.py` at import, rewriting `token=<JWT>` to `token=REDACTED` while leaving the
+rest of the access line (method, path, protocol, status) intact. `Dockerfile:25` runs uvicorn
+with default access logging, so that filter is the entire mechanism. The dead
+`sentry-sdk[fastapi]` dependency and its `SENTRY_DSN` config were removed in the same change:
+`sentry_sdk.init` was called nowhere, and its FastAPI integration captures full request URLs,
+so wiring it later would have reopened this leak by another route.
+
+**⚠ NOT YET CONFIRMED IN THE DEPLOYED CONTAINER.** Redaction is proven in-process (unit tests
+plus a reproduction of uvicorn's real startup and access-log call shape), but the running
+service has not been re-probed. **Arc A closeout step 4** owns this: after the branch deploys,
+re-run `curl ".../saved-reels/organize/<uuid>/stream?token=SENTINEL-B1-PROBE"` then
+`render logs -r srv-d976aess728c738pskk0 --type app` and confirm the line reads
+`token=REDACTED`. Until that runs, treat B1 as resolved-in-code, not resolved-in-production.
+
+**Why the decision was safe to make without a further product call.** A sentinel probe against
+the live service (`srv-d976aess728c738pskk0`, starter plan) on 2026-07-19T09:34:17Z classified
+every sink:
+
+| Sink | Sentinel | Verdict |
+|---|---|---|
+| `--type app` (uvicorn access log, in-container) | **PRESENT** — `"GET /saved-reels/organize/…/stream?token=… HTTP/1.1" 401` | the leak Branch A closes |
+| `--type request` (Render platform/edge) | **ABSENT — no request-type logs exist at all** | nothing outside app control to redact |
+
+Absence of evidence was ruled out: a `--type request` query with no text filter returned
+empty, and sampling 200 recent entries with no type filter returned `type=app` × 200. Reproduce
+with `render logs -r srv-d976aess728c738pskk0 --type request --limit 3 -o json --confirm`.
+Branch A therefore closes every sink observable on this service.
+
+**What Branch A does NOT fix, and when Branch B (one-time stream tokens) becomes mandatory.**
+Redaction removes the credential from the logs; the Supabase JWT still travels in the URL and
+so still lands in browser history, and absence from the Render CLI proves Render does not
+*expose* request logs to us, not that nothing records them. Branch B (short-lived, single-use,
+ownership-bound stream tokens — fully specified in
+`docs/superpowers/plans/2026-07-19-saved-reels-followups.md` § Task A5) stays deferred behind
+an explicit trigger: **whichever comes first of (a) public beta, (b) any external party gaining
+log access, (c) a Render plan/tier change that surfaces platform request logs — re-run the
+sentinel probe after any such change.**
 
 **Files and symbols:**
 
+- `backend/log_redaction.py` (the fix) · `backend/main.py::_install_log_redaction` (the wiring)
+- `backend/test_log_redaction.py` (regression)
 - `frontend/lib/reels/api.ts::streamOrganize`
 - `frontend/lib/trip/api.ts::streamGeneration`
 - `backend/auth.py::get_user_id_from_query_or_header`
 - `backend/main.py::organize_stream`
 - `backend/main.py::stream` (the trip stream route)
 
-**Problem:** Browser `EventSource` cannot set an `Authorization` header, so both frontend
-streams append the full Supabase JWT as `?token=<JWT>`. FastAPI authenticates it correctly,
-but Uvicorn/Render access logs record the request URL. Anyone with log access may therefore
-receive a live bearer credential. Query parameters can also pass through intermediary
-request telemetry.
+**Problem (as originally reported):** Browser `EventSource` cannot set an `Authorization`
+header, so both frontend streams append the full Supabase JWT as `?token=<JWT>`. FastAPI
+authenticates it correctly, but Uvicorn/Render access logs record the request URL. Anyone with
+log access may therefore receive a live bearer credential. Query parameters can also pass
+through intermediary request telemetry.
 
 **Scoped options:**
 
@@ -37,15 +107,18 @@ request telemetry.
    the observed log leak, but the Supabase JWT still exists in the browser URL and may be
    visible to infrastructure outside the application logger.
 
-**Recommendation/open question:** Zhi Hao must decide whether the release requirement is
-to eliminate the Supabase JWT from URLs entirely (option 1) or to accept URL transport while
-guaranteeing access-log redaction (option 2). At minimum, do not deploy with the current
-unredacted Render access logs.
+**Decision (settled — no longer open):** option 2 now, option 1 behind the trigger above. The
+probe made this a measurement rather than a judgement call: option 1's extra surface (issuance,
+expiry, consumption, replay prevention, reconnect semantics) buys nothing against any sink that
+is observable today, and option 2 removes the credential from the one sink that *is*.
 
-**Regression test:** Start each stream with a sentinel JWT, capture application and access
-logs, and assert the sentinel and `token=` never appear. For one-time tokens, additionally
-prove expiry, single use, ownership binding, reconnect behavior, and rejection after
-consumption.
+**Regression test (shipped):** `backend/test_log_redaction.py` emits a JWT-shaped sentinel
+through the real `uvicorn.access` logger after importing `main`, and asserts neither the
+sentinel nor a bare `token=` survives while the access-line shape does. It is deliberately two
+layers — the direct-filter tests stay green if the wiring is deleted, so a separate `caplog`
+test covers the install, and that asymmetry was verified by fault injection. It also pins
+`api/errors.py` logging `request.url.path` (no query string). If Branch B is ever built, add:
+expiry, single use, ownership binding, reconnect behaviour, and rejection after consumption.
 
 ## B4 — Bound organize-job recovery concurrency at startup
 
@@ -163,37 +236,60 @@ producer, and assert a 1536-dimensional vector is stored and discoverable throug
 intended similarity query. Until then, add a contract test/documentation assertion that
 null is deliberate rather than accidental.
 
-## B5 — Make organize-event sequencing explicitly single-writer or atomic
+## B5 — Make organize-event sequencing explicitly single-writer or atomic — **RESOLVED (Arc A)**
 
-**Suggested severity:** P3. The current CAS job claim gives one organizer writer per job,
-and `(job_id, sequence)` is unique, so normal operation is safe; the implementation is
-fragile if another writer is introduced.
+**Status:** closed by Arc A. The mechanism this issue described no longer exists, and the
+safety property it *asserted* has been replaced with a stronger one that is actually true.
+
+**CORRECTION — the original severity note was wrong.** It read: "The current CAS job claim
+gives one organizer writer per job … so normal operation is safe; the implementation is
+fragile if another writer is introduced." That understated the problem in the one way that
+matters. A second writer did not have to be *introduced* — one was already reachable.
+`recover_organize_jobs` could requeue a job whose original worker was still alive, and
+nothing stopped that superseded worker from continuing to write. So "safe under normal
+operation, fragile later" was really "already unsafe, and invisible". Anyone reading the old
+text would have inherited a false premise about why the code was correct.
+
+**What the problem was.** `_record_organize_event` read the existing sequences, computed
+`MAX(sequence) + 1` in Python, and issued a separate insert. Two writers could compute the
+same sequence; the loser then violated `organize_events_job_sequence_unique`, turning
+otherwise valid work into a terminal failure.
+
+**How it was fixed.** Arc A did not document the single-writer dependency — it removed it.
+Allocation moved into `public.append_organize_event`
+(`supabase/migrations/20260720090000_job_leases.sql`), which takes `select … for update` on
+the parent `organize_jobs` row and then allocates inside that lock. Two consequences:
+
+1. `MAX(sequence) + 1` is collision-free because the **database serializes allocation**, not
+   because exactly one writer exists. Correctness no longer rests on distributed
+   exactly-once execution.
+2. A `p_lease_token` fence rejects a superseded worker outright (`AS409`), so it cannot write
+   at all. There is no unfenced form — a null token raises `AS400` by design.
+
+**Therefore a second event producer is now safe to add**, provided it goes through this RPC
+with a valid lease. That is the opposite of the original recommendation, and it is the reason
+this issue is closed rather than deferred.
 
 **Files and symbols:**
 
-- `backend/organizer.py::_record_organize_event`
-- `backend/organizer.py::run_organize_job`
+- `backend/organizer.py::_record_organize_event` (carries the load-bearing invariant comment)
+- `supabase/migrations/20260720090000_job_leases.sql` (`append_organize_event` — the row lock)
 - `supabase/migrations/20260718130000_saved_reels_organize.sql`
-  (`organize_events_job_sequence_unique`)
+  (`organize_events_job_sequence_unique` — the backstop)
 
-**Problem:** `_record_organize_event` reads all existing sequences, computes
-`MAX(sequence) + 1` in Python, and performs a separate insert. Two writers for the same job
-can choose the same sequence; one then fails the unique constraint and may turn otherwise
-valid work into a terminal failure. Safety currently depends on the load-bearing CAS
-single-writer invariant elsewhere in `run_organize_job`.
+**Regression tests (shipped):**
 
-**Options:** Allocate and insert the next sequence atomically in a database function under a
-job/advisory lock; maintain a per-job database counter; or retain the current implementation
-with an explicit load-bearing invariant comment and a test proving a second worker cannot
-write after losing the claim.
+- `supabase/tests/010_organize_event_sequencing.sql` — proves against real Postgres that the
+  `for update` row lock is genuinely taken (via the row-level lock *mode*: `For Update`, not
+  the foreign key's incidental `For Key Share`) and that the unique constraint fires on a
+  hand-rolled duplicate sequence. Fault-injected both ways.
+- `backend/test_organizer_lease.py` (`--- ISSUES-B5 ---`) — races two claims and proves the
+  loser emits **zero** events while the winner's sequences stay unique, gapless and ordered.
 
-**Recommendation:** For the MVP, document and test the CAS single-writer dependency beside
-`_record_organize_event`. Move allocation into one database operation before adding any
-second event producer or concurrent writer for a job.
-
-**Regression test:** Race two job claims and prove only the winner can emit events and that
-sequences remain unique and ordered. If atomic allocation is implemented, concurrently
-insert many events and assert no unique violations, gaps caused by retries, or lost events.
+**Known limit, recorded deliberately:** no test races N *real* concurrent writers.
+`supabase test db` runs each file in one transaction on one connection, so genuine contention
+is unreachable there. The tests pin the lock's presence and the constraint's behaviour, and
+serialization follows from Postgres given both. Stated in full at the top of test file 010.
 
 ## B7 — Decide the user-facing name for country code CN
 
@@ -232,3 +328,54 @@ evidence.
 the backend card shape and frontend grouping. Assert one CN tray and the chosen visible
 label, while confirming the stored canonical provider name remains available if the
 presentation layer maps it.
+
+## B8 — Saved Reel cards will stop showing pins the viewer cannot actually use
+
+**Suggested severity:** P3 product-behavior change. Not a bug and not a security issue — a
+visible change to your surface that should not land silently inside a backend PR.
+
+**Owner/decision:** **Zhi Hao.** This is the only item in this file blocking on you. Arc A task
+A3 implements whichever way you call it; the backend work does not otherwise depend on the answer.
+
+**Files and symbols:**
+
+- `supabase/migrations/20260718190000_saved_reels_location_verification.sql` (the
+  `saved_reel_cards` view) and `20260719103000_saved_reels_current_cache_signal.sql:36`
+- `backend/organizer.py::authorize_place_ids` (`organizer.py:96-120`)
+- `frontend/components/reels/CountryTrays.tsx`, `frontend/components/reels/VerifiedPlacesMap.tsx`
+
+**Problem — the two surfaces disagree today.** `reel_place_mentions` is keyed on
+`reel_cache_id` and shared by every user who saved the same Reel. The `saved_reel_cards` view
+joins it filtering only on `verification_version`, **not** on the viewer's own
+`analysis_status`. But `authorize_place_ids` additionally requires *this* user's saved Reel to be
+`organized` before a place may enter a trip.
+
+Net effect right now: if you save a Reel that **someone else** already organized, you SEE their
+verified pins on your card — and selecting them fails trip generation with a terminal
+`PermissionError`. Pins you can look at but cannot use.
+
+Arc A's A3 migration adds a `user_id` dimension to the mentions table and scopes the view to the
+viewer, which removes that mismatch. The consequence: **users who saved a Reel but have not
+successfully organized it themselves will see no pins until they run their own Organize.**
+
+**Scoped options:**
+
+1. **Accept the narrowing (what the plan currently does).** The card shows only what the viewer
+   can actually use. Honest, and it makes the read surface and the authorization surface agree.
+   Cost: an emptier-looking card for a user who saved but has not organized — needs UI copy telling
+   them to hit Organize, otherwise it reads as breakage.
+2. **Keep the wider view and fix the mismatch at the other end** — let cards keep showing verified
+   pins from any owner, and make `authorize_place_ids` accept them. This is a real product/security
+   decision, not a display tweak: it would let any user pull another user's organized places into
+   their own trip. Not recommended without a deliberate sharing model.
+3. **Keep the wider view but mark unusable pins in the UI** (greyed, "Organize to use these").
+   Preserves discovery while making the limit legible. Most frontend work of the three.
+
+**Recommendation/open question:** option 1, plus a line of empty-state copy. It is the smallest
+change, it is what the plan already implements, and it removes a state where the UI promises
+something the backend refuses. If you want option 3, say so before Arc A's A3 lands — after that,
+widening the view again means another migration.
+
+**Regression test:** Seed two users sharing one `reel_cache_id`, only one of them `organized`.
+Assert the non-organizing user's card shows the chosen state (no pins for option 1), and that
+`authorize_place_ids` still rejects their attempt to select those places into a trip.

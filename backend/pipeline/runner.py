@@ -16,6 +16,8 @@ on every trips write), #12 (durable job = restart-with-cache-reuse). Every
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import logging
 import os
 
 from models.place import PlaceResult
@@ -25,14 +27,79 @@ from pipeline.geo import centroid
 from pipeline.offline_harness import _date_range, assemble_itinerary
 from pipeline.persist import persist_hotels, persist_itinerary, persist_narration, persist_restaurants, persist_tradeoffs, persist_transport, persist_weather
 from pipeline.tradeoffs import build_hotel_comparisons, warnings_to_notes
-from jobs import mark_job_done, mark_job_running
-from organizer import authorize_place_ids
+from jobs import _heartbeat, mark_job_running
+from organizer import LeaseLost, authorize_place_ids
 from supabase_client import get_supabase_client
 
 # A3: mem0=_UNSET (not None) means "not injected -> resolve the real singleton". Explicit
 # mem0=None then unambiguously means "memory disabled" (tests pass None or a fake), so a
 # CI run with MEM0_API_KEY set never constructs the real client / hits the network.
 _UNSET = object()
+
+logger = logging.getLogger(__name__)
+
+
+async def _complete_trip_run(client, job_id, trip_id, lease_token, *,
+                             status, stage, message, payload) -> bool:
+    """Terminal write for a leased run: the job's status AND the `result` event in ONE
+    fenced transaction. Returns False iff we were superseded — then emit nothing.
+
+    They cannot be two statements. `mark_job_done`'s fence stops a superseded worker writing
+    the JOB row, but nothing stops it writing the EVENT — and `api/streaming.py` ends the
+    stream on the first `result` row, deduping by row **id**, so a second writer's row is a
+    different id and is NOT deduped. The user's session would end on a stale worker's result:
+    a failure that isn't real, or an itinerary the replacement has already superseded, with
+    the replacement's genuine result never delivered. A fenced UPDATE followed by a separate
+    INSERT can still interleave — the update failing while the insert lands. One transaction
+    is what makes "no job write => no event write" true rather than merely probable.
+    """
+    result = await client.rpc("complete_trip_run", {
+        "p_job_id": job_id, "p_trip_id": trip_id, "p_lease_token": lease_token,
+        "p_status": status, "p_stage": stage, "p_message": message, "p_payload": payload,
+    }).execute()
+    return bool(result.data)
+
+
+async def _abort_when_lease_lost(work, lease_lost: asyncio.Event, *, job_id) -> None:
+    """Run `work`, CANCELLING it the moment the lease is lost — a race, not a gate.
+
+    A single `if lease_lost.is_set()` in front of a long section is a TOCTOU: the check passes
+    and then minutes of work follow (a delete-reinsert of the whole itinerary, four enrich
+    stages, and an Agents SDK narration call with no timeout). The heartbeat can mark the lease
+    lost anywhere in there, and a worker that only checks at the ends does not notice until it
+    reaches one — so it keeps writing on a job a replacement already owns.
+
+    Layering, stated honestly, because none of the three is sufficient alone:
+      * the gate before this call rejects a lease already lost (cancellation cannot preempt
+        work that never reaches an await point that suspends);
+      * this race makes the abort PROMPT rather than eventual;
+      * only the DB-side fence (`replace_trip_itinerary`) actually CLOSES the window, since
+        the lease can be lost mid-statement and cancellation lands only at await points.
+
+    `LeaseLost` is raised rather than returned so the caller's outer handler treats it exactly
+    as a gate's — `_fail` then sees `lease_lost` set and suppresses its unfenced writes.
+    """
+    task = asyncio.ensure_future(work)
+    lost = asyncio.ensure_future(lease_lost.wait())
+    try:
+        await asyncio.wait({task, lost}, return_when=asyncio.FIRST_COMPLETED)
+        if task.done():
+            task.result()               # re-raises whatever the work raised, unchanged
+            return
+        task.cancel()
+        # AWAIT the cancellation: the work's own `except`/`finally` blocks must finish before
+        # we unwind past it, or teardown races the abort we just started.
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        raise LeaseLost(f"trip job {job_id} lease superseded")
+    finally:
+        # Never leave either future dangling — including when THIS coroutine is the one being
+        # cancelled, in which case `task` is still pending and would outlive the run.
+        for future in (task, lost):
+            if not future.done():
+                future.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await future
 
 
 async def record_event(client, trip_id, *, event_type, stage, message, payload=None) -> None:
@@ -48,28 +115,54 @@ async def _set_status(client, trip_id, user_id, status) -> None:
     await client.table("trips").update({"status": status}).eq("id", trip_id).eq("user_id", user_id).execute()
 
 
-async def _fail(client, trip_id, user_id, job_id, stage, message) -> dict:
+async def _fail(client, trip_id, user_id, job_id, stage, message, *, lease_token=None,
+                lease_lost=None) -> dict:
     """Best-effort terminal failure write: each write is independent so one Supabase
     error (e.g. the original failure was connectivity) doesn't block the others — the
-    terminal `result` event and the job-failed mark are the load-bearing ones."""
-    try:
-        await record_event(client, trip_id, event_type="error", stage=stage, message=message)
-    except Exception:
-        pass
-    try:
-        await _set_status(client, trip_id, user_id, "failed")
-    except Exception:
-        pass
-    try:
-        await record_event(client, trip_id, event_type="result", stage=stage,
-                            message="generation failed", payload={"error": message})
-    except Exception:
-        pass
-    if job_id:
+    terminal `result` event and the job-failed mark are the load-bearing ones.
+
+    A run that died BEFORE `mark_job_running` returned holds no token, and a run that never
+    owned the job MUST NOT write the job's terminal state: it would stamp `failed` over a
+    replacement's live run. Such a row is left to the reaper, which is the component that
+    owns it. That is safer than an unfenced write and less code than threading an optional
+    token down into `mark_job_done`, where it would be a standing fencing bypass.
+
+    `lease_lost` gates the UNFENCED writes. `trips.status` has no CAS to reject a stale
+    write, so a superseded worker reaching here would stamp `failed` over a replacement's
+    `complete` — and unlike the job row and the event stream, nothing ever corrects it.
+    Bounding the window is not enough: a worker parked in a call with no timeout (extraction's
+    agent loop over `web_search` — the reason the heartbeat exists) can finish aborting AFTER
+    the replacement has finished, so the stale write lands last. The job row is safe either way
+    (`complete_trip_run`'s CAS rejects it) and the stray `error` event is unreachable
+    (`api/streaming.py` returns on the first `result`), so `trips.status` was the only leak.
+    """
+    superseded = lease_lost is not None and lease_lost.is_set()
+    if not superseded:
         try:
-            await mark_job_done(client, job_id, status="failed")
+            await record_event(client, trip_id, event_type="error", stage=stage, message=message)
         except Exception:
             pass
+        try:
+            await _set_status(client, trip_id, user_id, "failed")
+        except Exception:
+            pass
+    if job_id is None:
+        # No durable job to fence against — the terminal result is still REQUIRED, because
+        # the SSE stream ends on it.
+        try:
+            await record_event(client, trip_id, event_type="result", stage=stage,
+                                message="generation failed", payload={"error": message})
+        except Exception:
+            pass
+        return {"error": message}
+    if lease_token is None:
+        return {"error": message}     # never owned the job; the reaper owns this row
+    try:
+        await _complete_trip_run(client, job_id, trip_id, lease_token, status="failed",
+                                 stage=stage, message="generation failed",
+                                 payload={"error": message})
+    except Exception:
+        pass
     return {"error": message}
 
 
@@ -79,6 +172,9 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                           client=None, scrape=None, extract=None, mem0=_UNSET,
                           weather=None, transport=None, restaurant=None, narrator=None, hotel=None) -> dict:
     """Run the deterministic spine; own the job lifecycle; always write a terminal result."""
+    lease_token = None      # in scope for the pre-claim failure path, which must NOT finalize
+    lease_lost = asyncio.Event()
+    beat = None
     try:
         if client is None:
             client = await get_supabase_client()
@@ -96,8 +192,14 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
 
         # Atomic claim guard (amendment §C): abort BEFORE any work if another instance
         # already owns this job (double-run guard on recovery + original dispatch racing).
-        if job_id and not await mark_job_running(client, job_id):
-            return {"skipped": "job already claimed by another run"}
+        # The claim mints this attempt's lease token — every terminal write is fenced on it.
+        if job_id:
+            lease_token = await mark_job_running(client, job_id)
+            if lease_token is None:
+                return {"skipped": "job already claimed by another run"}
+            # Started only AFTER the claim is won: a loser that started a beat would be
+            # renewing the WINNER's lease. Cancelled in this function's `finally`.
+            beat = asyncio.create_task(_heartbeat(client, job_id, lease_token, lease_lost))
 
         await _set_status(client, trip_id, user_id, "generating")
         degraded = False
@@ -191,7 +293,7 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
             places = [p for r in results if r for p in r]
         if not places:
             return await _fail(client, trip_id, user_id, job_id, "extract",
-                                "no verified places after extraction")
+                                "no verified places after extraction", lease_token=lease_token)
 
         await record_event(client, trip_id, event_type="stage", stage="dedup",
                             message=f"deduping {len(places)} place(s)")
@@ -226,151 +328,188 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
             except Exception:
                 pass   # best-effort: a warning-write failure must not fail the trip either
 
+        # GATE — the cheap first layer. It rejects a lease ALREADY lost before any of the save
+        # work starts, which the race below cannot: cancellation only lands at an await point
+        # that actually suspends, so work that runs straight through would complete regardless.
+        if lease_lost.is_set():
+            raise LeaseLost(f"trip job {job_id} lease superseded")
+
         status = "saved_with_gaps" if degraded else "complete"
         await record_event(client, trip_id, event_type="stage", stage="save", message="saving trip")
-        try:
-            dropped = await persist_itinerary(client, trip_id, canonical, dates)
+
+        async def _save_and_enrich() -> None:
+            nonlocal status
             try:
-                # Owner-checked (guardrail #6) + best-effort: never fail the trip on this write.
-                await client.table("trips").update(
-                    {"preference_summary": pref_ctx.summary,
-                     "preference_sources": [pref_ctx.source]}
-                ).eq("id", trip_id).eq("user_id", user_id).execute()
+                dropped = await persist_itinerary(client, trip_id, canonical, dates,
+                                                  job_id=job_id, lease_token=lease_token)
+                try:
+                    # Owner-checked (guardrail #6) + best-effort: never fail the trip on this write.
+                    await client.table("trips").update(
+                        {"preference_summary": pref_ctx.summary,
+                         "preference_sources": [pref_ctx.source]}
+                    ).eq("id", trip_id).eq("user_id", user_id).execute()
+                except Exception:
+                    pass   # best-effort trip metadata; never fail the trip on it
+                if dropped:
+                    status = "saved_with_gaps"
+                    await record_event(client, trip_id, event_type="warning", stage="save",
+                                       message=f"{dropped} place(s) shown in the itinerary were not saved "
+                                               "(missing coordinates or merged with an existing place)")
+
+                # TRADEOFF NOTES — the FeasibilityWarnings feasibility.py flagged as "the seam".
+                # Computed here (warnings + groups in scope); WRITTEN once after the enrich gather.
+                try:
+                    _tradeoff_notes = warnings_to_notes(
+                        itinerary.feasibility_warnings,
+                        groups=group_places_by_day(canonical, dates))
+                except Exception:
+                    _tradeoff_notes = []
+
+                if weather_reports:                       # weather AFTER persist created trip_days (ordering!)
+                    try:
+                        await persist_weather(client, trip_id, weather_reports)
+                    except Exception:
+                        try:
+                            await record_event(client, trip_id, event_type="warning", stage="weather",
+                                               message="weather persist failed")
+                        except Exception:
+                            pass   # best-effort — weather persist failure is non-critical
+
+                # Compute the soft-guidance preference block ONCE, before the enrich gather — restaurant
+                # and narrator are the only two stages that personalize toward it (Task 4). Self-contained
+                # (guardrail #3): a failure here must degrade to no-injection, not skip the entire
+                # enrich gather (transport/hotel/narration don't even use pref_block).
+                try:
+                    from pipeline.preferences import preference_block
+                    pref_block = preference_block(pref_ctx)
+                except Exception:
+                    pref_block = None   # memory personalization is best-effort (guardrail #3): a hiccup
+                                        # here must not disable the transport/hotel/narration stages
+
+                # Enrich stages are INDEPENDENT (disjoint write tables) and best-effort (guardrail #3),
+                # so run them CONCURRENTLY instead of sequentially (~halves the enrich block latency).
+                # Weather is persisted ABOVE, sequentially, because narration reads
+                # trip_days.weather_summary. Each coroutine is fully self-contained: it swallows its own
+                # errors (a failure can't fail the trip), and return_exceptions=True additionally
+                # guarantees one stage's raise never cancels its siblings.
+                async def _stage_transport():
+                    try:
+                        await record_event(client, trip_id, event_type="stage", stage="transport",
+                                           message="computing routes")
+                        await persist_transport(client, trip_id, fetch_legs=transport)
+                        # persist_transport isolates per-day fetch failures internally (status="failed"
+                        # rows, never raises) — surface that as the same non-critical warning.
+                        failed_legs = (await client.table("transport_legs").select("id")
+                                       .eq("trip_id", trip_id).eq("status", "failed").execute()).data
+                        if failed_legs:
+                            await record_event(client, trip_id, event_type="warning", stage="transport",
+                                               message="transport legs unavailable")
+                    except Exception:
+                        try:
+                            await record_event(client, trip_id, event_type="warning", stage="transport",
+                                               message="transport legs unavailable")
+                        except Exception:
+                            pass   # best-effort — transport failure is non-critical
+
+                async def _stage_restaurants():
+                    try:
+                        await record_event(client, trip_id, event_type="stage", stage="restaurants",
+                                           message="suggesting restaurants")
+                        await persist_restaurants(client, trip_id, suggest=restaurant, preference_block=pref_block)
+                    except Exception:
+                        try:
+                            await record_event(client, trip_id, event_type="warning", stage="restaurants",
+                                               message="restaurant suggestions unavailable")
+                        except Exception:
+                            pass   # best-effort — restaurant failure is non-critical
+
+                async def _stage_hotels():
+                    try:
+                        await record_event(client, trip_id, event_type="stage", stage="hotels",
+                                           message="searching hotels")
+                        await persist_hotels(client, trip_id, fetch=hotel)
+                    except Exception:
+                        try:
+                            await record_event(client, trip_id, event_type="warning", stage="hotels",
+                                               message="hotel suggestions unavailable")
+                        except Exception:
+                            pass   # best-effort — hotel failure is non-critical
+
+                async def _stage_narration():
+                    # MUST run after persist_weather (above): reads trip_days.weather_summary.
+                    try:
+                        await record_event(client, trip_id, event_type="stage", stage="summarize",
+                                           message="narrating the trip")
+                        await persist_narration(client, trip_id, user_id, narrate=narrator, preference_block=pref_block)
+                    except Exception:
+                        try:
+                            await record_event(client, trip_id, event_type="warning", stage="summarize",
+                                               message="narration unavailable")
+                        except Exception:
+                            pass   # best-effort — narration failure is non-critical
+
+                await asyncio.gather(_stage_transport(), _stage_restaurants(),
+                                     _stage_hotels(), _stage_narration(), return_exceptions=True)
+
+                # ONE tradeoffs write (notes computed pre-gather + comparisons from persisted hotels).
+                # No read-modify-write; best-effort (a failure must never fail the trip, guardrail #3).
+                _comparisons = []
+                try:
+                    _hotel_rows = (await client.table("hotel_suggestions")
+                                   .select("id,name,star_rating,price_snapshot")
+                                   .eq("trip_id", trip_id).execute()).data or []
+                    _comparisons = build_hotel_comparisons(_hotel_rows)
+                except Exception:
+                    _comparisons = []   # a hotel-query blip must NOT discard the independently-valid notes
+                try:
+                    await persist_tradeoffs(client, trip_id, user_id,
+                                            notes=_tradeoff_notes, comparisons=_comparisons)
+                except Exception:
+                    pass   # best-effort — tradeoffs must never fail the trip
+            except LeaseLost:
+                # NOT a degraded persistence outcome. `replace_trip_itinerary`'s fence rejected
+                # us, which is an authoritative statement that a replacement owns this job — so
+                # record what the heartbeat has not noticed yet and abort. Swallowed into the
+                # handler below it would become `saved_with_gaps`, and this worker would go on
+                # to stamp a terminal status over the live run's.
+                lease_lost.set()
+                raise
             except Exception:
-                pass   # best-effort trip metadata; never fail the trip on it
-            if dropped:
                 status = "saved_with_gaps"
                 await record_event(client, trip_id, event_type="warning", stage="save",
-                                   message=f"{dropped} place(s) shown in the itinerary were not saved "
-                                           "(missing coordinates or merged with an existing place)")
+                                    message="normalized persistence failed; itinerary saved to the result event only")
 
-            # TRADEOFF NOTES — the FeasibilityWarnings feasibility.py flagged as "the seam".
-            # Computed here (warnings + groups in scope); WRITTEN once after the enrich gather.
-            try:
-                _tradeoff_notes = warnings_to_notes(
-                    itinerary.feasibility_warnings,
-                    groups=group_places_by_day(canonical, dates))
-            except Exception:
-                _tradeoff_notes = []
+        # RACE the whole save+enrich section against the heartbeat instead of gating once in
+        # front of it: everything above is a delete-reinsert of the itinerary plus four enrich
+        # stages plus an unbounded narration call, and a worker superseded anywhere inside it
+        # must stop there rather than at the far end.
+        await _abort_when_lease_lost(_save_and_enrich(), lease_lost, job_id=job_id)
 
-            if weather_reports:                       # weather AFTER persist created trip_days (ordering!)
-                try:
-                    await persist_weather(client, trip_id, weather_reports)
-                except Exception:
-                    try:
-                        await record_event(client, trip_id, event_type="warning", stage="weather",
-                                           message="weather persist failed")
-                    except Exception:
-                        pass   # best-effort — weather persist failure is non-critical
-
-            # Compute the soft-guidance preference block ONCE, before the enrich gather — restaurant
-            # and narrator are the only two stages that personalize toward it (Task 4). Self-contained
-            # (guardrail #3): a failure here must degrade to no-injection, not skip the entire
-            # enrich gather (transport/hotel/narration don't even use pref_block).
-            try:
-                from pipeline.preferences import preference_block
-                pref_block = preference_block(pref_ctx)
-            except Exception:
-                pref_block = None   # memory personalization is best-effort (guardrail #3): a hiccup
-                                    # here must not disable the transport/hotel/narration stages
-
-            # Enrich stages are INDEPENDENT (disjoint write tables) and best-effort (guardrail #3),
-            # so run them CONCURRENTLY instead of sequentially (~halves the enrich block latency).
-            # Weather is persisted ABOVE, sequentially, because narration reads
-            # trip_days.weather_summary. Each coroutine is fully self-contained: it swallows its own
-            # errors (a failure can't fail the trip), and return_exceptions=True additionally
-            # guarantees one stage's raise never cancels its siblings.
-            async def _stage_transport():
-                try:
-                    await record_event(client, trip_id, event_type="stage", stage="transport",
-                                       message="computing routes")
-                    await persist_transport(client, trip_id, fetch_legs=transport)
-                    # persist_transport isolates per-day fetch failures internally (status="failed"
-                    # rows, never raises) — surface that as the same non-critical warning.
-                    failed_legs = (await client.table("transport_legs").select("id")
-                                   .eq("trip_id", trip_id).eq("status", "failed").execute()).data
-                    if failed_legs:
-                        await record_event(client, trip_id, event_type="warning", stage="transport",
-                                           message="transport legs unavailable")
-                except Exception:
-                    try:
-                        await record_event(client, trip_id, event_type="warning", stage="transport",
-                                           message="transport legs unavailable")
-                    except Exception:
-                        pass   # best-effort — transport failure is non-critical
-
-            async def _stage_restaurants():
-                try:
-                    await record_event(client, trip_id, event_type="stage", stage="restaurants",
-                                       message="suggesting restaurants")
-                    await persist_restaurants(client, trip_id, suggest=restaurant, preference_block=pref_block)
-                except Exception:
-                    try:
-                        await record_event(client, trip_id, event_type="warning", stage="restaurants",
-                                           message="restaurant suggestions unavailable")
-                    except Exception:
-                        pass   # best-effort — restaurant failure is non-critical
-
-            async def _stage_hotels():
-                try:
-                    await record_event(client, trip_id, event_type="stage", stage="hotels",
-                                       message="searching hotels")
-                    await persist_hotels(client, trip_id, fetch=hotel)
-                except Exception:
-                    try:
-                        await record_event(client, trip_id, event_type="warning", stage="hotels",
-                                           message="hotel suggestions unavailable")
-                    except Exception:
-                        pass   # best-effort — hotel failure is non-critical
-
-            async def _stage_narration():
-                # MUST run after persist_weather (above): reads trip_days.weather_summary.
-                try:
-                    await record_event(client, trip_id, event_type="stage", stage="summarize",
-                                       message="narrating the trip")
-                    await persist_narration(client, trip_id, user_id, narrate=narrator, preference_block=pref_block)
-                except Exception:
-                    try:
-                        await record_event(client, trip_id, event_type="warning", stage="summarize",
-                                           message="narration unavailable")
-                    except Exception:
-                        pass   # best-effort — narration failure is non-critical
-
-            await asyncio.gather(_stage_transport(), _stage_restaurants(),
-                                 _stage_hotels(), _stage_narration(), return_exceptions=True)
-
-            # ONE tradeoffs write (notes computed pre-gather + comparisons from persisted hotels).
-            # No read-modify-write; best-effort (a failure must never fail the trip, guardrail #3).
-            _comparisons = []
-            try:
-                _hotel_rows = (await client.table("hotel_suggestions")
-                               .select("id,name,star_rating,price_snapshot")
-                               .eq("trip_id", trip_id).execute()).data or []
-                _comparisons = build_hotel_comparisons(_hotel_rows)
-            except Exception:
-                _comparisons = []   # a hotel-query blip must NOT discard the independently-valid notes
-            try:
-                await persist_tradeoffs(client, trip_id, user_id,
-                                        notes=_tradeoff_notes, comparisons=_comparisons)
-            except Exception:
-                pass   # best-effort — tradeoffs must never fail the trip
-        except Exception:
-            status = "saved_with_gaps"
-            await record_event(client, trip_id, event_type="warning", stage="save",
-                                message="normalized persistence failed; itinerary saved to the result event only")
+        if lease_lost.is_set():
+            raise LeaseLost(f"trip job {job_id} lease superseded")
         await _set_status(client, trip_id, user_id, status)
         payload = {"itinerary": itinerary.model_dump()}
-        await record_event(client, trip_id, event_type="result", stage="save",
-                            message="generation complete", payload=payload)
-        if job_id:
+        if job_id is None:
+            await record_event(client, trip_id, event_type="result", stage="save",
+                                message="generation complete", payload=payload)
+        else:
+            # The job status and the terminal result land together or not at all.
+            superseded = False
             try:
-                await mark_job_done(client, job_id, status="succeeded")
+                superseded = not await _complete_trip_run(
+                    client, job_id, trip_id, lease_token, status="succeeded", stage="save",
+                    message="generation complete", payload=payload)
             except Exception:
                 try:
                     await record_event(client, trip_id, event_type="warning", stage="save",
                                        message="job completion mark failed; recovery may re-sweep")
                 except Exception:
-                    pass   # post-terminal-result: a failure here must never re-enter _fail / flip the trip
+                    pass   # post-persistence: a failure here must never re-enter _fail / flip the trip
+            if superseded:
+                # A replacement owns this run and has written (or will write) the real
+                # terminal state. Emit nothing further — not even the memory write-back.
+                logger.warning("trip_run_superseded job_id=%s", job_id)
+                return payload
 
         # WRITE-BACK — AFTER the terminal `result` (stream already ended → invisible),
         # AWAITED (not create_task → no GC risk). Wrapped in its OWN try/except: memory
@@ -397,4 +536,14 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
         # Any unexpected error → terminal result, failed status, failed job (never hang the stream).
         if client is None:
             raise  # never got a client → BackgroundTasks logs it; startup recovery sweep re-picks the still-pending job
-        return await _fail(client, trip_id, user_id, job_id, "save", "unexpected generation error")
+        return await _fail(client, trip_id, user_id, job_id, "save", "unexpected generation error",
+                           lease_token=lease_token, lease_lost=lease_lost)
+    finally:
+        # A leaked beat would go on renewing the lease of a run that has already finished,
+        # holding a completed job against the reaper. `lease_lost` doubles as the beat's
+        # shutdown flag, so setting it stops the loop even if the cancel races the sleep.
+        lease_lost.set()
+        if beat is not None:
+            beat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await beat

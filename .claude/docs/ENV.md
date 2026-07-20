@@ -17,7 +17,9 @@ MAPBOX_SECRET_TOKEN              # sk — Search Box API resolution, server-side
 MEM0_API_KEY
 LANGFUSE_PUBLIC_KEY
 LANGFUSE_SECRET_KEY
-SENTRY_DSN
+# SENTRY_DSN removed 2026-07-19 (ISSUES-B1) — sentry-sdk was staged but never initialised, and
+# its FastAPI integration captures full request URLs, reintroducing the ?token=<JWT> leak that
+# backend/log_redaction.py closes. Re-add only together with a `before_send` URL scrubber.
 ```
 
 ## Backend (optional, with defaults)

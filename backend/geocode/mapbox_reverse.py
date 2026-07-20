@@ -25,7 +25,28 @@ def _retry_delay(response: httpx.Response | None, fallback_s: float) -> float:
     return min(max(fallback_s, 0.0), MAX_REVERSE_RETRY_DELAY_S)
 
 
-def parse_reverse_country_response(data: object) -> CountryResult | None:
+def parse_reverse_country_response(data: object) -> CountryResult:
+    """Return the verified country, or raise. It never reports "no country" as a value.
+
+    A well-formed but EMPTY FeatureCollection used to return None, which `_ground_place` read
+    as "this coordinate does not verify" and settled the item at `location_not_found` — a
+    TERMINAL state. An empty-but-valid collection is far more likely a Mapbox brownout than a
+    real country-less venue, so raising is the right bias: the item settles at `failed`, which
+    is retryable, instead of freezing a wrong terminal answer. Accepted consequence: a genuine
+    open-ocean coordinate now reports `failed` rather than `location_not_found`.
+
+    BLAST RADIUS IS PER-ITEM, NOT PER-PLACE. `_ground_and_persist` grounds a Reel's places in
+    one list comprehension, so this raise aborts the WHOLE item — places in the same Reel that
+    already verified fine are discarded and re-grounded on retry. Pre-A3 an empty collection
+    dropped just that one place and the rest organized normally. This is not a new class of
+    fragility (a network error, a 5xx, and malformed JSON all already raised and aborted the
+    item), but it extends it to a case that used to degrade softly — so on a noisy Mapbox day
+    expect whole items to retry rather than partially organize. Narrowing this to per-place
+    means grounding each place in its own try/except and is deliberately NOT done here:
+    partial-organize is the harder semantic to reason about, and guardrail #3 already accepts
+    a retryable item failure. TRIGGER to revisit: a measured rate of item failures where the
+    empty-collection path is the cause.
+    """
     if not isinstance(data, dict):
         raise RuntimeError("Mapbox reverse-country returned malformed data")
     features = data.get("features")
@@ -33,7 +54,7 @@ def parse_reverse_country_response(data: object) -> CountryResult | None:
         raise RuntimeError("Mapbox reverse-country returned malformed data")
     if not features:
         if data.get("type") == "FeatureCollection":
-            return None
+            raise RuntimeError("Mapbox reverse-country returned no country for coordinate")
         raise RuntimeError("Mapbox reverse-country returned malformed data")
     if not isinstance(features[0], dict):
         raise RuntimeError("Mapbox reverse-country returned malformed data")
@@ -64,7 +85,7 @@ async def reverse_country(
     client: httpx.AsyncClient | None = None,
     timeout_s: int = 15,
     retry_delay_s: float = 0.25,
-) -> CountryResult | None:
+) -> CountryResult:
     params = {
         "longitude": lng,
         "latitude": lat,

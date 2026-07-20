@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 import json
 from uuid import UUID
@@ -9,6 +10,7 @@ import pytest
 from api.schemas import GenerateTripRequest, OrganizeJobStatus, OrganizeSavedReelsRequest
 from api.streaming import DONE, format_sse, stream_organize_events
 from models.place import PlaceResult
+from pipeline.geo import haversine_m
 from organizer import (
     ActiveOrganizeConflict,
     _ground_place,
@@ -27,6 +29,67 @@ class _Result:
         self.data = data
 
 
+def _split_top_level(expr):
+    """Split a PostgREST filter list on commas that are not inside an `and(...)`/`or(...)`."""
+    parts, depth, start = [], 0, 0
+    for index, char in enumerate(expr):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif char == "," and depth == 0:
+            parts.append(expr[start:index])
+            start = index + 1
+    parts.append(expr[start:])
+    return parts
+
+
+# DEFERRED, with a trigger: comma-splitting above is parenthesis-depth-aware but NOT
+# quote-aware, so `name.eq."a,b"` mis-splits on the embedded comma. No predicate in the repo
+# constructs a quoted value containing a comma, so this is unreachable today. TRIGGER: make
+# the splitter quote-aware the first time any predicate quotes a value — I5 and A-III both
+# add predicates against this fake, and a mis-split term fails toward green.
+def _lt(row, key, value):
+    """Postgres semantics: `NULL < value` is NULL, so the row does NOT match.
+
+    Deliberately not `row.get(key, "") < value`, which fails two different ways: for a row
+    that OMITS the column it makes the NULL case always match (`"" < "2026-..."` is True),
+    silently inverting the legacy-orphan reclaim tests; and for a row that carries the column
+    as an explicit `None` — how Supabase actually returns it — the default never applies and
+    it still raises TypeError. Checking the retrieved value covers both.
+    """
+    current = row.get(key)
+    return current is not None and current < value
+
+
+def _eval_filter_term(row, term):
+    """Evaluate one PostgREST filter term (`col.op.value`, or a nested `and(...)`/`or(...)`)."""
+    if term.startswith("and(") and term.endswith(")"):
+        return all(_eval_filter_term(row, part) for part in _split_top_level(term[4:-1]))
+    if term.startswith("or(") and term.endswith(")"):
+        return any(_eval_filter_term(row, part) for part in _split_top_level(term[3:-1]))
+    if "(" in term or ")" in term:
+        # A term carrying parens that did NOT match the and(...)/or(...) shapes above is
+        # malformed — usually an unbalanced paren. Without this guard it falls through to the
+        # split below and evaluates TRUE by accident: `"and(lock_expires_at.is.null"` parses as
+        # key=`"and(lock_expires_at"`, op=`is`, value=`null`, and that key is absent from every
+        # row, so `is null` holds. A typo'd predicate would then satisfy every filter and each
+        # test built on it would pass while asserting nothing.
+        raise ValueError(f"fake got a malformed/unbalanced filter group: {term!r}")
+    key, op, value = term.split(".", 2)
+    if op == "lt":
+        return _lt(row, key, value)
+    if op == "eq":
+        return row.get(key) == value
+    if op == "is":
+        if value != "null":
+            raise ValueError(f"fake implements only `is.null`, got {term!r}")
+        return row.get(key) is None
+    # Unimplemented operators must fail loudly. One that quietly evaluated True (or was
+    # dropped) is how a later increment gets a green test that proves nothing.
+    raise ValueError(f"fake does not implement PostgREST operator {op!r} in {term!r}")
+
+
 class _Table:
     def __init__(self, name, db):
         self.name, self.db = name, db
@@ -35,15 +98,19 @@ class _Table:
         self.gt_filters = {}
         self.lt_filters = {}
         self.in_filters = {}
+        self.or_filters = []
+        self.on_conflict = None
         self.single = False
 
     def select(self, *_args): self.op = "select"; return self
     def insert(self, row): self.op = ("insert", row); return self
+    def upsert(self, row, on_conflict=None): self.op = ("upsert", row); self.on_conflict = on_conflict; return self
     def update(self, row): self.op = ("update", row); return self
     def delete(self): self.op = "delete"; return self
     def eq(self, key, value): self.filters[key] = value; return self
     def gt(self, key, value): self.gt_filters[key] = value; return self
     def lt(self, key, value): self.lt_filters[key] = value; return self
+    def or_(self, expr): self.or_filters.append(expr); return self
     def in_(self, key, values): self.in_filters[key] = set(values); return self
     def order(self, *_args, **_kwargs): return self
     def maybe_single(self): self.single = True; return self
@@ -52,7 +119,10 @@ class _Table:
         return all(row.get(k) == v for k, v in self.filters.items()) and all(
             row.get(k) in values for k, values in self.in_filters.items()
         ) and all(row.get(k, 0) > v for k, v in self.gt_filters.items()) and all(
-            row.get(k) < v for k, v in self.lt_filters.items()
+            _lt(row, k, v) for k, v in self.lt_filters.items()
+        ) and all(
+            any(_eval_filter_term(row, term) for term in _split_top_level(expr))
+            for expr in self.or_filters
         )
 
     async def execute(self):
@@ -61,6 +131,21 @@ class _Table:
             row = {"id": f"{self.name}-{len(rows) + 1}", **self.op[1]}
             rows.append(row)
             return _Result([row])
+        if isinstance(self.op, tuple) and self.op[0] == "upsert":
+            # `on_conflict` is REQUIRED, exactly as Postgres requires a matching unique index:
+            # a fake that fell back to plain-insert would let a caller who forgot it duplicate
+            # rows here and fail only against the real database.
+            keys = [key.strip() for key in (self.on_conflict or "").split(",") if key.strip()]
+            if not keys:
+                raise ValueError("fake upsert requires on_conflict")
+            row = self.op[1]
+            existing = next((r for r in rows if all(r.get(k) == row.get(k) for k in keys)), None)
+            if existing is not None:
+                existing.update(row)
+                return _Result([existing])
+            stored = {"id": f"{self.name}-{len(rows) + 1}", **row}
+            rows.append(stored)
+            return _Result([stored])
         if isinstance(self.op, tuple) and self.op[0] == "update":
             matched = [row for row in rows if self._matches(row)]
             for row in matched:
@@ -82,21 +167,446 @@ class _Table:
 
 
 class _Client:
+    """A fake Supabase client that owns its own clock, because the DATABASE owns the real one.
+
+    `clock_skew` moves THIS FAKE DATABASE's clock, not the caller's. Every lease instant is now
+    `clock_timestamp()` inside Postgres (20260720170000), so the way a test says "five minutes
+    passed" is to advance the database, exactly as production would experience it. A fake that
+    read the *worker's* clock instead could not express host-clock skew at all — the property
+    the lease RPCs exist to defend — and every skew test would be vacuous.
+    """
+
     def __init__(self, db=None):
         self.db = db or {}
         self.rpc_calls = []
+        self.clock_skew = timedelta(0)
+
+    def db_now(self) -> datetime:
+        return datetime.now(timezone.utc) + self.clock_skew
 
     def table(self, name): return _Table(name, self.db)
     def rpc(self, name, params):
         self.rpc_calls.append((name, params))
         if name == "create_saved_reels_organize_job":
             return _CreateOrganizeJobRpc(self, params)
+        if name == "append_organize_event":
+            return _AppendOrganizeEventRpc(self, params)
+        if name == "replace_reel_place_mentions":
+            return _ReplaceReelPlaceMentionsRpc(self, params)
+        if name == "find_or_create_place":
+            return _FindOrCreatePlaceRpc(self, params)
+        if name in _LEASE_RPCS:
+            mirror, table = _LEASE_RPCS[name]
+            return mirror(self, params, self.db.setdefault(table, []))
         return _Rpc(self, name)
+
+
+class _BarrierClient(_Client):
+    """A client whose every round trip is a real interleaving point.
+
+    `.execute()` waits until `parties` callers have reached one, so anything a caller decided
+    BEFORE a round trip is guaranteed stale by the time it acts on it. That models the property
+    that matters: a single database statement is atomic, and the gap between two of them is
+    where a concurrent worker gets in.
+    """
+
+    def __init__(self, db=None, *, parties):
+        super().__init__(db)
+        self._barrier = asyncio.Barrier(parties)
+
+    # Both seams are barriered on purpose. `_Table.execute()` contains no real await, so without
+    # `_BarrierTable` two gathered callers would each run start-to-finish before the other began
+    # and a select-then-insert would never interleave — the concurrency test would go green
+    # against the very code it exists to reject. Confirmed by injection.
+    def table(self, name): return _BarrierTable(name, self.db, self._barrier)
+
+    def rpc(self, name, params):
+        return _Barriered(super().rpc(name, params), self._barrier)
+
+
+class _Barriered:
+    def __init__(self, inner, barrier): self._inner, self._barrier = inner, barrier
+
+    async def execute(self):
+        await self._barrier.wait()
+        return await self._inner.execute()
+
+
+class _BarrierTable(_Table):
+    def __init__(self, name, db, barrier):
+        super().__init__(name, db)
+        self._barrier = barrier
+
+    async def execute(self):
+        await self._barrier.wait()
+        return await super().execute()
 
 
 class _Rpc:
     def __init__(self, client, name): self.client, self.name = client, name
     async def execute(self): return _Result(self.client.db.get(f"rpc:{self.name}"))
+
+
+# --- lease RPCs: mirrors of 20260720170000_db_clock_job_leases.sql ---------------------------
+#
+# Every instant below comes from `client.db_now()`, never `datetime.now()`. That is the entire
+# property these functions exist to provide: the claim, the renewal and the expiry comparison
+# are made by ONE clock — Postgres's — so two Render instances that disagree about the time
+# cannot both believe they own a job. A mirror that read the caller's clock would model a
+# database that does not have that property, and every skew test would pass against the
+# Python-clock implementation these replaced.
+
+
+def _iso(value: datetime) -> str:
+    """`Z`-suffixed ISO-8601, matching what Postgres hands back through PostgREST."""
+    return value.isoformat().replace("+00:00", "Z")
+
+
+def _parse_ts(value) -> datetime | None:
+    return None if value is None else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def _require_lease_params(params, *, needs_token: bool = True) -> None:
+    """The functions' AS400 boundary checks. Mirrored because they are load-bearing, not
+    defensive noise: a claim with no token writes a row nothing can later fence on, and a
+    non-positive TTL mints a lease that is already expired — both fail toward two live
+    workers, which is the failure this whole mechanism exists to prevent."""
+    if needs_token and params.get("p_lease_token") is None:
+        raise _pg_error("AS400", "lease token is required")
+    ttl = params.get("p_ttl_seconds")
+    if ttl is None or ttl <= 0:
+        raise _pg_error("AS400", "lease TTL must be positive")
+
+
+def _lease_is_expired(row, now: datetime, legacy_cutoff: datetime) -> bool:
+    """The reclaim predicate, with POSTGRES's NULL semantics — where it is easiest to get wrong.
+
+    `NULL < clock_timestamp()` is NULL, not true, so a row with no expiry does NOT match the
+    first branch; it falls through to the legacy branch, which is itself gated on the expiry
+    genuinely being NULL. Collapse either half and the mirror lies in one of two opposite
+    directions: treat NULL as expired and the reaper steals live long-running leases, drop the
+    legacy branch and pre-lease rows are skipped forever (guardrail #12's silent drop).
+    """
+    expiry = _parse_ts(row.get("lock_expires_at"))
+    if expiry is not None:
+        return expiry < now
+    locked_at = _parse_ts(row.get("locked_at"))
+    return locked_at is not None and locked_at < legacy_cutoff
+
+
+class _ClaimTripJobRpc:
+    """Mirror of `public.claim_trip_job`. `started_at` is re-stamped on every claim, matching
+    the function (and unlike the organize claim, which coalesces)."""
+
+    def __init__(self, client, params, rows):
+        self.client, self.params, self.rows = client, params, rows
+
+    async def execute(self):
+        params = self.params
+        _require_lease_params(params)
+        now = self.client.db_now()
+        matched = [row for row in self.rows
+                   if row.get("id") == params["p_job_id"]
+                   and row.get("status") in ("pending", "retryable")]
+        for row in matched:
+            row.update({
+                "status": "running",
+                "locked_at": _iso(now),
+                "started_at": _iso(now),
+                "lock_expires_at": _iso(now + timedelta(seconds=params["p_ttl_seconds"])),
+                "lease_token": params["p_lease_token"],
+                "completed_at": None,
+                "error_message": None,
+            })
+        return _Result(bool(matched))
+
+
+class _RenewTripJobLeaseRpc:
+    """Mirror of `public.renew_trip_job_lease`. `status = 'running'` is part of the fence, not
+    decoration: a job already reclaimed and re-dispatched must not be renewable by the run
+    that lost it."""
+
+    def __init__(self, client, params, rows):
+        self.client, self.params, self.rows = client, params, rows
+
+    async def execute(self):
+        params = self.params
+        _require_lease_params(params)
+        now = self.client.db_now()
+        matched = [row for row in self.rows
+                   if row.get("id") == params["p_job_id"]
+                   and row.get("status") == "running"
+                   and row.get("lease_token") == params["p_lease_token"]]
+        for row in matched:
+            row["lock_expires_at"] = _iso(now + timedelta(seconds=params["p_ttl_seconds"]))
+        return _Result(bool(matched))
+
+
+class _ReclaimExpiredTripJobsRpc:
+    """Mirror of `public.reclaim_expired_trip_jobs`. Returns the COUNT, as the function does.
+
+    The lease fields are cleared, NOT just the status. `mark_job_done` fences on the token with
+    no status guard, so a row that kept its token would let an expired-but-still-alive worker
+    flip the freshly scheduled `retryable` back to `failed`.
+    """
+
+    def __init__(self, client, params, rows):
+        self.client, self.params, self.rows = client, params, rows
+
+    async def execute(self):
+        params = self.params
+        _require_lease_params(params, needs_token=False)
+        now = self.client.db_now()
+        legacy_cutoff = now - timedelta(seconds=params["p_ttl_seconds"])
+        matched = [row for row in self.rows
+                   if row.get("status") == "running"
+                   and _lease_is_expired(row, now, legacy_cutoff)]
+        for row in matched:
+            row.update({"status": "retryable", "lease_token": None,
+                        "lock_expires_at": None, "locked_at": None})
+        return _Result(len(matched))
+
+
+class _ClaimOrganizeJobRpc:
+    """Mirror of `public.claim_organize_job`.
+
+    `started_at` COALESCES rather than re-stamping: it is the run's user-visible elapsed time,
+    and re-stamping on retry makes a job stuck in a retry loop report as though it had just
+    begun. The owner scope is part of the predicate, not a courtesy.
+    """
+
+    def __init__(self, client, params, rows):
+        self.client, self.params, self.rows = client, params, rows
+
+    async def execute(self):
+        params = self.params
+        _require_lease_params(params)
+        now = self.client.db_now()
+        matched = [row for row in self.rows
+                   if row.get("id") == params["p_job_id"]
+                   and row.get("user_id") == params["p_user_id"]
+                   and row.get("status") == "pending"]
+        for row in matched:
+            row.update({
+                "status": "processing",
+                "status_message": params["p_status_message"],
+                "locked_at": _iso(now),
+                "started_at": row.get("started_at") or _iso(now),
+                "lock_expires_at": _iso(now + timedelta(seconds=params["p_ttl_seconds"])),
+                "lease_token": params["p_lease_token"],
+                "attempt_count": params["p_attempt_count"],
+            })
+        return _Result(bool(matched))
+
+
+class _RenewOrganizeJobLeaseRpc:
+    def __init__(self, client, params, rows):
+        self.client, self.params, self.rows = client, params, rows
+
+    async def execute(self):
+        params = self.params
+        _require_lease_params(params)
+        now = self.client.db_now()
+        matched = [row for row in self.rows
+                   if row.get("id") == params["p_job_id"]
+                   and row.get("user_id") == params["p_user_id"]
+                   and row.get("status") == "processing"
+                   and row.get("lease_token") == params["p_lease_token"]]
+        for row in matched:
+            row["lock_expires_at"] = _iso(now + timedelta(seconds=params["p_ttl_seconds"]))
+        return _Result(bool(matched))
+
+
+class _ReclaimExpiredOrganizeJobsRpc:
+    def __init__(self, client, params, rows):
+        self.client, self.params, self.rows = client, params, rows
+
+    async def execute(self):
+        params = self.params
+        _require_lease_params(params, needs_token=False)
+        now = self.client.db_now()
+        legacy_cutoff = now - timedelta(seconds=params["p_ttl_seconds"])
+        matched = [row for row in self.rows
+                   if row.get("status") == "processing"
+                   and _lease_is_expired(row, now, legacy_cutoff)]
+        for row in matched:
+            row.update({"status": "pending", "status_message": params["p_status_message"],
+                        "locked_at": None, "lock_expires_at": None, "lease_token": None})
+        return _Result(len(matched))
+
+
+# name -> (mirror, the table it operates on). The table is named here rather than inside each
+# mirror so a fake whose rows live somewhere other than `client.db` — `test_jobs._Client` keys
+# its store by idempotency key — can construct the same mirror over its own rows and get
+# identical semantics, instead of growing a second, drifting copy of the predicate.
+_LEASE_RPCS = {
+    "claim_trip_job": (_ClaimTripJobRpc, "jobs"),
+    "renew_trip_job_lease": (_RenewTripJobLeaseRpc, "jobs"),
+    "reclaim_expired_trip_jobs": (_ReclaimExpiredTripJobsRpc, "jobs"),
+    "claim_organize_job": (_ClaimOrganizeJobRpc, "organize_jobs"),
+    "renew_organize_job_lease": (_RenewOrganizeJobLeaseRpc, "organize_jobs"),
+    "reclaim_expired_organize_jobs": (_ReclaimExpiredOrganizeJobsRpc, "organize_jobs"),
+}
+
+
+class _FindOrCreatePlaceRpc:
+    """Mirror of `public.find_or_create_place` (20260720160000_serialized_...).
+
+    ATOMIC ON PURPOSE — the body below contains no `await`, so no other coroutine can run
+    between the lookup and the insert. That is not the fake being convenient: it is what the
+    real function's `pg_advisory_xact_lock` buys, and a fake that awaited mid-body would model
+    a database that does not have it, quietly reddening the concurrency test for the wrong
+    reason.
+
+    What it CANNOT reproduce is the lock itself — whether two separate BACKENDS are serialized
+    is a property of Postgres, not of Python, so it is proven against real concurrent
+    connections in `supabase/tests/012_serialized_place_find_or_create.sql`. This mirror pins
+    the reuse rule the callers depend on: same name, same verified country, inside the gate.
+    """
+
+    def __init__(self, client, params): self.client, self.params = client, params
+
+    def _match(self):
+        params = self.params
+        # Insertion order, which for this fake's sequential ids IS `order by id` — the tie-break
+        # the function uses so several eligible rows resolve the same way every run.
+        rows = self.client.db.setdefault("places", [])
+        for row in rows:
+            if (
+                row.get("name") == params["p_name"]
+                and row.get("country_code") == params["p_country_code"]
+                and params["p_lat"] is not None
+                and params["p_lng"] is not None
+                and row.get("lat") is not None
+                and row.get("lng") is not None
+                and haversine_m(params["p_lat"], params["p_lng"], row["lat"], row["lng"])
+                < params["p_max_distance_m"]
+            ):
+                return row
+        return None
+
+    async def execute(self):
+        params = self.params
+        row = self._match()
+        if row is not None:
+            row.update({
+                "country": params["p_country"],
+                "country_code": params["p_country_code"],
+                "country_name": params["p_country_name"],
+            })
+            return _Result(row["id"])
+        rows = self.client.db.setdefault("places", [])
+        # `embedding` is deliberately absent, mirroring the function's column list (ISSUES-B3).
+        stored = {
+            "id": f"places-{len(rows) + 1}",
+            "name": params["p_name"],
+            "place_type": params["p_place_type"],
+            "lat": params["p_lat"],
+            "lng": params["p_lng"],
+            "country": params["p_country"],
+            "country_code": params["p_country_code"],
+            "country_name": params["p_country_name"],
+            "city": params["p_city"],
+        }
+        rows.append(stored)
+        return _Result(stored["id"])
+
+
+def _pg_error(code, message):
+    from postgrest.exceptions import APIError
+
+    return APIError({"code": code, "message": message, "details": None, "hint": None})
+
+
+class _AppendOrganizeEventRpc:
+    """Mirror of `public.append_organize_event` (20260720090000_job_leases.sql).
+
+    The AS409 branch is the load-bearing part. `_record_organize_event` swallows a superseded
+    append so a terminal path never crashes on it — which means a fake that always inserted
+    would leave that handling as dead code AND let every fencing test below pass while the
+    real RPC's fence was gone. The error ORDER matters too and mirrors the function: the row
+    lookup happens first (AS404), then the null-token rejection (AS400), then the fence
+    (AS409). `is distinct from` and Python's `!=` agree on a NULL lease against a real token.
+    """
+
+    def __init__(self, client, params): self.client, self.params = client, params
+
+    async def execute(self):
+        job_id, user_id = self.params["p_job_id"], self.params["p_user_id"]
+        job = next((row for row in self.client.db.get("organize_jobs", [])
+                    if row.get("id") == job_id and row.get("user_id") == user_id), None)
+        if job is None:
+            raise _pg_error("AS404", "Organize job not found")
+        if self.params["p_lease_token"] is None:
+            raise _pg_error("AS400", "Organize event requires a lease token")
+        if job.get("lease_token") != self.params["p_lease_token"]:
+            raise _pg_error("AS409", "Organize job lease superseded")
+        events = self.client.db.setdefault("organize_events", [])
+        sequence = max((row.get("sequence", 0) for row in events
+                        if row.get("job_id") == job_id), default=0) + 1
+        events.append({
+            "id": f"organize_events-{len(events) + 1}",
+            "user_id": user_id,
+            "job_id": job_id,
+            "sequence": sequence,
+            "event_type": self.params["p_event_type"],
+            "message": self.params["p_message"],
+            "payload": self.params.get("p_payload") or {},
+        })
+        return _Result(sequence)
+
+
+class _ReplaceReelPlaceMentionsRpc:
+    """Mirror of `public.replace_reel_place_mentions` (20260720080000_..._user_scope.sql).
+
+    Two properties are load-bearing and both are asserted against this fake in
+    `test_organizer_mention_rewrite.py`: the upsert and the prune are ONE unit (no window in
+    which a concurrent reader sees a half-written set), and the prune is scoped to
+    `p_user_id`, so another owner's rows are unreachable by construction.
+
+    What it CANNOT reproduce: Postgres rejecting a payload that names the same `place_id`
+    twice with "ON CONFLICT DO UPDATE command cannot affect row a second time". A Python dict
+    keyed on the same tuple simply overwrites. The `distinct on (place_id)` that prevents that
+    is therefore pinned in pgTAP (`supabase/tests/007_saved_reels_organize.sql`), NOT here —
+    the duplicate test in the mention-rewrite module pins the call shape only.
+    """
+
+    def __init__(self, client, params): self.client, self.params = client, params
+
+    async def execute(self):
+        params = self.params
+        mentions = params["p_mentions"]
+        if not isinstance(mentions, list):
+            raise _pg_error("AS422", "mentions payload must be a JSON array")
+        user_id, cache_id = params["p_user_id"], params["p_reel_cache_id"]
+        deduped = {}
+        for mention in mentions:            # first occurrence wins, as `distinct on ... order by ord`
+            deduped.setdefault(mention["place_id"], mention)
+        rows = self.client.db.setdefault("reel_place_mentions", [])
+        for place_id, mention in deduped.items():
+            row = next((candidate for candidate in rows
+                        if candidate.get("user_id") == user_id
+                        and candidate.get("reel_cache_id") == cache_id
+                        and candidate.get("place_id") == place_id), None)
+            values = {
+                "user_id": user_id, "reel_cache_id": cache_id, "place_id": place_id,
+                "evidence_quote": mention.get("evidence_quote"),
+                "source_url": mention.get("source_url"),
+                "confidence": mention.get("confidence") or 0,
+                "verification_version": params["p_verification_version"],
+            }
+            if row is None:
+                rows.append({"id": f"reel_place_mentions-{len(rows) + 1}", **values})
+            else:
+                row.update(values)
+        # Prune ONLY this owner's superseded rows for this cache.
+        self.client.db["reel_place_mentions"] = [
+            row for row in rows
+            if not (row.get("user_id") == user_id
+                    and row.get("reel_cache_id") == cache_id
+                    and row.get("place_id") not in deduped)
+        ]
+        return _Result(len(deduped))
 
 
 class _CreateOrganizeJobRpc:
@@ -351,57 +861,11 @@ async def test_create_organize_job_allows_terminal_overlap_and_disjoint_sets():
 
 
 @pytest.mark.asyncio
-async def test_recover_organize_jobs_deletes_stale_initializing_job_and_children():
-    stale_created_at = (
-        datetime.now(timezone.utc) - timedelta(seconds=121)
-    ).isoformat()
-    current_created_at = datetime.now(timezone.utc).isoformat()
-    client = _Client({
-        "organize_jobs": [
-            {
-                "id": "stale-job",
-                "user_id": "user-a",
-                "status": "initializing",
-                "created_at": stale_created_at,
-            },
-            {
-                "id": "current-job",
-                "user_id": "user-a",
-                "status": "initializing",
-                "created_at": current_created_at,
-            },
-            {
-                "id": "pending-job",
-                "user_id": "user-b",
-                "status": "pending",
-                "created_at": current_created_at,
-            },
-        ],
-        "organize_job_items": [
-            {"id": "stale-item", "job_id": "stale-job"},
-            {"id": "current-item", "job_id": "current-job"},
-        ],
-        "organize_events": [
-            {"id": "stale-event", "job_id": "stale-job"},
-            {"id": "current-event", "job_id": "current-job"},
-        ],
-    })
-
-    pending = await recover_organize_jobs(client)
-
-    assert {row["id"] for row in client.db["organize_jobs"]} == {
-        "current-job", "pending-job",
-    }
-    assert [row["id"] for row in client.db["organize_job_items"]] == ["current-item"]
-    assert [row["id"] for row in client.db["organize_events"]] == ["current-event"]
-    assert [(row["id"], row["user_id"]) for row in pending] == [
-        ("pending-job", "user-b"),
-    ]
-
-
-@pytest.mark.asyncio
 async def test_recover_organize_jobs_immediately_requeues_prior_process_work():
-    future_lock = (datetime.now(timezone.utc) + timedelta(minutes=14)).isoformat()
+    # Seeded with an EXPIRED lease: recovery is expiry-gated now, so a future lock_expires_at
+    # would (correctly) mean a live instance still owns the job. Field-level clearing and the
+    # unexpired/legacy-NULL branches are covered in test_organizer_lease.py.
+    expired_lock = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
     client = _Client({
         "organize_jobs": [{
             "id": "interrupted-job",
@@ -409,7 +873,8 @@ async def test_recover_organize_jobs_immediately_requeues_prior_process_work():
             "status": "processing",
             "status_message": "Finding places",
             "locked_at": datetime.now(timezone.utc).isoformat(),
-            "lock_expires_at": future_lock,
+            "lock_expires_at": expired_lock,
+            "lease_token": "t-old",
             "created_at": datetime.now(timezone.utc).isoformat(),
         }],
     })
@@ -431,15 +896,12 @@ async def test_recover_organize_jobs_immediately_requeues_prior_process_work():
 async def test_unexpected_organizer_failure_marks_job_failed_and_emits_result(
     monkeypatch, failure
 ):
+    class _FaultRpc:
+        async def execute(self):
+            raise RuntimeError("initial event write failed")
+
     class _FaultTable(_Table):
         async def execute(self):
-            if failure == "initial_event" and self.name == "organize_events":
-                if (
-                    isinstance(self.op, tuple)
-                    and self.op[0] == "insert"
-                    and self.op[1].get("message") == "Finding places"
-                ):
-                    raise RuntimeError("initial event write failed")
             if failure == "items_load" and self.name == "organize_job_items":
                 if self.op == "select" and self.filters.get("job_id") == "job-1":
                     raise RuntimeError("item load failed")
@@ -457,6 +919,19 @@ async def test_unexpected_organizer_failure_marks_job_failed_and_emits_result(
     class _FaultClient(_Client):
         def table(self, name):
             return _FaultTable(name, self.db)
+
+        def rpc(self, name, params):
+            # The opening event moved from a table insert to `append_organize_event`, so the
+            # fault has to move with it. Left on the table, this hook would simply never fire
+            # and the case would assert the SUCCESS path while still looking green.
+            call = super().rpc(name, params)
+            if (
+                failure == "initial_event"
+                and name == "append_organize_event"
+                and params.get("p_message") == "Finding places"
+            ):
+                return _FaultRpc()
+            return call
 
     client = _FaultClient({
         "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending"}],
@@ -594,7 +1069,7 @@ async def test_organize_event_stream_times_out_with_terminal_result_before_done(
 @pytest.mark.asyncio
 async def test_place_ids_are_owner_scoped_through_organized_reel_proof():
     client = _Client({
-        "reel_place_mentions": [{"place_id": "p1", "reel_cache_id": "cache-a", "evidence_quote": "proof", "source_url": None, "confidence": 0.9, "verification_version": "mapbox-country-v1"}],
+        "reel_place_mentions": [{"user_id": "user-a", "place_id": "p1", "reel_cache_id": "cache-a", "evidence_quote": "proof", "source_url": None, "confidence": 0.9, "verification_version": "mapbox-country-v1"}],
         "saved_reels": [{"id": "r1", "user_id": "user-a", "reel_cache_id": "cache-a", "analysis_status": "organized"}],
         "places": [{"id": "p1", "name": "Canonical A", "place_type": "attraction", "lat": 1.0, "lng": 2.0, "city": "City"}],
     })
@@ -764,7 +1239,7 @@ async def test_ground_place_accepts_matching_research_and_reverse_country(
         country_name=name,
     )
 
-    result = await _ground_place(place, verify_country=verify)
+    result = await _ground_place(_Client({}), place, verify_country=verify)
 
     assert result == {
         "place": place,
@@ -784,7 +1259,7 @@ async def test_ground_place_uses_mapbox_name_after_country_code_agrees(monkeypat
     monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
     poisoned = _place().model_copy(update={"country_name": "United States"})
 
-    result = await _ground_place(poisoned, verify_country=verify)
+    result = await _ground_place(_Client({}), poisoned, verify_country=verify)
 
     assert result["country_code"] == "JP"
     assert result["country_name"] == "Japan"
@@ -811,7 +1286,7 @@ async def test_ground_place_rejects_country_mismatch(monkeypatch):
         country_name="Japan",
     )
 
-    assert await _ground_place(place, verify_country=verify) is None
+    assert await _ground_place(_Client({}), place, verify_country=verify) is None
 
 
 @pytest.mark.asyncio
@@ -826,7 +1301,7 @@ async def test_ground_place_rejects_valid_empty_country_result(monkeypatch):
         country_code="JP", country_name="Japan",
     )
 
-    assert await _ground_place(place, verify_country=verify) is None
+    assert await _ground_place(_Client({}), place, verify_country=verify) is None
 
 
 @pytest.mark.asyncio
@@ -846,7 +1321,7 @@ async def test_ground_place_fails_when_mapbox_verification_is_unavailable(monkey
     )
 
     with pytest.raises(RuntimeError, match="verification is unavailable"):
-        await _ground_place(place, verify_country=verify)
+        await _ground_place(_Client({}), place, verify_country=verify)
     assert called is False
 
 
@@ -879,7 +1354,7 @@ async def test_ground_place_rejects_incomplete_research_without_mapbox_call(monk
         country_name="Japan",
     ).model_copy(update=updates)
 
-    assert await _ground_place(place, verify_country=verify) is None
+    assert await _ground_place(_Client({}), place, verify_country=verify) is None
     assert called is False
 
 
@@ -902,16 +1377,25 @@ async def test_ground_place_propagates_provider_outage_after_adapter_retry(monke
     )
 
     with pytest.raises(RuntimeError, match="reverse-country"):
-        await _ground_place(place, verify_country=verify)
+        await _ground_place(_Client({}), place, verify_country=verify)
 
 
 @pytest.mark.asyncio
 async def test_persist_place_does_not_reuse_same_name_from_another_country():
+    """The verified country is what separates two same-named venues — nothing else may be.
+
+    The MX row deliberately sits at the JP place's EXACT coordinates. It used to carry no
+    lat/lng at all, which made this test unfalsifiable: the distance gate skips a candidate
+    with no coordinates, so it passed with the country predicate deleted outright (injected,
+    confirmed). Same coordinates means only `country_code` can keep these two apart.
+    """
     client = _Client({
         "places": [{
             "id": "place-mx",
             "name": "Harry Potter Cafe",
             "country_code": "MX",
+            "lat": 35.6764,
+            "lng": 139.65,
         }],
     })
     place = PlaceResult(
@@ -992,6 +1476,63 @@ async def test_persist_place_reuses_near_match_but_preserves_distant_same_name_b
 
 
 @pytest.mark.asyncio
+async def test_concurrent_persist_of_the_same_place_creates_one_canonical_row():
+    """Two workers racing for the same new place must leave ONE `places` row, not two.
+
+    This is the defect, reproduced: `places` has no unique key, so an expired worker and its
+    replacement both looked, both saw nothing, and both inserted. Fencing the mention row only
+    decides which duplicate gets referenced — the orphan stays in the GLOBAL flywheel and every
+    later organize resolves the same venue to an arbitrary one of the two ids.
+
+    The interleaving is real, not asserted on call counts: `_BarrierClient` holds every
+    `.execute()` until both callers have reached one, so each round trip is a point where the
+    other coroutine is guaranteed to have run. What the barrier models is exactly what Postgres
+    gives us — one statement is atomic, the gap BETWEEN two statements is not. So this pins the
+    Python half of the fix (the decision and the write are one round trip); that the single
+    statement is itself serialized against another *connection* is the advisory lock, proven
+    with real concurrent backends in `supabase/tests/012_serialized_place_find_or_create.sql`.
+
+    Against the old select-then-insert both selects clear the barrier before either insert
+    runs, both see an empty table, and the table ends with two rows.
+    """
+    client = _BarrierClient({}, parties=2)
+    grounded = {
+        "place": PlaceResult(
+            name="Harry Potter Cafe", category="restaurant", lat=35.67311, lng=139.73625,
+            confidence=0.8, evidence_quote="Harry Potter Cafe", source_url="https://hpcafe.jp/",
+            country_code="JP", country_name="Japan",
+        ),
+        "country_code": "JP",
+        "country_name": "Japan",
+    }
+
+    async with asyncio.timeout(5):          # a barrier deadlock must fail, not hang the suite
+        first, second = await asyncio.gather(
+            _persist_place(client, grounded), _persist_place(client, grounded),
+        )
+
+    assert len(client.db["places"]) == 1, "the race duplicated the canonical place row"
+    assert first == second == client.db["places"][0]["id"]
+
+
+@pytest.mark.asyncio
+async def test_persist_place_omits_embedding_deliberately():
+    """ISSUES-B3: null `embedding` is an accepted MVP state, not an oversight.
+
+    There is no shared embedding producer in this repo, and a zero vector would pollute every
+    future similarity search. Characterization only — when a producer exists, this test is the
+    place that has to change, deliberately.
+    """
+    client = _Client({})
+
+    await _persist_place(client, {
+        "place": _place("Shibuya Sky"), "country_code": "JP", "country_name": "Japan",
+    })
+
+    assert "embedding" not in client.db["places"][0]
+
+
+@pytest.mark.asyncio
 async def test_persist_place_repairs_poisoned_country_label_on_near_match():
     client = _Client({
         "places": [{
@@ -1024,6 +1565,10 @@ async def test_persist_place_repairs_poisoned_country_label_on_near_match():
 async def test_authorize_place_ids_rejects_unstamped_mention():
     client = _Client({
         "reel_place_mentions": [{
+            # OWNED by the requesting user on purpose: without user_id the A3 owner filter
+            # rejects the row first and this test would pass without ever exercising the
+            # verification-version check it exists to pin.
+            "user_id": "user-a",
             "place_id": "p1", "reel_cache_id": "cache-a", "evidence_quote": "proof",
             "source_url": "https://source.test/a", "confidence": 0.9,
             "verification_version": None,
@@ -1064,13 +1609,17 @@ async def test_poisoned_legacy_mention_is_replaced_by_verified_japan_link(monkey
             },
         ],
         "reel_place_mentions": [
+            # Owned by the organizing user — post-A3 every mention has an owner, and the
+            # rewrite replaces exactly that owner's set for the cache.
             {
-                "id": "legacy-mx", "reel_cache_id": "cache-1", "place_id": "place-mx",
+                "id": "legacy-mx", "user_id": "user-a",
+                "reel_cache_id": "cache-1", "place_id": "place-mx",
                 "evidence_quote": "Harry Potter Cafe", "source_url": None, "confidence": 0.6,
                 "verification_version": None,
             },
             {
-                "id": "legacy-us", "reel_cache_id": "cache-1", "place_id": "place-us",
+                "id": "legacy-us", "user_id": "user-a",
+                "reel_cache_id": "cache-1", "place_id": "place-us",
                 "evidence_quote": "Harry Potter Cafe", "source_url": None, "confidence": 0.6,
                 "verification_version": None,
             },
@@ -1102,7 +1651,16 @@ async def test_poisoned_legacy_mention_is_replaced_by_verified_japan_link(monkey
 
 
 @pytest.mark.asyncio
-async def test_country_mismatch_removes_all_poisoned_links_and_fails_closed(monkeypatch):
+async def test_country_mismatch_fails_closed_without_destroying_mentions(monkeypatch):
+    """A country mismatch must fail CLOSED — but no longer by deleting.
+
+    Pre-A3 this test asserted the mentions table was emptied. That deletion was the
+    cross-user destruction Major: it ran before the grounding result was known and was scoped
+    to `reel_cache_id` alone, so a Mapbox brownout wiped every user's verified evidence for
+    the Reel. A3 removes the delete entirely; fail-closed is now carried by the
+    verification-version stamp, which `authorize_place_ids` requires — so the poisoned links
+    survive as rows yet remain unusable, and no other owner's evidence is at risk.
+    """
     client = _Client({
         "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending"}],
         "organize_job_items": [{
@@ -1116,8 +1674,8 @@ async def test_country_mismatch_removes_all_poisoned_links_and_fails_closed(monk
         }],
         "reel_cache": [{"id": "cache-1", "normalized_url": "https://www.instagram.com/reel/A"}],
         "reel_place_mentions": [
-            {"id": "legacy-mx", "reel_cache_id": "cache-1", "place_id": "place-mx"},
-            {"id": "legacy-us", "reel_cache_id": "cache-1", "place_id": "place-us"},
+            {"id": "legacy-mx", "user_id": "user-a", "reel_cache_id": "cache-1", "place_id": "place-mx"},
+            {"id": "legacy-us", "user_id": "user-a", "reel_cache_id": "cache-1", "place_id": "place-us"},
         ],
     })
     research = PlaceResult(
@@ -1137,9 +1695,13 @@ async def test_country_mismatch_removes_all_poisoned_links_and_fails_closed(monk
         "job-1", "user-a", client=client, scrape=unexpected_scrape, ground=mismatch
     )
 
-    assert client.db["reel_place_mentions"] == []
     assert client.db["organize_job_items"][0]["status"] == "location_not_found"
     assert client.db["saved_reels"][0]["analysis_status"] == "location_not_found"
+    # Not destroyed — a failed grounding is a partial failure, not a data-loss event.
+    assert {row["place_id"] for row in client.db["reel_place_mentions"]} == {"place-mx", "place-us"}
+    # ...and still unusable, because neither carries the verification stamp.
+    with pytest.raises(PermissionError):
+        await authorize_place_ids(client, "user-a", ["place-mx"])
 
 
 @pytest.mark.asyncio

@@ -110,9 +110,58 @@ async def _find_or_create_place(client, place: CanonicalPlace) -> str:
     return inserted[0]["id"]
 
 
+async def _replace_trip_rows(client, trip_id: str, place_rows: list[dict], day_rows: list[dict],
+                             *, job_id: str | None, lease_token: str | None) -> None:
+    """Swap this trip's trip_places/trip_days for the given rows — FENCED on our job lease.
+
+    This is the pipeline's only DESTRUCTIVE write, and the fence has to be part of the write
+    rather than a check in front of it. A superseded worker that merely *checked* an
+    in-process flag can still be superseded a microsecond later and go on to delete the
+    replacement's itinerary; `replace_trip_itinerary` re-reads the lease under a row lock in
+    the SAME transaction as the delete-reinsert, so being superseded means writing nothing.
+    Unlike the job row (`complete_trip_run`'s CAS) and the terminal event (`api/streaming.py`
+    returns on the first `result`), nothing anywhere corrects a clobbered itinerary.
+
+    `job_id`/`lease_token` are REQUIRED keyword arguments with no defaults, mirroring
+    `mark_job_done`: a defaulted `None` is exactly the bypass a forgetful call site would take,
+    and it would be silent. Passing both as None is the explicit "this run has no durable job"
+    declaration — the jobless path has no lease, no reaper, and therefore no supersession to
+    fence against. A job_id WITHOUT a token is not a third mode, it is a bug: the token is
+    minted by the same statement that claims the job, so a caller holding one and not the
+    other never owned it.
+    """
+    if job_id is None:
+        if lease_token is not None:
+            raise ValueError("lease_token without job_id: this run never claimed a job")
+        # No durable job => nothing to be superseded BY. Same statements the fenced path runs,
+        # in the same order.
+        await client.table("trip_places").delete().eq("trip_id", trip_id).execute()
+        await client.table("trip_days").delete().eq("trip_id", trip_id).execute()
+        for row in place_rows:
+            await client.table("trip_places").insert({"trip_id": trip_id, **row}).execute()
+        for row in day_rows:
+            await client.table("trip_days").insert({"trip_id": trip_id, **row}).execute()
+        return
+    if lease_token is None:
+        raise ValueError(f"job {job_id} has no lease token: refusing an unfenced trip rewrite")
+
+    fenced = await client.rpc("replace_trip_itinerary", {
+        "p_job_id": job_id, "p_trip_id": trip_id, "p_lease_token": lease_token,
+        "p_places": place_rows, "p_days": day_rows,
+    }).execute()
+    if not fenced.data:
+        # A zero-row fence is an AUTHORITATIVE statement that a replacement owns this job —
+        # the same signal `_renew_job_lease` returning False carries. Raise the type the
+        # runner's gates raise so it takes the identical abort path.
+        from organizer import LeaseLost      # local: keeps pipeline.persist off organizer's imports
+
+        raise LeaseLost(f"trip job {job_id} lease superseded during persist")
+
+
 async def persist_itinerary(client, trip_id: str, canonical: list[CanonicalPlace],
-                            dates: list[str]) -> int:
-    """Persist the trip's normalized rows. Retry-safe (clears this trip's links/days first).
+                            dates: list[str], *, job_id: str | None,
+                            lease_token: str | None) -> int:
+    """Persist the trip's normalized rows. Retry-safe (replaces this trip's links/days).
 
     Day assignment is IDENTITY-based: `group_places_by_day` produces the same geo-order +
     contiguous-split grouping the itinerary narrator uses, keyed by CanonicalPlace object
@@ -125,18 +174,19 @@ async def persist_itinerary(client, trip_id: str, canonical: list[CanonicalPlace
     resolved to an already-linked global place_id (the flywheel collision). The caller
     degrades trip status to saved_with_gaps when this is > 0.
 
-    Raises on a DB error — the caller (runner) degrades to saved_with_gaps.
+    Every row is resolved BEFORE anything is deleted, so the whole swap is one fenced
+    statement (see `_replace_trip_rows`). The old ordering deleted first and then resolved
+    place ids one round-trip at a time, which left the trip with no itinerary at all for the
+    length of that loop — and left it that way permanently if a lookup raised mid-loop.
+
+    Raises on a DB error — the caller (runner) degrades to saved_with_gaps — or `LeaseLost`
+    if a replacement claimed the job, which the runner must NOT degrade but abort on.
     """
     groups = group_places_by_day(canonical, dates)   # identity-preserving, same grouping as the itinerary
 
-    # Retry-safety: clear THIS trip's links/days (places are global — never deleted here).
-    # The runner's atomic CAS claim makes this single-writer per job/trip, so the
-    # non-transactional delete-then-reinsert is safe against the normal concurrency path.
-    await client.table("trip_places").delete().eq("trip_id", trip_id).execute()
-    await client.table("trip_days").delete().eq("trip_id", trip_id).execute()
-
     linked: set[str] = set()   # dedup place_ids within this trip
     dropped = 0
+    place_rows: list[dict] = []
     for day_number, group in groups:
         sort_order = 0
         for place in group:
@@ -151,18 +201,18 @@ async def persist_itinerary(client, trip_id: str, canonical: list[CanonicalPlace
                 dropped += 1
                 continue
             linked.add(place_id)
-            await client.table("trip_places").insert({
-                "trip_id": trip_id, "place_id": place_id, "source_type": place.source_type,
+            place_rows.append({
+                "place_id": place_id, "source_type": place.source_type,
                 "evidence_json": _evidence_json(place),
                 "day_number": day_number, "sort_order": sort_order,
-            }).execute()
+            })
             sort_order += 1
 
-    for day_number, _group in groups:
-        await client.table("trip_days").insert({
-            "trip_id": trip_id, "day_number": day_number, "day_date": dates[day_number - 1],
-        }).execute()
+    day_rows = [{"day_number": day_number, "day_date": dates[day_number - 1]}
+                for day_number, _group in groups]
 
+    await _replace_trip_rows(client, trip_id, place_rows, day_rows,
+                             job_id=job_id, lease_token=lease_token)
     return dropped
 
 

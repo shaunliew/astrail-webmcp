@@ -8,7 +8,28 @@ services:
     plan: starter
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
-    autoDeploy: true
+    # DISABLED DELIBERATELY — do not flip back without reading the trigger below.
+    #
+    # There is no pre-deploy migration hook anywhere (no `preDeployCommand`, nothing in the
+    # Dockerfile), so schema is applied by hand while code ships on merge. With autoDeploy on,
+    # THE MERGE IS THE DEPLOY — which makes the standard protocol ("apply migrations → confirm
+    # the currently-deployed code still works → then merge") impossible to execute, because
+    # there is no gap between the last two steps to verify in.
+    #
+    # That is not theoretical. `20260720100000_reel_place_mentions_user_scope` drops the
+    # `(reel_cache_id, place_id)` conflict key that the deployed `_persist_mention` upsert
+    # targets, so old and new code cannot both work against either schema — the migration says
+    # so itself. And `20260720130000_organize_job_error_codes` changes the raised SQLSTATE from
+    # P0001 to AS4xx, so BOTH orderings return 500 for the length of the window.
+    #
+    # `/health` performs no schema check, so a code-first deploy against the old schema stays
+    # GREEN while jobs silently fail to start.
+    #
+    # TO RE-ENABLE: land a real pre-deploy migration gate (a Render `preDeployCommand` running
+    # `supabase migration up`, or a startup check that fails the health check on schema drift).
+    # Until one of those exists, deploys stay manual. Release sequence:
+    # docs/superpowers/plans/2026-07-20-saved-reels-release-runbook.md
+    autoDeploy: false
     envVars:
       - key: OPENAI_API_KEY
         sync: false
@@ -27,8 +48,6 @@ services:
       - key: LANGFUSE_PUBLIC_KEY
         sync: false
       - key: LANGFUSE_SECRET_KEY
-        sync: false
-      - key: SENTRY_DSN
         sync: false
       - key: ALLOWED_ORIGINS
         value: https://astrail.xyz,https://www.astrail.xyz

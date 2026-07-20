@@ -38,7 +38,7 @@ backend change beyond a trivial one-line fix. When in doubt, follow the loop.
    `.superpowers/sdd/progress.md`. Never run two implementers in parallel. Amendments in the plan supersede
    inline task code — tell the developer which.
 
-5. **Final whole-branch review (opus).** One **`astrail-reviewer`** over the WHOLE arc diff, `model: opus` —
+5. **Final whole-branch review (fable).** One **`astrail-reviewer`** over the WHOLE arc diff, `model: fable` —
    verifies every guardrail end-to-end against the code + migration DDL + FE contract, and triages the
    accumulated deferred Minors.
 
@@ -48,6 +48,21 @@ backend change beyond a trivial one-line fix. When in doubt, follow the loop.
    `|`-join collision (wrong-trip replay) and a `mark_job_done` failure flipping a completed trip to `failed`.
    Fix its findings + re-verify. **Run BOTH step 5 and step 6** — they have different blind spots; one is not a
    substitute for the other.
+
+   **Why it works, and how to prompt it (learned 2026-07-20 — it returned DO-NOT-MERGE on two arcs that
+   three Claude reviewers had already passed).** The value is not extra reasoning depth. Every Claude pass
+   reviews **the change**; the defects Codex found lived in the relationship between the change and
+   **what is already deployed** — a different question, which a reviewer only asks if you make it part of
+   the review surface. On Arc B it caught that the PR's own merge instruction would have taken production
+   down: the migration changes the raised SQLSTATE from `P0001` to `AS4xx`, and `dev`'s running code
+   matches `P0001`, so *both* orderings return 500. Three prior reviewers read the diff and agreed with it.
+
+   So **put the deployment reality in the prompt**, not just the diff: what is running right now, how code
+   and schema ship (separately, here), what the rollback does, and any scope limit you have already
+   accepted — then ask explicitly for consequences *beyond* that limit. Codex correctly found a case that
+   went past a boundary I told it was deliberate. Also tell it to say plainly when it finds nothing at a
+   severity; every agent this session found at least one thing the previous reviewer had over- or
+   understated, and "nothing here" is more useful than invented filler.
 
 7. **Live-verify.** A real smoke against the live stack (`backend/scripts/live_run.py` or a focused script) —
    prove the feature works end-to-end, not just in unit tests. For **UI / auth / SSE / Mapbox / full-flow**
@@ -74,12 +89,131 @@ backend change beyond a trivial one-line fix. When in doubt, follow the loop.
   load-bearing (revert the guard → watch the new test go red → restore).
 - **Both final reviews run** (astrail-reviewer opus whole-branch **AND** gstack `/review` Codex).
 
+## NEVER `git add -A` while a subagent is working (learned 2026-07-19, the hard way)
+
+Subagents share the orchestrator's working tree. An orchestrator running `git add -A && git commit`
+to land its own docs **sweeps the subagent's in-progress source files into that commit** — the
+developer then finds its work already committed under someone else's message.
+
+**Rule: stage explicit paths, always.**
+
+```bash
+git add docs/superpowers/reviews/my-doc.md          # yes
+git add -A                                           # NO, not while any subagent is live
+```
+
+If it happens anyway, the repair that preserves everyone's authorship is:
+`git reset <last-good>` → `git commit -C <bad-sha>` with only the intended paths staged (keeps the
+original message/author/date) → let the subagent commit its own work separately. Verify with
+`git diff <bad-sha> HEAD` — **empty means byte-identical, only the commit boundary moved.**
+Nothing is lost; the old SHA stays in the reflog.
+
+Related: check `git status --short` before committing. A file you did not touch appearing there is
+the tell that a subagent is mid-write.
+
+## Calling Codex without hanging (learned 2026-07-19 — cost ~20 min twice)
+
+`codex exec "<prompt>"` **hangs** when stdin is a non-TTY pipe with nothing written to it: it
+prints `Reading additional input from stdin...` and waits forever. This is NOT the shared-runtime
+hang — it happens to direct `codex exec` too, and it is easy to misattribute. Always redirect:
+
+```bash
+timeout 1500 codex exec -m gpt-5.6-sol -c model_reasoning_effort="high" \
+  --sandbox read-only --skip-git-repo-check "<prompt>" \
+  < /dev/null > /path/to/out.txt 2>&1
+```
+
+- `< /dev/null` is the fix — immediate EOF, so Codex uses the prompt argument.
+- Redirect to a **file**; do NOT pipe to `tail`/`head` (they buffer to completion, so you get no
+  incremental output and cannot tell progress from a hang).
+- `-c model_reasoning_effort="high"` matters: the user's `~/.codex/config.toml` defaults to `low`,
+  which is too weak for a plan or migration review.
+- **Exit code 0 does not mean it did the work.** A hung-then-killed run exits 0 with an empty or
+  header-only file. Check the output, not the status.
+
+## Subagent result delivery (learned 2026-07-19 — cost ~5 wasted round-trips in one session)
+
+**A background subagent's plain final text is NOT delivered to the orchestrator.** It must call
+`SendMessage` with `to: "main"`. Without that the agent finishes its work, produces a report nobody
+receives, and surfaces only as an idle notification — so the orchestrator has to re-prompt it for
+work that is already done. For read-only agents (reviewer, researcher) this is worse: they write no
+files, so the un-sent message was the entire output of the run.
+
+- The three `astrail-*` agent definitions now carry an explicit "HOW TO DELIVER" block. Keep it.
+- **When dispatching a non-`astrail-*` agent** (`general-purpose`, `Explore`, `Plan`, …) you cannot
+  edit its definition — put the instruction in the dispatch prompt: *"When done, call SendMessage
+  to `main` with your report; plain output is not delivered."*
+- **Diagnosing an idle agent:** check for the artifact first (a commit, a written file) before
+  assuming failure. Implementers usually did the work; only the handoff dropped. Read-only agents
+  have no artifact — re-prompt them, and ask for partial results if they did not finish.
+
+## Tests that cannot fail — the six ways found so far (learned 2026-07-20, all in one session)
+
+Fault injection is already a non-negotiable above. This is *where to point it*: six real cases from
+one session where a test looked like coverage and asserted nothing. **None were found by reading
+tests.** Every one was found by deleting the production code and watching what failed to redden.
+
+1. **A closure constructed but never invoked.** `run_organize_job`'s default Apify seam was built by
+   one test and *called* by none. Defining a nested function resolves none of the names in its body —
+   lookup happens at call time — so a `NameError` sat in the production path while 727 tests passed.
+2. **A fixture already in the asserted order.** The SSE cursor test seeded events `1, 2` and asserted
+   `1, 2`, so it passed with `.order("sequence")` deleted outright. **If the fixture's natural state
+   satisfies the assertion, the assertion tests nothing.**
+3. **An assertion that runs before the mutation it should catch.** A guard checked the stored value
+   *before* calling the function that would have corrupted it.
+4. **A fake whose method is a no-op.** `_Table.order` was `return self`. Three production call sites
+   relied on `.order()`, and no test could ever have detected its removal. Fakes must implement the
+   real interface — a partial fake plus a `hasattr` fork in production is the same bug wearing a hat.
+5. **A React unmount that proves nothing.** A full-tree unmount "proving" a provider outlives its
+   consumer passes vacuously, because React destroys the parent first. Model the actual route change.
+   (Same shape: `rerender` reconciles the same element and never re-runs the effect — use distinct keys.)
+6. **A fixture missing a field, so an earlier gate short-circuits.** A country-predicate test seeded
+   its row with no lat/lng, so the distance gate skipped it and the predicate under test never ran.
+   It passed with the country check deleted. This one had been in the repo for a long time.
+
+**The rule that catches all six:** before trusting any test, state *what specifically makes it red
+when the guard is removed* — then delete the guard and prove it. Clear `__pycache__` first
+(`find . -name __pycache__ -type d -not -path "./.venv/*" -exec rm -rf {} +`); restoring a file can
+leave stale bytecode so every signal reads clean while the interpreter runs faulted code.
+
+**And check whether the instrument itself can see the change.** A static `mapbox-gl` import put 1.7MB
+into a shared chunk and `next build`'s size table reported every route as *unchanged*; it took
+diffing `app-build-manifest.json` to see it. `/health` returns green against the wrong schema.
+`supabase test db` cannot reach `supabase/migrations/rollback/` at all, so a rollback test must run
+host-side — and testing a *copy* of the script is how a divergent script ships green.
+
+## Look for absences, not just defects (learned 2026-07-20)
+
+Two of the session's most valuable findings were things that did not exist, and **no code review can
+find those** — an absent file has no line number, fails no test, and appears in no diff. Both came
+from reading the spec and asking *which described behaviours have no host surface*:
+
+- The app had **no `error.tsx` and no `not-found.tsx` anywhere**, so Next.js was serving stock error
+  screens — found by looking for where `DESIGN-DRAFT.md` §7 said the mascot should appear.
+- `TripDay.title/summary/weather_summary` — the **narrator and weather agents' output** — shipped in
+  every bundle and rendered nowhere. The backend paid for narration on every run and discarded it.
+
+So run one pass code-first (is what exists correct?) and one pass spec-first (does everything
+described have somewhere to live?). They find different classes of defect.
+
 ## Model selection (per subagent-driven-development)
 
-Cheapest tier for transcription-from-plan implementers + single-file mechanical fixes; **sonnet** for
-integration tasks + most per-task reviews; **opus** for the final whole-branch review and the highest-risk
-per-task diffs (durable spine, idempotency, concurrency, recovery). **Always specify the model explicitly
-when dispatching a subagent** — an omitted model inherits the session's (often the most expensive).
+**Always specify the model explicitly when dispatching a subagent** — an omitted model inherits the
+session's (often the most expensive).
+
+Current tiering (**revised 2026-07-19**; supersedes the earlier opus-implements/opus-final-review split):
+
+| Step | Model | Why |
+|---|---|---|
+| Plan (step 2) + reviewing a large merged diff that feeds a plan | **fable** | Highest-leverage thinking. Quota-limited — batch many issues into ONE plan pass rather than one pass per issue. |
+| Implement (step 4, `astrail-developer`) | **opus** | Plentiful relative to fable; strong at faithful transcription-from-plan + TDD. |
+| Per-task review gate (step 4, `astrail-reviewer`) | **sonnet** | ~7+ passes per arc. Never spend fable here — it exhausts the quota before step 5. |
+| Final whole-branch review (step 5) | **fable** | The single review with the most to catch. Fable replaces opus for this pass. |
+| Research (step 1) | **sonnet** | Read-only fan-out; cheap. |
+| Cross-model outside voice (steps 3 + 6) | **`gpt-5.6-sol`** via Codex | Different-vendor blind spots. Call `codex exec -m gpt-5.6-sol` directly (NOT the shared runtime — it hangs on long reviews); raise `-c model_reasoning_effort="high"` for reviews, since the user's `~/.codex/config.toml` defaults to `low`. |
+
+**Fable budget discipline:** roughly 3 fable passes per arc (plan, merged-diff review if any, final review).
+If an arc needs more, batch harder — merge related issues into one plan — rather than raising the count.
 
 ## Why this loop (evidence)
 

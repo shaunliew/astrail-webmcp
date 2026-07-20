@@ -19,6 +19,7 @@ vi.mock('@/lib/reels/api', () => ({ listSavedReelCards, startOrganize, streamOrg
 vi.mock('@/lib/trip/api', () => ({ generateTrip, streamGeneration }))
 
 import SavedReelsFlow, { toReelBriefItem } from '@/components/reels/SavedReelsFlow'
+import MapProvider from '@/components/map/MapProvider'
 import type { SavedReelCard } from '@/lib/reels/backend-types'
 
 const cards: SavedReelCard[] = [
@@ -57,7 +58,7 @@ const mixedOrganizedCards: SavedReelCard[] = [
 ]
 
 async function startSelectedOrganize() {
-  const rendered = render(<SavedReelsFlow />)
+  const rendered = render(<MapProvider><SavedReelsFlow /></MapProvider>)
   await screen.findByText(/cache ready/i)
   fireEvent.click(screen.getByRole('button', { name: /select reels/i }))
   fireEvent.click(screen.getByRole('checkbox', { name: /select .*AAA/i }))
@@ -112,7 +113,7 @@ describe('SavedReelsFlow', () => {
   })
 
   it('shows cached and uncached cards, then enters temporary selection mode with quota copy', async () => {
-    render(<SavedReelsFlow />)
+    render(<MapProvider><SavedReelsFlow /></MapProvider>)
     expect(await screen.findByText(/cache ready/i)).toBeInTheDocument()
     expect(screen.getByText(/not analyzed yet/i)).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /select reels/i }))
@@ -121,7 +122,7 @@ describe('SavedReelsFlow', () => {
   })
 
   it('organizes selected Reels, shows the replacing globe status, and opens country trays', async () => {
-    render(<SavedReelsFlow />)
+    render(<MapProvider><SavedReelsFlow /></MapProvider>)
     await screen.findByText(/cache ready/i)
     fireEvent.click(screen.getByRole('button', { name: /select reels/i }))
     fireEvent.click(screen.getByRole('checkbox', { name: /select .*AAA/i }))
@@ -141,7 +142,7 @@ describe('SavedReelsFlow', () => {
   })
 
   it('shows grounded places only from the Reels submitted in the current organize action', async () => {
-    render(<SavedReelsFlow />)
+    render(<MapProvider><SavedReelsFlow /></MapProvider>)
     await screen.findByText(/cache ready/i)
     fireEvent.click(screen.getByRole('button', { name: /select reels/i }))
     fireEvent.click(screen.getByRole('checkbox', { name: /select .*AAA/i }))
@@ -160,7 +161,7 @@ describe('SavedReelsFlow', () => {
   })
 
   it('passes selected place_ids through the brief into the existing generation stream', async () => {
-    render(<SavedReelsFlow />)
+    render(<MapProvider><SavedReelsFlow /></MapProvider>)
     await screen.findByText(/cache ready/i)
     fireEvent.click(screen.getByRole('button', { name: /select reels/i }))
     fireEvent.click(screen.getByRole('checkbox', { name: /select .*AAA/i }))
@@ -198,7 +199,7 @@ describe('SavedReelsFlow', () => {
       items: [{ saved_reel_id: 'saved-1', status: 'failed', place_count: 0, error_message: 'provider unavailable' }],
     })
 
-    render(<SavedReelsFlow />)
+    render(<MapProvider><SavedReelsFlow /></MapProvider>)
     await screen.findByText(/cache ready/i)
     fireEvent.click(screen.getByRole('button', { name: /select reels/i }))
     fireEvent.click(screen.getByRole('checkbox', { name: /select .*AAA/i }))
@@ -223,7 +224,7 @@ describe('SavedReelsFlow', () => {
       items: [{ saved_reel_id: 'saved-1', status: 'location_not_found', place_count: 0, error_message: null }],
     })
 
-    render(<SavedReelsFlow />)
+    render(<MapProvider><SavedReelsFlow /></MapProvider>)
     await screen.findByText(/cache ready/i)
     fireEvent.click(screen.getByRole('button', { name: /select reels/i }))
     fireEvent.click(screen.getByRole('checkbox', { name: /select .*AAA/i }))
@@ -369,7 +370,7 @@ describe('SavedReelsFlow', () => {
   it('does not update or stream after unmount during the inbox load', async () => {
     let resolveCards!: (value: SavedReelCard[]) => void
     listSavedReelCards.mockReturnValueOnce(new Promise((resolve) => { resolveCards = resolve }))
-    const { unmount } = render(<SavedReelsFlow />)
+    const { unmount } = render(<MapProvider><SavedReelsFlow /></MapProvider>)
     unmount()
     resolveCards(cards)
     await Promise.resolve(); await Promise.resolve()

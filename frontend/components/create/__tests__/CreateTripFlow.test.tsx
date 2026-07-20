@@ -13,6 +13,7 @@ vi.mock('@/lib/supabase/session', () => ({ getAccessToken }))
 vi.mock('@/lib/trip/api', () => ({ generateTrip, streamGeneration }))
 
 import CreateTripFlow from '@/components/create/CreateTripFlow'
+import MapProvider from '@/components/map/MapProvider'
 
 describe('CreateTripFlow', () => {
   beforeEach(() => {
@@ -34,12 +35,12 @@ describe('CreateTripFlow', () => {
   })
 
   it('disables Generate until there is at least one item', () => {
-    render(<CreateTripFlow />)
+    render(<MapProvider><CreateTripFlow /></MapProvider>)
     expect(screen.getByRole('button', { name: /review trip brief/i })).toBeDisabled()
   })
 
   it('creates the trip, streams progress, and routes to the trip view', async () => {
-    render(<CreateTripFlow />)
+    render(<MapProvider><CreateTripFlow /></MapProvider>)
     fireEvent.change(screen.getByLabelText(/paste.*reel/i), {
       target: { value: 'https://www.instagram.com/reel/AAA/' },
     })
@@ -67,7 +68,7 @@ describe('CreateTripFlow', () => {
     let resolveGenerate!: (v: { trip_id: string }) => void
     generateTrip.mockImplementationOnce(() => new Promise((res) => { resolveGenerate = res }))
 
-    const { unmount } = render(<CreateTripFlow />)
+    const { unmount } = render(<MapProvider><CreateTripFlow /></MapProvider>)
     fireEvent.change(screen.getByLabelText(/paste.*reel/i), {
       target: { value: 'https://www.instagram.com/reel/AAA/' },
     })

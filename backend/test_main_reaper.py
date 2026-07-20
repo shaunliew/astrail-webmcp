@@ -14,13 +14,18 @@ is a CAS.
 from __future__ import annotations
 
 import asyncio
-from datetime import timedelta
 
 import pytest
 
 import main
 from config_validation import REQUIRED_SECRETS
-from test_organizer_lease import _now_utc, _spin_until, _tick, in_minutes, minutes_ago
+from test_organizer_lease import (
+    _spin_until,
+    _tick,
+    advance_db_clock,
+    in_minutes,
+    minutes_ago,
+)
 from test_saved_reels_organize import _Client
 
 
@@ -47,39 +52,43 @@ def job_row(client) -> dict:
 
 
 async def test_fresh_crash_is_reclaimed_by_the_DELAYED_sweep_not_only_at_boot(monkeypatch):
-    """THE SILENT DROP, closed. Reclaimed on the SECOND tick, not the first.
+    """THE SILENT DROP, closed. Reclaimed by a LATER sweep, not the one that first saw it.
 
-    Driven by an injected clock rather than real sleeps, and asserted on the TICK INDEX at
-    which the re-dispatch happened rather than on elapsed time — so it is deterministic, not
-    a race dressed up as a test. Tick 1 sees a lease that has not yet expired and must leave
-    the job alone; only tick 2, past the TTL, may reclaim and re-dispatch it.
+    Driven by the DATABASE's clock rather than real sleeps, and sequenced on observed sweeps
+    rather than elapsed time, so it is deterministic instead of a race dressed up as a test.
+    The reaper has no clock of its own to inject any more: expiry is decided by
+    `clock_timestamp()` inside Postgres, which is the whole point — a reaper that supplied its
+    own instant is how a skewed instance reclaimed leases another instance still held.
+
+    The early sweeps see a lease that has not yet expired and must leave the job alone. Only
+    once the database's clock passes the expiry may a sweep reclaim and re-dispatch it.
     """
     monkeypatch.setattr(main, "REAP_INTERVAL_S", 0)
     client = _Client(crashed_job_db())
-    base = _now_utc()
-    ticks: list[int] = []
 
-    def clock():
-        ticks.append(len(ticks) + 1)
-        return base if len(ticks) == 1 else base + timedelta(minutes=10)
-
-    dispatched: list[int] = []
+    dispatched: list[str] = []
 
     async def fake_run_generation(*_args, **_kwargs):
-        dispatched.append(ticks[-1])       # WHICH tick re-dispatched this run
+        dispatched.append("run")
         return {"itinerary": {"days": []}}
 
     monkeypatch.setattr(main, "run_generation", fake_run_generation)
 
-    reaper = asyncio.create_task(main._reap_loop(client, clock=clock))
+    def sweeps() -> int:
+        return sum(1 for name, _ in client.rpc_calls if name == "reclaim_expired_trip_jobs")
+
+    reaper = asyncio.create_task(main._reap_loop(client))
+    await _spin_until(lambda: sweeps() >= 2)
+    assert not dispatched               # the lease was still live: hands off, twice over
+
+    advance_db_clock(client, minutes=10)                # the database's clock passes the TTL
+
     await _spin_until(lambda: bool(dispatched))
     reaper.cancel()
     with pytest.raises(asyncio.CancelledError):
         await reaper
 
-    assert 1 not in dispatched          # tick 1: the lease was still live, hands off
-    assert 2 in dispatched              # tick 2: expired, reclaimed, re-dispatched
-    assert job_row(client)["lease_token"] is None      # and the stale token was cleared
+    assert job_row(client)["lease_token"] is None      # the stale token was cleared
 
 
 async def test_the_reaper_survives_a_db_blip_and_keeps_reaping(monkeypatch, caplog):

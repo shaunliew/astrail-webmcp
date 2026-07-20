@@ -3,6 +3,8 @@ awaitable). Covers happy path, partial failure (degraded), critical failure (no
 places/reels survive), an unexpected exception outside the per-reel isolation,
 a blank-day feasibility flag downgrading status even with no scrape/extract
 failures, and the atomic CAS claim guard that aborts a double-dispatched run."""
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from models.enrichment import WeatherReport
@@ -13,7 +15,7 @@ from pipeline import runner
 # Postgres-faithful `NULL < value` semantics and its refusal to evaluate an unimplemented
 # operator are pinned by fidelity tests in `test_organizer_lease.py`. A second, subtly
 # different evaluator here is how a lease test passes while proving nothing.
-from test_saved_reels_organize import _eval_filter_term, _lt, _split_top_level
+from test_saved_reels_organize import _LEASE_RPCS, _eval_filter_term, _lt, _split_top_level
 
 
 class _Result:
@@ -184,6 +186,13 @@ class _Client:
     def __init__(self, jobs=None):
         self.db: dict = {"jobs": jobs or []}
         self.rpc_calls: list = []
+        # The DATABASE's clock, as the organize fake documents at length: every lease instant
+        # is `clock_timestamp()` inside Postgres, so the mirrors must read this and never
+        # `datetime.now()`.
+        self.clock_skew = timedelta(0)
+
+    def db_now(self) -> datetime:
+        return datetime.now(timezone.utc) + self.clock_skew
 
     def table(self, name):
         return _Table(name, self.db)
@@ -194,6 +203,9 @@ class _Client:
             return _CompleteTripRunRpc(self, params)
         if name == "replace_trip_itinerary":
             return _ReplaceTripItineraryRpc(self, params)
+        if name in _LEASE_RPCS:
+            mirror, table = _LEASE_RPCS[name]
+            return mirror(self, params, self.db.setdefault(table, []))
         raise AssertionError(f"fake does not implement rpc {name!r}")
 
     @property

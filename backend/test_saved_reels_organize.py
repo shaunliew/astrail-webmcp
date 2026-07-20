@@ -167,9 +167,22 @@ class _Table:
 
 
 class _Client:
+    """A fake Supabase client that owns its own clock, because the DATABASE owns the real one.
+
+    `clock_skew` moves THIS FAKE DATABASE's clock, not the caller's. Every lease instant is now
+    `clock_timestamp()` inside Postgres (20260720170000), so the way a test says "five minutes
+    passed" is to advance the database, exactly as production would experience it. A fake that
+    read the *worker's* clock instead could not express host-clock skew at all — the property
+    the lease RPCs exist to defend — and every skew test would be vacuous.
+    """
+
     def __init__(self, db=None):
         self.db = db or {}
         self.rpc_calls = []
+        self.clock_skew = timedelta(0)
+
+    def db_now(self) -> datetime:
+        return datetime.now(timezone.utc) + self.clock_skew
 
     def table(self, name): return _Table(name, self.db)
     def rpc(self, name, params):
@@ -182,6 +195,9 @@ class _Client:
             return _ReplaceReelPlaceMentionsRpc(self, params)
         if name == "find_or_create_place":
             return _FindOrCreatePlaceRpc(self, params)
+        if name in _LEASE_RPCS:
+            mirror, table = _LEASE_RPCS[name]
+            return mirror(self, params, self.db.setdefault(table, []))
         return _Rpc(self, name)
 
 
@@ -229,6 +245,208 @@ class _BarrierTable(_Table):
 class _Rpc:
     def __init__(self, client, name): self.client, self.name = client, name
     async def execute(self): return _Result(self.client.db.get(f"rpc:{self.name}"))
+
+
+# --- lease RPCs: mirrors of 20260720170000_db_clock_job_leases.sql ---------------------------
+#
+# Every instant below comes from `client.db_now()`, never `datetime.now()`. That is the entire
+# property these functions exist to provide: the claim, the renewal and the expiry comparison
+# are made by ONE clock — Postgres's — so two Render instances that disagree about the time
+# cannot both believe they own a job. A mirror that read the caller's clock would model a
+# database that does not have that property, and every skew test would pass against the
+# Python-clock implementation these replaced.
+
+
+def _iso(value: datetime) -> str:
+    """`Z`-suffixed ISO-8601, matching what Postgres hands back through PostgREST."""
+    return value.isoformat().replace("+00:00", "Z")
+
+
+def _parse_ts(value) -> datetime | None:
+    return None if value is None else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def _require_lease_params(params, *, needs_token: bool = True) -> None:
+    """The functions' AS400 boundary checks. Mirrored because they are load-bearing, not
+    defensive noise: a claim with no token writes a row nothing can later fence on, and a
+    non-positive TTL mints a lease that is already expired — both fail toward two live
+    workers, which is the failure this whole mechanism exists to prevent."""
+    if needs_token and params.get("p_lease_token") is None:
+        raise _pg_error("AS400", "lease token is required")
+    ttl = params.get("p_ttl_seconds")
+    if ttl is None or ttl <= 0:
+        raise _pg_error("AS400", "lease TTL must be positive")
+
+
+def _lease_is_expired(row, now: datetime, legacy_cutoff: datetime) -> bool:
+    """The reclaim predicate, with POSTGRES's NULL semantics — where it is easiest to get wrong.
+
+    `NULL < clock_timestamp()` is NULL, not true, so a row with no expiry does NOT match the
+    first branch; it falls through to the legacy branch, which is itself gated on the expiry
+    genuinely being NULL. Collapse either half and the mirror lies in one of two opposite
+    directions: treat NULL as expired and the reaper steals live long-running leases, drop the
+    legacy branch and pre-lease rows are skipped forever (guardrail #12's silent drop).
+    """
+    expiry = _parse_ts(row.get("lock_expires_at"))
+    if expiry is not None:
+        return expiry < now
+    locked_at = _parse_ts(row.get("locked_at"))
+    return locked_at is not None and locked_at < legacy_cutoff
+
+
+class _ClaimTripJobRpc:
+    """Mirror of `public.claim_trip_job`. `started_at` is re-stamped on every claim, matching
+    the function (and unlike the organize claim, which coalesces)."""
+
+    def __init__(self, client, params, rows):
+        self.client, self.params, self.rows = client, params, rows
+
+    async def execute(self):
+        params = self.params
+        _require_lease_params(params)
+        now = self.client.db_now()
+        matched = [row for row in self.rows
+                   if row.get("id") == params["p_job_id"]
+                   and row.get("status") in ("pending", "retryable")]
+        for row in matched:
+            row.update({
+                "status": "running",
+                "locked_at": _iso(now),
+                "started_at": _iso(now),
+                "lock_expires_at": _iso(now + timedelta(seconds=params["p_ttl_seconds"])),
+                "lease_token": params["p_lease_token"],
+                "completed_at": None,
+                "error_message": None,
+            })
+        return _Result(bool(matched))
+
+
+class _RenewTripJobLeaseRpc:
+    """Mirror of `public.renew_trip_job_lease`. `status = 'running'` is part of the fence, not
+    decoration: a job already reclaimed and re-dispatched must not be renewable by the run
+    that lost it."""
+
+    def __init__(self, client, params, rows):
+        self.client, self.params, self.rows = client, params, rows
+
+    async def execute(self):
+        params = self.params
+        _require_lease_params(params)
+        now = self.client.db_now()
+        matched = [row for row in self.rows
+                   if row.get("id") == params["p_job_id"]
+                   and row.get("status") == "running"
+                   and row.get("lease_token") == params["p_lease_token"]]
+        for row in matched:
+            row["lock_expires_at"] = _iso(now + timedelta(seconds=params["p_ttl_seconds"]))
+        return _Result(bool(matched))
+
+
+class _ReclaimExpiredTripJobsRpc:
+    """Mirror of `public.reclaim_expired_trip_jobs`. Returns the COUNT, as the function does.
+
+    The lease fields are cleared, NOT just the status. `mark_job_done` fences on the token with
+    no status guard, so a row that kept its token would let an expired-but-still-alive worker
+    flip the freshly scheduled `retryable` back to `failed`.
+    """
+
+    def __init__(self, client, params, rows):
+        self.client, self.params, self.rows = client, params, rows
+
+    async def execute(self):
+        params = self.params
+        _require_lease_params(params, needs_token=False)
+        now = self.client.db_now()
+        legacy_cutoff = now - timedelta(seconds=params["p_ttl_seconds"])
+        matched = [row for row in self.rows
+                   if row.get("status") == "running"
+                   and _lease_is_expired(row, now, legacy_cutoff)]
+        for row in matched:
+            row.update({"status": "retryable", "lease_token": None,
+                        "lock_expires_at": None, "locked_at": None})
+        return _Result(len(matched))
+
+
+class _ClaimOrganizeJobRpc:
+    """Mirror of `public.claim_organize_job`.
+
+    `started_at` COALESCES rather than re-stamping: it is the run's user-visible elapsed time,
+    and re-stamping on retry makes a job stuck in a retry loop report as though it had just
+    begun. The owner scope is part of the predicate, not a courtesy.
+    """
+
+    def __init__(self, client, params, rows):
+        self.client, self.params, self.rows = client, params, rows
+
+    async def execute(self):
+        params = self.params
+        _require_lease_params(params)
+        now = self.client.db_now()
+        matched = [row for row in self.rows
+                   if row.get("id") == params["p_job_id"]
+                   and row.get("user_id") == params["p_user_id"]
+                   and row.get("status") == "pending"]
+        for row in matched:
+            row.update({
+                "status": "processing",
+                "status_message": params["p_status_message"],
+                "locked_at": _iso(now),
+                "started_at": row.get("started_at") or _iso(now),
+                "lock_expires_at": _iso(now + timedelta(seconds=params["p_ttl_seconds"])),
+                "lease_token": params["p_lease_token"],
+                "attempt_count": params["p_attempt_count"],
+            })
+        return _Result(bool(matched))
+
+
+class _RenewOrganizeJobLeaseRpc:
+    def __init__(self, client, params, rows):
+        self.client, self.params, self.rows = client, params, rows
+
+    async def execute(self):
+        params = self.params
+        _require_lease_params(params)
+        now = self.client.db_now()
+        matched = [row for row in self.rows
+                   if row.get("id") == params["p_job_id"]
+                   and row.get("user_id") == params["p_user_id"]
+                   and row.get("status") == "processing"
+                   and row.get("lease_token") == params["p_lease_token"]]
+        for row in matched:
+            row["lock_expires_at"] = _iso(now + timedelta(seconds=params["p_ttl_seconds"]))
+        return _Result(bool(matched))
+
+
+class _ReclaimExpiredOrganizeJobsRpc:
+    def __init__(self, client, params, rows):
+        self.client, self.params, self.rows = client, params, rows
+
+    async def execute(self):
+        params = self.params
+        _require_lease_params(params, needs_token=False)
+        now = self.client.db_now()
+        legacy_cutoff = now - timedelta(seconds=params["p_ttl_seconds"])
+        matched = [row for row in self.rows
+                   if row.get("status") == "processing"
+                   and _lease_is_expired(row, now, legacy_cutoff)]
+        for row in matched:
+            row.update({"status": "pending", "status_message": params["p_status_message"],
+                        "locked_at": None, "lock_expires_at": None, "lease_token": None})
+        return _Result(len(matched))
+
+
+# name -> (mirror, the table it operates on). The table is named here rather than inside each
+# mirror so a fake whose rows live somewhere other than `client.db` — `test_jobs._Client` keys
+# its store by idempotency key — can construct the same mirror over its own rows and get
+# identical semantics, instead of growing a second, drifting copy of the predicate.
+_LEASE_RPCS = {
+    "claim_trip_job": (_ClaimTripJobRpc, "jobs"),
+    "renew_trip_job_lease": (_RenewTripJobLeaseRpc, "jobs"),
+    "reclaim_expired_trip_jobs": (_ReclaimExpiredTripJobsRpc, "jobs"),
+    "claim_organize_job": (_ClaimOrganizeJobRpc, "organize_jobs"),
+    "renew_organize_job_lease": (_RenewOrganizeJobLeaseRpc, "organize_jobs"),
+    "reclaim_expired_organize_jobs": (_ReclaimExpiredOrganizeJobsRpc, "organize_jobs"),
+}
 
 
 class _FindOrCreatePlaceRpc:

@@ -1,7 +1,10 @@
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from postgrest.exceptions import APIError
 
 import jobs
+from test_saved_reels_organize import _LEASE_RPCS
 
 
 def test_idempotency_key_is_request_derived_and_stable():
@@ -128,9 +131,24 @@ class _Table:
 class _Client:
     def __init__(self):
         self.store: dict = {}
+        self.clock_skew = timedelta(0)
+
+    def db_now(self) -> datetime:
+        """The DATABASE's clock. Every lease instant is `clock_timestamp()` inside Postgres,
+        so the mirrors must read this rather than this process's wall clock."""
+        return datetime.now(timezone.utc) + self.clock_skew
 
     def table(self, name):
         return _Table(self.store)
+
+    def rpc(self, name, params):
+        # The SHARED mirrors, over this fake's differently-shaped store. Copying the claim
+        # predicate into a second local mirror is how two fakes drift apart and one of them
+        # starts proving nothing; the mirrors take their rows as an argument for exactly this.
+        if name in _LEASE_RPCS:
+            mirror, _table = _LEASE_RPCS[name]
+            return mirror(self, params, list(self.store.values()))
+        raise AssertionError(f"fake does not implement rpc {name!r}")
 
 
 @pytest.mark.asyncio

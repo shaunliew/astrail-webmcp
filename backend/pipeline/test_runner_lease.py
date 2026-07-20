@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
 
 import pytest
 
@@ -39,7 +38,7 @@ from pipeline.test_runner import (
     _place,
     _reel,
 )
-from test_organizer_lease import _now_utc, _spin_until, minutes_ago
+from test_organizer_lease import _expiry, _now_utc, _spin_until, advance_db_clock, minutes_ago
 
 
 def seeded_client(**fields) -> _Client:
@@ -95,10 +94,11 @@ async def test_the_terminal_result_and_the_job_status_land_together_through_one_
     assert out["itinerary"]["days"][0]["place_names"] == ["Tokyo Tower"]
     assert [event["message"] for event in results(client)] == ["generation complete"]
     assert job_row(client)["status"] == "succeeded"
-    # BOTH fenced writes, in order: the itinerary rewrite is a destructive delete-reinsert and
-    # goes through its own fence, not just the terminal one.
+    # The claim, then BOTH fenced writes, in order. The claim leads because every lease
+    # instant is the database's now; the itinerary rewrite is a destructive delete-reinsert
+    # and goes through its own fence, not just the terminal one.
     assert [name for name, _params in client.rpc_calls] == [
-        "replace_trip_itinerary", "complete_trip_run"]
+        "claim_trip_job", "replace_trip_itinerary", "complete_trip_run"]
 
 
 async def test_a_run_without_a_job_id_still_writes_its_terminal_result():
@@ -155,8 +155,8 @@ async def test_a_superseded_worker_writes_neither_the_job_status_nor_a_result_ev
 
     # The reaper finds the lease expired and a replacement claims — the deploy-overlap
     # sequence in full, driven through the real reclaim rather than by editing the row.
-    assert [job["id"] for job in await jobs.reclaim_expired_jobs(
-        client=client, now=_now_utc() + timedelta(minutes=10))] == ["job-1"]
+    advance_db_clock(client, minutes=10)
+    assert [job["id"] for job in await jobs.reclaim_expired_jobs(client=client)] == ["job-1"]
     new = asyncio.create_task(run(client, extract=parked_extract(new_entered, new_release)))
     await _spin_until(new_entered.is_set)
     new_token = job_row(client)["lease_token"]
@@ -273,7 +273,7 @@ async def test_the_running_heartbeat_renews_a_long_runs_lease(monkeypatch):
     await _spin_until(entered.is_set)
 
     job_row(client)["lock_expires_at"] = minutes_ago(1)          # let the lease go stale
-    await _spin_until(lambda: job_row(client)["lock_expires_at"] > _now_utc().isoformat())
+    await _spin_until(lambda: _expiry(job_row(client)) > _now_utc())
 
     release.set()
     await asyncio.wait_for(task, timeout=5)
@@ -384,7 +384,8 @@ async def test_no_heartbeat_is_started_for_a_run_that_lost_the_claim():
 
     assert out == {"skipped": "job already claimed by another run"}
     assert job_row(client)["lease_token"] == "someone-else"
-    assert client.rpc_calls == []
+    # The claim is attempted and LOSES; nothing follows it — no renewal, no terminal write.
+    assert [name for name, _params in client.rpc_calls] == ["claim_trip_job"]
 
 
 async def test_a_superseded_worker_does_not_stamp_failed_over_a_completed_trip():
@@ -509,8 +510,9 @@ async def test_a_superseded_worker_cannot_overwrite_the_replacements_itinerary(m
     # The reaper finds the lease expired and a replacement claims — the deploy-overlap
     # sequence in full, driven through the real reclaim rather than by editing the row.
     replacement_client = sharing(client)
+    advance_db_clock(replacement_client, minutes=10)
     assert [job["id"] for job in await jobs.reclaim_expired_jobs(
-        client=replacement_client, now=_now_utc() + timedelta(minutes=10))] == ["job-1"]
+        client=replacement_client)] == ["job-1"]
     new = asyncio.create_task(run(replacement_client, extract=extract_sensoji,
                                   narrator=parked_narrator))
     await _spin_until(narrating.is_set)          # it has PERSISTED and is still running
@@ -606,9 +608,25 @@ async def test_a_worker_whose_heartbeat_cannot_reach_postgres_stops(monkeypatch)
     reach Postgres at all, and the run must still stop.
     """
     monkeypatch.setattr(jobs, "JOB_LEASE_RENEW_S", 0)
-    monkeypatch.setattr(jobs, "JOB_LEASE_TTL_S", 0)      # every attempt lands past the deadline
     client = seeded_client()
     entered, release = asyncio.Event(), asyncio.Event()
+
+    real_claim = jobs.mark_job_running
+
+    async def claim_then_collapse_the_ttl(*args, **kwargs):
+        """Claim on a REAL TTL, then collapse it so the beat's deadline is immediately past.
+
+        Setting `JOB_LEASE_TTL_S = 0` up front — which is what this test used to do — now asks
+        `claim_trip_job` to mint a lease the database considers expired the instant it is
+        written, and the RPC rejects that outright. Rightly so: the scenario here is a worker
+        that HOLDS a lease and cannot renew it, so it must genuinely hold one first. The beat
+        reads the constant when it starts, which is after this returns.
+        """
+        token = await real_claim(*args, **kwargs)
+        monkeypatch.setattr(jobs, "JOB_LEASE_TTL_S", 0)
+        return token
+
+    monkeypatch.setattr(runner, "mark_job_running", claim_then_collapse_the_ttl)
 
     attempts: list[int] = []
 

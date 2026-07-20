@@ -29,7 +29,16 @@ from jobs import (
     mark_job_running,
     reclaim_expired_jobs,
 )
-from test_organizer_lease import _now_utc, _spin_until, in_minutes, minutes_ago
+from test_organizer_lease import (
+    SIX_MINUTES,
+    _now_utc,
+    _spin_until,
+    advance_db_clock,
+    assert_host_clock_is_actually_skewed,
+    in_minutes,
+    install_host_clock_skew,
+    minutes_ago,
+)
 from test_saved_reels_organize import _Client, _Table
 
 
@@ -60,6 +69,24 @@ class _BarrierTable(_Table):
         return await super().execute()
 
 
+class _BarrierRpc:
+    """Parks an RPC before its body runs, so the race sees the row the mirror finds on resume.
+
+    The reclaim is a database FUNCTION now, not a PostgREST update, so this — not
+    `_BarrierTable` — is the seam every race below parks at. The mirror computes its matches
+    inside `execute()`, exactly as Postgres evaluates the predicate when the statement runs,
+    so waiting here reproduces "another worker committed while our statement was queued".
+    """
+
+    def __init__(self, inner, client): self._inner, self._client = inner, client
+
+    async def execute(self):
+        self._client.pause_before_rpc = None      # arm once, as the table barrier does
+        self._client.at_barrier.set()
+        await self._client.resume.wait()
+        return await self._inner.execute()        # predicate evaluated HERE, on resume
+
+
 class BarrierClient(_Client):
     """A `_Client` that parks one statement so the other worker can act in the gap.
 
@@ -69,16 +96,22 @@ class BarrierClient(_Client):
     first.
     """
 
-    def __init__(self, db, *, pause_before_update_on=None, pause_after_select_on=None):
+    def __init__(self, db, *, pause_before_update_on=None, pause_after_select_on=None,
+                 pause_before_rpc=None):
         super().__init__(db)
         self.pause_before_update_on = pause_before_update_on
         self.pause_after_select_on = pause_after_select_on
+        self.pause_before_rpc = pause_before_rpc
         self.at_barrier = asyncio.Event()
         self.selected = asyncio.Event()
         self.resume = asyncio.Event()
 
     def table(self, name):
         return _BarrierTable(name, self.db, self)
+
+    def rpc(self, name, params):
+        inner = super().rpc(name, params)
+        return _BarrierRpc(inner, self) if name == self.pause_before_rpc else inner
 
 
 def seed_trip_job(client, **fields) -> None:
@@ -106,13 +139,10 @@ def fake_client() -> _Client:
 
 
 async def test_barrier_client_evaluates_a_parked_update_against_the_row_it_finds_on_resume():
-    """THE FIDELITY PROOF for every race below.
-
-    A parked UPDATE must re-check its predicate against the row as it stands when the
+    """A parked UPDATE must re-check its predicate against the row as it stands when the
     statement finally runs. A fake that matched rows when the query was *built* would let the
-    parked write land on a row that had since changed underneath it — which is precisely the
-    behaviour these tests exist to prove production does NOT have. Every race assertion in
-    this file would then pass against an implementation with no status guard at all.
+    parked write land on a row that had since changed underneath it. This pins the table
+    seam; `mark_job_done`'s CAS — which the races below run in the gap — goes through it.
     """
     client = BarrierClient({"jobs": [{"id": "j1", "status": "running"}]},
                            pause_before_update_on="jobs")
@@ -128,12 +158,34 @@ async def test_barrier_client_evaluates_a_parked_update_against_the_row_it_finds
     assert job_row(client)["status"] == "succeeded"
 
 
-async def test_barrier_disarms_after_one_statement_so_the_sweeps_later_reads_run_free():
-    """Arm-once is load-bearing, not an optimization: `reclaim_expired_jobs` runs an UPDATE
-    and then a SELECT, and the second worker runs its own statements while we are parked. A
-    barrier that re-armed would park those too and deadlock the test instead of failing it.
+async def test_barrier_client_evaluates_a_parked_RPC_against_the_row_it_finds_on_resume():
+    """THE FIDELITY PROOF for every race below.
+
+    The reclaim is a database function now, so the races park at the RPC seam rather than the
+    table one. A mirror that computed its matches when the call was *constructed* would let a
+    parked reclaim land on a row that had since changed — precisely the behaviour these tests
+    exist to prove production does NOT have. Every race assertion below would then pass
+    against an implementation with no status guard at all.
     """
-    client = BarrierClient({"jobs": []}, pause_before_update_on="jobs")
+    client = BarrierClient({"jobs": []}, pause_before_rpc="reclaim_expired_trip_jobs")
+    seed_trip_job(client, status="running", lease_token="t1", lock_expires_at=minutes_ago(1))
+
+    parked = asyncio.create_task(reclaim_expired_jobs(client=client))
+    await client.at_barrier.wait()
+
+    job_row(client)["status"] = "succeeded"       # the old worker finishes while we are parked
+    client.resume.set()
+    await asyncio.wait_for(parked, timeout=5)
+
+    assert job_row(client)["status"] == "succeeded"      # the reclaim matched nothing
+
+
+async def test_barrier_disarms_after_one_statement_so_the_sweeps_later_reads_run_free():
+    """Arm-once is load-bearing, not an optimization: `reclaim_expired_jobs` runs the reclaim
+    RPC and then a SELECT, and the second worker runs its own statements while we are parked.
+    A barrier that re-armed would park those too and deadlock the test instead of failing it.
+    """
+    client = BarrierClient({"jobs": []}, pause_before_rpc="reclaim_expired_trip_jobs")
     seed_trip_job(client, status="running", lease_token="t1", lock_expires_at=minutes_ago(1))
 
     sweep = asyncio.create_task(reclaim_expired_jobs(client=client))
@@ -358,15 +410,23 @@ async def test_long_running_trip_with_a_renewed_lease_is_not_reclaimed(fake_clie
     assert job_row(fake_client)["status"] == "running"
 
 
-async def test_reclaim_honours_an_injected_now(fake_client):
-    """`now` is the seam the periodic reaper drives its sweep from, so it must reach the
-    predicate rather than being accepted and ignored."""
+async def test_reclaim_reads_the_database_clock_not_this_processs(fake_client):
+    """Expiry is decided by `clock_timestamp()` inside Postgres, so the only thing that can
+    expire a lease is the DATABASE's clock moving. Nothing about this process changes between
+    the two sweeps below.
+
+    There is deliberately no `now` parameter to inject any more: one instance handing the
+    reclaim its own idea of the time is precisely how a skewed host reclaimed leases another
+    host was still holding.
+    """
     seed_trip_job(fake_client, status="running", lease_token="t-old",
                   lock_expires_at=in_minutes(4))
 
-    assert await reclaim_expired_jobs(client=fake_client, now=_now_utc()) == []
-    assert [job["id"] for job in await reclaim_expired_jobs(
-        client=fake_client, now=_now_utc() + timedelta(minutes=10))] == ["j1"]
+    assert await reclaim_expired_jobs(client=fake_client) == []
+
+    advance_db_clock(fake_client, minutes=10)
+
+    assert [job["id"] for job in await reclaim_expired_jobs(client=fake_client)] == ["j1"]
 
 
 async def test_reclaim_returns_pending_and_retryable_jobs_to_redispatch(fake_client):
@@ -409,10 +469,11 @@ async def test_recovery_does_not_resurrect_a_job_that_succeeded_mid_sweep():
     The pre-fix code SELECTed stale `running` rows and then UPDATEd by id with no status
     guard, so a `succeeded` job written in that window was flipped back to `retryable` and
     re-ran — a completed trip re-executed end to end, at full provider cost. Pushing the whole
-    predicate into the UPDATE is what closes it: `status='running'` is re-evaluated against
-    the row as it stands on resume, and `succeeded` no longer matches.
+    predicate into the reclaim's own UPDATE — now the one inside `reclaim_expired_trip_jobs` —
+    is what closes it: `status='running'` is re-evaluated against the row as it stands on
+    resume, and `succeeded` no longer matches.
     """
-    client = BarrierClient({"jobs": []}, pause_before_update_on="jobs")
+    client = BarrierClient({"jobs": []}, pause_before_rpc="reclaim_expired_trip_jobs")
     seed_trip_job(client, status="running", lease_token="t1", lock_expires_at=minutes_ago(1))
 
     sweep = asyncio.create_task(reclaim_expired_jobs(client=client))
@@ -431,10 +492,10 @@ async def test_recovery_does_not_erase_a_fresh_claim():
 
     Two instances boot together (or a boot sweep overlaps a periodic one). Reaper A reclaims
     and the redispatch claims fresh, minting a new token and a future expiry. Reaper B's
-    UPDATE then lands: `lock_expires_at < now` is re-evaluated against the renewed row, so it
-    matches nothing and the live run keeps its claim.
+    UPDATE then lands: `lock_expires_at < clock_timestamp()` is re-evaluated against the
+    renewed row, so it matches nothing and the live run keeps its claim.
     """
-    client = BarrierClient({"jobs": []}, pause_before_update_on="jobs")
+    client = BarrierClient({"jobs": []}, pause_before_rpc="reclaim_expired_trip_jobs")
     seed_trip_job(client, status="running", lease_token="t1", lock_expires_at=minutes_ago(1))
     other = _Client(client.db)      # reaper A + the redispatch, sharing the same rows
 
@@ -458,12 +519,12 @@ async def test_reaper_does_not_reset_a_lease_the_heartbeat_just_renewed():
 
     The heartbeat deliberately keeps the SAME token, so a select-then-CAS reaper would still
     match it on resume and reset a lease that is demonstrably alive. Only pushing the expiry
-    into the UPDATE's own predicate makes the renewal win: `lock_expires_at < now` is
-    re-evaluated against the renewed row and matches zero rows. The worker must also not
+    into the UPDATE's own predicate makes the renewal win: `lock_expires_at < clock_timestamp()`
+    is re-evaluated against the renewed row and matches zero rows. The worker must also not
     observe a lost lease — a reaper that reset it would make the next renewal return False
     and abort a healthy run.
     """
-    client = BarrierClient({"jobs": []}, pause_before_update_on="jobs")
+    client = BarrierClient({"jobs": []}, pause_before_rpc="reclaim_expired_trip_jobs")
     seed_trip_job(client, status="running", lease_token="t1", lock_expires_at=minutes_ago(1))
     worker = _Client(client.db)
 
@@ -505,3 +566,112 @@ async def test_reclaimed_job_is_dispatchable_again_and_the_old_token_is_dead():
 def test_lease_ttl_leaves_room_for_several_renewals():
     """A renew interval close to the TTL means one blip loses a healthy lease."""
     assert jobs.JOB_LEASE_RENEW_S * 4 <= JOB_LEASE_TTL_S
+
+
+# --- host clock skew ------------------------------------------------------------------------
+#
+# Trip-side twin of the organize skew tests in `test_organizer_lease.py`, and the reason A2 #2
+# exists: a lease guarantees exactly one live worker per job, and until now both halves of that
+# decision were made on the worker's OWN host clock. Postgres evaluated `lock_expires_at < now`,
+# but it was handed two values produced by two machines that Render does not keep in agreement.
+# Each test stages one participant with a wrong clock and another with a right one — a shape no
+# Python-side comparison can satisfy, because the two Pythons are what disagree.
+
+
+async def test_a_trip_claim_from_a_slow_host_is_not_reclaimed_by_a_truthful_reaper(
+    fake_client, monkeypatch
+):
+    """Worker A's host runs six minutes slow. Its brand-new lease must still be live.
+
+    On the Python clock A stamped `lock_expires_at = its_now + 300s`, which by the reaper's
+    reckoning was already a minute in the PAST — so the very next sweep reclaimed a job A had
+    only just claimed, the redispatch minted a fresh token, and two workers ran the same trip
+    concurrently at full provider cost. The per-write CAS keeps ONE database token through all
+    of that; what it cannot do is stop the second worker from doing the work.
+    """
+    seed_trip_job(fake_client, status="pending")
+    skew = install_host_clock_skew(monkeypatch, jobs)
+
+    skew.offset = -SIX_MINUTES                    # worker A's host is six minutes slow
+    assert_host_clock_is_actually_skewed(jobs, skew)
+    token = await mark_job_running(fake_client, "j1")
+    assert token is not None
+
+    skew.offset = timedelta(0)                    # the reaper runs on a correctly-clocked host
+
+    assert await reclaim_expired_jobs(client=fake_client) == []
+    row = job_row(fake_client)
+    assert row["status"] == "running"             # A still owns the job it just claimed
+    assert row["lease_token"] == token
+
+
+async def test_a_trip_renewal_from_a_slow_host_keeps_the_lease_live(fake_client, monkeypatch):
+    """The renewal half, isolated: the lease starts live and only the RENEWAL is skewed.
+
+    This is the worst shape of the bug. A slow host's renewal wrote an expiry already in the
+    past, so the beat's CAS matched and reported success — positive evidence of ownership —
+    every minute while the reaper reclaimed the job out from under it. A worker told it lost
+    its lease stops; one told it still holds its lease keeps writing.
+    """
+    seed_trip_job(fake_client, status="running", lease_token="t1",
+                  lock_expires_at=in_minutes(4))
+    skew = install_host_clock_skew(monkeypatch, jobs)
+
+    skew.offset = -SIX_MINUTES
+    assert_host_clock_is_actually_skewed(jobs, skew)
+    assert await _renew_job_lease(fake_client, "j1", "t1") is True
+
+    skew.offset = timedelta(0)
+
+    assert await reclaim_expired_jobs(client=fake_client) == []
+    row = job_row(fake_client)
+    assert row["status"] == "running" and row["lease_token"] == "t1"
+
+
+async def test_a_trip_lease_from_a_fast_host_still_expires_on_the_databases_schedule(
+    fake_client, monkeypatch
+):
+    """The other direction, and the half that is a guardrail-#12 silent drop.
+
+    A host running six minutes FAST stamped an expiry six minutes beyond what the TTL allows,
+    so when that worker died its job sat `running` and unreclaimable for eleven minutes rather
+    than five — no terminal event, so the user's stream hangs, and no reclaim, so no retry.
+    Nothing in the system corrects a host clock, so the skew is a standing offset rather than
+    a one-off: this is "reclaimed late" only in the sense that it is reclaimed at all.
+    """
+    seed_trip_job(fake_client, status="pending")
+    skew = install_host_clock_skew(monkeypatch, jobs)
+
+    skew.offset = SIX_MINUTES                     # worker A's host is six minutes fast
+    assert_host_clock_is_actually_skewed(jobs, skew)
+    assert await mark_job_running(fake_client, "j1") is not None
+
+    skew.offset = timedelta(0)
+    advance_db_clock(fake_client, minutes=6)      # six real minutes, against a five-minute TTL
+
+    assert [job["id"] for job in await reclaim_expired_jobs(client=fake_client)] == ["j1"]
+    row = job_row(fake_client)
+    assert row["status"] == "retryable" and row["lease_token"] is None
+
+
+async def test_a_reaper_on_a_fast_host_does_not_reclaim_a_live_trip_lease(
+    fake_client, monkeypatch
+):
+    """The REAPER's own clock must not decide either — the other side of the same coin.
+
+    The claim above can be perfect and the outcome still wrong: a sweeping instance six
+    minutes fast read every live lease as expired and requeued healthy runs wholesale, which
+    is the same double-execution reached from the opposite direction. This is the test that
+    the expiry COMPARISON — not just the expiry value — belongs to Postgres. Nothing here
+    touches the row; only this process's idea of the time is wrong.
+    """
+    seed_trip_job(fake_client, status="running", lease_token="t1",
+                  lock_expires_at=in_minutes(4))
+    skew = install_host_clock_skew(monkeypatch, jobs)
+
+    skew.offset = SIX_MINUTES                     # THIS reaper's host is six minutes fast
+    assert_host_clock_is_actually_skewed(jobs, skew)
+
+    assert await reclaim_expired_jobs(client=fake_client) == []
+    row = job_row(fake_client)
+    assert row["status"] == "running" and row["lease_token"] == "t1"

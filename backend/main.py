@@ -19,7 +19,6 @@ import contextlib
 import logging
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -99,7 +98,7 @@ async def _redispatch_organize(client, job: dict) -> None:
         await run_organize_job(job["id"], job["user_id"], client=client)
 
 
-async def _reap_loop(client, *, clock=None) -> None:
+async def _reap_loop(client) -> None:
     """Reclaim expired leases on a timer, not only at boot.
 
     Boot-time recovery alone leaves a guardrail #12 silent drop: a job that crashed with an
@@ -110,17 +109,17 @@ async def _reap_loop(client, *, clock=None) -> None:
     Concurrent reapers across instances are safe: every reclaim is one atomic UPDATE whose
     predicate re-evaluates against the current row, and every claim after it is a CAS.
 
-    `clock` is the determinism seam (mirroring `recover_organize_jobs(now=...)`): one instant
-    per iteration, shared by both sweeps, so tests drive tick boundaries instead of sleeping.
+    NO `clock` SEAM. Both sweeps now compare against `clock_timestamp()` inside Postgres, so
+    this process's own clock has no bearing on which leases are expired — which is the point:
+    a reaper here injecting an instant is exactly how a skewed instance used to reclaim leases
+    another instance was still holding. Tests drive expiry by moving the fake DATABASE's clock.
     """
-    clock = clock or (lambda: datetime.now(timezone.utc))
     while True:
         await asyncio.sleep(REAP_INTERVAL_S)
         try:
-            now = clock()
-            for job in await reclaim_expired_jobs(client=client, now=now):
+            for job in await reclaim_expired_jobs(client=client):
                 _spawn(_redispatch(client, job))
-            for job in await recover_organize_jobs(client, now=now):
+            for job in await recover_organize_jobs(client):
                 _spawn(_redispatch_organize(client, job))
         except Exception:
             # A DB blip must NEVER kill the reaper — a reaper that dies on its first

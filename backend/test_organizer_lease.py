@@ -1,10 +1,16 @@
 """Organize-job lease reclaim (A2 / A-II I2).
 
 The fake-fidelity tests come FIRST and are load-bearing. `recover_organize_jobs` pushes its
-whole reclaim predicate into ONE PostgREST `update().eq().or_()`, so every reclaim test below
-is really a test of the fake's filter evaluation. If the fake ignored `.lt`, `.is.null` or
-`.or_()` — or evaluated them with Python's `None` semantics instead of Postgres's — all five
-reclaim tests would pass while asserting nothing.
+whole reclaim predicate into ONE database function, so every reclaim test below is really a
+test of `_ReclaimExpiredOrganizeJobsRpc`'s fidelity to it. If that mirror evaluated a NULL
+`lock_expires_at` with Python's semantics instead of Postgres's — or read the CALLER's clock
+instead of the database's — all five reclaim tests would pass while asserting nothing.
+
+`db_now` is the seam that replaced `recover_organize_jobs(now=...)`. Passing an instant INTO
+the reclaim is the defect A2 #2 closed: the comparison was always evaluated by Postgres, but
+the value on the right came from whichever instance was sweeping, so two Render hosts with
+different clocks disagreed about who owned a job. Time now advances by moving the fake
+DATABASE's clock, which is what production actually experiences.
 """
 from __future__ import annotations
 
@@ -20,26 +26,78 @@ from postgrest.exceptions import APIError
 
 import organizer
 from organizer import (
-    ORGANIZE_LEASE_TTL_S,
     _update_job_counts,
     get_organize_status,
     LeaseLost,
     _heartbeat,
     _mark_organize_job_failed,
-    _pg_timestamp,
     _record_organize_event,
+    _renew_organize_lease,
     recover_organize_jobs,
     run_organize_job,
 )
-from test_saved_reels_organize import _Client, _eval_filter_term, _place
-
-
-def _iso(value: datetime) -> str:
-    return value.isoformat().replace("+00:00", "Z")
+from test_saved_reels_organize import _Client, _eval_filter_term, _iso, _place
 
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def advance_db_clock(client, *, minutes: int) -> None:
+    """Move the fake DATABASE's clock forward — the only way to expire a lease now.
+
+    Every lease instant is `clock_timestamp()` inside Postgres, so "five minutes passed" is a
+    statement about the database, not about this process. A test that instead skewed the
+    worker's clock would be describing a different scenario entirely (see the skew tests).
+    """
+    client.clock_skew += timedelta(minutes=minutes)
+
+
+class HostClock:
+    """One worker HOST's wall clock, and how wrong it is. Mutable so a single test can run
+    worker A's statements on a skewed host and the reaper's on a truthful one."""
+
+    def __init__(self) -> None:
+        self.offset = timedelta(0)
+
+
+def install_host_clock_skew(monkeypatch, module) -> HostClock:
+    """Make `module`'s wall clock wrong while the fake database's stays truthful.
+
+    This stubs the ENVIRONMENT, not the code under test. Two Render instances whose hosts
+    disagree about the time is the physical situation the lease RPCs exist for, and it cannot
+    be expressed any other way: skewing both sides equally proves nothing (the old
+    implementation compared a Python instant against a Python instant and so was internally
+    consistent no matter how wrong it was), and skewing only the database describes a
+    correctly-clocked worker. The defect only appears when ONE participant is wrong and
+    ANOTHER is right, which is exactly what a mutable offset lets a single test stage.
+
+    Returns the handle; set `.offset` before the statements that should run on the bad host.
+    """
+    skew = HostClock()
+    real_datetime = datetime
+
+    class _SkewedDatetime(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real_datetime.now(tz) + skew.offset
+
+    monkeypatch.setattr(module, "datetime", _SkewedDatetime)
+    return skew
+
+
+def assert_host_clock_is_actually_skewed(module, skew: HostClock) -> None:
+    """Prove the patch BITES before trusting a test built on it.
+
+    `install_host_clock_skew` rebinds a module attribute, so a refactor to `import datetime`
+    (or a lease path that stops importing the name at all) turns it into a silent no-op —
+    and every skew test would then pass because nothing was skewed, which is the most
+    expensive way for a guard to be vacuous. `_now()` is the one wall-clock reader left in
+    both modules, so it is the observable.
+    """
+    drift = datetime.fromisoformat(module._now()) - datetime.now(timezone.utc)
+    assert abs(drift - skew.offset) < timedelta(seconds=5), (
+        f"host clock skew never reached {module.__name__}: drift={drift}")
 
 
 def minutes_ago(minutes: int) -> str:
@@ -80,66 +138,82 @@ def fake_client() -> _Client:
 
 
 @pytest.mark.asyncio
-async def test_fake_lt_skips_null_columns_like_postgres(fake_client):
-    """`NULL < value` is NULL in Postgres, so the row does NOT match.
+async def test_fake_reclaim_skips_a_null_expiry_like_postgres(fake_client):
+    """`NULL < clock_timestamp()` is NULL in Postgres, so a row with no expiry does NOT match
+    the first branch of the reclaim predicate.
 
-    Guards two opposite mistakes. Raw `row.get(k) < v` raises TypeError on a NULL
-    `lock_expires_at`; the tempting patch `row.get(k, "") < v` makes NULL rows ALWAYS match
-    (`"" < "2026-..."` is True), which would silently invert the legacy-orphan test below into
-    asserting the opposite of production behaviour while still looking green.
+    Guards two opposite mistakes in the mirror. Comparing a raw `None` raises TypeError; the
+    tempting patch of defaulting the missing value makes every NULL row match branch one,
+    which would silently invert the legacy-orphan test below into asserting the opposite of
+    production behaviour while still looking green.
+
+    `locked_at` is inside the TTL on both rows, so the legacy branch cannot reclaim either and
+    only the expiry comparison can move anything.
     """
     fake_client.db["organize_jobs"] = [
-        {"id": "null-expiry", "lock_expires_at": None},
-        {"id": "past-expiry", "lock_expires_at": minutes_ago(1)},
+        {"id": "null-expiry", "status": "processing",
+         "lock_expires_at": None, "locked_at": minutes_ago(1)},
+        {"id": "past-expiry", "status": "processing",
+         "lock_expires_at": minutes_ago(1), "locked_at": minutes_ago(1)},
     ]
 
-    matched = (await fake_client.table("organize_jobs").update({"status": "pending"})
-               .lt("lock_expires_at", _iso(_now_utc())).execute()).data
+    reclaimed = await recover_organize_jobs(fake_client)
 
-    assert [row["id"] for row in matched] == ["past-expiry"]
+    assert [row["id"] for row in reclaimed] == ["past-expiry"]
+    assert job_status(fake_client, "null-expiry") == "processing"
 
 
 @pytest.mark.asyncio
-async def test_fake_or_is_a_real_disjunction_over_an_and_group(fake_client):
-    """Each branch of the reclaim `or=` must select on its own, a row satisfying neither must
-    be left alone, and the `is.null` conjunct must genuinely constrain the legacy branch.
+async def test_fake_reclaim_is_a_real_disjunction_over_the_legacy_branch(fake_client):
+    """Each branch of the reclaim predicate must select on its own, a row satisfying neither
+    must be left alone, and the `lock_expires_at is null` conjunct must genuinely constrain
+    the legacy branch.
 
     `live-but-long-running` is the row that makes this test non-decorative. It has a non-NULL
-    future expiry (so branch 1 is False) and a `locked_at` older than the TTL. If `is.null`
-    were evaluated as anything but a real NULL check, the and-group would collapse to
-    `locked_at.lt.<cutoff>` alone and this row would be reclaimed — i.e. the reaper stealing a
-    live lease from a job that has simply been running longer than one TTL while its heartbeat
-    renews. Without this row, a broken `is.null` passes every other assertion here.
+    future expiry (so branch one is False) and a `locked_at` older than the TTL. If the NULL
+    conjunct were dropped, the legacy branch would collapse to the `locked_at` age check alone
+    and this row would be reclaimed — the reaper stealing a live lease from a job that has
+    simply been running longer than one TTL while its heartbeat renews. Without this row, a
+    broken legacy branch passes every other assertion here.
     """
     fake_client.db["organize_jobs"] = [
-        {"id": "expired", "lock_expires_at": minutes_ago(1), "locked_at": minutes_ago(1)},
-        {"id": "legacy-null", "lock_expires_at": None, "locked_at": minutes_ago(20)},
-        {"id": "live", "lock_expires_at": in_minutes(4), "locked_at": minutes_ago(1)},
-        {"id": "live-but-long-running", "lock_expires_at": in_minutes(4),
-         "locked_at": minutes_ago(20)},
+        {"id": "expired", "status": "processing",
+         "lock_expires_at": minutes_ago(1), "locked_at": minutes_ago(1)},
+        {"id": "legacy-null", "status": "processing",
+         "lock_expires_at": None, "locked_at": minutes_ago(20)},
+        {"id": "live", "status": "processing",
+         "lock_expires_at": in_minutes(4), "locked_at": minutes_ago(1)},
+        {"id": "live-but-long-running", "status": "processing",
+         "lock_expires_at": in_minutes(4), "locked_at": minutes_ago(20)},
     ]
-    cutoff = _iso(_now_utc() - timedelta(seconds=ORGANIZE_LEASE_TTL_S))
 
-    matched = (await fake_client.table("organize_jobs").update({"status": "pending"}).or_(
-        f"lock_expires_at.lt.{_iso(_now_utc())},"
-        f"and(lock_expires_at.is.null,locked_at.lt.{cutoff})"
-    ).execute()).data
+    reclaimed = await recover_organize_jobs(fake_client)
 
-    assert [row["id"] for row in matched] == ["expired", "legacy-null"]
+    assert [row["id"] for row in reclaimed] == ["expired", "legacy-null"]
+    assert job_status(fake_client, "live") == "processing"
+    assert job_status(fake_client, "live-but-long-running") == "processing"
 
 
 @pytest.mark.asyncio
-async def test_fake_evaluates_filters_at_execute_time_against_the_current_row(fake_client):
-    """The predicate must be applied to the row as it stands when the statement runs, not
-    snapshotted when the filter was registered. This is what makes the reclaim-vs-heartbeat
-    race meaningful: a lease renewed after the query is built must stop matching."""
-    fake_client.db["organize_jobs"] = [{"id": "j1", "lock_expires_at": minutes_ago(1)}]
-    query = (fake_client.table("organize_jobs").update({"status": "pending"})
-             .lt("lock_expires_at", _iso(_now_utc())))
+async def test_fake_reclaim_reads_the_database_clock_not_the_callers(fake_client):
+    """THE FIDELITY PROOF FOR EVERY SKEW TEST BELOW.
 
-    job_row(fake_client)["lock_expires_at"] = in_minutes(5)   # heartbeat renews underneath us
+    The mirror must take its instant from `client.db_now()`. One that called
+    `datetime.now(timezone.utc)` would model a database sharing the worker's clock — exactly
+    the arrangement `clock_timestamp()` exists to replace — and every skew test in this file
+    would go green against the Python-clock implementation it is meant to reject.
 
-    assert (await query.execute()).data == []
+    Advancing only the database is what proves the mirror is reading it: nothing about this
+    process changed between the two calls.
+    """
+    seed_job(fake_client, status="processing", lease_token="t1",
+             lock_expires_at=in_minutes(4), locked_at=minutes_ago(1))
+
+    assert await recover_organize_jobs(fake_client) == []      # live by the database's clock
+
+    advance_db_clock(fake_client, minutes=10)
+
+    assert [row["id"] for row in await recover_organize_jobs(fake_client)] == ["j1"]
 
 
 @pytest.mark.asyncio
@@ -261,17 +335,6 @@ async def test_long_running_job_with_a_renewed_lease_is_not_reclaimed(fake_clien
     assert job_status(fake_client) == "processing"
 
 
-@pytest.mark.asyncio
-async def test_reclaim_honours_an_injected_now(fake_client):
-    """`now` is the seam A-III's reaper drives the sweep from, so it must actually reach the
-    predicate rather than being accepted and ignored."""
-    seed_job(fake_client, status="processing", lease_token="t-old", lock_expires_at=in_minutes(4))
-
-    assert await recover_organize_jobs(fake_client, now=_now_utc()) == []
-    assert [j["id"] for j in
-            await recover_organize_jobs(fake_client, now=_now_utc() + timedelta(minutes=10))] == ["j1"]
-
-
 @pytest.mark.parametrize("malformed", [
     "and(lock_expires_at.is.null",           # unbalanced — the dangerous one
     "or(locked_at.lt.2026-07-19T00:00:00Z",  # unbalanced or-group
@@ -291,24 +354,11 @@ def test_fake_rejects_a_malformed_filter_group_instead_of_evaluating_it_true(mal
         _eval_filter_term({"lock_expires_at": None, "locked_at": "2026-07-19T00:00:00Z"}, malformed)
 
 
-@pytest.mark.parametrize("bad", [
-    datetime(2026, 7, 19, 12, 0, 0),                                          # naive
-    datetime(2026, 7, 19, 12, 0, 0, tzinfo=timezone(timedelta(hours=8))),     # non-UTC offset
-])
-def test_pg_timestamp_rejects_a_non_utc_datetime(bad):
-    """The Z-suffix guarantee only holds for UTC-aware input — enforce it.
-
-    `.replace("+00:00", "Z")` is a no-op on a naive or +08:00 datetime, so the raw `+` this
-    function exists to eliminate would survive into the `or=` filter. Offline tests cannot
-    catch that (the fake accepts any string), and A-III's reaper injects its own `now`.
-    """
-    with pytest.raises(ValueError):
-        _pg_timestamp(bad)
-
-
-def test_pg_timestamp_emits_a_z_suffix_for_utc():
-    stamped = _pg_timestamp(datetime(2026, 7, 19, 12, 0, 0, tzinfo=timezone.utc))
-    assert stamped.endswith("Z") and "+" not in stamped
+# `_pg_timestamp` and its two tests are GONE, not lost. Its whole job was encoding a
+# Python-computed instant safely into a PostgREST `or=` filter string — the raw `+` in
+# `isoformat()` decodes as a space and silently matches nothing. No instant crosses that
+# boundary any more: the reclaim predicate compares against `clock_timestamp()` inside the
+# database, so there is no timestamp to encode and nothing left for that guard to protect.
 
 
 # --- claim ---------------------------------------------------------------------------------
@@ -369,9 +419,10 @@ async def test_claim_mints_a_fresh_token_and_preserves_started_at(fake_client, m
         await run_organize_job("j1", "u1", client=fake_client,
                                ground=crash_after_snapshotting_the_row(fake_client, snapshots))
 
-    # Ten minutes on the lease is past its TTL, so the reaper takes the abandoned job back.
-    assert [j["id"] for j in await recover_organize_jobs(
-        fake_client, now=_now_utc() + timedelta(minutes=10))] == ["j1"]
+    # Ten minutes on the database's clock is past the lease's TTL, so the reaper takes the
+    # abandoned job back.
+    advance_db_clock(fake_client, minutes=10)
+    assert [j["id"] for j in await recover_organize_jobs(fake_client)] == ["j1"]
 
     with pytest.raises(asyncio.CancelledError):
         await run_organize_job("j1", "u1", client=fake_client,
@@ -789,8 +840,8 @@ async def test_a_superseded_worker_cannot_force_fail_the_worker_that_replaced_it
 
     # The reaper finds A's lease expired and worker B claims — the deploy-overlap sequence in
     # full, driven through the real reclaim rather than by editing the row.
-    assert [j["id"] for j in await recover_organize_jobs(
-        fake_client, now=_now_utc() + timedelta(minutes=10))] == ["j1"]
+    advance_db_clock(fake_client, minutes=10)
+    assert [j["id"] for j in await recover_organize_jobs(fake_client)] == ["j1"]
     worker_b = asyncio.create_task(run_organize_job(
         "j1", "u1", client=fake_client, ground=parked_ground(b_entered, b_release)))
     await _spin_until(b_entered.is_set)
@@ -845,7 +896,8 @@ async def test_fenced_writer_cannot_finalize_the_job(fake_client, monkeypatch):
     async def failing_ground(_place_result):
         raise RuntimeError("Mapbox is down for the replacement")
 
-    await recover_organize_jobs(client, now=_now_utc() + timedelta(minutes=10))
+    advance_db_clock(client, minutes=10)
+    await recover_organize_jobs(client)
     replacement = await run_organize_job("j1", "u1", client=client, ground=failing_ground)
     assert replacement["status"] == "failed"
     new_token = job_row(client)["lease_token"]
@@ -886,8 +938,8 @@ async def test_old_worker_resuming_after_replacement_cannot_finalize_the_job(
         "j1", "u1", client=fake_client, ground=parked_ground(entered, release)))
     await _spin_until(entered.is_set)
 
-    assert [j["id"] for j in await recover_organize_jobs(
-        fake_client, now=_now_utc() + timedelta(minutes=10))] == ["j1"]
+    advance_db_clock(fake_client, minutes=10)
+    assert [j["id"] for j in await recover_organize_jobs(fake_client)] == ["j1"]
     replacement = await run_organize_job("j1", "u1", client=fake_client, ground=_grounded)
     assert replacement["status"] == "succeeded"
     new_token = job_row(fake_client)["lease_token"]
@@ -1130,3 +1182,132 @@ async def test_a_superseded_worker_writes_no_event_and_does_not_crash(fake_clien
     assert [event["message"] for event in fake_client.db["organize_events"]] == ["Finding places"], \
         "the superseded worker's terminal event must not land"
     assert "organize_event_lease_superseded" in caplog.text
+
+
+# --- host clock skew ------------------------------------------------------------------------
+#
+# THE DEFECT THESE CLOSE: a lease exists so that exactly one worker is live per job, and until
+# A2 #2 both halves of that decision were made on the worker's own host clock — the claim and
+# the renewal computed `now + TTL` in Python, and the reaper passed its own `now` into the
+# predicate. Postgres evaluated the comparison, but both VALUES came from machines that Render
+# does not keep in agreement. Every test below stages one participant with a wrong clock and
+# another with a right one; none of them can be satisfied by a Python-side comparison, however
+# carefully written, because the two Pythons are what disagree.
+
+SIX_MINUTES = timedelta(minutes=6)      # > the 5-minute TTL: enough skew to invert a decision
+
+
+@pytest.mark.asyncio
+async def test_an_organize_claim_from_a_slow_host_is_not_reclaimed_by_a_truthful_reaper(
+    fake_client, monkeypatch
+):
+    """Worker A's host runs six minutes slow. Its brand-new lease must still be live.
+
+    On the Python clock A stamped `lock_expires_at = its_now + 300s`, which by the reaper's
+    reckoning was already a minute in the PAST — so the very next sweep reclaimed a job A had
+    just started, a replacement claimed it, and two workers ran the same job concurrently. The
+    per-write CAS keeps one database token through all of that; what it cannot do is stop the
+    second worker from doing the work.
+    """
+    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    seed_claimable_job(fake_client)
+    skew = install_host_clock_skew(monkeypatch, organizer)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    skew.offset = -SIX_MINUTES                    # worker A's host is six minutes slow
+    assert_host_clock_is_actually_skewed(organizer, skew)
+    worker = asyncio.create_task(run_organize_job(
+        "j1", "u1", client=fake_client, ground=parked_ground(entered, release)))
+    await _spin_until(entered.is_set)
+    assert job_status(fake_client) == "processing"
+
+    skew.offset = timedelta(0)                    # the reaper runs on a correctly-clocked host
+
+    assert await recover_organize_jobs(fake_client) == []
+    assert job_status(fake_client) == "processing"      # A still owns the job it just claimed
+
+    release.set()
+    await asyncio.wait_for(worker, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_an_organize_renewal_from_a_slow_host_keeps_the_lease_live(
+    fake_client, monkeypatch
+):
+    """The renewal half, isolated: the claim is truthful and only the RENEWAL is skewed.
+
+    This is the worst shape of the bug, which is why it gets its own test rather than riding
+    on the claim's. A slow host's renewal wrote an expiry already in the past, so the beat
+    reported success — positive evidence of ownership — every single minute while the reaper
+    reclaimed the job out from under it. A worker that is told it lost its lease stops; one
+    that is told it still holds it keeps writing.
+    """
+    # A live lease with four minutes left, so the ONLY thing that can expire it is what the
+    # renewal writes next.
+    seed_job(fake_client, status="processing", lease_token="t1", lock_expires_at=in_minutes(4))
+    skew = install_host_clock_skew(monkeypatch, organizer)
+
+    skew.offset = -SIX_MINUTES
+    assert_host_clock_is_actually_skewed(organizer, skew)
+    assert await _renew_organize_lease(fake_client, "j1", "u1", "t1") is True
+
+    skew.offset = timedelta(0)                    # the reaper runs on a correctly-clocked host
+
+    assert await recover_organize_jobs(fake_client) == []
+    assert job_status(fake_client) == "processing"
+    assert job_row(fake_client)["lease_token"] == "t1"
+
+
+@pytest.mark.asyncio
+async def test_an_organize_lease_from_a_fast_host_still_expires_on_the_databases_schedule(
+    fake_client, monkeypatch
+):
+    """The other direction, and the half that is a guardrail-#12 silent drop.
+
+    A host running six minutes FAST stamped an expiry six minutes further out than the TTL
+    allows, so when that worker died its job sat `processing` and unreclaimable for eleven
+    minutes instead of five. Skew grows without bound — nothing in the system corrects a host
+    clock — so this is "reclaimed late" only in the sense that it is reclaimed at all.
+    """
+    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    seed_claimable_job(fake_client)
+    skew = install_host_clock_skew(monkeypatch, organizer)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    skew.offset = SIX_MINUTES                     # worker A's host is six minutes fast
+    assert_host_clock_is_actually_skewed(organizer, skew)
+    worker = asyncio.create_task(run_organize_job(
+        "j1", "u1", client=fake_client, ground=parked_ground(entered, release)))
+    await _spin_until(entered.is_set)
+
+    skew.offset = timedelta(0)
+    advance_db_clock(fake_client, minutes=6)      # six real minutes, against a five-minute TTL
+
+    assert [job["id"] for job in await recover_organize_jobs(fake_client)] == ["j1"]
+    assert job_status(fake_client) == "pending"   # requeued, not stranded past its TTL
+
+    release.set()
+    await asyncio.wait_for(worker, timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_a_reaper_on_a_fast_host_does_not_reclaim_a_live_organize_lease(
+    fake_client, monkeypatch
+):
+    """The REAPER's own clock must not decide either — the other side of the same coin.
+
+    The claim can be perfect and the outcome still wrong: a sweeping instance six minutes fast
+    read every live lease as expired and requeued healthy runs wholesale, which is the same
+    double-execution reached from the opposite direction. This is the test that the expiry
+    COMPARISON — not just the expiry value — belongs to Postgres. Nothing here touches the
+    row; only this process's idea of the time is wrong.
+    """
+    seed_job(fake_client, status="processing", lease_token="t1", lock_expires_at=in_minutes(4))
+    skew = install_host_clock_skew(monkeypatch, organizer)
+
+    skew.offset = SIX_MINUTES                     # THIS reaper's host is six minutes fast
+    assert_host_clock_is_actually_skewed(organizer, skew)
+
+    assert await recover_organize_jobs(fake_client) == []
+    assert job_status(fake_client) == "processing"
+    assert job_row(fake_client)["lease_token"] == "t1"

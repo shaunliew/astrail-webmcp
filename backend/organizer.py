@@ -441,54 +441,34 @@ async def _mark_organize_job_failed(client, job_id: str, user_id: str, *, lease_
         pass
 
 
-def _pg_timestamp(value: datetime) -> str:
-    """`Z`-suffixed ISO-8601 for use inside a PostgREST filter string.
-
-    `datetime.isoformat()` emits `+00:00`; a raw `+` inside an `or=` filter can be decoded as
-    a space, which either 400s or silently matches nothing. Offline tests cannot catch that —
-    the fake accepts any string — so the encoding has to be right by construction.
-
-    The tz assertion is what makes "by construction" actually true. The `.replace()` only fires
-    on a UTC-aware value; hand this a naive or non-UTC-offset datetime and it becomes a silent
-    no-op, reintroducing the exact raw-`+` bug this function exists to prevent. Today's only
-    callers pass `datetime.now(timezone.utc)`, but A-III's reaper injects its own `now` — fail
-    loudly there rather than shipping a mis-encoded filter that offline tests cannot see.
-    """
-    if value.tzinfo is None or value.utcoffset() != timedelta(0):
-        raise ValueError(f"_pg_timestamp requires a UTC-aware datetime, got {value!r}")
-    return value.isoformat().replace("+00:00", "Z")
-
-
-async def recover_organize_jobs(client, *, now=None) -> list[dict]:
+async def recover_organize_jobs(client) -> list[dict]:
     """Reclaim organize jobs whose LEASE HAS EXPIRED, then return pending jobs to dispatch.
 
-    ONE atomic UPDATE, no select-then-CAS loop. `lock_expires_at < now` is evaluated by
-    Postgres as part of the update's own predicate, so a heartbeat that renews the lease
-    concurrently makes the row stop matching (READ COMMITTED re-checks the predicate against
-    the updated row version) and the reclaim skips it. A select-then-update version CANNOT do
-    this: it would compare a token it observed BEFORE the renewal, and since the heartbeat
-    deliberately keeps the same token, the stale-but-matching token would let the reaper reset
-    a live lease to pending. Collapsing to one statement removes that race and the
-    null-token branch fork at the same time — legacy rows match on expiry alone.
+    ONE atomic UPDATE, no select-then-CAS loop. `lock_expires_at < clock_timestamp()` is the
+    update's own predicate, so a heartbeat that renews the lease concurrently makes the row
+    stop matching (READ COMMITTED re-checks the predicate against the updated row version) and
+    the reclaim skips it. A select-then-update version CANNOT do this: it would compare a token
+    it observed BEFORE the renewal, and since the heartbeat deliberately keeps the same token,
+    the stale-but-matching token would let the reaper reset a live lease to pending.
+
+    THE INSTANT IS THE DATABASE'S, and there is deliberately no `now` parameter — an injectable
+    one is the defect this closes. Postgres always evaluated the comparison, but the value on
+    the right came from whichever instance was sweeping, so a reaper whose host clock ran fast
+    reclaimed leases that were still live, and a slow one left dead ones held past their TTL.
+    Twin of `jobs.reclaim_expired_jobs`; the two stay separate only because `organizer` and
+    `jobs` must not depend on each other.
     """
-    now = now or datetime.now(timezone.utc)
-    # LEGACY-NULL BRANCH IS LOAD-BEARING — do not simplify to `.lt("lock_expires_at", ...)`.
-    # NO production code today writes a non-null lock_expires_at: the organize claim and the
-    # trip claim (jobs.py) never set it, and the only writes anywhere are `None`. During the
-    # A-II/A-III deploy overlap the OLD container can claim jobs right up to SIGTERM, leaving
-    # lock_expires_at NULL. In SQL `NULL < now()` is NULL, not true — so an expiry-only
-    # predicate skips those rows FOREVER, which is precisely the silent drop guardrail #12
-    # forbids, reintroduced at this task's own rollout boundary. Fall back to locked_at + TTL.
-    legacy_cutoff = _pg_timestamp(now - timedelta(seconds=ORGANIZE_LEASE_TTL_S))
-    reclaimed = (await client.table("organize_jobs").update({
-        "status": "pending", "status_message": "Requeued after restart",
-        "locked_at": None, "lock_expires_at": None, "lease_token": None,
-    }).eq("status", "processing").or_(
-        f"lock_expires_at.lt.{_pg_timestamp(now)},"
-        f"and(lock_expires_at.is.null,locked_at.lt.{legacy_cutoff})"
-    ).execute()).data or []
+    # The RPC keeps the legacy-NULL branch that PostgREST expressed as `or=`. Rows claimed by a
+    # container running the pre-lease code carry `lock_expires_at IS NULL`, and in SQL
+    # `NULL < clock_timestamp()` is NULL, not true — so an expiry-only predicate would skip
+    # them FOREVER, which is precisely the silent drop guardrail #12 forbids. It falls back to
+    # `locked_at + TTL` for exactly those rows, still gated on the expiry being NULL so a long
+    # run whose heartbeat holds a future expiry is not reclaimed on its stale `locked_at`.
+    reclaimed = (await client.rpc("reclaim_expired_organize_jobs", {
+        "p_ttl_seconds": ORGANIZE_LEASE_TTL_S, "p_status_message": "Requeued after restart",
+    }).execute()).data or 0
     if reclaimed:
-        logger.info("organize_leases_reclaimed count=%d", len(reclaimed))
+        logger.info("organize_leases_reclaimed count=%d", reclaimed)
     return (await client.table("organize_jobs").select("id,user_id").eq("status", "pending")
             .order("created_at").execute()).data or []
 
@@ -505,12 +485,17 @@ async def _renew_organize_lease(client, job_id: str, user_id: str, lease_token: 
 
     `status='processing'` is part of the fence, not decoration: a job already reclaimed to
     `pending` and re-dispatched must not be renewable by the run that lost it.
+
+    The new expiry is `clock_timestamp() + TTL` inside the RPC, so a renewal from a host whose
+    clock lags cannot write an expiry that is already in the past by the reaper's reckoning —
+    a heartbeat renewing successfully every minute while the reaper reclaims the job anyway is
+    the worst shape of that bug, because the worker holds positive evidence of an ownership it
+    does not have.
     """
-    now = datetime.now(timezone.utc)
-    renewed = await (client.table("organize_jobs").update({
-        "lock_expires_at": (now + timedelta(seconds=ORGANIZE_LEASE_TTL_S)).isoformat(),
-    }).eq("id", job_id).eq("user_id", user_id).eq("status", "processing")
-     .eq("lease_token", lease_token).execute())
+    renewed = await client.rpc("renew_organize_job_lease", {
+        "p_job_id": job_id, "p_user_id": user_id, "p_lease_token": lease_token,
+        "p_ttl_seconds": ORGANIZE_LEASE_TTL_S,
+    }).execute()
     return bool(renewed.data)
 
 
@@ -729,7 +714,7 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
     if client is None:
         from supabase_client import get_supabase_client
         client = await get_supabase_client()
-    current = await (client.table("organize_jobs").select("attempt_count,started_at")
+    current = await (client.table("organize_jobs").select("attempt_count")
                      .eq("id", job_id).eq("user_id", user_id).maybe_single().execute())
     # `or {}` is load-bearing, not defensive noise. maybe_single() returns a result whose
     # `.data` is None when NO row matches — a job deleted between recovery listing it and this
@@ -741,20 +726,17 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
     # token shared across attempts would let a superseded worker pass the fence its own
     # replacement installed.
     lease_token = str(uuid.uuid4())
-    now = datetime.now(timezone.utc)
-    claim_update = {
-        "status": "processing", "status_message": "Finding places", "locked_at": now.isoformat(),
-        "lock_expires_at": (now + timedelta(seconds=ORGANIZE_LEASE_TTL_S)).isoformat(),
-        "lease_token": lease_token,
-        "attempt_count": attempt_count,
-    }
-    if not current_row.get("started_at"):
-        # Only the FIRST attempt stamps it. `started_at` is the run's user-visible elapsed
-        # time; re-stamping on every retry makes a job stuck in a retry loop for an hour
-        # report as though it had just begun, hiding the loop it is actually in.
-        claim_update["started_at"] = now.isoformat()
-    claimed = await (client.table("organize_jobs").update(claim_update)
-                     .eq("id", job_id).eq("user_id", user_id).eq("status", "pending").execute())
+    # Through the RPC because every lease INSTANT is the database's: `locked_at` and
+    # `lock_expires_at` are `clock_timestamp()`-derived, so a claim from a host whose clock
+    # lags cannot mint a lease the reaper already considers expired. `started_at` keeps the
+    # "only the FIRST attempt stamps it" rule as a `coalesce` in SQL — it is the run's
+    # user-visible elapsed time, and re-stamping on every retry makes a job stuck in a retry
+    # loop for an hour report as though it had just begun, hiding the loop it is in.
+    claimed = await client.rpc("claim_organize_job", {
+        "p_job_id": job_id, "p_user_id": user_id, "p_lease_token": lease_token,
+        "p_ttl_seconds": ORGANIZE_LEASE_TTL_S, "p_status_message": "Finding places",
+        "p_attempt_count": attempt_count,
+    }).execute()
     if not claimed.data:
         # Two distinct outcomes, distinguishable by whether the pre-claim read found a row:
         # the job is GONE (deleted between recovery listing it and now) versus another worker

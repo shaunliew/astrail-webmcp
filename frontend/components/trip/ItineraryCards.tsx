@@ -46,7 +46,7 @@ export default function ItineraryCards({
                     {[tp.place.place_type, tp.place.area, tp.place.city].filter(Boolean).join(' · ')}
                   </p>
                 </div>
-                <span className="type-label shrink-0 rounded border border-[var(--line)] px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-[var(--muted)]">
+                <span className="type-label shrink-0 rounded-[var(--radius-chip)] border border-[var(--line)] px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-[var(--muted)]">
                   {SOURCE_BADGE[tp.source_type]}
                 </span>
               </div>

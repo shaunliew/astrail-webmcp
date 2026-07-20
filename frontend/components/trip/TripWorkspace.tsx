@@ -149,10 +149,10 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
       <aside
         className={[
           'trip-details-panel absolute z-10 overflow-y-auto paper-scope bg-[rgba(243,238,226,0.55)] backdrop-blur-sm',
-          'inset-x-0 bottom-0 rounded-t-2xl transition-all duration-300 ease-out',
+          'inset-x-0 bottom-0 rounded-t-[var(--radius-card)] transition-all duration-300 ease-out',
           expanded ? 'h-[82dvh]' : 'h-[42dvh]',
           panelOpen ? 'translate-y-[0%]' : 'translate-y-[100%]',
-          'md:inset-y-0 md:left-0 md:right-auto md:h-full md:w-[440px] md:rounded-none md:rounded-r-2xl',
+          'md:inset-y-0 md:left-0 md:right-auto md:h-full md:w-[440px] md:rounded-none md:rounded-r-[var(--radius-card)]',
           panelOpen ? 'md:translate-x-[0%]' : 'md:translate-x-[-100%]',
         ].join(' ')}
         aria-label="Trip details"

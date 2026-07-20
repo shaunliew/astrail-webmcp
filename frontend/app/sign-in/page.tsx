@@ -96,7 +96,7 @@ export default function SignInPage() {
             <button
               type="submit"
               disabled={pending || !email.trim()}
-              className="type-label rounded-xl border border-[var(--brass)] bg-[var(--brass-soft)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] disabled:opacity-40"
+              className="type-label rounded-lg border border-[var(--brass)] bg-[var(--brass-soft)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] disabled:opacity-40"
             >
               {pending ? 'Sending…' : 'Email me a code'}
             </button>
@@ -125,7 +125,7 @@ export default function SignInPage() {
             <button
               type="submit"
               disabled={pending || code.trim().length !== 6}
-              className="type-label rounded-xl border border-[var(--brass)] bg-[var(--brass-soft)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] disabled:opacity-40"
+              className="type-label rounded-lg border border-[var(--brass)] bg-[var(--brass-soft)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] disabled:opacity-40"
             >
               {pending ? 'Verifying…' : 'Sign in'}
             </button>

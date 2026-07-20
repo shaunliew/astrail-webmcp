@@ -133,7 +133,7 @@ export default function CreateTripFlow() {
             type="button"
             onClick={() => setPhase('brief')}
             disabled={!canGenerate(items, brief)}
-            className="type-label rounded-xl border border-[var(--brass)] bg-[var(--brass-soft)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
+            className="type-label rounded-lg border border-[var(--brass)] bg-[var(--brass-soft)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
           >
             Review trip brief
           </button>

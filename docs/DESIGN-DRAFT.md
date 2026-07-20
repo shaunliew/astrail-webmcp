@@ -11,7 +11,7 @@
 > Known divergences from shipped code, all tracked in `DESIGN.md` §12: §3's mono `.type-label`
 > (overridden to sans inside the app), §3's italic-serif reel quotes (ship as sans), §4's
 > radius rule (12px and 16px leaks ship), §4's composed empty screens (left-aligned, no
-> illustration), §6.3's 2s night→dawn relight (not implemented), `tabular-nums` (zero uses).
+> illustration), §6.3's 2s night→dawn relight (shipped 2026-07-20), `tabular-nums` (zero uses).
 >
 > Corrected pointer: an earlier version of this header named EMDEE `astrail/DESIGN.md` as
 > canonical. **That document does not exist.** Repo-root `DESIGN.md` is canonical.

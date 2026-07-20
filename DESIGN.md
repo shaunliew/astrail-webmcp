@@ -424,35 +424,45 @@ Every rule below is a rule this repo has already stated, with the line that stat
 
 ## 12. Open gaps
 
-Everywhere the written system and the shipped code disagree. Nothing here is resolved; each item
-names both sides and what would change.
+Everywhere the written system and the shipped code disagree. Each item names both sides and what
+would change. Resolved items are kept, marked RESOLVED, rather than deleted — the reasoning is
+worth more than the tidiness.
 
-**G1 — The signature moment is specified but not implemented.**
-`docs/DESIGN-DRAFT.md:18-21` calls the night→dawn relight the product's signature moment, and
-§6.3 specs a *"2s map relight night → dawn"*. In shipped code there is no transition:
-`components/create/GenerationScene.tsx:50` sets `lightPreset: 'night'` on load,
-`components/map/TripMap.tsx:46` sets `'dawn'` on load, and they are **two separate Mapbox
-instances swapped by a route/component change**. The lighting states are correct per PRD §13; the
-animated relight between them does not exist. Resolving it means either building the transition in
-a single persistent map instance, or striking the "2s relight" language and documenting the swap
-as the intended behavior.
+**G1 — RESOLVED. The signature moment now ships.**
+Implemented 2026-07-20 on `feat/saved-reels-arc-c-frontend`. `docs/DESIGN-DRAFT.md:18-21`
+calls the night→dawn relight the product's signature moment and §6.3 specs a *"2s map relight
+night → dawn"*; both now hold.
 
-*What the Mapbox API supports* (checked against the Standard style guide, 2026-07-20): changing
-the preset at runtime on a **live** instance is the documented, supported call —
-`map.setConfigProperty('basemap', 'lightPreset', 'dawn')` — and the guide's own embedded demo
-switches lighting on one instance interactively. So the blocker is **not** the Mapbox API; it is
-the architecture. Two instances means there is nothing to animate: the night map is destroyed
-before the dawn map exists, and no transition can bridge an unmount. The relight therefore
-requires a map instance that **survives** the generation → result handoff, with a single
-`setConfigProperty` call fired on the SSE `result` event.
+**What the shipped architecture is.** One Mapbox instance lives in `frontend/app/app/layout.tsx`
+via `frontend/components/map/MapProvider.tsx` — the only common ancestor of both sides of the
+`router.push` handoff. `GenerationScene` and `TripMap` no longer own instances; they drive the
+shared one. The relight fires on the SSE `result` event in *both* generation flows
+(`CreateTripFlow.tsx` and `SavedReelsFlow.tsx` — there are two, which the original writeup of
+this gap missed). `prefers-reduced-motion` gets duration 0: the end state, not the journey.
 
-One unknown remains, cheap to settle once the instance is unified: whether Mapbox eases the
-preset change over a duration or snaps to it. The docs describe the runtime update without
-guaranteeing an animation curve. If it snaps, the 2s beat needs an explicit cross-fade on top.
+**The open question is answered: Mapbox animates the preset change — it does not snap.**
+Traced through the installed `mapbox-gl@3.24.0`: `setConfigProperty` →
+`updateConfigDependencies` → `ambientLight/directionalLight/fog.updateConfig` →
+`_transitionable.setTransitionOrValue` → `transitioned(parameters, prior)`, i.e. lighting rides
+the same Transitionable→Transitioning interpolation machinery as any other transitionable style
+property. It honours the style's `transition` spec, which defaults to **300ms**. So a cross-fade
+comes for free, but *not* the specced 2s — `setConfigProperty` takes no duration argument. The
+lever is `map.style?.setTransition({ duration, delay })` (`map.style` is a public typed
+property), applied before the preset change. Caveat: this is **source-level evidence, not a live
+observation** — there was no Mapbox token in the worktree, so the relight was never watched
+running. Only *transitionable* properties interpolate; config-dependent layer paint is
+re-evaluated and any discrete/enum-driven values will pop. Lighting and fog do interpolate.
 
-**Not attempted here.** This is an architectural change to the generation→result flow — the
-highest-risk path in the app and Zhi Hao's ownership area. It is the largest *shippable* gap in
-this document (G6 is larger but is a creative decision, not an implementation).
+**Two things the architecture alone did not fix, both since handled.** `TripWorkspace`'s
+loading state was a full-bleed takeover, so the relight would have played out behind a spinner
+even with a persistent instance — loading and still-generating now hold the map and float their
+message over it. And because the map is built lazily, a fast `result` can beat the Mapbox bundle;
+construction used to re-apply the acquiring route's preset and strand the map on night.
+
+**Cost control.** The Mapbox bundle is imported lazily inside the provider. A static import put
+1.7MB into the shared layout chunk (measured: `/app/layout` 343kB → 2071kB) that `/app/trips` and
+`/app/settings` would download for a map they never show; `next build`'s size table did not
+surface it. The WebGL context is likewise built only on first acquire.
 
 **G2 — Reel quotes: spec says serif, code ships sans.**
 `docs/DESIGN-DRAFT.md:88-89` specs reel quotes as *"italic serif with a brass quote-bar — the

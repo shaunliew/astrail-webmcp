@@ -3,18 +3,22 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 import json
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
 
 from api.schemas import GenerateTripRequest, OrganizeJobStatus, OrganizeSavedReelsRequest
+from genagents.place_extractor import EXTRACTOR_VERSION
 from api.streaming import DONE, format_sse, stream_organize_events
 from models.place import PlaceResult
+from grounding import _ground_place, _persist_place
+from pipeline.dedup import DEFAULT_DISTANCE_M
 from pipeline.geo import haversine_m
+import organizer
 from organizer import (
     ActiveOrganizeConflict,
-    _ground_place,
-    _persist_place,
+    InvalidOrganizeRequest,
     authorize_place_ids,
     create_organize_job,
     get_organize_status,
@@ -62,6 +66,20 @@ def _lt(row, key, value):
     return current is not None and current < value
 
 
+def _gt(row, key, value):
+    """Postgres semantics: `NULL > value` is NULL, so the row does NOT match.
+
+    The mirror of `_lt`, and load-bearing for the same reason. `stream_organize_events` now
+    ALWAYS pushes a reconnect cursor down as `.gt("sequence", …)` instead of first asking the
+    client whether it implements `gt` (B6), so this is real filter evaluation rather than a
+    branch the fake used to skip. The previous spelling, `row.get(key, 0) > value`, invented a
+    0 for a missing column — under which an event carrying no `sequence` outranks every cursor
+    and replays on every reconnect.
+    """
+    current = row.get(key)
+    return current is not None and current > value
+
+
 def _eval_filter_term(row, term):
     """Evaluate one PostgREST filter term (`col.op.value`, or a nested `and(...)`/`or(...)`)."""
     if term.startswith("and(") and term.endswith(")"):
@@ -98,7 +116,9 @@ class _Table:
         self.gt_filters = {}
         self.lt_filters = {}
         self.in_filters = {}
+        self.is_null_filters = set()
         self.or_filters = []
+        self.order_keys = []
         self.on_conflict = None
         self.single = False
 
@@ -111,14 +131,49 @@ class _Table:
     def gt(self, key, value): self.gt_filters[key] = value; return self
     def lt(self, key, value): self.lt_filters[key] = value; return self
     def or_(self, expr): self.or_filters.append(expr); return self
+
+    def is_(self, key, value):
+        # postgrest normalizes `None` to `"null"` (base_request_builder.is_), so both spellings
+        # reach the same filter and the fake must accept both. Anything else — `is.true`,
+        # `is.unknown` — is unimplemented and fails loudly rather than filtering on nothing.
+        if value not in (None, "null"):
+            raise ValueError(f"fake implements only `is.null`, got .is_({key!r}, {value!r})")
+        self.is_null_filters.add(key)
+        return self
+
     def in_(self, key, values): self.in_filters[key] = set(values); return self
-    def order(self, *_args, **_kwargs): return self
     def maybe_single(self): self.single = True; return self
+
+    def order(self, column, *, desc=False, **unsupported):
+        # This used to `return self` without sorting, which is the worst kind of fake: every
+        # caller's `.order()` looked honoured while the rows came back in insertion order, so a
+        # test asserting on ordering passed whether or not production ordered anything.
+        # Ascending-only, matching every call site; anything else fails loudly rather than
+        # silently sorting on nothing, same rule as the filter operators above.
+        if desc or unsupported:
+            raise ValueError(
+                f"fake implements only ascending .order(column), got "
+                f".order({column!r}, desc={desc!r}, **{unsupported!r})"
+            )
+        self.order_keys.append(column)
+        return self
+
+    def _ordered(self, rows):
+        # PostgREST reads chained `.order()` calls left-to-right, first call primary. Stable
+        # sorts applied last-key-first compose into exactly that. `None` sorts last, matching
+        # Postgres NULLS LAST on an ascending order, and the two-element key means two nulls
+        # compare equal instead of raising on `None < None`.
+        ordered = list(rows)
+        for key in reversed(self.order_keys):
+            ordered.sort(key=lambda row: (row.get(key) is None, row.get(key)))
+        return ordered
 
     def _matches(self, row):
         return all(row.get(k) == v for k, v in self.filters.items()) and all(
             row.get(k) in values for k, values in self.in_filters.items()
-        ) and all(row.get(k, 0) > v for k, v in self.gt_filters.items()) and all(
+        ) and all(
+            row.get(k) is None for k in self.is_null_filters
+        ) and all(_gt(row, k, v) for k, v in self.gt_filters.items()) and all(
             _lt(row, k, v) for k, v in self.lt_filters.items()
         ) and all(
             any(_eval_filter_term(row, term) for term in _split_top_level(expr))
@@ -147,12 +202,12 @@ class _Table:
             rows.append(stored)
             return _Result([stored])
         if isinstance(self.op, tuple) and self.op[0] == "update":
-            matched = [row for row in rows if self._matches(row)]
+            matched = self._ordered(row for row in rows if self._matches(row))
             for row in matched:
                 row.update(self.op[1])
             return _Result(matched)
         if self.op == "delete":
-            matched = [row for row in rows if self._matches(row)]
+            matched = self._ordered(row for row in rows if self._matches(row))
             self.db[self.name] = [row for row in rows if row not in matched]
             if self.name == "organize_jobs":
                 job_ids = {row["id"] for row in matched}
@@ -162,7 +217,7 @@ class _Table:
                         if row.get("job_id") not in job_ids
                     ]
             return _Result(matched)
-        matched = [row for row in rows if self._matches(row)]
+        matched = self._ordered(row for row in rows if self._matches(row))
         return _Result(matched[0] if self.single and matched else (None if self.single else matched))
 
 
@@ -450,7 +505,7 @@ _LEASE_RPCS = {
 
 
 class _FindOrCreatePlaceRpc:
-    """Mirror of `public.find_or_create_place` (20260720160000_serialized_...).
+    """Mirror of `public.find_or_create_place` (20260720160000, widened by 20260720180000).
 
     ATOMIC ON PURPOSE — the body below contains no `await`, so no other coroutine can run
     between the lookup and the insert. That is not the fake being convenient: it is what the
@@ -461,29 +516,38 @@ class _FindOrCreatePlaceRpc:
     What it CANNOT reproduce is the lock itself — whether two separate BACKENDS are serialized
     is a property of Postgres, not of Python, so it is proven against real concurrent
     connections in `supabase/tests/012_serialized_place_find_or_create.sql`. This mirror pins
-    the reuse rule the callers depend on: same name, same verified country, inside the gate.
+    the reuse rule the callers depend on: same name, a country that matches the verified one or
+    is not set yet, inside the gate, verified rows preferred and lowest id breaking the tie.
     """
 
     def __init__(self, client, params): self.client, self.params = client, params
 
     def _match(self):
         params = self.params
-        # Insertion order, which for this fake's sequential ids IS `order by id` — the tie-break
-        # the function uses so several eligible rows resolve the same way every run.
         rows = self.client.db.setdefault("places", [])
-        for row in rows:
-            if (
-                row.get("name") == params["p_name"]
-                and row.get("country_code") == params["p_country_code"]
-                and params["p_lat"] is not None
-                and params["p_lng"] is not None
-                and row.get("lat") is not None
-                and row.get("lng") is not None
-                and haversine_m(params["p_lat"], params["p_lng"], row["lat"], row["lng"])
-                < params["p_max_distance_m"]
-            ):
-                return row
-        return None
+        eligible = [
+            row for row in rows
+            if row.get("name") == params["p_name"]
+            # `country_code = p_country_code or country_code is null` (20260720180000). A row
+            # predating the country migration carries no country, and an equality predicate
+            # would exclude it structurally — which is how the organizer ended up inserting a
+            # duplicate for a venue it already had (ISSUES-B2).
+            and row.get("country_code") in (params["p_country_code"], None)
+            and params["p_lat"] is not None
+            and params["p_lng"] is not None
+            and row.get("lat") is not None
+            and row.get("lng") is not None
+            and haversine_m(params["p_lat"], params["p_lng"], row["lat"], row["lng"])
+            < params["p_max_distance_m"]
+        ]
+        # `order by (country_code is null), id`. Both keys are load-bearing and neither can be
+        # left to insertion order: a verified row beats a legacy one because it is already
+        # Mapbox-grounded, and `id` then makes the winner among equally-eligible rows total, so
+        # a re-organize resolves to the same canonical place every run. Seeding order must NOT
+        # satisfy either — `test_persist_place_breaks_a_same_country_tie_by_lowest_id` seeds the
+        # lower id second precisely so a fake that iterated the list would fail it.
+        eligible.sort(key=lambda row: (row.get("country_code") is None, row["id"]))
+        return eligible[0] if eligible else None
 
     async def execute(self):
         params = self.params
@@ -627,7 +691,7 @@ class _CreateOrganizeJobRpc:
         saved = [row for row in self.client.db.get("saved_reels", [])
                  if row.get("user_id") == user_id and row.get("id") in ids]
         if len(saved) != len(ids):
-            raise APIError({"code": "P0001", "message": "Saved Reel not found", "details": None, "hint": None})
+            raise APIError({"code": "AS404", "message": "Saved Reel not found", "details": None, "hint": None})
         active_item = next((item for item in self.client.db.get("organize_job_items", [])
                             if item.get("saved_reel_id") in ids
                             and any(job.get("id") == item.get("job_id")
@@ -636,7 +700,7 @@ class _CreateOrganizeJobRpc:
                                     for job in self.client.db.get("organize_jobs", []))), None)
         if active_item:
             raise APIError({
-                "code": "P0001",
+                "code": "AS409",
                 "message": "Saved Reel is already being organized",
                 "details": None,
                 "hint": None,
@@ -686,6 +750,27 @@ def _place(name="Tokyo Tower"):
     )
 
 
+# The seams below are ASYNC because the things they stand in for are async (B6). `organizer`
+# awaits `get_cached_places` and the injected `scrape`/`extract`/`ground` directly; it used to
+# funnel them through a `_maybe_await` that accepted either shape, which let sync fakes pass
+# for coroutine functions and hid the difference from every test in this file.
+def _cached(value):
+    """An async stand-in for `pipeline.cache.get_cached_places` returning a fixed result."""
+    async def _get_cached_places(*_args, **_kwargs):
+        return value
+    return _get_cached_places
+
+
+async def _grounds_to_japan(place):
+    """The common `ground` seam: Mapbox verifies every place as being in Japan."""
+    return {"place": place, "country_code": "JP", "country_name": "Japan"}
+
+
+async def _extracts_one_place(_scraped):
+    """The common `extract` seam: the extractor finds exactly one place."""
+    return [_place()]
+
+
 def test_place_only_generate_request_is_valid_and_empty_request_is_rejected():
     request = GenerateTripRequest(
         place_ids=["11111111-1111-1111-1111-111111111111"], start_date="2026-08-01", end_date="2026-08-02"
@@ -702,6 +787,15 @@ def test_organize_request_is_bounded():
         OrganizeSavedReelsRequest(saved_reel_ids=[])
     with pytest.raises(ValueError):
         OrganizeSavedReelsRequest(saved_reel_ids=[f"22222222-2222-2222-2222-{i:012d}" for i in range(6)])
+
+
+def test_organize_request_rejects_duplicate_ids():
+    # The RPC already rejects duplicates, but only with the generic P0001
+    # 'Saved Reel organize request is invalid' -- a message create_organize_job's mapping
+    # does not match, so a direct API client would get a 500. Reject at the boundary.
+    saved_reel_id = "22222222-2222-2222-2222-222222222222"
+    with pytest.raises(ValueError):
+        OrganizeSavedReelsRequest(saved_reel_ids=[saved_reel_id, saved_reel_id])
 
 
 def test_organize_job_status_accepts_initializing():
@@ -783,7 +877,7 @@ async def test_create_organize_job_uses_atomic_rpc_and_maps_active_conflict():
             class _ConflictResult:
                 async def execute(self):
                     raise APIError({
-                        "code": "P0001",
+                        "code": "AS409",
                         "message": "Saved Reel is already being organized",
                         "details": None,
                         "hint": None,
@@ -945,7 +1039,7 @@ async def test_unexpected_organizer_failure_marks_job_failed_and_emits_result(
             "reel_cache_id": "cache-1", "analysis_status": "queued",
         }],
     })
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
     if failure == "counts":
         async def fail_counts(*_args, **_kwargs):
             raise RuntimeError("count update failed")
@@ -954,7 +1048,7 @@ async def test_unexpected_organizer_failure_marks_job_failed_and_emits_result(
 
     await run_organize_job(
         "job-1", "user-a", client=client,
-        ground=lambda place: {"place": place, "country_code": "JP", "country_name": "Japan"},
+        ground=_grounds_to_japan,
     )
 
     job = client.db["organize_jobs"][0]
@@ -986,7 +1080,7 @@ async def test_uncached_source_failure_refunds_reserved_analysis(monkeypatch):
     async def extract(*_args, **_kwargs): calls.append("extract")
     monkeypatch.setattr("organizer.reserve_organize_item_analysis", reserve)
     monkeypatch.setattr("organizer.refund_organize_item_analysis", refund)
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("organizer.get_cached_places", _cached(None))
     await run_organize_job("job-1", "user-a", client=client, scrape=scrape, extract=extract)
     assert calls == ["reserve", "scrape", "refund"]
     assert client.db["organize_job_items"][0]["status"] == "failed"
@@ -1002,9 +1096,9 @@ async def test_cached_reel_skips_paid_calls_and_writes_terminal_state(monkeypatc
     })
     calls = []
     async def unexpected(*_args, **_kwargs): calls.append("paid"); raise AssertionError("paid call")
-    def ground(place):
+    async def ground(place):
         return {"place": place, "country_code": "JP", "country_name": "Japan"}
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
     await run_organize_job("job-1", "user-a", client=client, scrape=unexpected, extract=unexpected, ground=ground)
     assert calls == []
     assert client.db["organize_job_items"][0]["status"] == "organized"
@@ -1030,11 +1124,11 @@ async def test_cached_retry_does_not_require_apify_token(monkeypatch):
     async def unexpected_scrape(*_args, **_kwargs):
         raise AssertionError("cache-backed retry must not call Apify")
 
-    def ground(place):
+    async def ground(place):
         return {"place": place, "country_code": "JP", "country_name": "Japan"}
 
     monkeypatch.delenv("APIFY_TOKEN", raising=False)
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
     monkeypatch.setattr("organizer.scrape_reel", unexpected_scrape)
 
     await run_organize_job("job-1", "user-a", client=client, ground=ground)
@@ -1044,14 +1138,122 @@ async def test_cached_retry_does_not_require_apify_token(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_default_scrape_seam_fails_closed_without_an_apify_token(monkeypatch):
+    """The ONLY test that invokes `run_organize_job`'s default (un-injected) Apify seam.
+
+    Every other organize test passes `scrape=`. The one that does not,
+    `test_cached_retry_does_not_require_apify_token` above, is a cache HIT — it CONSTRUCTS the
+    default closure and never CALLS it. Defining a nested function resolves none of the names
+    in its body; that lookup happens at call time. So when B6's split left `import os` off
+    organizer.py, the closure's `os.environ` was a latent NameError and all 727 tests stayed
+    green. Only a cache MISS executes the body, which is what this test drives.
+
+    `scrape_reel` is stubbed to raise rather than merely left alone: that is the assertion
+    that the token guard short-circuits BEFORE the provider call, so reordering those two
+    lines fails loudly here instead of quietly dialling Apify from a unit test.
+    """
+    client = _Client({
+        "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending"}],
+        "organize_job_items": [{
+            "id": "item-1", "job_id": "job-1", "user_id": "user-a",
+            "saved_reel_id": "r1", "status": "queued", "analysis_charge_state": "not_charged",
+        }],
+        "saved_reels": [{
+            "id": "r1", "user_id": "user-a",
+            "normalized_url": "https://www.instagram.com/reel/A",
+            "reel_cache_id": "cache-1", "analysis_status": "queued",
+        }],
+        "rpc:reserve_organize_item_analysis": "2026-07-19",
+        "rpc:refund_organize_item_analysis": True,
+    })
+    seams, past_the_seam = [], []
+    real_item_context = organizer._ItemContext
+
+    def _capture_seam(**fields):
+        # Pure observation — the job still runs on a real `_ItemContext`. Holding the closure
+        # is what lets us assert WHICH error it raises: `_process_item` swallows the exception
+        # and records a deliberately generic `error_message`, which cannot tell the intended
+        # RuntimeError from the NameError a missing import would produce.
+        ctx = real_item_context(**fields)
+        seams.append(ctx.scrape)
+        return ctx
+
+    async def unexpected_scrape_reel(*_args, **_kwargs):
+        raise AssertionError("the no-token path must fail before calling Apify")
+
+    async def unexpected_stage(*_args, **_kwargs):
+        past_the_seam.append("called")
+
+    # MANDATORY, not decorative: conftest loads backend/.env under --run-live, so a real
+    # APIFY_TOKEN can genuinely be in the environment.
+    monkeypatch.delenv("APIFY_TOKEN", raising=False)
+    monkeypatch.setattr(organizer, "_ItemContext", _capture_seam)
+    monkeypatch.setattr("organizer.get_cached_places", _cached(None))
+    monkeypatch.setattr("organizer.scrape_reel", unexpected_scrape_reel)
+
+    await run_organize_job(
+        "job-1", "user-a", client=client, extract=unexpected_stage, ground=unexpected_stage
+    )
+
+    assert client.db["organize_job_items"][0]["status"] == "failed"
+    # The USER-facing message stays generic — the provider detail below is operator-facing and
+    # never reaches the item row.
+    assert client.db["organize_job_items"][0]["error_message"] == "Reel organization failed"
+    assert past_the_seam == []
+    with pytest.raises(RuntimeError, match="Reel extraction is unavailable"):
+        await seams[0]("https://www.instagram.com/reel/A")
+
+
+@pytest.mark.asyncio
 async def test_organize_event_stream_replays_integer_cursor_and_json_result():
+    """Seeded OUT of sequence order ON PURPOSE — the fixture is the assertion.
+
+    `stream_organize_events` relies on `.order("sequence")`. Until B8, the fake's `.order()`
+    was `return self` — a silent no-op — so this test passed whether or not production ordered
+    anything. Seeding 1-then-2 kept it vacuous even after the fake was fixed, because the
+    insertion order already matched the expected output. Seeding 2-then-1 is what makes
+    removing `.order("sequence")` from `api/streaming.py` turn this red.
+
+    SSE order is a frontend contract: the client replays events in the order it receives them,
+    so an unordered replay would show the pipeline running backwards.
+    """
     client = _Client({"organize_events": [
-        {"sequence": 1, "job_id": "job-1", "user_id": "user-a", "event_type": "stage", "message": "Queued", "payload": {}},
         {"sequence": 2, "job_id": "job-1", "user_id": "user-a", "event_type": "result", "message": "Organized", "payload": {"status": "succeeded"}},
+        {"sequence": 1, "job_id": "job-1", "user_id": "user-a", "event_type": "stage", "message": "Queued", "payload": {}},
     ]})
     events = [event async for event in stream_organize_events(client, "job-1", "user-a", poll_s=0)]
     assert events[0].startswith("id: 1\ndata: ")
     assert "\"content\": \"{\\\"status\\\": \\\"succeeded\\\"}\"" in events[1]
+    assert events[-1] == DONE
+
+
+@pytest.mark.asyncio
+async def test_organize_event_stream_resumes_after_a_cursor():
+    """A reconnect with a cursor replays only what the client has not already seen.
+
+    This path had NO coverage while `stream_organize_events` guarded it with
+    `hasattr(query, "gt")`: against a fake without `gt` the filter was silently skipped, so the
+    guard read as "cursors are optional" rather than "this fake is incomplete". The filter is
+    unconditional now, which is what makes this exercise the real query.
+
+    HONEST LIMIT: production ALSO skips `sequence <= cursor_sequence` row by row, so this stays
+    green if the pushed-down `.gt` is broken — the two guards share a predicate. What pins the
+    fake's `gt` itself is `test_fake_gt_skips_null_columns_like_postgres`.
+    """
+    client = _Client({"organize_events": [
+        {"sequence": 1, "job_id": "job-1", "user_id": "user-a", "event_type": "stage",
+         "message": "Queued", "payload": {}},
+        {"sequence": 2, "job_id": "job-1", "user_id": "user-a", "event_type": "stage",
+         "message": "Finding places", "payload": {}},
+        {"sequence": 3, "job_id": "job-1", "user_id": "user-a", "event_type": "result",
+         "message": "Organized", "payload": {"status": "succeeded"}},
+    ]})
+
+    events = [event async for event in stream_organize_events(
+        client, "job-1", "user-a", cursor="1", poll_s=0
+    )]
+
+    assert [event.split("\n", 1)[0] for event in events[:-1]] == ["id: 2", "id: 3"]
     assert events[-1] == DONE
 
 
@@ -1139,11 +1341,11 @@ async def test_refunded_item_gets_fresh_reservation_before_uncached_analysis(mon
 
     monkeypatch.setattr("organizer.reserve_organize_item_analysis", reserve)
     monkeypatch.setattr("organizer.cache_places", cache)
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("organizer.get_cached_places", _cached(None))
 
     await run_organize_job(
         "job-1", "user-a", client=client, scrape=scrape, extract=extract,
-        ground=lambda place: {"place": place, "country_code": "JP", "country_name": "Japan"},
+        ground=_grounds_to_japan,
     )
 
     assert calls[:3] == [("reserve", "item-1", "user-a"), ("scrape", "https://www.instagram.com/reel/A"), ("extract",)]
@@ -1173,11 +1375,11 @@ async def test_cache_retry_consumes_existing_reservation_without_apify(monkeypat
         raise AssertionError("cache retry must not call Apify")
 
     monkeypatch.setattr("organizer.reserve_organize_item_analysis", unexpected_reserve)
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
 
     await run_organize_job(
         "job-1", "user-a", client=client, scrape=unexpected_scrape,
-        ground=lambda place: {"place": place, "country_code": "JP", "country_name": "Japan"},
+        ground=_grounds_to_japan,
     )
 
     assert client.db["organize_job_items"][0]["analysis_charge_state"] == "consumed"
@@ -1202,7 +1404,7 @@ async def test_terminal_items_are_not_replayed_after_requeue(monkeypatch):
     async def unexpected_ground(*_args, **_kwargs):
         raise AssertionError("terminal items must not be replayed")
 
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
 
     await run_organize_job("job-1", "user-a", client=client, ground=unexpected_ground)
 
@@ -1561,6 +1763,206 @@ async def test_persist_place_repairs_poisoned_country_label_on_near_match():
     assert client.db["places"][0]["country_name"] == "Japan"
 
 
+def _legacy_null_country_row(place_id, lat, lng):
+    """A canonical row created BEFORE the country migration: name + coords, no country.
+
+    Written with explicit `None`s rather than omitted keys because that is how Supabase
+    actually returns a nullable column, and the two differ under `row.get(key, default)`.
+    """
+    return {"id": place_id, "name": "Harry Potter Cafe", "lat": lat, "lng": lng,
+            "country": None, "country_code": None, "country_name": None}
+
+
+@pytest.mark.asyncio
+async def test_persist_place_reuses_and_backfills_a_near_null_country_legacy_row():
+    """ISSUES-B2: `.eq("country_code", ...)` structurally excludes pre-migration rows, so the
+    organizer inserted a SECOND canonical row for a venue it already had. Coordinates — not the
+    name — are what license the reuse, and the verified country is written onto the reused row.
+    """
+    client = _Client({"places": [_legacy_null_country_row("place-legacy", 35.67311, 139.73625)]})
+    place = PlaceResult(
+        name="Harry Potter Cafe", category="restaurant", lat=35.67320, lng=139.73630,
+        confidence=0.8, evidence_quote="Harry Potter Cafe", source_url="https://hpcafe.jp/",
+        country_code="JP", country_name="Japan",
+    )
+
+    place_id = await _persist_place(client, {
+        "place": place, "country_code": "JP", "country_name": "Japan",
+    })
+
+    assert place_id == "place-legacy"
+    assert len(client.db["places"]) == 1, "reuse must not also insert a duplicate"
+    assert client.db["places"][0]["country_code"] == "JP"
+    assert client.db["places"][0]["country"] == "Japan"
+    assert client.db["places"][0]["country_name"] == "Japan"
+
+
+@pytest.mark.asyncio
+async def test_persist_place_does_not_reuse_a_far_null_country_row():
+    """The distance gate is what keeps null-aware matching from being data corruption: two
+    genuinely different venues sharing a name must stay two rows, and the far row must NOT be
+    stamped with a country it was never verified against.
+    """
+    client = _Client({"places": [_legacy_null_country_row("place-osaka", 34.6937, 135.5023)]})
+    place = PlaceResult(
+        name="Harry Potter Cafe", category="restaurant", lat=35.67320, lng=139.73630,
+        confidence=0.8, evidence_quote="Harry Potter Cafe", source_url="https://hpcafe.jp/",
+        country_code="JP", country_name="Japan",
+    )
+
+    place_id = await _persist_place(client, {
+        "place": place, "country_code": "JP", "country_name": "Japan",
+    })
+
+    assert place_id != "place-osaka"
+    assert len(client.db["places"]) == 2
+    assert client.db["places"][0]["country_code"] is None, "the far row must stay untouched"
+    assert client.db["places"][-1]["lat"] == 35.67320
+
+
+@pytest.mark.asyncio
+async def test_persist_place_prefers_the_country_code_match_over_a_null_country_row():
+    """Both rows are inside the gate, so both are reusable — the choice must be deterministic
+    and must pick the row whose country is already verified, not whichever came back first.
+    """
+    client = _Client({"places": [
+        _legacy_null_country_row("place-legacy", 35.67311, 139.73625),
+        {"id": "place-verified", "name": "Harry Potter Cafe", "lat": 35.67315,
+         "lng": 139.73628, "country": "Japan", "country_code": "JP", "country_name": "Japan"},
+    ]})
+    place = PlaceResult(
+        name="Harry Potter Cafe", category="restaurant", lat=35.67320, lng=139.73630,
+        confidence=0.8, evidence_quote="Harry Potter Cafe", source_url="https://hpcafe.jp/",
+        country_code="JP", country_name="Japan",
+    )
+
+    place_id = await _persist_place(client, {
+        "place": place, "country_code": "JP", "country_name": "Japan",
+    })
+
+    assert place_id == "place-verified"
+    assert client.db["places"][0]["country_code"] is None, "the unchosen row stays untouched"
+
+
+@pytest.mark.asyncio
+async def test_persist_place_breaks_a_same_country_tie_by_lowest_id():
+    """Two equally-eligible rows must resolve to the SAME canonical id on every run.
+
+    The country preference is a single boolean, so it separates the two groups and orders
+    nothing within them; a stable sort then means the winner among equally-eligible rows is
+    whatever order the database happened to return — and an unordered select promises none.
+    Two same-name, same-country rows both inside the 500 m gate could therefore hand
+    `reel_place_mentions` a different canonical place on a re-organize after a plan change or
+    a vacuum, which is the one thing a canonical id may not do. The second key in
+    `order by (country_code is null), id` is what makes the ordering total at the source
+    (20260720180000).
+
+    The lower id is seeded SECOND so the assertion cannot be satisfied by insertion order.
+    """
+    client = _Client({"places": [
+        {"id": "place-zzz", "name": "Starbucks", "lat": 35.67315, "lng": 139.73628,
+         "country": "Japan", "country_code": "JP", "country_name": "Japan"},
+        {"id": "place-aaa", "name": "Starbucks", "lat": 35.67311, "lng": 139.73625,
+         "country": "Japan", "country_code": "JP", "country_name": "Japan"},
+    ]})
+    place = PlaceResult(
+        name="Starbucks", category="restaurant", lat=35.67320, lng=139.73630,
+        confidence=0.8, evidence_quote="Starbucks", source_url="https://starbucks.co.jp/",
+        country_code="JP", country_name="Japan",
+    )
+
+    place_id = await _persist_place(client, {
+        "place": place, "country_code": "JP", "country_name": "Japan",
+    })
+
+    assert place_id == "place-aaa"
+
+
+@pytest.mark.asyncio
+async def test_persist_place_finds_or_creates_in_exactly_one_round_trip():
+    """The whole find-or-create is ONE call, and it is the RPC (B2 + 20260720160000).
+
+    B2 made reuse null-country-aware with two unconditional selects, so an organize of N places
+    issued up to 2N; B6 collapsed them into one `or=` select; the serialization then moved the
+    entire lookup-and-insert into `find_or_create_place`, which is what makes the count exactly
+    one rather than merely fewer. `_persist_place` runs once per grounded place, so this is the
+    loop worth keeping tight — and the count is now CORRECTNESS, not just cost: a second round
+    trip is by definition outside the function's transaction and therefore outside its advisory
+    lock, which is precisely the race 20260720160000 closed. Without this, a later increment
+    re-adds a read here and every other test in this file stays green.
+    """
+    round_trips = []
+
+    class _CountingClient(_Client):
+        def table(self, name):
+            round_trips.append(("table", name))
+            return super().table(name)
+
+        def rpc(self, name, params):
+            round_trips.append(("rpc", name))
+            return super().rpc(name, params)
+
+    client = _CountingClient({"places": [
+        _legacy_null_country_row("place-legacy", 35.67311, 139.73625),
+    ]})
+    place = PlaceResult(
+        name="Harry Potter Cafe", category="restaurant", lat=35.67320, lng=139.73630,
+        confidence=0.8, evidence_quote="Harry Potter Cafe", source_url="https://hpcafe.jp/",
+        country_code="JP", country_name="Japan",
+    )
+
+    place_id = await _persist_place(client, {
+        "place": place, "country_code": "JP", "country_name": "Japan",
+    })
+
+    assert round_trips == [("rpc", "find_or_create_place")]
+    assert place_id == "place-legacy"        # and it still reused, rather than trip-counting a no-op
+    # The reuse rule needs every one of these, and a missing key would raise inside the mirror
+    # rather than silently widen the gate. Which candidate the rule then PREFERS is decided by
+    # `order by (country_code is null), id` inside the function — proven against real Postgres
+    # in `supabase/tests/012_serialized_place_find_or_create.sql`, since no Python assertion can
+    # reach a SQL ORDER BY.
+    assert client.rpc_calls[0][1] == {
+        "p_name": "Harry Potter Cafe",
+        "p_place_type": "restaurant",
+        "p_lat": 35.67320,
+        "p_lng": 139.73630,
+        "p_country": "Japan",
+        "p_country_code": "JP",
+        "p_country_name": "Japan",
+        "p_city": None,
+        "p_max_distance_m": DEFAULT_DISTANCE_M,
+    }
+
+
+@pytest.mark.asyncio
+async def test_persist_place_omits_embedding_deliberately():
+    """CHARACTERIZATION (ISSUES-B3) — pins today's behaviour; there was no red phase.
+
+    A null `embedding` is a DECISION, not an oversight. Organizer places join the pgvector
+    flywheel through the future shared embedding producer, never through a blocking OpenAI
+    call on the organize critical path. The whole system is consistent here: no production
+    embedding writer exists repo-wide, and `pipeline/dedup.py` matches without embeddings
+    too. If this assertion bothers you, you are building that producer — see the trigger in
+    `ISSUES.md` B3, and change BOTH writers together.
+    """
+    client = _Client({})
+    place = PlaceResult(
+        name="Harry Potter Cafe", category="restaurant", lat=35.67320, lng=139.73630,
+        confidence=0.8, evidence_quote="Harry Potter Cafe", source_url="https://hpcafe.jp/",
+        country_code="JP", country_name="Japan",
+    )
+
+    await _persist_place(client, {
+        "place": place, "country_code": "JP", "country_name": "Japan",
+    })
+
+    inserted = client.db["places"][-1]
+    assert "embedding" not in inserted, (
+        "an embedding written here would be a new blocking OpenAI call on the organize path"
+    )
+
+
 @pytest.mark.asyncio
 async def test_authorize_place_ids_rejects_unstamped_mention():
     client = _Client({
@@ -1631,7 +2033,7 @@ async def test_poisoned_legacy_mention_is_replaced_by_verified_japan_link(monkey
         country_code="JP", country_name="Japan",
     )
 
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [research])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([research]))
 
     async def ground(place):
         return {"place": place, "country_code": "JP", "country_name": "Japan"}
@@ -1683,7 +2085,7 @@ async def test_country_mismatch_fails_closed_without_destroying_mentions(monkeyp
         confidence=0.8, evidence_quote="Harry Potter Cafe", source_url="https://hpcafe.jp/",
         country_code="JP", country_name="Japan",
     )
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [research])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([research]))
 
     async def mismatch(_place):
         return None
@@ -1732,7 +2134,7 @@ async def test_run_organize_job_persists_verified_country_matrix(
         confidence=0.8, evidence_quote=f"Verified {code}",
         source_url="https://source.test/verified", country_code=code, country_name=name,
     )
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [research])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([research]))
 
     async def ground(place):
         return {"place": place, "country_code": code, "country_name": name}
@@ -1785,7 +2187,7 @@ async def test_uncached_reel_caches_research_output_before_country_verification(
         assert cached == [research]
         return {"place": place, "country_code": "JP", "country_name": "Japan"}
 
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("organizer.get_cached_places", _cached(None))
     monkeypatch.setattr("organizer.cache_places", cache)
 
     await run_organize_job(
@@ -1846,10 +2248,10 @@ async def test_provider_outage_consumes_cached_research_then_retries_without_api
 
     monkeypatch.setattr("organizer.reserve_organize_item_analysis", reserve)
     monkeypatch.setattr("organizer.refund_organize_item_analysis", refund)
-    monkeypatch.setattr(
-        "organizer.get_cached_places",
-        lambda *_args, **_kwargs: list(cached) if cached else None,
-    )
+    async def get_cached_places(*_args, **_kwargs):
+        return list(cached) if cached else None
+
+    monkeypatch.setattr("organizer.get_cached_places", get_cached_places)
     monkeypatch.setattr("organizer.cache_places", cache)
 
     await run_organize_job(
@@ -1899,7 +2301,7 @@ async def test_item_failure_logs_only_fixed_phase_and_job_item_ids(monkeypatch, 
         }],
     })
 
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
 
     async def leak(_place):
         raise RuntimeError("TOKEN=secret https://private.example/reel/A")
@@ -1912,3 +2314,245 @@ async def test_item_failure_logs_only_fixed_phase_and_job_item_ids(monkeypatch, 
     assert "item_id=item-1" in caplog.text
     assert "secret" not in caplog.text
     assert "private.example" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_zero_place_job_does_not_report_as_organized(monkeypatch):
+    """4 failed + 1 location_not_found is `succeeded` with ZERO places — it must not say
+    "Organized".
+
+    `final_status` is deliberately unchanged (it is the frontend contract, and one
+    location_not_found among failures is still a completed run, not a crashed one). The
+    MESSAGE is what a user reads, and "Organized" on a job that produced no place is a lie
+    the status endpoint and the terminal SSE event both repeat.
+    """
+    client = _Client({
+        "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending"}],
+        "organize_job_items": [
+            {"id": f"item-{key}", "job_id": "job-1", "user_id": "user-a",
+             "saved_reel_id": f"r{key}", "status": "queued"}
+            for key in "ABCDE"
+        ],
+        "saved_reels": [
+            {"id": f"r{key}", "user_id": "user-a",
+             "normalized_url": f"https://www.instagram.com/reel/{key}",
+             "reel_cache_id": f"cache-{key}", "analysis_status": "queued"}
+            for key in "ABCDE"
+        ],
+        "reel_cache": [
+            {"id": f"cache-{key}", "normalized_url": f"https://www.instagram.com/reel/{key}"}
+            for key in "ABCDE"
+        ],
+    })
+    # One place per Reel, named after it, so the shared `ground` seam can behave per item.
+    async def get_cached_places(_client, url, _version):
+        return [_place(name=url.rsplit("/", 1)[-1])]
+
+    monkeypatch.setattr("organizer.get_cached_places", get_cached_places)
+
+    async def ground(place):
+        if place.name == "E":
+            return None                             # grounds to nothing -> location_not_found
+        raise RuntimeError("mapbox unavailable")    # -> failed
+
+    await run_organize_job("job-1", "user-a", client=client, ground=ground)
+
+    status = await get_organize_status(client, "job-1", "user-a")
+    assert (status["failed_items"], status["location_not_found_items"], status["organized_items"]) == (4, 1, 0)
+    job = client.db["organize_jobs"][0]
+    assert job["status"] == "succeeded"
+    assert job["status_message"] == "No locations found"
+    result_events = [e for e in client.db["organize_events"] if e["event_type"] == "result"]
+    assert [e["message"] for e in result_events] == ["No locations found"]
+
+
+@pytest.mark.asyncio
+async def test_organized_job_still_reports_organized(monkeypatch):
+    """The honest-message change must not relabel a job that DID produce places."""
+    client = _Client({
+        "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending"}],
+        "organize_job_items": [{"id": "item-1", "job_id": "job-1", "user_id": "user-a",
+                                "saved_reel_id": "r1", "status": "queued"}],
+        "saved_reels": [{"id": "r1", "user_id": "user-a",
+                         "normalized_url": "https://www.instagram.com/reel/A",
+                         "reel_cache_id": "cache-1", "analysis_status": "queued"}],
+        "reel_cache": [{"id": "cache-1", "normalized_url": "https://www.instagram.com/reel/A"}],
+    })
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
+
+    await run_organize_job(
+        "job-1", "user-a", client=client,
+        ground=_grounds_to_japan,
+    )
+
+    job = client.db["organize_jobs"][0]
+    assert (job["status"], job["status_message"]) == ("succeeded", "Organized")
+
+
+@pytest.mark.asyncio
+async def test_extraction_cache_read_blip_is_a_miss_not_an_item_failure(monkeypatch):
+    """A `reel_cache` SELECT blip must degrade to a MISS, exactly as the trip runner does
+    (`pipeline/runner.py:208-211`), not fail the item.
+
+    Deliberately runs the REAL `get_cached_places` — monkeypatching it would test the fake
+    rather than the seam where the blip actually arrives. Only the SELECT faults; the
+    write-through upsert still has to work, so a MISS can complete.
+    """
+
+    class _BlipTable(_Table):
+        async def execute(self):
+            if self.name == "reel_cache" and self.op == "select":
+                raise RuntimeError("connection reset by peer")
+            return await super().execute()
+
+    class _BlipClient(_Client):
+        def table(self, name): return _BlipTable(name, self.db)
+
+    client = _BlipClient({
+        "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending"}],
+        "organize_job_items": [{"id": "item-1", "job_id": "job-1", "user_id": "user-a",
+                                "saved_reel_id": "r1", "status": "queued"}],
+        "saved_reels": [{"id": "r1", "user_id": "user-a",
+                         "normalized_url": "https://www.instagram.com/reel/A",
+                         "reel_cache_id": "cache-1", "analysis_status": "queued"}],
+        "reel_cache": [{"id": "cache-1", "normalized_url": "https://www.instagram.com/reel/A",
+                        "extractor_version": EXTRACTOR_VERSION, "extracted_places": []}],
+    })
+    scraped = []
+
+    async def scrape(url):
+        scraped.append(url)
+        return SimpleNamespace(caption="c", location_name=None, transcript=None)
+
+    async def reserve(*_args, **_kwargs): return "2026-07-20"
+    monkeypatch.setattr("organizer.reserve_organize_item_analysis", reserve)
+
+    await run_organize_job(
+        "job-1", "user-a", client=client, scrape=scrape,
+        extract=_extracts_one_place,
+        ground=_grounds_to_japan,
+    )
+
+    # The blip is a MISS: the item scraped fresh and completed, rather than failing.
+    assert scraped == ["https://www.instagram.com/reel/A"]
+    assert client.db["organize_job_items"][0]["status"] == "organized"
+    assert client.db["organize_jobs"][0]["status"] == "succeeded"
+
+
+# ---------------------------------------------------------------------------
+# B5(d): organize-job errors map by SQLSTATE, never by message text.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code,expected", [
+    ("AS409", ActiveOrganizeConflict),
+    ("AS404", PermissionError),
+    ("AS422", InvalidOrganizeRequest),
+])
+async def test_organize_job_errors_map_by_sqlstate_through_a_reworded_message(code, expected):
+    """The WHOLE point of (d): the message text is deliberately NOT the current wording.
+
+    Matching on `exc.message` meant a copy-edit in the SQL — or Postgres surfacing the text
+    differently — silently downgraded a 409 to a 500, and no test could see it because both
+    sides shared one literal. Asserting against prose nobody would ever write is what proves
+    the mapping no longer depends on prose at all.
+    """
+    class _RewordedRpcClient:
+        def rpc(self, _name, _params):
+            class _Raiser:
+                async def execute(self):
+                    raise _pg_error(code, "totally different wording, copy-edited later")
+            return _Raiser()
+
+    with pytest.raises(expected):
+        await create_organize_job(_RewordedRpcClient(), "user-a", ["r1"])
+
+
+@pytest.mark.asyncio
+async def test_unmapped_organize_job_sqlstate_still_propagates():
+    """P0001 is now "some other validation the RPC rejects" — it must NOT be silently
+    absorbed into one of the three mapped outcomes."""
+    class _UnmappedRpcClient:
+        def rpc(self, _name, _params):
+            class _Raiser:
+                async def execute(self):
+                    raise _pg_error("P0001", "Saved Reel is already being organized")
+            return _Raiser()
+
+    from postgrest.exceptions import APIError
+
+    with pytest.raises(APIError):
+        await create_organize_job(_UnmappedRpcClient(), "user-a", ["r1"])
+
+
+# ---------------------------------------------------------------------------
+# B5(e): dangling quota reservations are reconciled at recovery.
+# ---------------------------------------------------------------------------
+
+
+def _items_client(*items) -> "_Client":
+    return _Client({"organize_jobs": [], "organize_job_items": list(items)})
+
+
+@pytest.mark.asyncio
+async def test_recovery_refunds_only_dangling_reserved_charges_on_terminal_items(monkeypatch):
+    """A terminal item still holding `reserved` was charged a quota unit nobody released.
+
+    It gets there when `refund_organize_item_analysis` ITSELF fails inside `_process_item`'s
+    handler: the item goes terminal `failed`, the reservation stays, and nothing else in the
+    system ever looks at it — the user loses that unit permanently, and re-organizing the
+    same Reel charges again. Two provider faults are needed to reach it, which is why it is
+    low-severity and not zero.
+
+    The `status` filter is as load-bearing as the `analysis_charge_state` one: an item still
+    `queued` or `processing` holds its reservation LEGITIMATELY — a live worker is mid-run and
+    will consume or refund it. Refunding that one hands out free analyses.
+    """
+    refunded: list[tuple[str, str]] = []
+
+    async def refund(_client, item_id, user_id):
+        refunded.append((item_id, user_id))
+        return True
+
+    monkeypatch.setattr("organizer.refund_organize_item_analysis", refund)
+    client = _items_client(
+        {"id": "dangling", "user_id": "user-a", "status": "failed", "analysis_charge_state": "reserved"},
+        {"id": "dangling-organized", "user_id": "user-a", "status": "organized", "analysis_charge_state": "reserved"},
+        {"id": "dangling-nlf", "user_id": "user-b", "status": "location_not_found", "analysis_charge_state": "reserved"},
+        {"id": "settled", "user_id": "user-a", "status": "organized", "analysis_charge_state": "consumed"},
+        {"id": "free", "user_id": "user-a", "status": "failed", "analysis_charge_state": "not_charged"},
+        {"id": "already", "user_id": "user-a", "status": "failed", "analysis_charge_state": "refunded"},
+        {"id": "in-flight", "user_id": "user-a", "status": "processing", "analysis_charge_state": "reserved"},
+        {"id": "queued", "user_id": "user-a", "status": "queued", "analysis_charge_state": "reserved"},
+    )
+
+    await recover_organize_jobs(client)
+
+    assert refunded == [
+        ("dangling", "user-a"),
+        ("dangling-organized", "user-a"),
+        ("dangling-nlf", "user-b"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_failing_refund_does_not_stop_recovery_dispatching_pending_jobs(monkeypatch):
+    """The sweep is janitorial; re-dispatch is guardrail #12. A blip in the former must never
+    cost the latter — otherwise this fix trades a leaked quota unit for a dropped job."""
+    async def refund(*_args, **_kwargs):
+        raise RuntimeError("postgrest unavailable")
+
+    monkeypatch.setattr("organizer.refund_organize_item_analysis", refund)
+    client = _Client({
+        "organize_jobs": [{"id": "job-1", "user_id": "user-a", "status": "pending",
+                           "created_at": datetime.now(timezone.utc).isoformat()}],
+        "organize_job_items": [
+            {"id": "dangling", "user_id": "user-a", "status": "failed",
+             "analysis_charge_state": "reserved"},
+        ],
+    })
+
+    pending = await recover_organize_jobs(client)
+
+    assert [row["id"] for row in pending] == ["job-1"]

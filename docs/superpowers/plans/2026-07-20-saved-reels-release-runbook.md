@@ -15,11 +15,12 @@ currently-running code, in opposite directions.
 `/health` performs **no schema check**. A code-first deploy against the old schema stays **green**
 while jobs silently fail to start. Do not treat a green health check as evidence the release landed.
 
-## The eight migrations, in stamp order
+## The ten migrations, in stamp order
 
-The count has moved twice as Codex findings were fixed — `20260720150000` came from the
-itinerary-fencing fix and `20260720160000` from the duplicate-places fix. **Eight is current.**
-Re-derive it rather than trusting a remembered number:
+The count has moved **four times** while findings were fixed — `…150000` (itinerary fence),
+`…160000` (duplicate places), `…170000` (lease clock), `…180000` (null-country reuse, from
+reconciling Arc B onto the fixed Arc A). **Ten is current as of the Arc B rebase.** This is exactly
+why the command below exists — re-derive, never trust a remembered number:
 
 ```bash
 diff <(git ls-tree -r --name-only dev -- supabase/migrations | sort) \
@@ -37,6 +38,13 @@ diff <(git ls-tree -r --name-only dev -- supabase/migrations | sort) \
 | 6 | `20260720140000_drop_superseded_reel_quota_functions` | B | safe — verified zero runtime callers on `dev` |
 | 7 | `20260720150000_fenced_trip_itinerary_replace` | A | additive — new `replace_trip_itinerary` RPC |
 | 8 | `20260720160000_serialized_place_find_or_create` | A | additive — advisory-locked `find_or_create_place`. **Assumes READ COMMITTED** (the re-check's snapshot is taken after the lock is granted); under REPEATABLE READ the lock would do visible work and no good. Postgres' default is READ COMMITTED and an assertion pins it. |
+| 9 | `20260720170000_db_clock_job_leases` | A | additive — six `security definer` RPCs (claim/renew/reclaim × trip + organize) so **one clock decides lease ownership**. Uses `clock_timestamp()`, not `now()`: `now()` is transaction-start time, so a statement that waits on a row lock would measure its expiry from *before* the wait — the lease shrinks exactly when the DB is slow. |
+| 10 | `20260720180000_null_country_place_reuse` | B-rebase | additive — widens #8's function to `(country_code = p_country_code or country_code is null)` with `order by (country_code is null), id`. Reconciles Arc A's advisory lock with Arc B's null-country reuse; neither alone was sufficient. |
+
+**Rehearsed end-to-end.** `supabase db reset` applied all 27 migrations (these 10 plus the existing
+17) in stamp order against a clean local database with no error, then pgTAP **14 files / 579** PASS
+and `db lint` clean. That rehearsal is the closest available proxy for your live run — it is the
+first and only time these ten have ever been applied together.
 
 ### The two that bite
 

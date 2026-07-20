@@ -23,6 +23,14 @@ def test_pace_within_max_length_is_accepted():
     assert req.pace == "relaxed"
 
 
+def test_mixed_reel_urls_and_place_ids_is_rejected():
+    # ISSUES-B6: run_generation's `if place_ids:` takes the organized-place branch, so a
+    # request carrying both silently drops the Reel URLs and still reports success. No
+    # approved product contract merges the two sources -- reject at the boundary.
+    with pytest.raises(ValidationError):
+        GenerateTripRequest(**_base_kwargs(place_ids=["11111111-1111-1111-1111-111111111111"]))
+
+
 def test_pace_over_max_length_is_rejected():
     # gstack /review cross-model finding (High): `pace` flows unbounded into LLM prompts
     # (preference_block -> restaurant/narrator) and the mem0 synopsis -- the same

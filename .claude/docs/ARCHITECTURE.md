@@ -178,7 +178,9 @@ Two-gate matching per new place:
 
 Both gates must pass to merge into an existing canonical record. Semantic-only would merge "Ichiran Shibuya" with "Ichiran Shinjuku." Lat/lng-only would miss "Senso-ji Temple" vs "浅草寺."
 
-On match: append new evidence quote, increment `timesReferenced`. On miss: create new canonical record with embedding.
+On match: append new evidence quote, increment `timesReferenced`. On miss: create new canonical record.
+
+**Status — the semantic gate is NOT built (ISSUES-B3, accepted MVP state).** The two gates above describe the target design; today only the geographic gate plus exact-name matching is live. Both writers — `organizer._persist_place` and `pipeline.persist._find_or_create_place` — insert `places` rows with `embedding = NULL`, and `pipeline/dedup.py` matches by name/alias overlap + haversine with no embeddings at all. There is **no production embedding writer anywhere in the repo**. This is deliberate: filling `embedding` at insert time means a blocking OpenAI call per place on a user-facing critical path, to serve a similarity query no feature issues yet. `places_embedding_hnsw_idx` is partial (`where embedding is not null`), so null rows cost it nothing. **Trigger to build it:** when semantic place matching is scheduled on the board — the first feature that actually queries `places_embedding_hnsw_idx` — built as a shared producer used by BOTH writers, plus a bounded backfill for existing rows. Never inline in the organize loop.
 
 ## Build Order (productionising from hackathon)
 

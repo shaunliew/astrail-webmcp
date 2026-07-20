@@ -54,6 +54,7 @@ from rate_limit import (
 from saved_reels import capture_saved_reel
 from organizer import (
     ActiveOrganizeConflict,
+    InvalidOrganizeRequest,
     create_organize_job,
     get_organize_status,
     recover_organize_jobs,
@@ -217,9 +218,12 @@ async def readiness():
 
 
 @app.post("/saved-reels", response_model=CaptureSavedReelResponse)
+@limiter.limit(BURST_LIMIT)
 async def create_saved_reel(
+    request: Request,                                     # required by slowapi; must be named `request`
+    response: Response,                                   # REQUIRED with headers_enabled=True (see generate_trip)
     req: _CaptureSavedReelRequest,
-    user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_current_user_id_stashed),  # stashes request.state.user_id for key_func
 ) -> CaptureSavedReelResponse:
     client = await get_supabase_client()
     try:
@@ -356,6 +360,11 @@ async def organize_saved_reels(
         job_id = await create_organize_job(client, user_id, saved_reel_ids)
     except ActiveOrganizeConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except InvalidOrganizeRequest as exc:
+        # The RPC's own boundary validation. Pydantic rejects the same shapes first, so this
+        # is defense in depth for a request that somehow reaches the RPC malformed — it must
+        # still read as the client error it is, not a 500.
+        raise HTTPException(status_code=422, detail="Saved Reel organize request is invalid") from exc
     except PermissionError as exc:
         raise HTTPException(status_code=404, detail="Saved Reel not found") from exc
     background.add_task(run_organize_job, job_id, user_id, client=client)

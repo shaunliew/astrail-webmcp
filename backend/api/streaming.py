@@ -85,7 +85,7 @@ async def stream_organize_events(
     for _ in range(max_polls):
         try:
             query = client.table("organize_events").select("*").eq("job_id", job_id).eq("user_id", user_id)
-            if cursor_sequence and hasattr(query, "gt"):
+            if cursor_sequence:
                 query = query.gt("sequence", cursor_sequence)
             result = await query.order("sequence").execute()
         except Exception:

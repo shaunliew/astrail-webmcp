@@ -2,8 +2,11 @@
 
 Priority order: **B1, B4, B6, B2, B3, B5, B7**. B1 is **RESOLVED** (live security-adjacent
 log exposure, closed by access-log redaction — see below);
-B4 is restart burst-cost and provider-rate-limit risk; B6 is a cheap correctness
-guard for a currently unreachable UI path; B2/B3 are canonical-data hygiene; B5 is
+B4 is restart burst-cost and provider-rate-limit risk; B6 is **RESOLVED** (the cheap
+correctness guard for a currently unreachable UI path — mixed input is now a 422);
+B2/B3 are canonical-data hygiene, and both are **RESOLVED** — B2 in code (null-country legacy
+rows are now reused and backfilled at the write boundary, still behind the 500-metre gate), B3
+by decision (null embeddings accepted as a documented, tested MVP state, with a trigger); B5 is
 **RESOLVED** (it was never protected by the single-writer invariant claimed below — Arc A's
 lease work replaced that premise with a database row lock); B7 is cosmetic product wording.
 
@@ -150,10 +153,21 @@ limit of three. Split the semaphore only after measured workloads show starvatio
 block each invocation on an event, and assert maximum simultaneous executions never exceeds
 three. Then release them and prove every pending job eventually runs exactly once.
 
-## B6 — Reject mixed Reel URLs and canonical place IDs
+## B6 — Reject mixed Reel URLs and canonical place IDs — **RESOLVED (Arc B)**
 
 **Suggested severity:** P3. The current Saved Reels UI sends only `place_ids`, so the path is
 not reachable from that screen, but an API client can silently lose requested input.
+
+**RESOLUTION (2026-07-20, Arc B / task B1).** The recommendation shipped as written:
+`GenerateTripRequest.require_reel_or_place` (`backend/api/schemas.py`) now also rejects the
+combination, so a request carrying both fields is a 422 from Pydantic — before the handler
+body runs. `backend/pipeline/runner.py::run_generation` is unchanged; no merge contract was
+defined, and none is planned until an approved product requirement for merged sources exists.
+The regression is `test_main.py::test_generate_trip_rejects_mixed_reel_urls_and_place_ids`,
+which asserts the 422 plus zero side effects (no trip row, no job, no quota RPC, no background
+dispatch — the last being the only path to an Apify call or to `authorize_place_ids`), with
+`api/test_schemas.py::test_mixed_reel_urls_and_place_ids_is_rejected` covering the model
+directly. The Reel-only and place-only happy paths keep their own regressions.
 
 **Files and symbols:**
 
@@ -177,10 +191,36 @@ expanding the pipeline.
 trip row, job, quota increment, background task, Apify call, or place authorization occurs.
 Keep separate regressions showing Reel-only and place-only requests still pass.
 
-## B2 — Reuse verified legacy places whose country code is null
+## B2 — Reuse verified legacy places whose country code is null — **RESOLVED (Arc B)**
 
 **Suggested severity:** P3. This creates duplicate canonical rows and weakens data hygiene,
 but it does not expose an unverified place or break the current trip flow.
+
+**RESOLUTION (2026-07-20, Arc B / task B2).** The recommendation shipped as written:
+null-aware reuse at the write boundary, no batch backfill. The reuse predicate lives in
+`public.find_or_create_place` (Arc A moved it there in 20260720160000 to serialize the
+find-or-create behind an advisory lock), and 20260720180000 widens it from
+`country_code = p_country_code` to `country_code = p_country_code or country_code is null`.
+`order by (country_code is null), id` then makes the choice deterministic when both shapes sit
+inside the gate: an already-Mapbox-verified row beats a legacy one, and the lowest id breaks
+the remaining tie, so a re-organize resolves to the same canonical place every run. Reuse is
+still licensed by coordinates alone — the unchanged 500-metre haversine gate decides — and the
+function's existing update on the chosen row is what backfills the verified
+`country/country_code/country_name`. Country is never inferred from the name, and only the
+chosen row is written. Regressions in `backend/test_saved_reels_organize.py`:
+`..._reuses_and_backfills_a_near_null_country_legacy_row`,
+`..._does_not_reuse_a_far_null_country_row` (the anti-corruption case — same name, different
+venue, stays two rows and is not stamped with an unverified country),
+`..._prefers_the_country_code_match_over_a_null_country_row` and
+`..._breaks_a_same_country_tie_by_lowest_id`; at the SQL level in
+`supabase/tests/012_serialized_place_find_or_create.sql`.
+
+**Still deferred, with triggers.** A separate audited batch backfill of legacy null-country
+rows: when a production count shows `places.country_code IS NULL` rows above roughly 200. The
+select-then-insert TOCTOU is closed for THIS caller by the advisory lock, but the lock is a
+convention rather than a constraint: `pipeline/persist.py::_find_or_create_place` still reaches
+`places` directly and keeps its own deferral, since its match rule is by name/alias rather than
+name/country. Trigger for porting it: observed duplicate canonical rows in production.
 
 **Files and symbols:**
 
@@ -205,7 +245,33 @@ country from the place name alone.
 persist a Mapbox-verified candidate, and assert the existing ID is reused and receives the
 verified country. Also prove a far null-country row is not reused.
 
-## B3 — Define how organizer places enter the pgvector flywheel
+## B3 — Define how organizer places enter the pgvector flywheel — **RESOLVED as ACCEPTED (Arc B)**
+
+**Status:** closed by decision, not by code. Null embeddings are now a *documented, tested*
+MVP state rather than an undocumented gap. Nothing about the insert changed — what changed is
+that the omission is asserted, so a future edit has to argue with it instead of drifting past it.
+
+**Why accept rather than fix.** The recommendation below was already "do not add a blocking
+OpenAI call to the organizer critical path for this", and verification during Arc B widened it:
+there is **no production embedding writer anywhere in the repo**. `pipeline/persist.py::
+_find_or_create_place` omits `embedding` exactly as the organizer does, and `pipeline/dedup.py`
+states outright that its matching is "Pure + offline — no embeddings, no Supabase". So null is
+the consistent state of the entire system, not an organizer oversight — which also means the fix
+is a shared producer, never a one-line addition to one insert. `places_embedding_hnsw_idx` is
+partial (`where embedding is not null`), so the null rows cost the index nothing meanwhile.
+
+**What landed:** a documentation block at the insert site (`organizer.py::_persist_place`), a
+corrected flywheel section in `.claude/docs/ARCHITECTURE.md` (it previously claimed inserts
+create the record "with embedding" — untrue), and a characterization test,
+`test_persist_place_omits_embedding_deliberately`. That test pins an absence, so it had no red
+phase; its fault-injection is inverted — adding `"embedding": [0.0]` to the insert payload
+reddens it, confirmed.
+
+**TRIGGER to build the producer + bounded backfill:** when **semantic place matching is
+scheduled on the board** — i.e. the first feature that actually queries
+`places_embedding_hnsw_idx`. Build it as a shared producer used by **both**
+`organizer._persist_place` and `persist._find_or_create_place`, never inline in the organize
+loop. Not before that trigger: an embedding written today serves no query.
 
 **Suggested severity:** P3. The rows remain usable by exact-name and geographic matching;
 the gap affects future semantic reuse rather than current correctness.
@@ -379,3 +445,18 @@ widening the view again means another migration.
 **Regression test:** Seed two users sharing one `reel_cache_id`, only one of them `organized`.
 Assert the non-organizing user's card shows the chosen state (no pins for option 1), and that
 `authorize_place_ids` still rejects their attempt to select those places into a trip.
+
+**Update 2026-07-20 (Arc B, task B3) — STILL YOUR CALL, but the narrowing is now wider.**
+A3 closed the cross-user half of this (a user who merely saved someone else's organized Reel
+owns no mention rows). B3 closed the remaining same-user half: the card view and
+`private.can_select_verified_saved_reel_place` now BOTH require
+`saved_reels.analysis_status = 'organized'`, matching `authorize_place_ids`.
+
+The newly visible consequence, beyond what this item described: a user who organized a Reel
+**successfully once**, then re-organized it into `failed` / `location_not_found`, keeps their
+verified mention rows but their pins **disappear from the card** until the next successful
+organize. That next organize is a cache hit (Mapbox-cached, quota-free), so it is cheap — but
+it is a state where pins vanish from a Reel the user previously saw working, and it needs the
+same empty-state copy option 1 already needs. Still option 1; still yours to confirm or
+override. Overriding after this means another view migration
+(`20260720120000_saved_reels_cache_signal_v2.sql`).

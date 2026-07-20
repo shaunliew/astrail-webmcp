@@ -31,6 +31,8 @@ class GenerateTripRequest(BaseModel):
     def require_reel_or_place(self):
         if not self.reel_urls and not self.place_ids:
             raise ValueError("At least one Reel URL or canonical place ID is required")
+        if self.reel_urls and self.place_ids:
+            raise ValueError("Provide either Reel URLs or canonical place IDs, not both")
         return self
 
 
@@ -65,6 +67,16 @@ class CaptureSavedReelResponse(BaseModel):
 
 class OrganizeSavedReelsRequest(BaseModel):
     saved_reel_ids: list[UUID] = Field(min_length=1, max_length=5)
+
+    # The RPC rejects duplicates too (now as AS422 -> InvalidOrganizeRequest -> 422, since
+    # B5(d)). This validator stops the bad input reaching the RPC at all; the SQLSTATE
+    # mapping makes the RPC's own rejection read correctly if it ever does. Neither
+    # replaces the other.
+    @model_validator(mode="after")
+    def reject_duplicate_ids(self):
+        if len(set(self.saved_reel_ids)) != len(self.saved_reel_ids):
+            raise ValueError("saved_reel_ids must not contain duplicates")
+        return self
 
 
 class OrganizeSavedReelsResponse(BaseModel):

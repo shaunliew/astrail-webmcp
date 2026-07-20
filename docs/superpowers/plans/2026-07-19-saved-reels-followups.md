@@ -1974,7 +1974,8 @@ it now ships as part of the lease design because the fence needed the same row l
    mid-organize and confirm the job is reclaimed and re-run, not dropped.
 4. Re-run the ISSUES-B1 sentinel probe against the redacted deployment (A5) — it must now be
    ABSENT from the `--type app` sink it was previously present in.
-5. Re-evaluate `organizer.py` against the 800-line ceiling (deferral register).
+5. Re-evaluate `organizer.py` against the 800-line ceiling (deferral register). **Outcome: it
+   hit 900 lines and was split in Arc B (B6) — see the register row, which is now RESOLVED.**
 6. Fast-forward `shaun` to `dev`.
 
 ---
@@ -2356,6 +2357,20 @@ into a quota re-review for zero present value.
 a method — that hides real supabase-py API drift (review §3). Do this AFTER all behavior tasks
 so the fake-interface work lands once.
 
+> **Carried in from B2's review (2026-07-20) — collapse `_persist_place`'s two selects here.**
+> B2 made canonical-place reuse null-country-aware by issuing TWO selects unconditionally
+> (`.eq("country_code", …)` then `.is_("country_code", "null")`) and concatenating the results.
+> The plan mandated that shape deliberately — it avoids `or_` so the fakes stay simple *until
+> this task*. Cost, confirmed: `_persist_place` runs once per grounded place, so an organize of
+> N places issues up to **2N** selects instead of N. Latency only, never correctness — the
+> single shared distance gate and the single shared update site mean the two branches cannot
+> diverge. **B6 is the natural moment to fix it**, because adding `or_` to the fake is already
+> this task's business: once it exists, the two selects collapse into one
+> `or(country_code.eq.<code>,country_code.is.null)`. Keep the ordering preference — a
+> country-code match must still win over a null-country row, since it is already
+> Mapbox-verified — and keep `test_persist_place_prefers_the_country_code_match_over_a_null_country_row`
+> green, which is what pins that.
+
 **Files:**
 - Modify: `backend/organizer.py` (delete `_maybe_await` (39-40) + all call sites; delete `_initializing_job_is_stale` (43-52). Note: `_persist_mention` and its `hasattr(table, "upsert")` fork were already deleted by **A3**, which replaced them with the `replace_reel_place_mentions` RPC — verify they are gone rather than re-deleting them)
 - Modify: `backend/api/streaming.py::stream_organize_events` (88) — drop `hasattr(query, "gt")`; always `.gt("sequence", cursor_sequence)` when a cursor is set
@@ -2386,6 +2401,44 @@ removing them is frontend-visible churn for zero value.
 ---
 
 ### Arc B closeout
+
+> ## ⛔ STEP 0 — APPLY `20260720130000` BEFORE THE MERGE. NOT OPTIONAL.
+>
+> B5(d) replaced Postgres error matching by message string with custom SQLSTATEs.
+> `_ORGANIZE_JOB_ERRORS` maps **only** `AS409`/`AS404`/`AS422` and re-raises everything else.
+> The deployed database still raises `P0001`.
+>
+> ```
+> merge before applying  →  deployed Postgres raises P0001
+>                        →  not in the map  →  re-raised
+>                        →  api/errors.py's bare-Exception handler returns a generic 500
+>                        →  EVERY 409 ("already organizing") and EVERY 404 (bad/cross-owner id)
+>                           on POST /saved-reels/organize becomes an opaque 500, for the whole
+>                           skew window. Mainline paths, not edge cases.
+> ```
+>
+> **Nothing in this repo enforces the order.** `render.yaml` has `autoDeploy: true` with no
+> pre-deploy migration hook, and `.github/workflows/rls-tests.yml` only runs `supabase db start`
+> against a fresh ephemeral Postgres — CI never touches the deployed project.
+>
+> **A code fallback was considered and REJECTED.** `rate_limit.py` has a precedent (catching
+> `PGRST202` and failing closed), but it does not transfer: there the function genuinely does not
+> exist yet, so the signal is unambiguous. Here the function exists in BOTH versions
+> (`create or replace`), and after the migration `P0001` is deliberately overloaded to mean "some
+> other validation" — so a `P0001`-plus-message fallback would be correct during the window and
+> **silently wrong afterwards**, misclassifying new P0001s into 409/404. That is precisely the
+> fragility B5(d) exists to remove, reintroduced on a timer. Fail-loud-500 for a controlled
+> window beats fail-quiet-wrong forever.
+>
+> **Order:**
+> 1. Apply `supabase/migrations/20260720130000_organize_job_error_codes.sql` to the deployed
+>    Supabase (plus `…120000_saved_reels_cache_signal_v2` if Arc A's closeout did not).
+> 2. Confirm the **currently deployed** code still works against it — it does; the migration is
+>    additive and old code matches on message text, which is unchanged.
+> 3. Only then merge and let auto-deploy ship the code.
+> 4. Smoke it: a duplicate organize of an already-active Reel must return **409, not 500**. If it
+>    returns 500, the migration did not land.
+
 
 1. Final whole-branch `astrail-reviewer` pass, **`model: fable`**.
 2. gstack `/review` Codex cross-model pass — run BOTH.
@@ -2494,7 +2547,7 @@ mention replacement with a true atomic swap. All are Arc A, tasks A2 and A3.
 | Env-parameterized analysis quota (SQL literal `5`) | Product changes the reel-analysis quota or adds tiers |
 | Legacy null-country batch backfill | Production `country_code IS NULL` count > ~200 |
 | Locale-aware country display names | A second locale ships |
-| `organizer.py` package split | **Never for v1** — review verdict: not warranted (421 lines, in budget). Note A1's extraction and A2's lease code push it past 500; re-evaluate against the 800-line ceiling at Arc A closeout, not before |
+| `organizer.py` package split | **RESOLVED — condition fired, split executed in Arc B (B6).** The original verdict was "not warranted *at 421 lines*; re-evaluate against the 800-line ceiling at Arc A closeout" — a conditional deferral, never a permanent no. A1/A2 pushed the file to 900 lines, so it fired as written: split along the grounding seam into `organizer.py` (710) + `grounding.py` (209), one-way dependency, pure moves |
 | Direct `reel_urls` trip path gets Mapbox country verification | Out of Saved-Reels scope by design (extractor-claimed country is trusted there); revisit when reel-path trips surface a wrong-country place in evals or live QA |
 
 ---

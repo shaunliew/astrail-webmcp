@@ -123,13 +123,26 @@ seconds earlier. The result was `dev` carrying code that could not speak to its 
 caught only by verifying the outcome (`git merge-base --is-ancestor`) rather than trusting the
 success message, and fixed by PR #49.
 
-**Your three frontend PRs are stacked the same way.** Merge them in order, and *wait for each
-retarget* before the next:
+**It then bit the frontend stack too — all four are merged now, nothing is pending, but read this
+before you ever stack PRs again.** #46 (Arc C: DESIGN.md, CN→China, the relight) merged to `dev`
+correctly. #47 (mascot + error screens) merged into **#46's branch**, and #48 (design pass) into
+**#47's branch** — both reported `✓ Merged`, neither reached `dev`.
 
-```
-#46  Arc C          -> dev          DESIGN.md, CN->China, night->dawn relight
-#47  Mascot         -> #46          astronaut + composed 404/error screens
-#48  Design pass    -> #47          G2/G3/G4/G7 + the narration nobody could see
+**The mechanism, which is counterintuitive:** GitHub retargets a stacked PR only when its base branch
+is **deleted**. Merging without `--delete-branch` leaves the parent alive, so it stays a perfectly
+valid base — the API keeps reporting `MERGEABLE` and merges happily into a dead end. Nothing is lost;
+the work just sits on a branch.
+
+Fixed by PR #50 (a rebase onto `dev`, resolving three real conflicts) — worth knowing *why* there
+were conflicts: `feat/astrail-mascot` was branched from Arc C **before** the relight's six commits
+existed, so the mascot and design-pass branches never contained the relight, and the design pass had
+edited a `TripWorkspace.tsx` the relight later restructured.
+
+**Two habits that would have prevented all of it:** always merge with `--delete-branch`, and verify
+the *outcome* rather than the success message —
+
+```bash
+git merge-base --is-ancestor origin/<branch> origin/dev && echo "actually on dev"
 ```
 
 ### What is waiting for you specifically

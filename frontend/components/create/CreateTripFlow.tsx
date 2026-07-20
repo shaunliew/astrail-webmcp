@@ -14,6 +14,8 @@ import SignOutButton from '@/components/auth/SignOutButton'
 import InspirationTray from './InspirationTray'
 import TripBriefForm from './TripBriefForm'
 import TripBriefReview from './TripBriefReview'
+import { useSharedMap } from '@/components/map/MapProvider'
+import { relightDurationMs } from '@/components/map/relight'
 import GenerationScene from './GenerationScene'
 
 const EMPTY_BRIEF: BriefInput = {
@@ -32,6 +34,7 @@ function tripIdFromResult(content: string, fallback: string): string {
 
 export default function CreateTripFlow() {
   const router = useRouter()
+  const { setLightPreset } = useSharedMap()
   const [items, setItems] = useState<DraftInspirationItem[]>([])
   const [brief, setBrief] = useState<BriefInput>(EMPTY_BRIEF)
   const [phase, setPhase] = useState<'compose' | 'brief' | 'generating'>('compose')
@@ -70,6 +73,10 @@ export default function CreateTripFlow() {
           if (!activeRef.current) return
           setEvents((prev) => [...prev, event])
           if (event.type === 'result') {
+            // The signature moment. The map is the shell's, shared with the trip view,
+            // so this transition carries across the navigation instead of dying with
+            // this component.
+            setLightPreset('dawn', relightDurationMs())
             handleRef.current?.cancel()
             router.push(`/app/trip/${tripIdFromResult(event.content, trip_id)}`)
           }

@@ -26,6 +26,9 @@ function mapboxToken(): string | undefined {
   return process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN
 }
 
+/** Mapbox's style-spec default. Re-applied so a timed relight cannot linger. */
+const DEFAULT_TRANSITION_MS = 300
+
 export type LightPreset = 'night' | 'dawn'
 
 export type AcquireOptions = {
@@ -104,11 +107,9 @@ export default function MapProvider({ children }: { children: React.ReactNode })
     const map = mapRef.current
     const desired = desiredPresetRef.current
     if (!map || !desired || appliedPresetRef.current === desired) return
-    const duration = transitionMsRef.current
-    if (duration !== null) {
-      map.style?.setTransition({ duration, delay: 0 })
-      transitionMsRef.current = null
-    }
+    const duration = transitionMsRef.current ?? DEFAULT_TRANSITION_MS
+    transitionMsRef.current = null
+    map.style?.setTransition({ duration, delay: 0 })
     map.setConfigProperty('basemap', 'lightPreset', desired)
     appliedPresetRef.current = desired
   }, [])
@@ -125,12 +126,6 @@ export default function MapProvider({ children }: { children: React.ReactNode })
     markersRef.current = markers
   }, [])
 
-  const applyOptions = useCallback((map: mapboxgl.Map, options: AcquireOptions) => {
-    desiredPresetRef.current = options.lightPreset
-    applyPreset()
-    applyInteractive(map, options.interactive)
-  }, [applyPreset])
-
   const acquire = useCallback((options: AcquireOptions) => {
     if (hideTimerRef.current) {
       clearTimeout(hideTimerRef.current)
@@ -142,10 +137,15 @@ export default function MapProvider({ children }: { children: React.ReactNode })
     activeRef.current = options
     setInteractive(options.interactive)
     setVisible(true)
+    // Recorded synchronously, and never re-applied once construction resolves: a
+    // relight requested while the Mapbox bundle is still in flight must win, or the
+    // map would settle on the preset of the phase the user has already left.
+    desiredPresetRef.current = options.lightPreset
 
     const existing = mapRef.current
     if (existing) {
-      applyOptions(existing, options)
+      applyPreset()
+      applyInteractive(existing, options.interactive)
       return
     }
     if (loadingRef.current) return
@@ -172,9 +172,10 @@ export default function MapProvider({ children }: { children: React.ReactNode })
         applyPreset()
       })
       mapRef.current = map
-      applyOptions(map, wanted)
+      applyPreset()
+      applyInteractive(map, wanted.interactive)
     })
-  }, [applyOptions, applyPreset])
+  }, [applyPreset])
 
   // Deliberately does NOT reset the light preset: the relight is fired on the outgoing
   // route and has to survive this teardown to still be running when the next one mounts.

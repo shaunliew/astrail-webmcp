@@ -156,6 +156,24 @@ describe('MapProvider', () => {
     expect(mapInstance.setConfigProperty).toHaveBeenCalledWith('basemap', 'lightPreset', 'dawn')
   })
 
+  // The result event can beat the lazily-imported Mapbox bundle. If construction then
+  // re-applied the acquiring route's preset, the map would settle on night after the
+  // user had already been handed to the dawn-lit trip view.
+  it('lets a relight requested mid-construction win over the acquiring preset', async () => {
+    render(
+      <MapProvider>
+        <Consumer interactive={false} lightPreset="night" />
+        <Grabber />
+      </MapProvider>,
+    )
+    act(() => { ctx!.setLightPreset('dawn', 2000) })
+    await flush()
+    fireLoad()
+
+    expect(mapInstance.setConfigProperty).toHaveBeenCalledWith('basemap', 'lightPreset', 'dawn')
+    expect(mapInstance.setConfigProperty).not.toHaveBeenCalledWith('basemap', 'lightPreset', 'night')
+  })
+
   it('disables every gesture handler for a non-interactive consumer', async () => {
     render(
       <MapProvider>

@@ -72,6 +72,71 @@ When weather *is* available the narrator uses it — the near-term trip above pr
 *"Akasaka Arrival in Stormy Weather"*. Resolving the horizon itself (climate normals? an explicit
 "forecast not yet available"? per-day calls?) is a product decision, not a bug fix, and is unclaimed.
 
+## How to test it yourself — the demo Reels and what they actually produced
+
+The four frozen demo Reels live in `backend/evals/fixtures/japan_demo_reels.json` (from
+`docs/evals/japan-beta-input-template.md`, Case 1). **Three were run against production on
+2026-07-20** — the outputs below are real, so you have something to compare against rather than
+guessing what "working" looks like.
+
+| Reel | Extracted | Notable |
+|---|---|---|
+| `DYGH3jFBZHz` Harry Potter | `Harry Potter Cafe` · `Akasaka Station` | `35.6735692, 139.7367042` → **JP** — the Mexico bug's exact case |
+| `DYbmT-SNzVK` Doraemon | `Tokyo Dream Park` | `35.6293125, 139.7878125` → **JP** |
+| `DYM_I5IvLSv` Grand Hyatt | `Grand Hyatt Tokyo` | **`name_local: グランド ハイアット 東京`**, `confidence 0.95` |
+| `DXwcVVliX3B` Sando spots | *not run* | multi-venue caption — the untested shape, worth trying |
+
+```
+https://www.instagram.com/reel/DYbmT-SNzVK/    Doraemon exhibition
+https://www.instagram.com/reel/DYM_I5IvLSv/    Grand Hyatt Tokyo
+https://www.instagram.com/reel/DYGH3jFBZHz/    Harry Potter cafe
+https://www.instagram.com/reel/DXwcVVliX3B/    Tokyo sando spots
+```
+
+### Steps
+
+1. **Sign in at https://astrail.xyz.** Your account already has the Reels above organized, plus
+   generated trips.
+2. **Paste a Reel → save → select → Organize.** Watch for pins landing with real coordinates.
+   ⚠️ **Rate limit is 3/minute** on both save and organize — a 4th inside a minute returns `429`.
+   That is the burst limit working, not a bug.
+3. **Generate a trip** from the organized places. This exercises the *other* durable path — the one
+   the itinerary-fencing RPC and database-clock leases protect.
+4. **Use a start date within ~16 days** if you want to see weather. Beyond that it is null by
+   provider limitation (see above), and the narrator's weather-aware phrasing disappears with it.
+
+### What good looks like
+
+A real generated trip from 2026-07-20, all three Reels' places, `2026-07-27 → 07-30`:
+
+```
+Roppongi Base with Pop-Culture Touches            (status: saved_with_gaps)
+  Day 1  Arrive at Grand Hyatt Tokyo              Thunderstorm, 25-32°C
+  Day 2  Akasaka Station Day                      Thunderstorm, 25-32°C
+  Day 3  Harry Potter Cafe in the Drizzle         Drizzle, 24-31°C
+  Day 4  Open Day in Roppongi                     Drizzle, 25-34°C
+
+  Grand Hyatt Tokyo / グランド ハイアット 東京   conf 0.95
+      quote: "Grand Hyatt Tokyo -  グランド ハイアット 東京"
+  tradeoffs: 1 note [flag] "day has no stops"
+```
+
+Two things in that output are the system being honest rather than broken: `saved_with_gaps` (not
+`saved`) because day 4 has no stops, and the narrator writing *"Harry Potter Cafe in the Drizzle"* —
+it reads the forecast when one exists.
+
+### Things that are NOT bugs
+
+- **`429` after three saves or organizes in a minute** — `BURST_LIMIT`, deliberate.
+- **`weather_summary` null** on a trip starting more than ~16 days out — provider horizon.
+- **`name_local` null** when the caption has no local-script name. It must be a *verbatim substring
+  of the caption*; inventing one would violate guardrail #1. The Harry Potter Reel is English-only,
+  so its places correctly have none.
+- **`saved_with_gaps`** on a short place list — fewer places than days means empty days, and the
+  tradeoff engine flags rather than pads.
+- **A day with no weather line at all** — `DayOverview` renders nothing rather than an invented
+  reason.
+
 ## Backend release 2026-07-20 (Shaun)
 
 ### The headline you need

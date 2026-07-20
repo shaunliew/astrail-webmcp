@@ -905,6 +905,78 @@ async def test_old_worker_resuming_after_replacement_cannot_finalize_the_job(
 
 
 @pytest.mark.asyncio
+async def test_a_transient_read_after_success_cannot_flip_the_job_to_failed(
+    fake_client, monkeypatch
+):
+    """SSE SAYS SUCCESS, POLLING LATER SAYS FAILURE — worse than either answer alone.
+
+    The success update and the terminal `result` event both commit, and then the final status
+    read at the end of the try block fails transiently. That exception reaches the outer
+    handler, which calls `_mark_organize_job_failed`. Its fence checks only `lease_token`, and
+    the token is UNCHANGED — this worker legitimately still holds the lease, which is exactly
+    why the guard passes. So it overwrites its own `succeeded` with `failed` and appends a
+    second, contradictory `result`. The user has already been told it worked.
+
+    Fencing on the lease cannot catch this, because nothing about the lease is wrong. The
+    predicate has to also require the job is not already FINISHED. Both halves are asserted:
+    the terminal row, and the single result event — a fix that guarded only the row would still
+    leave two result rows, and `stream_organize_events` replays them.
+    """
+    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    seed_claimable_job(fake_client)
+
+    real_status = organizer.get_organize_status
+    calls: list[int] = []
+
+    async def flaky_status(*args, **kwargs):
+        # Call 1 computes `final_status`, call 2 is the post-success read that returns to the
+        # caller, call 3 is the outer handler's. Only call 2 lands AFTER both terminal writes
+        # have committed, which is the whole reason this bug is reachable.
+        calls.append(len(calls))
+        if len(calls) == 2:
+            raise ConnectionError("transient PostgREST failure")
+        return await real_status(*args, **kwargs)
+
+    monkeypatch.setattr(organizer, "get_organize_status", flaky_status)
+
+    polled = await run_organize_job("j1", "u1", client=fake_client, ground=_grounded)
+
+    assert len(calls) >= 3, "the transient read must actually have been reached and handled"
+    row = job_row(fake_client)
+    assert (row["status"], row["status_message"]) == ("succeeded", "Organized"), \
+        "a committed success must survive a failure on the read that follows it"
+    results = [event for event in fake_client.db["organize_events"]
+               if event["event_type"] == "result"]
+    assert [event["payload"]["status"] for event in results] == ["succeeded"], \
+        "no second, contradictory terminal event"
+    assert polled["status"] == "succeeded", "polling must not contradict what SSE reported"
+
+
+@pytest.mark.asyncio
+async def test_a_live_workers_genuine_failure_is_still_recorded(fake_client, monkeypatch):
+    """The terminal guard must not swallow the failures it exists alongside.
+
+    `_mark_organize_job_failed` is the ONLY thing that reports a mid-run crash, so a predicate
+    that refused to write on a `processing` job would silently strand every genuine failure as
+    `processing` forever — a guard that "passes" by never doing its job.
+    """
+    monkeypatch.setattr("organizer.get_cached_places", lambda *_args, **_kwargs: [_place()])
+    seed_claimable_job(fake_client)
+
+    async def failing_ground(_place_result):
+        raise RuntimeError("Mapbox is down")
+
+    status = await run_organize_job("j1", "u1", client=fake_client, ground=failing_ground)
+
+    row = job_row(fake_client)
+    assert (row["status"], row["status_message"]) == ("failed", organizer.ORGANIZE_FAILURE_MESSAGE)
+    assert status["status"] == "failed"
+    results = [event for event in fake_client.db["organize_events"]
+               if event["event_type"] == "result"]
+    assert [event["payload"]["status"] for event in results] == ["failed"]
+
+
+@pytest.mark.asyncio
 async def test_a_superseded_workers_stale_counts_write_cannot_land():
     """The counts aggregate is decision-bearing, so it must be fenced like the terminal writes.
 

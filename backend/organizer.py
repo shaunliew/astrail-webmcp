@@ -402,17 +402,40 @@ async def _mark_organize_job_failed(client, job_id: str, user_id: str, *, lease_
     heartbeat is also what makes it fire in practice, by giving a worker parked in a slow
     provider call a guaranteed exit one renewal interval after being superseded. So this fence
     is not optional relative to the heartbeat — the two must ship together.
+
+    ALSO GATED ON `status='processing'`, which the lease token cannot cover. The final status
+    read at the end of `run_organize_job` runs AFTER the success update and the terminal
+    `result` event have both committed. A transient failure on that read reaches the same outer
+    handler and lands here — with a token that is entirely valid, because this worker really
+    does still hold the lease. That is precisely why a token-only fence passes: nothing about
+    the lease is wrong. Without the status predicate the job flips from `succeeded` to
+    `failed` after the user has already been told, via SSE, that it worked. Polling then
+    contradicts the stream, which is worse than either answer alone.
+
+    The event append is gated on the update having MATCHED A ROW, for the same reason the
+    trip runner makes its job write and its terminal event one transaction: "no job write =>
+    no event write". The RPC's own AS409 fence cannot substitute here — it rejects a stale
+    token, and in this cascade the token is good, so an ungated append would add a second,
+    contradictory `result` that `stream_organize_events` replays. When the update instead
+    fails transiently, `landed` stays False and nothing is written: the row is left
+    `processing` for the reaper to reclaim and re-dispatch, which is guardrail #12's
+    re-queued-not-silently-dropped direction rather than a fabricated terminal state.
     """
+    landed = False
     try:
-        await (client.table("organize_jobs").update({
+        failed = await (client.table("organize_jobs").update({
             "status": "failed",
             "status_message": ORGANIZE_FAILURE_MESSAGE,
             "completed_at": _now(),
             "locked_at": None,
             "lock_expires_at": None,
-        }).eq("id", job_id).eq("user_id", user_id).eq("lease_token", lease_token).execute())
+        }).eq("id", job_id).eq("user_id", user_id).eq("lease_token", lease_token)
+         .eq("status", "processing").execute())
+        landed = bool(failed.data)
     except Exception:
         pass
+    if not landed:
+        return
     try:
         await _record_organize_event(
             client, job_id, user_id, "result", ORGANIZE_FAILURE_MESSAGE, {"status": "failed"},

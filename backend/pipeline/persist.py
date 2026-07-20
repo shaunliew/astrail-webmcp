@@ -101,6 +101,10 @@ async def _find_or_create_place(client, place: CanonicalPlace) -> str:
             return row["id"]
     inserted = (await client.table("places").insert({
         "name": place.name,
+        # The local-script name, verbatim from the caption (20260720190000). `_place_matches`
+        # above already reads this field for alias dedup, so a row inserted without it stays
+        # unmatched by the exact name the next reel is most likely to caption it with.
+        "name_local": getattr(place, "name_local", None),
         "place_type": _place_type(place.category),
         "lat": place.lat, "lng": place.lng,
         "city": getattr(place, "city_or_region_guess", None),
@@ -373,6 +377,10 @@ async def _find_or_create_restaurant_place(client, cand, city) -> str:
         source_summary["formatted_address"] = cand.address
     inserted = (await client.table("places").insert({
         "name": cand.name,
+        # Straight from the Mapbox POI — `genagents/restaurant.py` takes `name_local` from the
+        # POI structurally and never from the LLM, so this is grounded provider data rather than
+        # a transliteration (20260720190000).
+        "name_local": cand.name_local,
         "place_type": "restaurant",
         "lat": cand.lat, "lng": cand.lng,
         "city": city,

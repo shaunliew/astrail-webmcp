@@ -557,6 +557,11 @@ class _FindOrCreatePlaceRpc:
                 "country": params["p_country"],
                 "country_code": params["p_country_code"],
                 "country_name": params["p_country_name"],
+                # `name_local = coalesce(name_local, p_name_local)` (20260720190000). The country
+                # labels above are overwritten because this run RE-VERIFIED them against Mapbox;
+                # nothing verifies the local name, so a reuse may fill a null one but must never
+                # replace or blank one that is already there.
+                "name_local": row.get("name_local") or params["p_name_local"],
             })
             return _Result(row["id"])
         rows = self.client.db.setdefault("places", [])
@@ -564,6 +569,9 @@ class _FindOrCreatePlaceRpc:
         stored = {
             "id": f"places-{len(rows) + 1}",
             "name": params["p_name"],
+            # Present-and-NULL, not absent: the real column is nullable and always comes back as
+            # a key, and the two differ under `row.get(key, default)`.
+            "name_local": params["p_name_local"],
             "place_type": params["p_place_type"],
             "lat": params["p_lat"],
             "lng": params["p_lng"],
@@ -1879,6 +1887,133 @@ async def test_persist_place_breaks_a_same_country_tie_by_lowest_id():
 
 
 @pytest.mark.asyncio
+async def test_persist_place_stores_the_local_name():
+    """`name_local` survives the run that extracted it (20260720190000).
+
+    The extractor has emitted this field since `models/place.py` gained it, the geocoder uses it
+    to reach POIs that Mapbox only indexes in the local script, and `_place_matches` reads it
+    back for alias dedup — but no column stored it. So a place REUSED from the canonical table
+    came back with the local name gone, and re-grounding it fell back to the English label: the
+    exact failure the field exists to prevent.
+    """
+    client = _Client({})
+    place = PlaceResult(
+        name="Tokyo Tower", name_local="東京タワー", category="attraction",
+        lat=35.65859, lng=139.74539, confidence=0.9, evidence_quote="東京タワー",
+        source_url="https://www.tokyotower.co.jp/", country_code="JP", country_name="Japan",
+    )
+
+    await _persist_place(client, {
+        "place": place, "country_code": "JP", "country_name": "Japan",
+    })
+
+    assert client.db["places"][0]["name_local"] == "東京タワー"
+
+
+@pytest.mark.asyncio
+async def test_persist_place_stores_null_when_the_caption_had_no_local_name():
+    """A caption with no local-script name is the COMMON case, and null is the honest answer.
+
+    Guardrail #1: deriving a local name from a model or a provider would be unsourced data.
+    `name_local` is verbatim-from-caption or it is nothing.
+    """
+    client = _Client({})
+
+    await _persist_place(client, {
+        "place": _place("Shibuya Sky"), "country_code": "JP", "country_name": "Japan",
+    })
+
+    assert client.db["places"][0]["name_local"] is None
+
+
+@pytest.mark.asyncio
+async def test_persist_place_reuse_never_blanks_an_existing_local_name():
+    """A reuse whose extraction has no local name must LEAVE the stored one alone.
+
+    The country backfill beside it overwrites unconditionally, and copying that shape here would
+    be the bug: `country` is re-verified against Mapbox on every organize, so the fresh value is
+    strictly better. `name_local` is not verified by anything — it is whatever this reel's
+    caption happened to contain — so an absent one carries no information about the stored one,
+    and writing it through would destroy a good local name on every organize of a reel that
+    wrote its caption in English.
+    """
+    client = _Client({"places": [
+        {"id": "place-1", "name": "Tokyo Tower", "name_local": "東京タワー",
+         "lat": 35.65859, "lng": 139.74539,
+         "country": "Japan", "country_code": "JP", "country_name": "Japan"},
+    ]})
+    place = PlaceResult(
+        name="Tokyo Tower", name_local=None, category="attraction",
+        lat=35.65860, lng=139.74540, confidence=0.9, evidence_quote="Tokyo Tower",
+        source_url="https://www.tokyotower.co.jp/", country_code="JP", country_name="Japan",
+    )
+
+    place_id = await _persist_place(client, {
+        "place": place, "country_code": "JP", "country_name": "Japan",
+    })
+
+    assert place_id == "place-1"
+    assert client.db["places"][0]["name_local"] == "東京タワー"
+
+
+@pytest.mark.asyncio
+async def test_persist_place_reuse_fills_a_null_local_name():
+    """The reuse path is the ONLY route by which a pre-migration row can ever acquire one.
+
+    Every row that exists today has `name_local IS NULL` — the column is new and deliberately
+    unbackfilled — so without this fill the flywheel's most-referenced places, the ones reused
+    rather than inserted, would be exactly the ones that never get a local name.
+    """
+    client = _Client({"places": [
+        {"id": "place-1", "name": "Tokyo Tower", "name_local": None,
+         "lat": 35.65859, "lng": 139.74539,
+         "country": "Japan", "country_code": "JP", "country_name": "Japan"},
+    ]})
+    place = PlaceResult(
+        name="Tokyo Tower", name_local="東京タワー", category="attraction",
+        lat=35.65860, lng=139.74540, confidence=0.9, evidence_quote="東京タワー",
+        source_url="https://www.tokyotower.co.jp/", country_code="JP", country_name="Japan",
+    )
+
+    place_id = await _persist_place(client, {
+        "place": place, "country_code": "JP", "country_name": "Japan",
+    })
+
+    assert place_id == "place-1"
+    assert client.db["places"][0]["name_local"] == "東京タワー"
+
+
+@pytest.mark.asyncio
+async def test_persist_place_reuse_keeps_the_local_name_it_already_had():
+    """When BOTH are set and they differ, the STORED one wins — first non-null is final.
+
+    This is the one case `coalesce` has to decide, and last-writer-wins is wrong twice over.
+    Neither value is more authoritative: both are verbatim from some caption, and two reels
+    routinely render the same venue differently ('一蘭 渋谷店' vs '一蘭'). And because organize
+    order across reels is not fixed, overwriting would let the canonical row's local name FLIP
+    between runs — the same nondeterminism `order by (country_code is null), id` was added to
+    eliminate in 20260720180000. Fill-if-null converges; last-writer-wins never does.
+    """
+    client = _Client({"places": [
+        {"id": "place-1", "name": "Ichiran", "name_local": "一蘭 渋谷店",
+         "lat": 35.6611, "lng": 139.7011,
+         "country": "Japan", "country_code": "JP", "country_name": "Japan"},
+    ]})
+    place = PlaceResult(
+        name="Ichiran", name_local="一蘭", category="restaurant",
+        lat=35.66111, lng=139.70111, confidence=0.9, evidence_quote="一蘭",
+        source_url="https://ichiran.com/", country_code="JP", country_name="Japan",
+    )
+
+    place_id = await _persist_place(client, {
+        "place": place, "country_code": "JP", "country_name": "Japan",
+    })
+
+    assert place_id == "place-1"
+    assert client.db["places"][0]["name_local"] == "一蘭 渋谷店"
+
+
+@pytest.mark.asyncio
 async def test_persist_place_finds_or_creates_in_exactly_one_round_trip():
     """The whole find-or-create is ONE call, and it is the RPC (B2 + 20260720160000).
 
@@ -1924,6 +2059,7 @@ async def test_persist_place_finds_or_creates_in_exactly_one_round_trip():
     # reach a SQL ORDER BY.
     assert client.rpc_calls[0][1] == {
         "p_name": "Harry Potter Cafe",
+        "p_name_local": None,                    # this caption had no local-script name
         "p_place_type": "restaurant",
         "p_lat": 35.67320,
         "p_lng": 139.73630,

@@ -36,6 +36,7 @@ export type EvidenceKind =
 export type Place = {
   id: string
   name: string
+  name_local: string | null       // local-script name (e.g. 東京タワー), from a caption or Mapbox POI; never inferred
   place_type: PlaceType
   lat: number
   lng: number

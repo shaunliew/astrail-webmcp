@@ -10,7 +10,7 @@ const place = (
   id: string, name: string, place_type: Place['place_type'],
   lat: number, lng: number, area: string,
 ): Place => ({
-  id, name, place_type, lat, lng,
+  id, name, name_local: null, place_type, lat, lng,
   country: 'Japan', city: 'Tokyo', area, aliases: [], source_summary: {},
 })
 

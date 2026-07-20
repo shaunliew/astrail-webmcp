@@ -8,6 +8,7 @@ import {
   orderedDays, placesForDay, legsForDay, restaurantsForDay,
   tripHotels, buildPlaceIndex, findTripPlace,
 } from '@/lib/trip/selectors'
+import { useSharedMap } from '@/components/map/MapProvider'
 import DaySelector from './DaySelector'
 import ItineraryCards from './ItineraryCards'
 import TransportStrip from './TransportStrip'
@@ -33,6 +34,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 export default function TripWorkspace({ tripId }: { tripId: string }) {
+  const { acquire, release } = useSharedMap()
   const [bundle, setBundle] = useState<TripBundle | null>(null)
   const [status, setStatus] = useState<'loading' | 'ready' | 'not_found'>('loading')
   const [activeDayNumber, setActiveDayNumber] = useState(1)
@@ -61,10 +63,23 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
   const dayRestaurants = bundle && activeDay ? restaurantsForDay(bundle, activeDay.id) : []
   const selectedTripPlace = bundle ? findTripPlace(bundle, selectedPlaceId) : null
 
+  // Hold the shell map on screen while the trip loads and while it is still generating.
+  // The night->dawn relight fires as generation completes and lands in exactly these
+  // states — a full-bleed takeover here would hide the signature moment behind a
+  // loading screen. Inert, because there is nothing to explore until the bundle lands.
+  const mapBehind = status === 'loading'
+    || (bundle !== null && (bundle.trip.status === 'generating' || bundle.trip.status === 'draft'))
+
+  useEffect(() => {
+    if (!mapBehind) return
+    acquire({ interactive: false, lightPreset: 'dawn' })
+    return () => release()
+  }, [mapBehind, acquire, release])
+
   if (status === 'loading') {
     return (
-      <main className="flex h-[100dvh] items-center justify-center bg-[var(--void)]">
-        <p className="type-label text-xs uppercase tracking-wide text-[var(--muted)]">Loading trip…</p>
+      <main className="relative flex h-[100dvh] items-center justify-center p-6">
+        <p className="surface type-label px-4 py-2.5 text-xs uppercase tracking-wide text-[var(--muted)]">Loading trip…</p>
       </main>
     )
   }
@@ -90,23 +105,25 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
   }
   if (bundle.trip.status === 'generating' || bundle.trip.status === 'draft') {
     return (
-      <main className="flex h-[100dvh] flex-col items-center justify-center gap-3 bg-[var(--void)] p-6">
-        <p className="type-label text-xs uppercase tracking-wide text-[var(--muted)]">
-          Still generating — refresh in a moment.
-        </p>
-        <button
-          type="button"
-          onClick={() => window.location.reload()}
-          className="type-label text-xs uppercase tracking-wide text-[var(--brass)] underline-offset-2 hover:underline"
-        >
-          Refresh
-        </button>
+      <main className="relative flex h-[100dvh] flex-col items-center justify-center p-6">
+        <div className="surface flex flex-col items-center gap-3 px-5 py-4">
+          <p className="type-label text-xs uppercase tracking-wide text-[var(--muted)]">
+            Still generating — refresh in a moment.
+          </p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="type-label text-xs uppercase tracking-wide text-[var(--brass)] underline-offset-2 hover:underline"
+          >
+            Refresh
+          </button>
+        </div>
       </main>
     )
   }
 
   return (
-    <main className="relative h-[100dvh] w-full overflow-hidden bg-[var(--void)]">
+    <main className="relative h-[100dvh] w-full overflow-hidden">
       <div className="absolute inset-0">
         <TripMap
           bundle={bundle}

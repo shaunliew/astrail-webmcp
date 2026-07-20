@@ -1,22 +1,30 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures'
+import MapProvider from '@/components/map/MapProvider'
+import TripMap from '@/components/map/TripMap'
 
 const { mapInstance, MapCtor, MarkerCtor, BoundsCtor, markerElements } = vi.hoisted(() => {
+  const handler = () => ({ enable: vi.fn(), disable: vi.fn() })
   const mapInstance = {
-    on: vi.fn((evt: string, cb: () => void) => { if (evt === 'load') cb() }),
+    on: vi.fn(),
     addSource: vi.fn(), addLayer: vi.fn(),
     getSource: vi.fn(() => undefined), getLayer: vi.fn(() => undefined),
     removeLayer: vi.fn(), removeSource: vi.fn(),
-    flyTo: vi.fn(), fitBounds: vi.fn(), setConfigProperty: vi.fn(), remove: vi.fn(),
+    flyTo: vi.fn(), fitBounds: vi.fn(), setConfigProperty: vi.fn(),
+    remove: vi.fn(), resize: vi.fn(), stop: vi.fn(),
+    style: { setTransition: vi.fn() },
+    scrollZoom: handler(), boxZoom: handler(), dragRotate: handler(), dragPan: handler(),
+    keyboard: handler(), doubleClickZoom: handler(), touchZoomRotate: handler(), touchPitch: handler(),
   }
   const MapCtor = vi.fn(() => mapInstance)
   const markerElements: HTMLElement[] = []
   const MarkerCtor = vi.fn((options: { element: HTMLElement }) => {
     markerElements.push(options.element)
-    return {
-      setLngLat: vi.fn().mockReturnThis(), addTo: vi.fn().mockReturnThis(), remove: vi.fn(),
+    const marker = {
+      setLngLat: vi.fn(() => marker), addTo: vi.fn(() => marker), remove: vi.fn(),
     }
+    return marker
   })
   const BoundsCtor = vi.fn(() => ({ extend: vi.fn() }))
   return { mapInstance, MapCtor, MarkerCtor, BoundsCtor, markerElements }
@@ -27,50 +35,101 @@ vi.mock('mapbox-gl', () => ({
 }))
 vi.mock('mapbox-gl/dist/mapbox-gl.css', () => ({}))
 
+function fireLoad() {
+  const load = mapInstance.on.mock.calls.find((c) => c[0] === 'load')
+  act(() => { (load?.[1] as () => void)?.() })
+}
+
+async function flush() {
+  await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
+}
+
+function renderMap(props: Partial<Parameters<typeof TripMap>[0]> = {}) {
+  return render(
+    <MapProvider>
+      <TripMap
+        bundle={TOKYO_TRIP}
+        activeDayNumber={1}
+        selectedPlaceId={null}
+        onSelectPlace={() => {}}
+        {...props}
+      />
+    </MapProvider>,
+  )
+}
+
 describe('TripMap', () => {
   beforeEach(() => {
-    MapCtor.mockClear()
-    MarkerCtor.mockClear()
+    vi.clearAllMocks()
     markerElements.length = 0
-    mapInstance.addSource.mockClear()
-    mapInstance.addLayer.mockClear()
+    process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN = 'pk.test'
   })
   afterEach(() => { delete process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN })
 
-  it('constructs a Mapbox map when a token is present', async () => {
-    process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN = 'pk.test'
-    vi.resetModules()
-    const { default: TripMap } = await import('@/components/map/TripMap')
-    render(<TripMap bundle={TOKYO_TRIP} activeDayNumber={1} selectedPlaceId={null} onSelectPlace={() => {}} />)
+  // It drives the shell's instance rather than building one, so the map arriving from
+  // generation is the same object — that is what lets it relight instead of restart.
+  it('drives the shared map at the dawn preset instead of constructing its own', async () => {
+    renderMap()
+    await flush()
+    fireLoad()
+
     expect(MapCtor).toHaveBeenCalledTimes(1)
+    expect(mapInstance.setConfigProperty).toHaveBeenCalledWith('basemap', 'lightPreset', 'dawn')
   })
 
   it('anchors wheel zoom to the map center so pins do not follow the cursor', async () => {
-    process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN = 'pk.test'
-    vi.resetModules()
-    const { default: TripMap } = await import('@/components/map/TripMap')
-    render(<TripMap bundle={TOKYO_TRIP} activeDayNumber={1} selectedPlaceId={null} onSelectPlace={() => {}} />)
+    renderMap()
+    await flush()
 
-    expect(MapCtor).toHaveBeenCalledWith(expect.objectContaining({
-      scrollZoom: { around: 'center' },
-    }))
+    expect(mapInstance.scrollZoom.enable).toHaveBeenCalledWith({ around: 'center' })
+  })
+
+  // With one persistent instance the camera no longer resets on navigation, so the trip
+  // view has to frame its own places rather than inherit the generation globe.
+  it('frames its own places instead of inheriting the generation camera', async () => {
+    renderMap()
+    await flush()
+    fireLoad()
+
+    expect(mapInstance.fitBounds).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ maxZoom: 13, pitch: 45 }),
+    )
   })
 
   it('shows a fallback and does not construct a map without a token', async () => {
-    vi.resetModules()
-    const { default: TripMap } = await import('@/components/map/TripMap')
-    render(<TripMap bundle={TOKYO_TRIP} activeDayNumber={1} selectedPlaceId={null} onSelectPlace={() => {}} />)
+    delete process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN
+    renderMap()
+    await flush()
+
     expect(screen.getByText(/map unavailable/i)).toBeInTheDocument()
     expect(MapCtor).not.toHaveBeenCalled()
   })
 
-  it('draws a two-layer trail, an honest failed stub, and constellation markers', async () => {
-    process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN = 'pk.test'
-    vi.resetModules()
-    const { default: TripMap } = await import('@/components/map/TripMap')
-    const view = render(<TripMap bundle={TOKYO_TRIP} activeDayNumber={1} selectedPlaceId={null} onSelectPlace={() => {}} />)
+  // Navigating away, not tearing down the shell: the provider stays mounted and the map
+  // survives, so layers this trip added would otherwise paint over the next one. (React
+  // destroys a parent before its children, so unmounting the whole tree would null the
+  // map first and this would pass without proving anything.)
+  it('drops its route layers when it unmounts but the shared map lives on', async () => {
+    mapInstance.getLayer.mockReturnValue({} as never)
+    mapInstance.getSource.mockReturnValue({} as never)
+    const view = renderMap()
+    await flush()
+    fireLoad()
+    expect(mapInstance.addLayer).toHaveBeenCalled()
 
-    expect(screen.getByTestId('trip-map')).toHaveClass('trip-map-container--loaded')
+    view.rerender(<MapProvider><div /></MapProvider>)
+    expect(mapInstance.removeLayer).toHaveBeenCalledWith('route-leg_1-core')
+    expect(mapInstance.removeSource).toHaveBeenCalledWith('route-leg_1')
+    mapInstance.getLayer.mockReturnValue(undefined as never)
+    mapInstance.getSource.mockReturnValue(undefined as never)
+  })
+
+  it('draws a two-layer trail, an honest failed stub, and constellation markers', async () => {
+    const view = renderMap()
+    await flush()
+    fireLoad()
+
     expect(mapInstance.addLayer).toHaveBeenCalledWith(expect.objectContaining({
       id: 'route-leg_1-casing',
       paint: expect.objectContaining({ 'line-width': 9, 'line-opacity': 0.18 }),
@@ -87,7 +146,11 @@ describe('TripMap', () => {
 
     mapInstance.addSource.mockClear()
     mapInstance.addLayer.mockClear()
-    view.rerender(<TripMap bundle={TOKYO_TRIP} activeDayNumber={3} selectedPlaceId={null} onSelectPlace={() => {}} />)
+    view.rerender(
+      <MapProvider>
+        <TripMap bundle={TOKYO_TRIP} activeDayNumber={3} selectedPlaceId={null} onSelectPlace={() => {}} />
+      </MapProvider>,
+    )
     expect(mapInstance.addLayer).toHaveBeenCalledWith(expect.objectContaining({
       id: 'route-leg_3-stub',
       paint: expect.objectContaining({

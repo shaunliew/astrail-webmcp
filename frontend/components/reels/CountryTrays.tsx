@@ -1,7 +1,7 @@
 'use client'
 
 import { useMemo } from 'react'
-import type { CountryTray } from '@/lib/reels/organize'
+import { countryDisplayLabel, type CountryTray } from '@/lib/reels/organize'
 import VerifiedPlacesMap from './VerifiedPlacesMap'
 
 export default function CountryTrays({
@@ -25,7 +25,7 @@ export default function CountryTrays({
       <div className="flex flex-col gap-4">
         {trays.map((tray) => (
           <section key={tray.country_code} className="surface flex flex-col gap-3 p-4">
-            <h2 className="type-display text-xl text-[var(--starlight)]">{tray.country_name}</h2>
+            <h2 className="type-display text-xl text-[var(--starlight)]">{countryDisplayLabel(tray)}</h2>
             <ul className="grid gap-3 sm:grid-cols-2">
               {tray.places.map((place) => (
                 <li key={place.place_id} className="rounded-lg border border-[var(--line)] p-3">

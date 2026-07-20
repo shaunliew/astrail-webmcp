@@ -1,8 +1,23 @@
-# Astrail Design System — "Night & Daybreak" (DRAFT)
+# Astrail Design System — "Night & Daybreak" (DRAFT — SUPERSEDED)
 
-> Proposal drafted 2026-07-14 (Claude + Zhi Hao design session). Not yet canonical —
-> canonical UX doc is EMDEE `astrail/DESIGN.md`; merge this in after review with Shaun.
-> Grounded in `docs/PRD.md` §3 (brand), §13 (map lighting), §15 (evidence UI).
+> **⚠️ SUPERSEDED 2026-07-20. The canonical design doc is repo-root [`DESIGN.md`](../DESIGN.md).**
+> Read that first for anything current. It describes what is actually implemented, cites the
+> file:line for every rule, and collects all spec/ship divergences in one "Open gaps" section.
+>
+> This draft is kept — not deleted — because it carries the 2026-07-14 session's reasoning and
+> the astronaut mascot spec (§7), which has **no implementation** and remains an open decision
+> for Shaun + Zhi Hao. Where this draft and `DESIGN.md` disagree, `DESIGN.md` wins.
+>
+> Known divergences from shipped code, all tracked in `DESIGN.md` §12: §3's mono `.type-label`
+> (overridden to sans inside the app), §3's italic-serif reel quotes (ship as sans), §4's
+> radius rule (12px and 16px leaks ship), §4's composed empty screens (left-aligned, no
+> illustration), §6.3's 2s night→dawn relight (shipped 2026-07-20), `tabular-nums` (zero uses).
+>
+> Corrected pointer: an earlier version of this header named EMDEE `astrail/DESIGN.md` as
+> canonical. **That document does not exist.** Repo-root `DESIGN.md` is canonical.
+>
+> Proposal drafted 2026-07-14 (Claude + Zhi Hao design session).
+> Grounded in `docs/PRD.md` §3 (brand), §13 (map lighting), §15 (generated trip content).
 
 ## 1. The story drives the system
 

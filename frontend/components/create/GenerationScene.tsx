@@ -2,16 +2,17 @@
 
 // The launch: a Night-world map behind the generation rail. Pins land the moment a
 // places-bearing stage fires (PRD §16 — time to first mapped value beats time to done).
-// The map is progressive enhancement: without a token (tests, missing env) the rail
-// still narrates over the starfield and nothing fetches.
+//
+// The map is the shell's shared instance (components/map/MapProvider), not one of our
+// own: it has to outlive this component so the night->dawn relight can run on a live map
+// across the handoff to the trip workspace. The map stays progressive enhancement —
+// without a token (tests, missing env) the rail still narrates over the starfield.
 import { useEffect, useRef } from 'react'
 import mapboxgl from 'mapbox-gl'
-import 'mapbox-gl/dist/mapbox-gl.css'
 import { getTrip } from '@/lib/trip/supabase-api'
 import type { StreamEvent } from '@/lib/trip/backend-types'
+import { useSharedMap } from '@/components/map/MapProvider'
 import GenerationProgress from './GenerationProgress'
-
-const TOKEN = process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN
 
 // Stages that only run after places are persisted (progressive persistence, PRD §16) —
 // the earliest safe moments to read trip_places and land pins.
@@ -25,58 +26,42 @@ export default function GenerationScene({
   tripId: string | null
   events: StreamEvent[]
 }) {
-  const containerRef = useRef<HTMLDivElement | null>(null)
-  const mapRef = useRef<mapboxgl.Map | null>(null)
-  const markersRef = useRef<mapboxgl.Marker[]>([])
+  const { hasToken, ready, getMap, acquire, release, setMarkers } = useSharedMap()
   const fetchedRef = useRef(false)
 
   const placesReady = events.some(
     (e) => e.type === 'stage' && PLACES_READY_STAGES.has(e.stage),
   )
 
-  // Night globe backdrop.
+  // Night globe backdrop. Inert: this scene is a backdrop, not something to fly around.
   useEffect(() => {
-    if (!TOKEN || !containerRef.current || mapRef.current) return
-    mapboxgl.accessToken = TOKEN
-    const map = new mapboxgl.Map({
-      container: containerRef.current,
-      style: 'mapbox://styles/mapbox/standard',
-      projection: 'globe',
-      center: [100, 15], // wide-open globe until the first verified places arrive
-      zoom: 1.2,
-      pitch: 0,
-      interactive: false,
-    })
-    map.on('load', () => map.setConfigProperty('basemap', 'lightPreset', 'night'))
-    mapRef.current = map
-    return () => {
-      map.remove()
-      mapRef.current = null
-      markersRef.current = []
-    }
-  }, [])
+    acquire({ interactive: false, lightPreset: 'night', center: [100, 15], zoom: 1.2 })
+    return () => release()
+  }, [acquire, release])
 
   // First mapped value: fetch the progressively-persisted places once and land them.
   useEffect(() => {
-    if (!TOKEN || !tripId || !placesReady || fetchedRef.current) return
+    if (!ready || !tripId || !placesReady || fetchedRef.current) return
     fetchedRef.current = true
     let cancelled = false
     ;(async () => {
       try {
         const bundle = await getTrip(tripId)
-        const map = mapRef.current
+        const map = getMap()
         if (cancelled || !bundle || !map || bundle.places.length === 0) return
         const bounds = new mapboxgl.LngLatBounds()
-        bundle.places.forEach((tp, i) => {
+        const markers = bundle.places.map((tp, i) => {
           const el = document.createElement('div')
           el.className = 'pin-land'
           el.style.animationDelay = `${600 + i * 220}ms` // land while the camera dives
-          const marker = new mapboxgl.Marker({ element: el })
+          bounds.extend([tp.place.lng, tp.place.lat])
+          return new mapboxgl.Marker({ element: el })
             .setLngLat([tp.place.lng, tp.place.lat])
             .addTo(map)
-          markersRef.current.push(marker)
-          bounds.extend([tp.place.lng, tp.place.lat])
         })
+        // Handed to the provider so they are torn down on the way out and can never
+        // accumulate on the shared instance across repeat generations.
+        setMarkers(markers)
         map.fitBounds(bounds, { padding: 120, maxZoom: 11.5, pitch: 45, duration: 3200, essential: true })
       } catch {
         // Pins mid-generation are a bonus — the rail still narrates every stage,
@@ -84,15 +69,13 @@ export default function GenerationScene({
       }
     })()
     return () => { cancelled = true }
-  }, [tripId, placesReady])
+  }, [ready, tripId, placesReady, getMap, setMarkers])
 
   return (
     <main className="relative min-h-[100dvh] overflow-hidden">
-      {TOKEN ? (
-        <div ref={containerRef} aria-hidden className="absolute inset-0" />
-      ) : (
-        <div aria-hidden className="hero-field absolute inset-0" />
-      )}
+      {/* The map itself is the shell's fixed layer behind this route; only the
+          no-token fallback needs painting here. */}
+      {hasToken ? null : <div aria-hidden className="hero-field absolute inset-0" />}
       {/* Readability scrim: night sky stays visible, the rail stays legible. */}
       <div
         aria-hidden

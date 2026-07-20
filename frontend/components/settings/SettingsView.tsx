@@ -52,7 +52,7 @@ export default function SettingsView() {
       <h1 className="type-display text-3xl text-[var(--starlight)]">Settings</h1>
 
       <section className="surface flex flex-col gap-3 rounded-xl p-5">
-        <h2 className="type-label text-[11px] uppercase tracking-wide text-[var(--muted)]">
+        <h2 className="type-display text-lg text-[var(--starlight)]">
           Using your saved travel preferences
         </h2>
         <dl className="flex flex-col gap-2">

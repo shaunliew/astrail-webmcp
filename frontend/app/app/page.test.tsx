@@ -38,7 +38,10 @@ describe('/app mock-auth gate', () => {
     vi.resetModules()
     process.env.NEXT_PUBLIC_MOCK_AUTH = 'true'
     const { default: AppHomePage } = await import('@/app/app/page')
-    render(<AppHomePage />)
+    // Same module registry as the page: resetModules gives MapProvider a fresh context
+    // object, and a statically imported one would not match what the page consumes.
+    const { default: MapProvider } = await import('@/components/map/MapProvider')
+    render(<MapProvider><AppHomePage /></MapProvider>)
 
     expect(screen.getByRole('heading', { name: 'Plan a new trip' })).toBeInTheDocument()
     expect(screen.queryByTestId('saved-reels-flow')).not.toBeInTheDocument()

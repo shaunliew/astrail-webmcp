@@ -451,6 +451,30 @@ button:focus-visible {
   scale: 1.15;
 }
 
+/* The single persistent Mapbox instance (components/map/MapProvider). Fixed to the
+   viewport because both map-bearing scenes render the map full-bleed, so one container
+   serves the generation scene and the trip workspace with no DOM moved across the route
+   boundary. Sits at z-0, behind every route's own content. */
+.shared-map {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 400ms ease-out;
+}
+
+.shared-map--visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+/* Only the trip workspace takes gestures; the generation scene stays inert. */
+.shared-map--interactive {
+  pointer-events: auto;
+}
+
 .trip-map-container {
   opacity: 0;
   transition: opacity 400ms ease-out;
@@ -557,6 +581,10 @@ button:focus-visible {
   }
 
   .trip-map-container {
+    transition: none;
+  }
+
+  .shared-map {
     transition: none;
   }
 }

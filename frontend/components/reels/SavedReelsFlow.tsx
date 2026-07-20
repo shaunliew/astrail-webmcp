@@ -11,6 +11,8 @@ import { generateTrip, streamGeneration } from '@/lib/trip/api'
 import { canGenerate, toGenerateRequest, type BriefInput, type DraftInspirationItem } from '@/lib/trip/parse-inspiration'
 import TripBriefForm from '@/components/create/TripBriefForm'
 import TripBriefReview from '@/components/create/TripBriefReview'
+import { useSharedMap } from '@/components/map/MapProvider'
+import { relightDurationMs } from '@/components/map/relight'
 import GenerationScene from '@/components/create/GenerationScene'
 import SavedReelsInbox from './SavedReelsInbox'
 import OrganizeGlobe from './OrganizeGlobe'
@@ -39,6 +41,7 @@ export function toReelBriefItem(place: SavedReelPlaceProof): DraftInspirationIte
 
 export default function SavedReelsFlow() {
   const router = useRouter()
+  const { setLightPreset } = useSharedMap()
   const [phase, setPhase] = useState<Phase>('inbox')
   const [cards, setCards] = useState<SavedReelCard[]>([])
   const [jobId, setJobId] = useState<string | null>(null)
@@ -211,6 +214,8 @@ export default function SavedReelsFlow() {
           if (!activeRef.current) return
           setEvents((current) => [...current, event])
           if (event.type === 'result') {
+            // The signature moment — see CreateTripFlow: same live shell map, same beat.
+            setLightPreset('dawn', relightDurationMs())
             generationHandleRef.current?.cancel()
             router.push(`/app/trip/${tripIdFromResult(event.content, response.trip_id)}`)
           }

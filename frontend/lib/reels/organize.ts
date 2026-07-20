@@ -6,6 +6,15 @@ export type CountryTray = {
   places: SavedReelPlaceProof[]
 }
 
+// Product-owned display overrides; stored provider names are never mutated (ISSUES-B7).
+const COUNTRY_DISPLAY_OVERRIDES: Record<string, string> = { CN: 'China' }
+
+export function countryDisplayLabel(
+  tray: Pick<CountryTray, 'country_code' | 'country_name'>,
+): string {
+  return COUNTRY_DISPLAY_OVERRIDES[tray.country_code] ?? tray.country_name
+}
+
 export function groupPlacesByCountry(places: SavedReelPlaceProof[]): CountryTray[] {
   const countries = new Map<string, CountryTray>()
   const seen = new Set<string>()
@@ -25,5 +34,5 @@ export function groupPlacesByCountry(places: SavedReelPlaceProof[]): CountryTray
 
   return [...countries.values()]
     .map((group) => ({ ...group, places: [...group.places].sort((a, b) => a.name.localeCompare(b.name)) }))
-    .sort((a, b) => a.country_name.localeCompare(b.country_name))
+    .sort((a, b) => countryDisplayLabel(a).localeCompare(countryDisplayLabel(b)))
 }

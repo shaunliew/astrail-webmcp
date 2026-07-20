@@ -29,4 +29,18 @@ describe('GenerationProgress', () => {
     expect(screen.getByTestId('generation-progress')).toBeInTheDocument()
     expect(screen.getByText(/starting/i)).toBeInTheDocument()
   })
+
+  it('the astronaut waits while generating and holds still once the result lands', () => {
+    const { container, rerender } = render(
+      <GenerationProgress events={[{ type: 'stage', stage: 'scrape', msg: 'Scraping…' }]} />,
+    )
+    expect(container.querySelector('[data-mascot="astronaut"]')).not.toBeNull()
+    expect(container.querySelector('.astronaut-trail--waiting')).not.toBeNull()
+    rerender(
+      <GenerationProgress
+        events={[{ type: 'result', content: JSON.stringify({ trip_id: 't' }) }]}
+      />,
+    )
+    expect(container.querySelector('.astronaut-trail--waiting')).toBeNull()
+  })
 })

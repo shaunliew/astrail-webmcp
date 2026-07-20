@@ -1,6 +1,7 @@
 'use client'
 
 import type { StreamEvent, GenerationStage } from '@/lib/trip/backend-types'
+import Astronaut from '@/components/mascot/Astronaut'
 
 // The canonical stage->English map (DESIGN.md §8) — AgentDecisionRail reuses it.
 export const STAGE_LABEL: Record<GenerationStage, string> = {
@@ -22,8 +23,13 @@ export const STAGE_LABEL: Record<GenerationStage, string> = {
 }
 
 export default function GenerationProgress({ events }: { events: StreamEvent[] }) {
+  // The generation rail is the mascot's fourth spec'd surface (DESIGN-DRAFT §7) and the
+  // product's longest wait. Waiting is the only live state: once the result event lands,
+  // the trail stops flowing — a pulse on a finished run is motion telling a lie.
+  const done = events.some((e) => e.type === 'result')
   return (
     <section data-testid="generation-progress" className="flex w-full flex-col gap-4">
+      <Astronaut size={40} variant={done ? 'idle' : 'waiting'} />
       <h1 className="type-display text-2xl text-[var(--starlight)]">Building your trip</h1>
       <p className="type-body text-sm text-[var(--muted)]">
         Astrail is turning your inspiration into a mapped route. Pins appear as places are verified.

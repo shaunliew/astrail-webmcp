@@ -46,11 +46,13 @@ export default function ItineraryCards({
                     {[tp.place.place_type, tp.place.area, tp.place.city].filter(Boolean).join(' · ')}
                   </p>
                 </div>
-                <span className="type-label shrink-0 rounded border border-[var(--line)] px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-[var(--muted)]">
+                <span className="type-label shrink-0 rounded-[var(--radius-chip)] border border-[var(--line)] px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-[var(--muted)]">
                   {SOURCE_BADGE[tp.source_type]}
                 </span>
               </div>
               {tp.evidence_json.quote ? (
+                /* Compact quote preview: sans-italic on purpose — the serif quote face
+                   never drops below 18px (DESIGN.md G2), and this caption is 12px. */
                 <p className="type-body mt-2 border-l border-[var(--brass)] pl-2 text-xs italic text-[var(--muted)]">
                   "{tp.evidence_json.quote}"
                 </p>

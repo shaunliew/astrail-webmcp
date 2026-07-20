@@ -8,6 +8,7 @@ import {
   toggleTag, toProfileInput, canFinish, type OnboardingDraft,
 } from '@/lib/onboarding/onboarding'
 import ChipMultiSelect from './ChipMultiSelect'
+import Astronaut from '@/components/mascot/Astronaut'
 
 function ReviewRow({ label, value }: { label: string; value: string }) {
   return (
@@ -72,10 +73,7 @@ export default function OnboardingWizard() {
             style={{ width: `${((stepIndex + 1) / STEPS.length) * 100}%` }}
           />
         </div>
-        <h1 className="type-display flex items-center gap-2 text-3xl text-[var(--starlight)]">
-          {step.title}
-          {isLast ? <span aria-hidden className="pulse-dot" /> : null}
-        </h1>
+        <h1 className="type-display text-3xl text-[var(--starlight)]">{step.title}</h1>
       </div>
 
       <section className="surface flex flex-col gap-6 p-6 sm:p-8">
@@ -129,17 +127,20 @@ export default function OnboardingWizard() {
         ) : null}
 
         {step.key === 'review' ? (
+          <>
+            <Astronaut size={48} className="self-center" />
             <dl className="flex flex-col gap-3">
-            <ReviewRow label="Origin" value={draft.origin_city || 'Not set'} />
-            <ReviewRow label="Style" value={draft.travel_style_tags.join(', ') || 'None yet'} />
-            <ReviewRow label="Interests" value={draft.preference_tags.join(', ') || 'None yet'} />
-            <ReviewRow label="Notes" value={draft.preference_notes || 'None'} />
-          </dl>
+              <ReviewRow label="Origin" value={draft.origin_city || 'Not set'} />
+              <ReviewRow label="Style" value={draft.travel_style_tags.join(', ') || 'None yet'} />
+              <ReviewRow label="Interests" value={draft.preference_tags.join(', ') || 'None yet'} />
+              <ReviewRow label="Notes" value={draft.preference_notes || 'None'} />
+            </dl>
+          </>
         ) : null}
       </section>
 
       {saveError ? (
-        <p className="type-body text-xs text-red-400" role="alert">{saveError}</p>
+        <p className="type-body text-xs text-[var(--fail)]" role="alert">{saveError}</p>
       ) : null}
 
       <div className="mt-auto flex items-center justify-between gap-3">

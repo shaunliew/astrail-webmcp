@@ -26,7 +26,7 @@ export default function RestaurantStrip({
                 {place?.name ?? 'Suggested spot'}
               </span>
               {r.cuisine ? (
-                <span className="type-label shrink-0 text-[10px] uppercase tracking-wide text-[var(--brass)]">
+                <span className="type-label shrink-0 text-[10px] uppercase tracking-wide text-[var(--brass-bright)]">
                   {r.cuisine}
                 </span>
               ) : null}
@@ -37,7 +37,7 @@ export default function RestaurantStrip({
                 href={r.source_url}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="type-label text-[10px] text-[var(--brass)] underline decoration-dotted underline-offset-2"
+                className="type-label text-[10px] text-[var(--brass-bright)] underline decoration-dotted underline-offset-2"
               >
                 evidence
               </a>

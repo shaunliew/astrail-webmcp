@@ -46,6 +46,9 @@
   --shadow-paper:
     0 1px 2px rgba(26, 24, 16, 0.1),
     0 8px 24px rgba(26, 24, 16, 0.1);
+  /* Astronaut visor (mascot helmet = constellation pin). Night-deep on night; the
+     paper scope lifts it to warm ink so the disc doesn't outweigh the line art. */
+  --astronaut-visor: var(--night-deep);
 }
 
 * {
@@ -388,6 +391,7 @@ button:focus-visible {
   --warn: var(--warn-day);
   --fail: var(--fail-day);
   --chip-bg: rgba(26, 24, 16, 0.055);
+  --astronaut-visor: rgba(26, 24, 16, 0.78);
   color: var(--ink-day);
 }
 
@@ -514,6 +518,18 @@ button:focus-visible {
   }
 }
 
+/* Astronaut mascot (DESIGN.md G6): waiting is the only live state — the trail
+   dots flow toward the star. Idle, empty, and error instances hold still. */
+.astronaut-trail--waiting {
+  animation: astronaut-trail-flow 1.8s linear infinite;
+}
+
+@keyframes astronaut-trail-flow {
+  to {
+    stroke-dashoffset: -11.2;
+  }
+}
+
 /* Status dot: color carries the state's tone; ONLY live states animate —
    a glowing pulse on a finished trip is motion telling a lie. */
 .pulse-dot {
@@ -568,7 +584,8 @@ button:focus-visible {
   .pain-local-shards .motion-shard,
   .how-section-route .motion-route__draw,
   .pin-land,
-  .pulse-dot--live {
+  .pulse-dot--live,
+  .astronaut-trail--waiting {
     animation: none;
   }
 

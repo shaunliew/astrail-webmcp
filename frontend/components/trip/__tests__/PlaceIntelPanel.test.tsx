@@ -16,4 +16,14 @@ describe('PlaceIntelPanel', () => {
     const pct = `${Math.round(tp.evidence_json.confidence * 100)}%`
     expect(screen.getByText(pct)).toBeInTheDocument()
   })
+
+  it('renders the reel quote as an italic serif blockquote — the voice of the source (G2)', () => {
+    const tp = TOKYO_TRIP.places.find((p) => p.evidence_json.quote)
+    if (!tp) throw new Error('fixture must include a quoted place')
+    render(<PlaceIntelPanel tripPlace={tp} />)
+    const quote = screen.getByText(new RegExp(tp.evidence_json.quote as string))
+    expect(quote.tagName).toBe('BLOCKQUOTE')
+    expect(quote.className).toContain('type-display')
+    expect(quote.className).toContain('italic')
+  })
 })

@@ -126,14 +126,14 @@ export default function CreateTripFlow() {
           <TripBriefForm brief={brief} onChange={setBrief} />
 
           {submitError ? (
-            <p className="type-body text-xs text-red-400" role="alert">{submitError}</p>
+            <p className="type-body text-xs text-[var(--fail)]" role="alert">{submitError}</p>
           ) : null}
 
           <button
             type="button"
             onClick={() => setPhase('brief')}
             disabled={!canGenerate(items, brief)}
-            className="type-label rounded-xl border border-[var(--brass)] bg-[var(--brass-soft)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
+            className="type-label rounded-lg border border-[var(--brass)] bg-[var(--brass-soft)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
           >
             Review trip brief
           </button>

@@ -6,6 +6,7 @@ import type { Trip } from '@/lib/trip/backend-types'
 import { listTrips } from '@/lib/trip/supabase-api'
 import SignOutButton from '@/components/auth/SignOutButton'
 import TripCard from './TripCard'
+import Astronaut from '@/components/mascot/Astronaut'
 
 export default function TripsList() {
   const [trips, setTrips] = useState<Trip[] | null>(null)
@@ -35,12 +36,13 @@ export default function TripsList() {
           </div>
         </header>
 
-        {error ? <p className="type-body text-xs text-red-700" role="alert">{error}</p> : null}
+        {error ? <p className="type-body text-xs text-[var(--fail)]" role="alert">{error}</p> : null}
         {trips === null && !error ? (
           <p className="type-label text-xs uppercase tracking-wide text-[var(--muted)]">Loading…</p>
         ) : null}
         {trips !== null && trips.length === 0 ? (
-          <div className="flex flex-col items-start gap-3 rounded-[var(--radius-card)] border border-dashed border-[rgba(138,96,35,0.35)] bg-[var(--paper-0)] p-6">
+          <div className="flex flex-col items-center gap-3 rounded-[var(--radius-card)] border border-dashed border-[rgba(138,96,35,0.35)] bg-[var(--paper-0)] px-6 py-10 text-center">
+            <Astronaut size={48} />
             <p className="type-body text-sm text-[var(--muted)]">
               No trails yet. Your saved trips will land here.
             </p>

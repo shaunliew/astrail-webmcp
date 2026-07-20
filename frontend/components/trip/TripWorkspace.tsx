@@ -10,6 +10,7 @@ import {
 } from '@/lib/trip/selectors'
 import { useSharedMap } from '@/components/map/MapProvider'
 import DaySelector from './DaySelector'
+import DayOverview from './DayOverview'
 import ItineraryCards from './ItineraryCards'
 import TransportStrip from './TransportStrip'
 import RestaurantStrip from './RestaurantStrip'
@@ -97,7 +98,7 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
         <p className="type-body max-w-md text-center text-sm text-[var(--muted)]">
           Astrail couldn&apos;t build this trip. Start a new one — repeat Reels are cached, so retrying is fast.
         </p>
-        <a href="/app" className="type-label text-xs uppercase tracking-wide text-[var(--brass)] underline-offset-2 hover:underline">
+        <a href="/app" className="type-label text-xs uppercase tracking-wide text-[var(--brass-bright)] underline-offset-2 hover:underline">
           Plan a new trip
         </a>
       </main>
@@ -113,7 +114,7 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
           <button
             type="button"
             onClick={() => window.location.reload()}
-            className="type-label text-xs uppercase tracking-wide text-[var(--brass)] underline-offset-2 hover:underline"
+            className="type-label text-xs uppercase tracking-wide text-[var(--brass-bright)] underline-offset-2 hover:underline"
           >
             Refresh
           </button>
@@ -149,10 +150,10 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
       <aside
         className={[
           'trip-details-panel absolute z-10 overflow-y-auto paper-scope bg-[rgba(243,238,226,0.55)] backdrop-blur-sm',
-          'inset-x-0 bottom-0 rounded-t-2xl transition-all duration-300 ease-out',
+          'inset-x-0 bottom-0 rounded-t-[var(--radius-card)] transition-all duration-300 ease-out',
           expanded ? 'h-[82dvh]' : 'h-[42dvh]',
           panelOpen ? 'translate-y-[0%]' : 'translate-y-[100%]',
-          'md:inset-y-0 md:left-0 md:right-auto md:h-full md:w-[440px] md:rounded-none md:rounded-r-2xl',
+          'md:inset-y-0 md:left-0 md:right-auto md:h-full md:w-[440px] md:rounded-none md:rounded-r-[var(--radius-card)]',
           panelOpen ? 'md:translate-x-[0%]' : 'md:translate-x-[-100%]',
         ].join(' ')}
         aria-label="Trip details"
@@ -184,7 +185,10 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
           </Section>
 
           <Section title="Itinerary">
-            <ItineraryCards places={dayPlaces} selectedPlaceId={selectedPlaceId} onSelectPlace={setSelectedPlaceId} />
+            <div className="flex flex-col gap-3">
+              {activeDay ? <DayOverview day={activeDay} /> : null}
+              <ItineraryCards places={dayPlaces} selectedPlaceId={selectedPlaceId} onSelectPlace={setSelectedPlaceId} />
+            </div>
           </Section>
 
           <Section title="Getting around">

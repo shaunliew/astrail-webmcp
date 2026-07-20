@@ -61,11 +61,14 @@ describe('TripWorkspace', () => {
   it('switching days swaps the visible places', async () => {
     getTrip.mockResolvedValueOnce(TOKYO_TRIP)
     renderWorkspace(TOKYO_TRIP.trip.id)
+    const day1Place = placesForDay(TOKYO_TRIP, 1)[0].place.name
     const day3Place = placesForDay(TOKYO_TRIP, 3)[0].place.name
     // wait for load
     await screen.findByRole('tab', { name: /day 3/i })
     fireEvent.click(screen.getByRole('tab', { name: /day 3/i }))
-    await waitFor(() => expect(screen.getByText(day3Place)).toBeInTheDocument())
+    // getAllByText: day 3's narrated title is also the place name (Tokyo Disneyland)
+    await waitFor(() => expect(screen.getAllByText(day3Place).length).toBeGreaterThan(0))
+    expect(screen.queryByText(day1Place)).not.toBeInTheDocument()
   })
 
   it('shows a not-found state for an unknown trip id', async () => {

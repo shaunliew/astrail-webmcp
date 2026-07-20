@@ -1,8 +1,10 @@
 'use client'
 
 import type { StreamEvent, GenerationStage } from '@/lib/trip/backend-types'
+import Astronaut from '@/components/mascot/Astronaut'
 
-const STAGE_LABEL: Record<GenerationStage, string> = {
+// The canonical stage->English map (DESIGN.md §8) — AgentDecisionRail reuses it.
+export const STAGE_LABEL: Record<GenerationStage, string> = {
   create_trip: 'Creating your trip',
   scrape: 'Scraping Reels',
   cache_hit: 'Using cached Reel',
@@ -21,8 +23,13 @@ const STAGE_LABEL: Record<GenerationStage, string> = {
 }
 
 export default function GenerationProgress({ events }: { events: StreamEvent[] }) {
+  // The generation rail is the mascot's fourth spec'd surface (DESIGN-DRAFT §7) and the
+  // product's longest wait. Waiting is the only live state: once the result event lands,
+  // the trail stops flowing — a pulse on a finished run is motion telling a lie.
+  const done = events.some((e) => e.type === 'result')
   return (
     <section data-testid="generation-progress" className="flex w-full flex-col gap-4">
+      <Astronaut size={40} variant={done ? 'idle' : 'waiting'} />
       <h1 className="type-display text-2xl text-[var(--starlight)]">Building your trip</h1>
       <p className="type-body text-sm text-[var(--muted)]">
         Astrail is turning your inspiration into a mapped route. Pins appear as places are verified.
@@ -35,14 +42,14 @@ export default function GenerationProgress({ events }: { events: StreamEvent[] }
           {events.map((event, i) => {
             if (event.type === 'heartbeat') {
               return (
-                <li key={i} className="type-label pl-4 text-[10px] uppercase tracking-wide text-[var(--faint)]">
+                <li key={i} className="type-label pl-4 text-[10px] uppercase tracking-wide tabular-nums text-[var(--faint)]">
                   {event.elapsed_s.toFixed(1)}s elapsed
                 </li>
               )
             }
             if (event.type === 'result') {
               return (
-                <li key={i} className="type-body flex items-center gap-2 text-sm text-[var(--brass)]">
+                <li key={i} className="type-body flex items-center gap-2 text-sm text-[var(--brass-bright)]">
                   <span aria-hidden>✓</span> Trip ready — opening your trip…
                 </li>
               )

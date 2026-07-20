@@ -96,7 +96,7 @@ export default function SignInPage() {
             <button
               type="submit"
               disabled={pending || !email.trim()}
-              className="type-label rounded-xl border border-[var(--brass)] bg-[var(--brass-soft)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] disabled:opacity-40"
+              className="type-label rounded-lg border border-[var(--brass)] bg-[var(--brass-soft)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] disabled:opacity-40"
             >
               {pending ? 'Sending…' : 'Email me a code'}
             </button>
@@ -125,7 +125,7 @@ export default function SignInPage() {
             <button
               type="submit"
               disabled={pending || code.trim().length !== 6}
-              className="type-label rounded-xl border border-[var(--brass)] bg-[var(--brass-soft)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] disabled:opacity-40"
+              className="type-label rounded-lg border border-[var(--brass)] bg-[var(--brass-soft)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] disabled:opacity-40"
             >
               {pending ? 'Verifying…' : 'Sign in'}
             </button>
@@ -133,7 +133,7 @@ export default function SignInPage() {
               type="button"
               onClick={() => void sendCode()}
               disabled={pending || cooldown > 0}
-              className="type-label min-h-11 text-[11px] uppercase tracking-wide text-[var(--muted)] underline-offset-2 hover:underline disabled:opacity-40"
+              className="type-label min-h-11 text-[11px] uppercase tracking-wide tabular-nums text-[var(--muted)] underline-offset-2 hover:underline disabled:opacity-40"
             >
               {cooldown > 0 ? `Resend code (${cooldown}s)` : 'Resend code'}
             </button>
@@ -148,7 +148,7 @@ export default function SignInPage() {
         )}
 
         {notice ? <p className="type-body text-xs text-[var(--muted)]">{notice}</p> : null}
-        {error ? <p className="type-body text-xs text-red-400" role="alert">{error}</p> : null}
+        {error ? <p className="type-body text-xs text-[var(--fail)]" role="alert">{error}</p> : null}
       </section>
     </main>
   )

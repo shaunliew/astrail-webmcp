@@ -2,7 +2,8 @@
 
 import type { StreamEvent, GenerationStage } from '@/lib/trip/backend-types'
 
-const STAGE_LABEL: Record<GenerationStage, string> = {
+// The canonical stage->English map (DESIGN.md §8) — AgentDecisionRail reuses it.
+export const STAGE_LABEL: Record<GenerationStage, string> = {
   create_trip: 'Creating your trip',
   scrape: 'Scraping Reels',
   cache_hit: 'Using cached Reel',

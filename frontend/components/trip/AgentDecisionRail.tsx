@@ -1,4 +1,5 @@
 import type { GenerationEvent, GenerationEventType } from '@/lib/trip/backend-types'
+import { STAGE_LABEL } from '@/components/create/GenerationProgress'
 
 const DOT_COLOR: Record<GenerationEventType, string> = {
   stage: 'var(--faint)',
@@ -24,7 +25,11 @@ export default function AgentDecisionRail({ events }: { events: GenerationEvent[
           />
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <span className="type-label text-[10px] uppercase tracking-wide text-[var(--faint)]">{ev.stage}</span>
+              {/* Raw enums never render (DESIGN.md §8) — same map as the generation rail,
+                  with a humanized fallback for stages the map has not met yet. */}
+              <span className="type-label text-[10px] uppercase tracking-wide text-[var(--faint)]">
+                {STAGE_LABEL[ev.stage] ?? ev.stage.replaceAll('_', ' ')}
+              </span>
               {ev.event_type === 'warning' ? (
                 <span className="type-label text-[9px] uppercase tracking-wide text-[var(--warn)]">warning</span>
               ) : null}

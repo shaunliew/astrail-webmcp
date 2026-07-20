@@ -22,7 +22,7 @@ from organizer import (
     _ground_and_persist,
     authorize_place_ids,
 )
-from test_saved_reels_organize import _Client, _Table, _place
+from test_saved_reels_organize import _Client, _FindOrCreatePlaceRpc, _Table, _place
 
 
 def _ctx(client, *, user_id="uB", ground=None) -> _ItemContext:
@@ -74,6 +74,29 @@ class _FailingInsertTable(_Table):
         return await super().execute()
 
 
+class _FailingFindOrCreatePlaceRpc(_FindOrCreatePlaceRpc):
+    """The same insert budget, on the seam `places` inserts actually travel through.
+
+    Since 20260720160000 the canonical insert is inside `find_or_create_place`, not a
+    `.table("places").insert(...)`, so a fixture that only wrapped `table()` would stop failing
+    anything here — and `test_crash_mid_persist_leaves_old_mentions_intact` would pass by
+    never crashing at all, which is the opposite of what it asserts. Only a call that would
+    INSERT is charged; a reuse writes no new row, exactly as the table version charged only
+    inserts.
+    """
+
+    def __init__(self, client, params, budget):
+        super().__init__(client, params)
+        self._budget = budget
+
+    async def execute(self):
+        if self._match() is None:
+            if self._budget["remaining"] <= 0:
+                raise RuntimeError("supabase insert failed")
+            self._budget["remaining"] -= 1
+        return await super().execute()
+
+
 class _FailingInsertClient(_Client):
     def __init__(self, db=None, *, fail_table, after):
         super().__init__(db)
@@ -83,6 +106,12 @@ class _FailingInsertClient(_Client):
         if name != self._fail_table:
             return super().table(name)
         return _FailingInsertTable(name, self.db, self._budget)
+
+    def rpc(self, name, params):
+        if name == "find_or_create_place" and self._fail_table == "places":
+            self.rpc_calls.append((name, params))
+            return _FailingFindOrCreatePlaceRpc(self, params, self._budget)
+        return super().rpc(name, params)
 
 
 async def test_failed_grounding_preserves_existing_mentions():

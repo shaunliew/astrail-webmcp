@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 import json
 from uuid import UUID
@@ -9,6 +10,7 @@ import pytest
 from api.schemas import GenerateTripRequest, OrganizeJobStatus, OrganizeSavedReelsRequest
 from api.streaming import DONE, format_sse, stream_organize_events
 from models.place import PlaceResult
+from pipeline.geo import haversine_m
 from organizer import (
     ActiveOrganizeConflict,
     _ground_place,
@@ -178,12 +180,118 @@ class _Client:
             return _AppendOrganizeEventRpc(self, params)
         if name == "replace_reel_place_mentions":
             return _ReplaceReelPlaceMentionsRpc(self, params)
+        if name == "find_or_create_place":
+            return _FindOrCreatePlaceRpc(self, params)
         return _Rpc(self, name)
+
+
+class _BarrierClient(_Client):
+    """A client whose every round trip is a real interleaving point.
+
+    `.execute()` waits until `parties` callers have reached one, so anything a caller decided
+    BEFORE a round trip is guaranteed stale by the time it acts on it. That models the property
+    that matters: a single database statement is atomic, and the gap between two of them is
+    where a concurrent worker gets in.
+    """
+
+    def __init__(self, db=None, *, parties):
+        super().__init__(db)
+        self._barrier = asyncio.Barrier(parties)
+
+    # Both seams are barriered on purpose. `_Table.execute()` contains no real await, so without
+    # `_BarrierTable` two gathered callers would each run start-to-finish before the other began
+    # and a select-then-insert would never interleave — the concurrency test would go green
+    # against the very code it exists to reject. Confirmed by injection.
+    def table(self, name): return _BarrierTable(name, self.db, self._barrier)
+
+    def rpc(self, name, params):
+        return _Barriered(super().rpc(name, params), self._barrier)
+
+
+class _Barriered:
+    def __init__(self, inner, barrier): self._inner, self._barrier = inner, barrier
+
+    async def execute(self):
+        await self._barrier.wait()
+        return await self._inner.execute()
+
+
+class _BarrierTable(_Table):
+    def __init__(self, name, db, barrier):
+        super().__init__(name, db)
+        self._barrier = barrier
+
+    async def execute(self):
+        await self._barrier.wait()
+        return await super().execute()
 
 
 class _Rpc:
     def __init__(self, client, name): self.client, self.name = client, name
     async def execute(self): return _Result(self.client.db.get(f"rpc:{self.name}"))
+
+
+class _FindOrCreatePlaceRpc:
+    """Mirror of `public.find_or_create_place` (20260720160000_serialized_...).
+
+    ATOMIC ON PURPOSE — the body below contains no `await`, so no other coroutine can run
+    between the lookup and the insert. That is not the fake being convenient: it is what the
+    real function's `pg_advisory_xact_lock` buys, and a fake that awaited mid-body would model
+    a database that does not have it, quietly reddening the concurrency test for the wrong
+    reason.
+
+    What it CANNOT reproduce is the lock itself — whether two separate BACKENDS are serialized
+    is a property of Postgres, not of Python, so it is proven against real concurrent
+    connections in `supabase/tests/012_serialized_place_find_or_create.sql`. This mirror pins
+    the reuse rule the callers depend on: same name, same verified country, inside the gate.
+    """
+
+    def __init__(self, client, params): self.client, self.params = client, params
+
+    def _match(self):
+        params = self.params
+        # Insertion order, which for this fake's sequential ids IS `order by id` — the tie-break
+        # the function uses so several eligible rows resolve the same way every run.
+        rows = self.client.db.setdefault("places", [])
+        for row in rows:
+            if (
+                row.get("name") == params["p_name"]
+                and row.get("country_code") == params["p_country_code"]
+                and params["p_lat"] is not None
+                and params["p_lng"] is not None
+                and row.get("lat") is not None
+                and row.get("lng") is not None
+                and haversine_m(params["p_lat"], params["p_lng"], row["lat"], row["lng"])
+                < params["p_max_distance_m"]
+            ):
+                return row
+        return None
+
+    async def execute(self):
+        params = self.params
+        row = self._match()
+        if row is not None:
+            row.update({
+                "country": params["p_country"],
+                "country_code": params["p_country_code"],
+                "country_name": params["p_country_name"],
+            })
+            return _Result(row["id"])
+        rows = self.client.db.setdefault("places", [])
+        # `embedding` is deliberately absent, mirroring the function's column list (ISSUES-B3).
+        stored = {
+            "id": f"places-{len(rows) + 1}",
+            "name": params["p_name"],
+            "place_type": params["p_place_type"],
+            "lat": params["p_lat"],
+            "lng": params["p_lng"],
+            "country": params["p_country"],
+            "country_code": params["p_country_code"],
+            "country_name": params["p_country_name"],
+            "city": params["p_city"],
+        }
+        rows.append(stored)
+        return _Result(stored["id"])
 
 
 def _pg_error(code, message):
@@ -1056,11 +1164,20 @@ async def test_ground_place_propagates_provider_outage_after_adapter_retry(monke
 
 @pytest.mark.asyncio
 async def test_persist_place_does_not_reuse_same_name_from_another_country():
+    """The verified country is what separates two same-named venues — nothing else may be.
+
+    The MX row deliberately sits at the JP place's EXACT coordinates. It used to carry no
+    lat/lng at all, which made this test unfalsifiable: the distance gate skips a candidate
+    with no coordinates, so it passed with the country predicate deleted outright (injected,
+    confirmed). Same coordinates means only `country_code` can keep these two apart.
+    """
     client = _Client({
         "places": [{
             "id": "place-mx",
             "name": "Harry Potter Cafe",
             "country_code": "MX",
+            "lat": 35.6764,
+            "lng": 139.65,
         }],
     })
     place = PlaceResult(
@@ -1138,6 +1255,63 @@ async def test_persist_place_reuses_near_match_but_preserves_distant_same_name_b
     assert far_id != "place-tokyo"
     assert client.db["places"][-1]["lat"] == 34.6937
     assert client.db["places"][-1]["lng"] == 135.5023
+
+
+@pytest.mark.asyncio
+async def test_concurrent_persist_of_the_same_place_creates_one_canonical_row():
+    """Two workers racing for the same new place must leave ONE `places` row, not two.
+
+    This is the defect, reproduced: `places` has no unique key, so an expired worker and its
+    replacement both looked, both saw nothing, and both inserted. Fencing the mention row only
+    decides which duplicate gets referenced — the orphan stays in the GLOBAL flywheel and every
+    later organize resolves the same venue to an arbitrary one of the two ids.
+
+    The interleaving is real, not asserted on call counts: `_BarrierClient` holds every
+    `.execute()` until both callers have reached one, so each round trip is a point where the
+    other coroutine is guaranteed to have run. What the barrier models is exactly what Postgres
+    gives us — one statement is atomic, the gap BETWEEN two statements is not. So this pins the
+    Python half of the fix (the decision and the write are one round trip); that the single
+    statement is itself serialized against another *connection* is the advisory lock, proven
+    with real concurrent backends in `supabase/tests/012_serialized_place_find_or_create.sql`.
+
+    Against the old select-then-insert both selects clear the barrier before either insert
+    runs, both see an empty table, and the table ends with two rows.
+    """
+    client = _BarrierClient({}, parties=2)
+    grounded = {
+        "place": PlaceResult(
+            name="Harry Potter Cafe", category="restaurant", lat=35.67311, lng=139.73625,
+            confidence=0.8, evidence_quote="Harry Potter Cafe", source_url="https://hpcafe.jp/",
+            country_code="JP", country_name="Japan",
+        ),
+        "country_code": "JP",
+        "country_name": "Japan",
+    }
+
+    async with asyncio.timeout(5):          # a barrier deadlock must fail, not hang the suite
+        first, second = await asyncio.gather(
+            _persist_place(client, grounded), _persist_place(client, grounded),
+        )
+
+    assert len(client.db["places"]) == 1, "the race duplicated the canonical place row"
+    assert first == second == client.db["places"][0]["id"]
+
+
+@pytest.mark.asyncio
+async def test_persist_place_omits_embedding_deliberately():
+    """ISSUES-B3: null `embedding` is an accepted MVP state, not an oversight.
+
+    There is no shared embedding producer in this repo, and a zero vector would pollute every
+    future similarity search. Characterization only — when a producer exists, this test is the
+    place that has to change, deliberately.
+    """
+    client = _Client({})
+
+    await _persist_place(client, {
+        "place": _place("Shibuya Sky"), "country_code": "JP", "country_name": "Japan",
+    })
+
+    assert "embedding" not in client.db["places"][0]
 
 
 @pytest.mark.asyncio

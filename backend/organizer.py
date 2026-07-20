@@ -21,7 +21,6 @@ from postgrest.exceptions import APIError
 from pydantic import ValidationError
 from pipeline.cache import cache_places, get_cached_places
 from pipeline.dedup import DEFAULT_DISTANCE_M
-from pipeline.geo import haversine_m
 from scrape.apify_direct import scrape_reel
 from usage import refund_organize_item_analysis, reserve_organize_item_analysis
 
@@ -317,34 +316,31 @@ async def _persist_place(client, grounded: dict) -> str:
         place_type = "station"
     if place_type not in {"attraction", "restaurant", "hotel", "area", "city", "country", "station", "shop", "other"}:
         place_type = "other"
-    existing = await (client.table("places").select("id,lat,lng").eq("name", place.name)
-                      .eq("country_code", grounded["country_code"]).execute())
-    for row in existing.data or []:
-        if (
-            place.lat is not None
-            and place.lng is not None
-            and row.get("lat") is not None
-            and row.get("lng") is not None
-            and haversine_m(place.lat, place.lng, row["lat"], row["lng"])
-            < DEFAULT_DISTANCE_M
-        ):
-            await client.table("places").update({
-                "country": grounded["country_name"],
-                "country_code": grounded["country_code"],
-                "country_name": grounded["country_name"],
-            }).eq("id", row["id"]).execute()
-            return row["id"]
-    row = (await client.table("places").insert({
-        "name": place.name,
-        "place_type": place_type,
-        "lat": place.lat,
-        "lng": place.lng,
-        "country": grounded["country_name"],
-        "country_code": grounded["country_code"],
-        "country_name": grounded["country_name"],
-        "city": place.city_or_region_guess,
-    }).execute()).data[0]
-    return row["id"]
+    # ONE round trip, and the database serializes it (20260720160000). This was a SELECT here
+    # and an INSERT there, with no unique key anywhere on `places` to catch what fell between:
+    # an expired worker and its replacement both looked, both saw nothing, and both inserted.
+    #
+    # That is worse than the same select-then-insert deferred in `pipeline/persist.py`. There
+    # one trip ends up pointing at one of two rows. Here `places` is the CROSS-TRIP dedup
+    # flywheel — the orphan is global and permanent, and every later organize resolves the same
+    # venue to an arbitrary one of the duplicates. Fencing the mention row cannot help; it only
+    # decides which duplicate gets referenced.
+    #
+    # The reuse rule (same name, same verified country, inside DEFAULT_DISTANCE_M, repairing
+    # the reused row's country labels) moved into the function unchanged. It stays a distance
+    # gate rather than a unique constraint because no constraint can express "within 500 m" —
+    # see the migration for why an advisory lock is the route and what it does not cover.
+    return (await client.rpc("find_or_create_place", {
+        "p_name": place.name,
+        "p_place_type": place_type,
+        "p_lat": place.lat,
+        "p_lng": place.lng,
+        "p_country": grounded["country_name"],
+        "p_country_code": grounded["country_code"],
+        "p_country_name": grounded["country_name"],
+        "p_city": place.city_or_region_guess,
+        "p_max_distance_m": DEFAULT_DISTANCE_M,
+    }).execute()).data
 
 
 async def _update_job_counts(client, job_id: str, user_id: str, *, lease_token: str) -> None:

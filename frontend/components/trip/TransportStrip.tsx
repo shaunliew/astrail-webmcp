@@ -37,7 +37,7 @@ export default function TransportStrip({
               </span>
             </div>
             {routed ? (
-              <p className="type-label mt-1 text-[11px] text-[var(--brass-bright)]">
+              <p className="type-label mt-1 text-[11px] tabular-nums text-[var(--brass-bright)]">
                 {fmtDuration(leg.duration_seconds)}
                 {leg.distance_meters != null ? ` · ${(leg.distance_meters / 1000).toFixed(1)} km` : ''}
               </p>

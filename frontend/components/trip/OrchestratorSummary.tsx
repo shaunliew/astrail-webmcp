@@ -3,7 +3,7 @@ import type { TripBundle } from '@/lib/trip/backend-types'
 function Stat({ value, label }: { value: string | number; label: string }) {
   return (
     <div className="flex flex-col" data-testid={`stat-${label}`}>
-      <span className="type-display text-2xl leading-none text-[var(--starlight)]">{value}</span>
+      <span className="type-display text-2xl leading-none tabular-nums text-[var(--starlight)]">{value}</span>
       <span className="type-label text-[10px] uppercase tracking-wide text-[var(--faint)]">{label}</span>
     </div>
   )

@@ -133,7 +133,7 @@ export default function SignInPage() {
               type="button"
               onClick={() => void sendCode()}
               disabled={pending || cooldown > 0}
-              className="type-label min-h-11 text-[11px] uppercase tracking-wide text-[var(--muted)] underline-offset-2 hover:underline disabled:opacity-40"
+              className="type-label min-h-11 text-[11px] uppercase tracking-wide tabular-nums text-[var(--muted)] underline-offset-2 hover:underline disabled:opacity-40"
             >
               {cooldown > 0 ? `Resend code (${cooldown}s)` : 'Resend code'}
             </button>

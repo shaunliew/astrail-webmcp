@@ -35,7 +35,7 @@ export default function GenerationProgress({ events }: { events: StreamEvent[] }
           {events.map((event, i) => {
             if (event.type === 'heartbeat') {
               return (
-                <li key={i} className="type-label pl-4 text-[10px] uppercase tracking-wide text-[var(--faint)]">
+                <li key={i} className="type-label pl-4 text-[10px] uppercase tracking-wide tabular-nums text-[var(--faint)]">
                   {event.elapsed_s.toFixed(1)}s elapsed
                 </li>
               )

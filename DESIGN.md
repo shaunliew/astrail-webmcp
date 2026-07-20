@@ -505,11 +505,14 @@ utility** — so those six render at 8px and the class is inert. The three that 
 12px are buttons outside `.surface`: `CreateTripFlow.tsx:129`, `sign-in/page.tsx:99` and `:128`.
 `TripWorkspace`'s 16px panel corners render as written.
 
-**G4 — `tabular-nums` is specified and entirely unimplemented.**
-`docs/DESIGN-DRAFT.md:88` requires `font-variant-numeric: tabular-nums` on all stats, durations
-and distances. A repo-wide search for `tabular` across `frontend/components`, `frontend/app`,
-`frontend/lib` and `globals.css` returns **zero hits.** Confidence percentages, durations and
-distances currently render proportional and will jitter as they update.
+**G4 — resolved (2026-07-20): `tabular-nums` where numerals move or align, not everywhere.**
+The draft's "all stats, durations, distances" over-reaches: numerals set in `.type-evidence`
+(JetBrains Mono — confidence percentages, coordinates) are fixed-width by construction, and a
+lone static numeral in prose gains nothing. Applied where it is load-bearing: the workspace
+stat grid (`OrchestratorSummary.tsx`), transport leg durations/distances
+(`TransportStrip.tsx`), the generation heartbeat's elapsed seconds
+(`GenerationProgress.tsx`), and the sign-in resend countdown (`sign-in/page.tsx` — the one
+numeral that ticks every second in place).
 
 **G5 — "Empty screens are composed (centered, illustrated)" is only half true.**
 The rule is stated at `docs/DESIGN-DRAFT.md:98-99`. `TripsList.tsx:43` ships

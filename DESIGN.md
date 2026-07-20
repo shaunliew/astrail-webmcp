@@ -176,9 +176,10 @@ you are reverting Rule 03.
 ```
 
 Monospace appearing on screen is a signal with one meaning: **this is verbatim data from a
-source.** It is used in exactly six components today — `EvidenceChip`, `TradeoffPanel`,
-`InspirationTray`, `TripBriefReview`, `SavedReelsInbox`, `CountryTrays`. Adding mono anywhere
-that is not provenance dilutes the signal to zero.
+source.** It is used in seven components today — `EvidenceChip`, `TradeoffPanel`,
+`InspirationTray`, `TripBriefReview`, `SavedReelsInbox`, `CountryTrays`, `DayOverview` (the
+weather source tag) — and `SettingsView` composes `EvidenceChip` for the memory receipt.
+Adding mono anywhere that is not provenance dilutes the signal to zero.
 
 ### Quoted source text is italic serif — at display sizes only
 
@@ -231,8 +232,9 @@ Never a flat neutral grey ground.
    a glowing pulse on a finished trip is motion telling a lie. */
 ```
 
-`.pulse-dot--live` (`globals.css:519-521`) is the only animating status class. `ok`, `warn` and
-`fail` are static semantic colors. The rule is mirrored in the presenter layer —
+`.pulse-dot--live` and `.astronaut-trail--waiting` (the mascot's flowing trail) are the only
+animating state classes, and both mean the same thing: something is in flight right now. `ok`,
+`warn` and `fail` are static semantic colors. The rule is mirrored in the presenter layer —
 `frontend/lib/trip/trip-presenters.ts:31-32`:
 
 ```ts
@@ -352,8 +354,10 @@ The map is the core product surface (`docs/PRD.md:451`).
 ## 10. Worked example: breaking vs. following the rule
 
 Both of these are `<h2>` section headers, in the same component, twelve lines apart.
+*(Historical: the violation below was fixed by `c805e16` — the example is kept because it is
+the clearest statement of the rule.)*
 
-**Breaks the rule** — `frontend/components/settings/SettingsView.tsx:55`:
+**Broke the rule** — `frontend/components/settings/SettingsView.tsx:55` before `c805e16`:
 
 ```tsx
 <h2 className="type-label text-[11px] uppercase tracking-wide text-[var(--muted)]">
@@ -386,8 +390,7 @@ The uppercase tracked micro-label is still correct one level down, on **data cap
 `TripBriefReview.tsx:99` labels a field group `Reels ({reels.length})` in exactly that style.
 The rule is about which role the treatment marks, not about banning the treatment.
 
-*(Fixing `SettingsView.tsx` is a separate task. This document is the deliverable; the code change
-is not part of it.)*
+*(Fixed by `c805e16`: both headers in `SettingsView.tsx` are now `type-display` sentence-case.)*
 
 ---
 
@@ -422,8 +425,8 @@ Every rule below is a rule this repo has already stated, with the line that stat
   (`globals.css:362`).
 - **Don't put brass on body text or hairlines.** Borders and labels are not accent surfaces.
 - **Don't use `--brass` (`#C9974E`) for small text.** It is a fill and trail color.
-- **Don't introduce a fourth radius.** `rounded-xl` (12px) and `rounded-2xl` (16px) are already
-  leaks, not precedent — see G3.
+- **Don't introduce a fourth radius.** Every live surface renders 8 / 6 / pill as of
+  2026-07-20 — see G3 for the six inert `rounded-xl` class names that remain.
 - **Don't use pure black or neutral grey darks.** Night is indigo-shifted (`globals.css:18-20`).
 - **Don't render a raw enum string.**
 - **Don't ship a bare colored dot** as the only carrier of a semantic state.
@@ -435,9 +438,9 @@ Every rule below is a rule this repo has already stated, with the line that stat
 
 ## 12. Open gaps
 
-Everywhere the written system and the shipped code disagree. Each item names both sides and what
-would change. Resolved items are kept, marked RESOLVED, rather than deleted — the reasoning is
-worth more than the tidiness.
+Everywhere the written system and the shipped code disagree — or did. Resolved gaps stay
+listed with their resolving commit, because each one records a decision the system argued
+about; the open ones name both sides and what would change.
 
 **G1 — RESOLVED. The signature moment now ships.**
 Implemented 2026-07-20 on `feat/saved-reels-arc-c-frontend`. `docs/DESIGN-DRAFT.md:18-21`
@@ -482,28 +485,17 @@ UI's voice, slanted. But the draft also gives the display face an 18px floor, wh
 (`PlaceIntelPanel.tsx`), sans-italic below (`ItineraryCards.tsx`), brass bar always. Rule
 now lives in §4.
 
-**G3 — The radius rule is stated but not held.**
-"8 / 6 / pill and nothing else" is the rule; the shipped inventory across
-`frontend/components` and `frontend/app` is:
-
-| Utility | Computed | Uses | Status |
-|---|---|---|---|
-| `rounded-[var(--radius-card)]` / `rounded-[var(--radius-chip)]` | 8px / 6px | 14 | On-system |
-| `rounded-lg` | 0.5rem = **8px** | 34 | Right value, bypasses the token |
-| `rounded-full` | pill | 11 | On-system |
-| `rounded-xl` | 0.75rem = **12px** | 9 | **Off-system** |
-| `rounded-t-2xl` / `rounded-r-2xl` | 1rem = **16px** | 2 | **Off-system** (`TripWorkspace.tsx:135,138`) |
-| `rounded-[6px]` | 6px | 1 | Right value, hardcoded (`ChipMultiSelect.tsx:22`) |
-
-(Computed values confirmed against the compiled stylesheet: `--radius-lg:.5rem`,
-`--radius-xl:.75rem`.)
-
-Nuance that matters before anyone starts deleting: of the nine `rounded-xl` uses, six sit on
-`.surface` elements, where the unlayered `.app-shell .surface` / `.paper-scope .surface` rules
-(`globals.css:374`, `:397`) force `border-radius: var(--radius-card)` and **win over the layered
-utility** — so those six render at 8px and the class is inert. The three that genuinely render
-12px are buttons outside `.surface`: `CreateTripFlow.tsx:129`, `sign-in/page.tsx:99` and `:128`.
-`TripWorkspace`'s 16px panel corners render as written.
+**G3 — resolved on every live surface (2026-07-20).** "8 / 6 / pill and nothing else" now
+holds everywhere it renders. The three buttons genuinely drawing 12px (`CreateTripFlow`,
+`sign-in` ×2) went to `rounded-lg` (8px, the button idiom the rest of the app already used);
+`TripWorkspace`'s 16px panel corners went to the card token; and the inventory had missed a
+live **fourth** radius — `ItineraryCards`' source badge shipped bare `rounded` (4px), now the
+chip token. Deliberately untouched: the six `rounded-xl` uses sitting on `.surface`, where the
+unlayered `.app-shell .surface` / `.paper-scope .surface` rules force
+`border-radius: var(--radius-card)` and win over the layered utility — those render 8px today,
+so rewriting them changes nothing but diff noise. They remain the one cosmetic leak: inert
+class names that would pop to 12px only if the `.surface` radius rule were ever removed.
+`rounded-lg` (34 uses) remains "right value, bypasses the token."
 
 **G4 — resolved (2026-07-20): `tabular-nums` where numerals move or align, not everywhere.**
 The draft's "all stats, durations, distances" over-reaches: numerals set in `.type-evidence`
@@ -514,31 +506,20 @@ stat grid (`OrchestratorSummary.tsx`), transport leg durations/distances
 (`GenerationProgress.tsx`), and the sign-in resend countdown (`sign-in/page.tsx` — the one
 numeral that ticks every second in place).
 
-**G5 — "Empty screens are composed (centered, illustrated)" is only half true.**
-The rule is stated at `docs/DESIGN-DRAFT.md:98-99`. `TripsList.tsx:43` ships
-`flex flex-col items-start` — **left-aligned, not centered — and with no illustration.** It does
-satisfy the actionable half (a dashed-border card with one clear CTA) and the copy is on-voice.
-Either the rule narrows to "composed and actionable", or the empty states gain centering and
-artwork — which collides with G6.
+**G5 — resolved by `12f816e`.** The trips-list empty state is now centered
+(`items-center`, `text-center`) and illustrated by the astronaut. Composed, illustrated,
+actionable — the rule as stated now ships.
 
-**G6 — The astronaut mascot is fully specified and has zero implementation. This is the
-largest open gap, and it is deliberately not resolved here.**
-`docs/PRD.md:39` builds the "astronaut traveler" persona as the product's core metaphor and
-carries it through §6 (`:64`, `:128`) and the roadmap (`:1162`). `docs/DESIGN-DRAFT.md:127-133`
-specs the mascot in detail: line-art, single-weight brass stroke, 24–48px, appearing only in
-"generation progress, empty states, final onboarding step, error pages", never on the map canvas
-or in the itinerary.
-
-Implementation: **none.** A case-insensitive search for "astronaut" across `frontend/` returns
-exactly one hit — `frontend/lib/auth/mock-auth.ts:6`, a mock user's display name. There is no
-mascot asset, component, or reference anywhere in the frontend. (The claim "returns nothing" is
-very slightly wrong; the substance is right — nothing renders a mascot.)
-
-**Status: unresolved, pending Shaun + Zhi Hao.** This document does not design, describe, or
-propose a mascot, and no agent should. It is net-new creative work in another owner's area with
-no correctness criterion, and an AI-invented mascot is precisely the change most likely to
-*produce* the "AI-generated" quality this system is being sharpened to avoid. It needs a human
-decision — including the decision not to build it — before any pixel exists.
+**G6 — resolved by `12f816e` (mascot) + `cb8ac6a` (error pages) + this branch (generation).**
+The astronaut traveler (`docs/DESIGN-DRAFT.md:127-133` spec) ships as
+`components/mascot/Astronaut.tsx`: line-art in the system's single 1.5px brass stroke
+(non-scaling), the helmet quoting the constellation pin, the glove sketching a dotted star
+path to a destination star. `currentColor` rides `--brass-bright`, so `.paper-scope` recolors
+it automatically. It appears on exactly the four spec'd surfaces — trips-list empty state,
+final onboarding step, error/404 pages (`ErrorScreen.tsx`, `not-found.tsx`), and the
+generation rail — and nowhere else: never on the map canvas, never in the itinerary.
+`variant="waiting"` (trail dots flowing toward the star) is the only animated state, live only
+while generation is in flight, and registered in the reduced-motion block.
 
 **G7 — resolved in two commits.** The eyebrow header was fixed by `c805e16` (section
 headers serif sentence-case). The deeper half — remembered preferences rendering identically

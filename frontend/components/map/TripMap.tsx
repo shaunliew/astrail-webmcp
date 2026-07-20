@@ -1,12 +1,10 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import mapboxgl from 'mapbox-gl'
-import 'mapbox-gl/dist/mapbox-gl.css'
 import type { TripBundle } from '@/lib/trip/backend-types'
 import { legsForDay, orderedDays, buildPlaceIndex, pinLabelForPlace } from '@/lib/trip/selectors'
-
-const TOKEN = process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN
+import { useSharedMap } from '@/components/map/MapProvider'
 
 export default function TripMap({
   bundle, activeDayNumber, selectedPlaceId, onSelectPlace,
@@ -16,64 +14,45 @@ export default function TripMap({
   selectedPlaceId: string | null
   onSelectPlace: (placeId: string) => void
 }) {
-  const containerRef = useRef<HTMLDivElement | null>(null)
-  const mapRef = useRef<mapboxgl.Map | null>(null)
-  const markersRef = useRef<mapboxgl.Marker[]>([])
+  const { hasToken, ready, getMap, acquire, release, setMarkers } = useSharedMap()
   const routeIdsRef = useRef<string[]>([])
-  const loadedRef = useRef(false)
-  const [mapLoaded, setMapLoaded] = useState(false)
+  const framedRef = useRef(false)
 
-  // Create the map once.
+  function clearRoutes() {
+    const map = getMap()
+    if (!map) return
+    for (const id of [...routeIdsRef.current].reverse()) {
+      if (map.getLayer(id)) map.removeLayer(id)
+      if (map.getSource(id)) map.removeSource(id)
+    }
+    routeIdsRef.current = []
+  }
+
+  // Daybreak world (DESIGN-DRAFT §5): generation happens at night (GenerationScene);
+  // the saved trip is explored at dawn — PRD §13's "readable trip exploration lighting".
+  // Arriving from generation the map is already relighting to dawn, and re-setting the
+  // same preset is a no-op, so the transition is never interrupted.
   useEffect(() => {
-    if (!TOKEN || !containerRef.current || mapRef.current) return
-    mapboxgl.accessToken = TOKEN
     const first = bundle.places[0]?.place
-    const map = new mapboxgl.Map({
-      container: containerRef.current,
-      style: 'mapbox://styles/mapbox/standard',
-      projection: 'globe',
+    acquire({
+      interactive: true,
+      lightPreset: 'dawn',
       center: first ? [first.lng, first.lat] : [0, 20],
       zoom: 1.4,
-      pitch: 0,
-      scrollZoom: { around: 'center' },
     })
-    mapRef.current = map
-    map.on('load', () => {
-      loadedRef.current = true
-      setMapLoaded(true)
-      // Daybreak world (DESIGN-DRAFT §5): generation happens at night (GenerationScene);
-      // the saved trip is explored at dawn — PRD §13's "readable trip exploration lighting".
-      map.setConfigProperty('basemap', 'lightPreset', 'dawn')
-      drawMarkers()
-      drawRoutes()
-      flyToTrip()
-    })
-
-    // Mapbox's built-in trackResize only reliably corrects the canvas on a window
-    // resize event. When the container changes size for any other reason — device
-    // rotation, mobile browser chrome collapsing, a parent layout change — the WebGL
-    // canvas can stay frozen at its old size, and the surplus container renders black.
-    // Observing the container directly and calling resize() closes that gap.
-    const resizeObserver = new ResizeObserver(() => { mapRef.current?.resize() })
-    resizeObserver.observe(containerRef.current)
-
+    // Layers are ours, and the map outlives this component — leaving them behind would
+    // paint this trip's routes over the next one.
     return () => {
-      resizeObserver.disconnect()
-      map.remove()
-      mapRef.current = null
-      loadedRef.current = false
-      markersRef.current = []
-      routeIdsRef.current = []
+      clearRoutes()
+      release()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   function drawMarkers() {
-    const map = mapRef.current
+    const map = getMap()
     if (!map) return
-    markersRef.current.forEach((m) => m.remove())
-    markersRef.current = []
-    for (const tp of bundle.places) {
+    const markers = bundle.places.map((tp) => {
       const el = document.createElement('button')
       el.type = 'button'
       el.setAttribute('aria-label', tp.place.name)
@@ -86,24 +65,14 @@ export default function TripMap({
       ].filter(Boolean).join(' ')
       el.textContent = label ?? ''
       el.addEventListener('click', (e) => { e.stopPropagation(); onSelectPlace(tp.place_id) })
-      const marker = new mapboxgl.Marker({ element: el }).setLngLat([tp.place.lng, tp.place.lat]).addTo(map)
-      markersRef.current.push(marker)
-    }
-  }
-
-  function clearRoutes() {
-    const map = mapRef.current
-    if (!map) return
-    for (const id of [...routeIdsRef.current].reverse()) {
-      if (map.getLayer(id)) map.removeLayer(id)
-      if (map.getSource(id)) map.removeSource(id)
-    }
-    routeIdsRef.current = []
+      return new mapboxgl.Marker({ element: el }).setLngLat([tp.place.lng, tp.place.lat]).addTo(map)
+    })
+    setMarkers(markers)
   }
 
   function drawRoutes() {
-    const map = mapRef.current
-    if (!map || !loadedRef.current) return
+    const map = getMap()
+    if (!map) return
     clearRoutes()
     const day = orderedDays(bundle).find((d) => d.day_number === activeDayNumber)
     if (!day) return
@@ -170,7 +139,7 @@ export default function TripMap({
   }
 
   function flyToTrip() {
-    const map = mapRef.current
+    const map = getMap()
     if (!map) return
     const pts = bundle.places.map((tp) => [tp.place.lng, tp.place.lat] as [number, number])
     if (pts.length === 0) return
@@ -179,38 +148,45 @@ export default function TripMap({
     map.fitBounds(bounds, { padding: 80, maxZoom: 13, pitch: 45, duration: 2200 })
   }
 
+  // The shared map fires 'load' once ever, and this component usually mounts long after
+  // that — so first draw keys off `ready`, not a load listener that will never fire.
+  // Framing is explicit for the same reason: the camera no longer resets on navigation,
+  // so without this the trip would inherit wherever generation left the globe.
+  useEffect(() => {
+    if (!ready || framedRef.current) return
+    framedRef.current = true
+    drawMarkers()
+    drawRoutes()
+    flyToTrip()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready])
+
   // Redraw markers and routes when the active day changes.
   useEffect(() => {
-    if (loadedRef.current) {
-      drawMarkers()
-      drawRoutes()
-    }
+    if (!ready || !framedRef.current) return
+    drawMarkers()
+    drawRoutes()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeDayNumber])
 
   // Refresh marker selection and fly to the selected place.
   useEffect(() => {
-    const map = mapRef.current
-    if (loadedRef.current) drawMarkers()
+    if (!ready) return
+    drawMarkers()
+    const map = getMap()
     if (!map || !selectedPlaceId) return
-    const idx = buildPlaceIndex(bundle)
-    const place = idx.get(selectedPlaceId)
+    const place = buildPlaceIndex(bundle).get(selectedPlaceId)
     if (place) map.flyTo({ center: [place.lng, place.lat], zoom: 14, pitch: 55, duration: 1400, essential: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPlaceId])
 
-  if (!TOKEN) {
+  if (!hasToken) {
     return (
       <div className="flex h-full w-full items-center justify-center bg-[var(--deep)]">
         <p className="type-label text-xs uppercase tracking-wide text-[var(--muted)]">Map unavailable — token missing</p>
       </div>
     )
   }
-  return (
-    <div
-      ref={containerRef}
-      data-testid="trip-map"
-      className={['trip-map-container h-full w-full', mapLoaded ? 'trip-map-container--loaded' : ''].filter(Boolean).join(' ')}
-    />
-  )
+  // The canvas itself is the shell's fixed layer; this component only drives it.
+  return null
 }

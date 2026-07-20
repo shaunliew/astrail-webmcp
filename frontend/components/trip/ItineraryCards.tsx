@@ -51,6 +51,8 @@ export default function ItineraryCards({
                 </span>
               </div>
               {tp.evidence_json.quote ? (
+                /* Compact quote preview: sans-italic on purpose — the serif quote face
+                   never drops below 18px (DESIGN.md G2), and this caption is 12px. */
                 <p className="type-body mt-2 border-l border-[var(--brass)] pl-2 text-xs italic text-[var(--muted)]">
                   "{tp.evidence_json.quote}"
                 </p>

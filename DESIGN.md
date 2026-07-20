@@ -180,6 +180,15 @@ source.** It is used in exactly six components today — `EvidenceChip`, `Tradeo
 `InspirationTray`, `TripBriefReview`, `SavedReelsInbox`, `CountryTrays`. Adding mono anywhere
 that is not provenance dilutes the signal to zero.
 
+### Quoted source text is italic serif — at display sizes only
+
+Resolved from Open gap G2 (2026-07-20, this branch). A verbatim reel/user quote renders as
+an italic **Instrument Serif** blockquote over the brass quote-bar — the voice of the
+source, not the UI (`PlaceIntelPanel.tsx`). The display face never drops below 18px
+(`docs/DESIGN-DRAFT.md` §3), so the serif treatment applies only where the quote is a focus
+surface; compact caption-size previews (`ItineraryCards.tsx`, 12px) keep sans-italic with
+the same brass bar. The bar + italics are the constant; the face follows the scale.
+
 ### Uppercase tracked micro-labels are reserved
 
 `52cf367` states the rule in its own commit body: *"uppercase tracked micro-labels are now
@@ -292,8 +301,10 @@ enum→English map, which is the canonical wording:
 - Confidence renders as a rounded percentage, always present.
 - `source_url` renders as a dotted-underline "source" link, `target="_blank"` +
   `rel="noopener noreferrer"`, and is omitted entirely when null — never a dead link.
-- A verbatim `quote`, when present, renders adjacent (see `PlaceIntelPanel.tsx:20-24`) with a
+- A verbatim `quote`, when present, renders adjacent (see `PlaceIntelPanel.tsx`) with a
   brass left bar and italics — the voice of the source, distinct from the UI's own voice.
+  At display sizes (>=18px) the quote is serif (`type-display`); below that, sans-italic
+  (see §4, "Quoted source text").
 
 New screens must compose this component rather than inventing a local provenance affordance.
 
@@ -464,14 +475,12 @@ construction used to re-apply the acquiring route's preset and strand the map on
 `/app/settings` would download for a map they never show; `next build`'s size table did not
 surface it. The WebGL context is likewise built only on first acquire.
 
-**G2 — Reel quotes: spec says serif, code ships sans.**
-`docs/DESIGN-DRAFT.md:88-89` specs reel quotes as *"italic serif with a brass quote-bar — the
-voice of the source, not the UI."* `PlaceIntelPanel.tsx:21` ships `type-body` (Geist sans) with
-the brass bar and italics present. **Unresolved — this doc does not pick a side.**
-- If serif wins: `frontend/components/trip/PlaceIntelPanel.tsx:21` changes `type-body` →
-  `type-display`, and any other quote surface follows.
-- If sans wins: `docs/DESIGN-DRAFT.md:88-89` is corrected and §4 of this doc gains a rule that
-  quoted source text is sans-italic with a brass bar.
+**G2 — resolved (2026-07-20): serif won, scale-gated.** The draft's reasoning ("the voice
+of the source, not the UI") is only satisfied by a face change — italic Geist is still the
+UI's voice, slanted. But the draft also gives the display face an 18px floor, which the
+12px card previews cannot meet. Both rules survive: serif at display sizes
+(`PlaceIntelPanel.tsx`), sans-italic below (`ItineraryCards.tsx`), brass bar always. Rule
+now lives in §4.
 
 **G3 — The radius rule is stated but not held.**
 "8 / 6 / pill and nothing else" is the rule; the shipped inventory across

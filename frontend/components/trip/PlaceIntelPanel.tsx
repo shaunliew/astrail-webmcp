@@ -18,9 +18,13 @@ export default function PlaceIntelPanel({ tripPlace }: { tripPlace: TripPlace | 
         {[place.area, place.city, place.country].filter(Boolean).join(', ')}
       </p>
       {ev.quote ? (
-        <p className="type-body mt-3 border-l border-[var(--brass)] pl-3 text-sm italic text-[var(--muted)]">
+        /* The reel quote is the voice of the source, not the UI (DESIGN.md G2, resolved
+           serif): italic display serif over the brass quote-bar. Serif never drops below
+           18px, so only focus surfaces like this one carry it — compact card previews
+           (ItineraryCards) keep the sans-italic fallback at caption sizes. */
+        <blockquote className="type-display mt-3 border-l border-[var(--brass)] pl-3 text-lg italic leading-snug text-[var(--muted)]">
           "{ev.quote}"
-        </p>
+        </blockquote>
       ) : null}
       {ev.rationale ? (
         <p className="type-body mt-3 text-sm text-[var(--muted)]">{ev.rationale}</p>

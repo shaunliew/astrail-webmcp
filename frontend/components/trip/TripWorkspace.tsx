@@ -10,6 +10,7 @@ import {
 } from '@/lib/trip/selectors'
 import { useSharedMap } from '@/components/map/MapProvider'
 import DaySelector from './DaySelector'
+import DayOverview from './DayOverview'
 import ItineraryCards from './ItineraryCards'
 import TransportStrip from './TransportStrip'
 import RestaurantStrip from './RestaurantStrip'
@@ -184,7 +185,10 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
           </Section>
 
           <Section title="Itinerary">
-            <ItineraryCards places={dayPlaces} selectedPlaceId={selectedPlaceId} onSelectPlace={setSelectedPlaceId} />
+            <div className="flex flex-col gap-3">
+              {activeDay ? <DayOverview day={activeDay} /> : null}
+              <ItineraryCards places={dayPlaces} selectedPlaceId={selectedPlaceId} onSelectPlace={setSelectedPlaceId} />
+            </div>
           </Section>
 
           <Section title="Getting around">

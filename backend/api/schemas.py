@@ -24,7 +24,15 @@ class GenerateTripRequest(BaseModel):
     # frontend sends these three every request; requested_places is recorded on the
     # create_trip event but not yet resolved into the pipeline (deferred).
     requested_places: list[str] = Field(default_factory=list)
-    budget_level: str | None = None
+    # Literal here, unlike `pace` above — deliberately asymmetric. `pace` has NO database
+    # constraint, so an unrecognized value is accepted and merely flows into a prompt;
+    # permissiveness costs nothing and spares the frontend a breaking 422. `budget_level`
+    # has one (`trips_budget_level_check`, 20260701151718_trip_job_backbone.sql:23), so an
+    # unrecognized value is GUARANTEED to fail — permissiveness there does not buy
+    # tolerance, it buys a 500 (23514 -> the broad handler in main.py). Reject it at the
+    # boundary instead, as the client error it is. These four values must stay in lockstep
+    # with that CHECK and with BudgetLevel in frontend/lib/trip/backend-types.ts (#4).
+    budget_level: Literal["budget", "mid_range", "premium", "luxury"] | None = None
     origin_city: str | None = None
 
     @model_validator(mode="after")

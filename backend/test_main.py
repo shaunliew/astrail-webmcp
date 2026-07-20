@@ -629,6 +629,99 @@ async def test_generate_trip_old_shape_payload_still_succeeds(ctx):
     assert trip["preference_sources"] == []
 
 
+# ---------------------------------------------------------------------------
+# budget_level: a client error must read as one (422), not as a 500.
+# ---------------------------------------------------------------------------
+
+
+async def test_generate_trip_rejects_unknown_budget_level_before_the_db(ctx):
+    """`budget_level: "mid"` used to reach Postgres, violate trips_budget_level_check
+    (23514), hit the broad handler and surface as a 500 — a client error reported as a
+    server error. Pydantic must reject it first, with ZERO side effects: no trip row, no
+    quota RPC, no dispatch."""
+    ac, db, calls, client = ctx
+    r = await ac.post("/generate-trip", json={**_PAYLOAD, "budget_level": "mid"})
+
+    assert r.status_code == 422
+    assert db == {}                # never reached the database
+    assert client.rpc_calls == []  # no quota consumed
+    assert calls == []             # never dispatched
+
+
+@pytest.mark.parametrize("budget_level", ["budget", "mid_range", "premium", "luxury", None])
+async def test_generate_trip_accepts_every_db_valid_budget_level(ctx, budget_level):
+    """The accepted set must be exactly the SQL CHECK's set (guardrail #4 — the same four
+    values as BudgetLevel in frontend/lib/trip/backend-types.ts). Narrowing the type must
+    not reject a value the database would have taken."""
+    ac, db, _calls, _client = ctx
+    r = await ac.post("/generate-trip", json={**_PAYLOAD, "budget_level": budget_level})
+
+    assert r.status_code == 200
+    assert db["trips"][0]["budget_level"] == budget_level
+
+
+async def test_generate_trip_still_accepts_unrecognized_pace(ctx):
+    """The budget_level fix must NOT be over-applied to `pace`. `pace` has no DB CHECK, so
+    an unknown value is accepted and merely flows into a prompt — deliberately permissive
+    (schemas.py). Only a field the database is guaranteed to reject gets a Literal."""
+    ac, db, _calls, _client = ctx
+    r = await ac.post("/generate-trip", json={**_PAYLOAD, "pace": "hyperspeed"})
+
+    assert r.status_code == 200
+    create_trip_events = [e for e in db["generation_events"] if e["stage"] == "create_trip"]
+    assert create_trip_events[0]["payload"]["pace"] == "hyperspeed"
+
+
+# ---------------------------------------------------------------------------
+# The enqueue handler must not be silent: Render logged only `POST 500`.
+# ---------------------------------------------------------------------------
+
+
+async def test_generate_trip_enqueue_failure_logs_the_real_exception(ctx, monkeypatch, caplog):
+    """The broad handler swallowed the exception entirely, so a 500 was undiagnosable from
+    Render's logs. It must log the traceback server-side while the CLIENT response stays
+    the same opaque envelope."""
+    ac, _db, _calls, _client = ctx
+
+    async def _boom_enqueue(*_args, **_kwargs):
+        raise RuntimeError("distinctive-enqueue-boom")
+
+    monkeypatch.setattr(main, "enqueue_job", _boom_enqueue)
+
+    with caplog.at_level("ERROR", logger="main"):
+        r = await ac.post("/generate-trip", json=_PAYLOAD)
+
+    assert r.status_code == 500
+    assert "generate_trip_enqueue_failed" in caplog.text
+    assert "distinctive-enqueue-boom" in caplog.text  # the traceback, not just the event name
+    assert "distinctive-enqueue-boom" not in r.text   # never leaked to the client
+    assert r.json()["error"]["message"] == "Could not enqueue generation job"
+
+
+async def test_generate_trip_swallowed_fail_mark_and_refund_failures_are_logged(
+    ctx, monkeypatch, caplog
+):
+    """The two `except Exception: pass` siblings were silent too. A failed fail-mark strands
+    a trip in `generating`; a failed refund costs the user a day's quota. Both stay
+    best-effort (the 500 is still raised, the refund still runs) but must leave a trace —
+    error TYPE only, matching organizer.py, since these carry DB-error text."""
+    ac, _db, _calls, client = ctx
+
+    async def _boom_enqueue(*_args, **_kwargs):
+        raise RuntimeError("enqueue boom")
+
+    monkeypatch.setattr(main, "enqueue_job", _boom_enqueue)
+    client.fail_ops.add(("trips", "update"))                    # fail-mark raises
+    client.rpc_results["decrement_daily_trip_usage"] = _RAISE   # refund raises too
+
+    with caplog.at_level("WARNING", logger="main"):
+        r = await ac.post("/generate-trip", json=_PAYLOAD)
+
+    assert r.status_code == 500
+    assert "generate_trip_fail_mark_failed" in caplog.text
+    assert "generate_trip_quota_refund_failed" in caplog.text
+
+
 async def test_boot_time_recovery_failure_does_not_down_the_app(monkeypatch):
     """A DB blip during the startup recovery sweep must DEGRADE, not crash the app —
     the lifespan must not raise, and /health must still serve (Fix 2)."""

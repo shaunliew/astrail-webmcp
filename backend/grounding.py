@@ -172,6 +172,13 @@ async def _persist_place(client, grounded: dict) -> str:
     # lives. `test_persist_place_omits_embedding_deliberately` is what reddens if it changes.
     return (await client.rpc("find_or_create_place", {
         "p_name": place.name,
+        # The local-script name, verbatim from the caption. Persisted since 20260720190000 —
+        # before that it lived only for the duration of this run, so a place reused from the
+        # canonical table came back without it and re-grounded against its English name, which
+        # is what `geocode/policy.py` needs the local name to avoid. Fill-if-null on reuse: the
+        # country labels beside it are overwritten because this run re-verified them, and
+        # nothing re-verifies this one.
+        "p_name_local": place.name_local,
         "p_place_type": place_type,
         "p_lat": place.lat,
         "p_lng": place.lng,

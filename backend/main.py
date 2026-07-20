@@ -306,6 +306,14 @@ async def generate_trip(
         )
         job_id, winning_trip_id = await enqueue_job(trip_id, user_id, idem)
     except Exception:
+        # LOG IT, with the traceback. This handler used to swallow the exception whole, so a
+        # 500 here left Render with nothing but `POST /generate-trip 500` — the cause had to
+        # be reproduced locally to be found. `exc_info=True` matches the reap loop above; the
+        # error TYPE alone would not have named the failing constraint, which is the one fact
+        # worth having. Everything reachable inside this try is a Supabase call, so the
+        # traceback carries DB error text, not a credential. The client response below is
+        # unchanged and deliberately says nothing about any of it.
+        logger.exception("generate_trip_enqueue_failed trip_id=%s", trip_id)
         # Invariant FIRST (load-bearing): a created-but-jobless trip must be marked failed
         # (recovery only scans `jobs`; a transient httpx ConnectError/ReadTimeout counts too).
         if trip_id is not None:
@@ -313,12 +321,17 @@ async def generate_trip(
                 await client.table("trips").update({"status": "failed"}).eq("id", trip_id).eq(
                     "user_id", user_id
                 ).execute()
-            except Exception:
-                pass  # best-effort — a fail-mark failure must NOT skip the quota refund below
+            except Exception as exc:
+                # Still best-effort — a fail-mark failure must NOT skip the quota refund below
+                # — but no longer silent: this is the path that strands a trip in `generating`
+                # forever, and it left no trace that it had happened.
+                logger.warning(
+                    "generate_trip_fail_mark_failed trip_id=%s error=%s", trip_id, type(exc).__name__
+                )
         try:
             await refund_daily_quota(client, user_id)   # best-effort; never masks the 500 / fail-mark
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("generate_trip_quota_refund_failed error=%s", type(exc).__name__)
         raise HTTPException(status_code=500, detail="Could not enqueue generation job")
 
     if winning_trip_id != trip_id:
@@ -327,8 +340,11 @@ async def generate_trip(
         # (owner-filtered) and redirect; do NOT dispatch a second run_generation.
         try:
             await refund_daily_quota(client, user_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Same silence, same fix: losing the race then silently losing a day's quota is
+            # a user-visible cost with no server-side trace. Still swallowed — the winner's
+            # trip_id is the right answer regardless.
+            logger.warning("generate_trip_quota_refund_failed error=%s", type(exc).__name__)
         await client.table("trips").delete().eq("id", trip_id).eq("user_id", user_id).execute()
         return GenerateTripResponse(trip_id=winning_trip_id)
 

@@ -326,8 +326,20 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                 await record_event(client, trip_id, event_type="stage", stage="weather",
                                    message="fetching weather")
                 weather_reports = await weather(center[0], center[1], dates)
-        except Exception:
+        except Exception as exc:
             weather_reports = []
+            # Log the TYPE (never the exception text — a provider error body can echo the
+            # request). Without this the only trace is a `generation_events` row, so the
+            # failure is invisible in Render's logs and looks like the agent never ran.
+            #
+            # The overwhelmingly common cause is NOT a bug: Open-Meteo's forecast API has a
+            # rolling ~16-day horizon and returns HTTP 400 beyond it. `fetch_weather` makes ONE
+            # call spanning the whole trip, so a start date past the horizon fails EVERY day at
+            # once — which is the default state for any trip planned more than two weeks ahead.
+            # Verified live 2026-07-20: start_date=2026-08-14 -> 400 "out of allowed range from
+            # 2026-04-18 to 2026-08-04". Degrading to no weather is guardrail #3 working, but it
+            # means `trip_days.weather_summary` is null on the COMMON path, not an edge case.
+            logger.warning("weather_unavailable trip_id=%s error=%s", trip_id, type(exc).__name__)
             try:
                 await record_event(client, trip_id, event_type="warning", stage="weather",
                                    message="weather unavailable")

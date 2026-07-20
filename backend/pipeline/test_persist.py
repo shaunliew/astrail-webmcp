@@ -116,6 +116,30 @@ async def test_persist_writes_places_trip_places_and_days():
 
 
 @pytest.mark.asyncio
+async def test_persist_writes_the_local_name_on_a_new_place():
+    """The trip pipeline inserts into `places` directly, so it is a SECOND write path.
+
+    `grounding._persist_place` goes through `find_or_create_place`, which gained `name_local` in
+    20260720190000 — but `persist_itinerary` never did, and a column only one of two writers
+    fills is a column you cannot trust. `_place_matches` right above already READS `name_local`
+    for alias dedup, so a trip-created row that dropped it stayed unmatched by the very name the
+    next reel would caption it with.
+    """
+    c = _Client()
+    canonical = [_cp("Tokyo Tower", 35.6586, 139.7454, name_local="東京タワー"),
+                 _cp("Senso-ji", 35.7148, 139.7967)]
+
+    await persist.persist_itinerary(c, "trip-1", canonical, ["2026-08-01"],
+                                    job_id=None, lease_token=None)
+
+    rows = {p["name"]: p for p in c.db["places"]}
+    assert rows["Tokyo Tower"]["name_local"] == "東京タワー"
+    # Present-and-null, not absent: a caption with no local-script name is the common case and
+    # null is the honest answer (guardrail #1 — never inferred or transliterated).
+    assert rows["Senso-ji"]["name_local"] is None
+
+
+@pytest.mark.asyncio
 async def test_persist_drops_no_coord_places():
     c = _Client()
     canonical = [_cp("Has Coords", 35.0, 139.0), _cp("No Coords", None, None)]
@@ -463,6 +487,28 @@ async def test_persist_restaurants_distinct_mapbox_ids_not_merged():
     assert len(rest_ids) == 2, "distinct-mapbox_id branches must not merge into one places row"
     by_pid = {p["id"]: p for p in c.db["places"]}
     assert {by_pid[pid]["source_summary"].get("mapbox_id") for pid in rest_ids} == {"poi.a", "poi.b"}
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_writes_the_local_name_from_the_poi():
+    """The restaurant writer is the THIRD path into `places`, and its local name is the good one.
+
+    `genagents/restaurant.py` takes `name_local` STRUCTURALLY from the Mapbox POI and never from
+    the LLM, so it is grounded provider data, not a transliteration — exactly what the column is
+    for, and the case that matters most in Japan, where Mapbox indexes POIs under their Japanese
+    names. It was already being flattened into `aliases`; the column makes it addressable.
+    """
+    c = _Client()
+    await _seed_two_places_one_day(c)
+
+    async def suggest(places, *, city=None, preference_block=None):
+        return [_rcand("Ramen X", 35.70, 139.75, name_local="ラーメンX")]
+
+    await persist.persist_restaurants(c, "trip-1", suggest=suggest)
+
+    rest_id = c.db["restaurant_suggestions"][0]["restaurant_place_id"]
+    rest_place = next(p for p in c.db["places"] if p["id"] == rest_id)
+    assert rest_place["name_local"] == "ラーメンX"
 
 
 @pytest.mark.asyncio

@@ -24,18 +24,18 @@ select plan(27);
 
 -- Shape and privileges, mirroring 008_job_leases.sql and 011_fenced_trip_itinerary_replace.sql.
 select ok(
-  to_regprocedure('public.find_or_create_place(text,text,double precision,double precision,text,text,text,text,double precision)') is not null,
+  to_regprocedure('public.find_or_create_place(text,text,text,double precision,double precision,text,text,text,text,double precision)') is not null,
   'find_or_create_place exists'
 );
 select ok(
   coalesce((select prosecdef from pg_proc
-             where oid = to_regprocedure('public.find_or_create_place(text,text,double precision,double precision,text,text,text,text,double precision)')),
+             where oid = to_regprocedure('public.find_or_create_place(text,text,text,double precision,double precision,text,text,text,text,double precision)')),
            false),
   'find_or_create_place is security definer'
 );
 select ok(
   coalesce((select 'search_path=""' = any(proconfig) from pg_proc
-             where oid = to_regprocedure('public.find_or_create_place(text,text,double precision,double precision,text,text,text,text,double precision)')),
+             where oid = to_regprocedure('public.find_or_create_place(text,text,text,double precision,double precision,text,text,text,text,double precision)')),
            false),
   'find_or_create_place has an empty search path'
 );
@@ -44,7 +44,7 @@ select ok(
     select 1
     from pg_proc
     cross join lateral aclexplode(coalesce(proacl, acldefault('f', proowner))) as privilege
-    where oid = to_regprocedure('public.find_or_create_place(text,text,double precision,double precision,text,text,text,text,double precision)')
+    where oid = to_regprocedure('public.find_or_create_place(text,text,text,double precision,double precision,text,text,text,text,double precision)')
       and privilege.grantee = 0
       and privilege.privilege_type = 'EXECUTE'
   ),
@@ -52,17 +52,17 @@ select ok(
 );
 select ok(
   not coalesce(has_function_privilege('anon',
-    to_regprocedure('public.find_or_create_place(text,text,double precision,double precision,text,text,text,text,double precision)'), 'EXECUTE'), false),
+    to_regprocedure('public.find_or_create_place(text,text,text,double precision,double precision,text,text,text,text,double precision)'), 'EXECUTE'), false),
   'anon cannot execute find_or_create_place'
 );
 select ok(
   not coalesce(has_function_privilege('authenticated',
-    to_regprocedure('public.find_or_create_place(text,text,double precision,double precision,text,text,text,text,double precision)'), 'EXECUTE'), false),
+    to_regprocedure('public.find_or_create_place(text,text,text,double precision,double precision,text,text,text,text,double precision)'), 'EXECUTE'), false),
   'authenticated cannot execute find_or_create_place'
 );
 select ok(
   coalesce(has_function_privilege('service_role',
-    to_regprocedure('public.find_or_create_place(text,text,double precision,double precision,text,text,text,text,double precision)'), 'EXECUTE'), false),
+    to_regprocedure('public.find_or_create_place(text,text,text,double precision,double precision,text,text,text,text,double precision)'), 'EXECUTE'), false),
   'service_role can execute find_or_create_place'
 );
 
@@ -125,18 +125,18 @@ begin
   -- The holder opens a transaction and creates the place, so it keeps the advisory lock.
   perform extensions.dblink_exec('holder', 'begin');
   select id into v_holder from extensions.dblink('holder',
-    $q$select public.find_or_create_place('Race Cafe','attraction',35.0,139.0,
+    $q$select public.find_or_create_place('Race Cafe',null,'attraction',35.0,139.0,
         'Japan','JP','Japan','Tokyo',500)::text$q$) as t(id uuid);
 
   -- The replacement worker: same name, same country, ~1.4 m away — the duplicate this whole
   -- migration exists to prevent. Asynchronous, so we can observe it mid-wait.
   perform extensions.dblink_send_query('waiter',
-    $q$select public.find_or_create_place('Race Cafe','attraction',35.00001,139.00001,
+    $q$select public.find_or_create_place('Race Cafe',null,'attraction',35.00001,139.00001,
         'Japan','JP','Japan','Tokyo',500)::text$q$);
   -- A different name: a lock keyed on the identity must let this straight through. A blanket
   -- mutex would satisfy the wait assertion below and fail here.
   perform extensions.dblink_send_query('bystander',
-    $q$select public.find_or_create_place('Bystander Cafe','attraction',35.0,139.0,
+    $q$select public.find_or_create_place('Bystander Cafe',null,'attraction',35.0,139.0,
         'Japan','JP','Japan','Tokyo',500)::text$q$);
   perform pg_sleep(0.5);        -- ~500x an uncontended call; only a real wait survives it
   v_same_busy := extensions.dblink_is_busy('waiter');
@@ -202,16 +202,16 @@ create temporary table found_place (label text primary key, id uuid);
 
 insert into found_place values
   ('tokyo', public.find_or_create_place(
-     'Harry Potter Cafe', 'restaurant', 35.67311, 139.73625, 'Japan', 'JP', 'Japan', 'Tokyo', 500)),
+     'Harry Potter Cafe', null, 'restaurant', 35.67311, 139.73625, 'Japan', 'JP', 'Japan', 'Tokyo', 500)),
   -- ~11 m away: inside the gate.
   ('tokyo_nearby', public.find_or_create_place(
-     'Harry Potter Cafe', 'restaurant', 35.67320, 139.73630, 'Japan', 'JP', 'Japan', 'Tokyo', 500)),
+     'Harry Potter Cafe', null, 'restaurant', 35.67320, 139.73630, 'Japan', 'JP', 'Japan', 'Tokyo', 500)),
   -- Osaka, ~400 km away: outside it.
   ('osaka', public.find_or_create_place(
-     'Harry Potter Cafe', 'restaurant', 34.69370, 135.50230, 'Japan', 'JP', 'Japan', 'Osaka', 500)),
+     'Harry Potter Cafe', null, 'restaurant', 34.69370, 135.50230, 'Japan', 'JP', 'Japan', 'Osaka', 500)),
   -- Same name, same coordinates as 'tokyo', different verified country.
   ('mexico', public.find_or_create_place(
-     'Harry Potter Cafe', 'restaurant', 35.67311, 139.73625, 'Mexico', 'MX', 'Mexico', 'CDMX', 500));
+     'Harry Potter Cafe', null, 'restaurant', 35.67311, 139.73625, 'Mexico', 'MX', 'Mexico', 'CDMX', 500));
 
 select is(
   (select id from found_place where label = 'tokyo_nearby'),
@@ -247,7 +247,7 @@ update public.places
 
 select is(
   public.find_or_create_place(
-    'Harry Potter Cafe', 'restaurant', 35.67320, 139.73630, 'Japan', 'JP', 'Japan', 'Tokyo', 500),
+    'Harry Potter Cafe', null, 'restaurant', 35.67320, 139.73630, 'Japan', 'JP', 'Japan', 'Tokyo', 500),
   (select id from found_place where label = 'tokyo'),
   'the poisoned row is still the reuse target'
 );
@@ -294,13 +294,13 @@ values
 
 insert into legacy_place values
   ('legacy_near', public.find_or_create_place(
-     'Legacy Cafe', 'restaurant', 35.67320, 139.73630, 'Japan', 'JP', 'Japan', 'Tokyo', 500)),
+     'Legacy Cafe', null, 'restaurant', 35.67320, 139.73630, 'Japan', 'JP', 'Japan', 'Tokyo', 500)),
   ('legacy_far', public.find_or_create_place(
-     'Faraway Cafe', 'restaurant', 35.67320, 139.73630, 'Japan', 'JP', 'Japan', 'Tokyo', 500)),
+     'Faraway Cafe', null, 'restaurant', 35.67320, 139.73630, 'Japan', 'JP', 'Japan', 'Tokyo', 500)),
   ('contested', public.find_or_create_place(
-     'Contested Cafe', 'restaurant', 35.67320, 139.73630, 'Japan', 'JP', 'Japan', 'Tokyo', 500)),
+     'Contested Cafe', null, 'restaurant', 35.67320, 139.73630, 'Japan', 'JP', 'Japan', 'Tokyo', 500)),
   ('tie', public.find_or_create_place(
-     'Tie Cafe', 'restaurant', 35.67320, 139.73630, 'Japan', 'JP', 'Japan', 'Tokyo', 500));
+     'Tie Cafe', null, 'restaurant', 35.67320, 139.73630, 'Japan', 'JP', 'Japan', 'Tokyo', 500));
 
 select is(
   (select id from legacy_place where label = 'legacy_near'),

@@ -24,6 +24,16 @@ describe('SettingsView', () => {
     expect(screen.getByText(/kuala lumpur/i)).toBeInTheDocument()
   })
 
+  it('discloses where each learned fact came from — Memory for inferred, You for stated (G7)', async () => {
+    render(<SettingsView />)
+    await screen.findByText('Likes ramen')
+    // The demo facts mix sources: mem0-inferred facts carry the Memory evidence
+    // chip; facts the user stated (onboarding) carry You. Same closed vocabulary
+    // as every other provenance surface (EvidenceChip KIND_LABEL).
+    expect(screen.getAllByText('Memory').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('You').length).toBeGreaterThan(0)
+  })
+
   it('clears memory and swaps the receipt for a cleared message', async () => {
     render(<SettingsView />)
     await screen.findByText('Likes ramen')

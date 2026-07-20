@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { getProfile, clearMemory } from '@/lib/trip/mock-api'
 import type { TravelerProfile, UserPreferenceFact } from '@/lib/trip/backend-types'
-import { memoryReceiptLines } from '@/lib/profile/memory'
+import { memoryReceipt } from '@/lib/profile/memory'
+import EvidenceChip from '@/components/trip/EvidenceChip'
 
 type ProfileData = { profile: TravelerProfile; facts: UserPreferenceFact[] }
 
@@ -45,7 +46,7 @@ export default function SettingsView() {
   }
 
   const { profile } = data
-  const lines = memoryReceiptLines(data.facts)
+  const receipt = memoryReceipt(data.facts)
 
   return (
     <main className="mx-auto flex min-h-[100dvh] w-full max-w-2xl flex-col gap-8 bg-[var(--void)] p-6">
@@ -70,10 +71,14 @@ export default function SettingsView() {
             Memory cleared. Astrail will infer fresh preferences next time.
           </p>
         ) : (
-          <ul className="flex flex-col gap-1.5">
-            {lines.map((line) => (
-              <li key={line} className="type-body flex items-center gap-2 text-sm text-[var(--starlight)]">
-                <span aria-hidden className="text-[var(--brass)]">•</span> {line}
+          /* Disclosure is a feature: every learned fact renders with its provenance —
+             Memory for what Astrail inferred, You for what the user stated (G7). Same
+             EvidenceChip as every other claim in the product (DESIGN.md §7). */
+          <ul className="flex flex-col gap-2">
+            {receipt.map((entry) => (
+              <li key={entry.id} className="type-body flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-[var(--starlight)]">
+                <span aria-hidden className="text-[var(--brass-bright)]">•</span> {entry.line}
+                <EvidenceChip evidence={entry.evidence} />
               </li>
             ))}
           </ul>

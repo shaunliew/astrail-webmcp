@@ -540,9 +540,12 @@ no correctness criterion, and an AI-invented mascot is precisely the change most
 *produce* the "AI-generated" quality this system is being sharpened to avoid. It needs a human
 decision — including the decision not to build it — before any pixel exists.
 
-**G7 — `SettingsView.tsx` was missed by the `52cf367` de-slop sweep.**
-Documented as the worked example in §10. `SettingsView.tsx:55` still uses the pre-audit eyebrow
-grammar for a section header. Fix is a separate task.
+**G7 — resolved in two commits.** The eyebrow header was fixed by `c805e16` (section
+headers serif sentence-case). The deeper half — remembered preferences rendering identically
+to user-entered data, against §8's "disclosure is a feature" — resolved 2026-07-20: every
+learned fact in the settings receipt now carries an `EvidenceChip` (`memory_preference` →
+"Memory" for inferred facts, `requested_by_you` → "You" for stated ones), composed from the
+§7 primitive rather than a new device (`SettingsView.tsx`, `lib/profile/memory.ts`).
 
 ---
 

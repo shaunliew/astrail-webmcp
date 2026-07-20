@@ -15,10 +15,17 @@ currently-running code, in opposite directions.
 `/health` performs **no schema check**. A code-first deploy against the old schema stays **green**
 while jobs silently fail to start. Do not treat a green health check as evidence the release landed.
 
-## The seven migrations, in stamp order
+## The eight migrations, in stamp order
 
-`20260720150000` was added late by the itinerary-fencing fix — if you were told "six", this is the
-seventh.
+The count has moved twice as Codex findings were fixed — `20260720150000` came from the
+itinerary-fencing fix and `20260720160000` from the duplicate-places fix. **Eight is current.**
+Re-derive it rather than trusting a remembered number:
+
+```bash
+diff <(git ls-tree -r --name-only dev -- supabase/migrations | sort) \
+     <(git ls-tree -r --name-only feat/saved-reels-arc-b-hygiene -- supabase/migrations | sort) \
+  | grep '^>' | grep -v rollback
+```
 
 | # | Migration | Arc | Hazard |
 |---|---|---|---|
@@ -29,6 +36,7 @@ seventh.
 | 5 | `20260720130000_organize_job_error_codes` | B | **both orderings 500** — see below |
 | 6 | `20260720140000_drop_superseded_reel_quota_functions` | B | safe — verified zero runtime callers on `dev` |
 | 7 | `20260720150000_fenced_trip_itinerary_replace` | A | additive — new `replace_trip_itinerary` RPC |
+| 8 | `20260720160000_serialized_place_find_or_create` | A | additive — advisory-locked `find_or_create_place`. **Assumes READ COMMITTED** (the re-check's snapshot is taken after the lock is granted); under REPEATABLE READ the lock would do visible work and no good. Postgres' default is READ COMMITTED and an assertion pins it. |
 
 ### The two that bite
 

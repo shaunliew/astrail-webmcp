@@ -4,15 +4,15 @@ import re
 from genagents.place_extractor import EXTRACTOR_VERSION
 
 
-# The migration that CURRENTLY defines saved_reel_cards. A3 dropped and recreated the view
-# to add the owner-scoped mention join, so it carries the live copies of both literals these
-# guards protect; pointing at 20260719103000 would pin a superseded definition and go quietly
-# useless the next time EXTRACTOR_VERSION is bumped.
+# The migration that CURRENTLY defines saved_reel_cards — re-point this on every view swap.
+# It carries the live copies of the literals these guards protect; pointing at a superseded
+# migration pins a definition the database no longer has and goes quietly useless the next
+# time EXTRACTOR_VERSION is bumped. See the bump procedure in place_extractor.py.
 MIGRATION_PATH = (
     Path(__file__).resolve().parents[1]
     / "supabase"
     / "migrations"
-    / "20260720100000_reel_place_mentions_user_scope.sql"
+    / "20260720120000_saved_reels_cache_signal_v2.sql"
 )
 
 
@@ -30,4 +30,5 @@ def test_saved_reel_cards_migration_preserves_verified_place_join_literal():
     assert """left join public.reel_place_mentions
   on reel_place_mentions.reel_cache_id = saved_reels.reel_cache_id
  and reel_place_mentions.verification_version = 'mapbox-country-v1'
- and reel_place_mentions.user_id = saved_reels.user_id""" in sql
+ and reel_place_mentions.user_id = saved_reels.user_id
+ and saved_reels.analysis_status = 'organized'""" in sql

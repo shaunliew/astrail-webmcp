@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(201);
+select plan(192);
 
 insert into auth.users (id, email)
 values
@@ -368,11 +368,12 @@ select ok(
 select table_privs_are('public', 'organize_jobs', 'authenticated', array['SELECT'], 'authenticated can read organize jobs only');
 select table_privs_are('public', 'organize_job_items', 'authenticated', array['SELECT'], 'authenticated can read organize items only');
 select table_privs_are('public', 'organize_events', 'authenticated', array['SELECT'], 'authenticated can replay organize events only');
-select ok(not has_function_privilege('authenticated', 'public.reserve_daily_reel_analysis(uuid,date)', 'EXECUTE'), 'authenticated cannot reserve analysis');
-select ok(not has_function_privilege('anon', 'public.reserve_daily_reel_analysis(uuid,date)', 'EXECUTE'), 'anon cannot reserve analysis');
-select ok(has_function_privilege('service_role', 'public.reserve_daily_reel_analysis(uuid,date)', 'EXECUTE'), 'service role can reserve analysis');
-select ok(not has_function_privilege('authenticated', 'public.refund_daily_reel_analysis(uuid,date)', 'EXECUTE'), 'authenticated cannot refund analysis');
-select ok(has_function_privilege('service_role', 'public.refund_daily_reel_analysis(uuid,date)', 'EXECUTE'), 'service role can refund analysis');
+-- The day-level quota functions were superseded by the item-level RPCs asserted below and
+-- dropped in 20260720140000. Assert they are GONE rather than deleting their coverage
+-- silently: a drop migration that failed to apply would otherwise leave a second, unfenced
+-- way to charge the same quota column with nothing pointing at it.
+select hasnt_function('public', 'reserve_daily_reel_analysis', 'day-level reserve is dropped');
+select hasnt_function('public', 'refund_daily_reel_analysis', 'day-level refund is dropped');
 select ok(
   not exists (
     select 1
@@ -506,6 +507,14 @@ values (
   0.95,
   'mapbox-country-v1'
 );
+-- Owning verified mentions means the organize SUCCEEDED — the only way to acquire them. The
+-- fixture left the Reel at the 'not_analyzed' default, a state the writer never produces.
+-- The card view and the places predicate now both require 'organized' (matching
+-- authorize_place_ids), so an incoherent fixture would fail for the right reason.
+update public.saved_reels
+set analysis_status = 'organized', analyzed_at = now()
+where user_id = '00000000-0000-0000-0000-000000000701'
+  and normalized_url = 'https://www.instagram.com/reel/ORGANIZE-A';
 reset role;
 alter table public.reel_place_mentions
   alter column verification_version drop not null;
@@ -685,15 +694,6 @@ select throws_ok(
   '23503', null,
   'organize items reject cross-owner job/reel links'
 );
-
-select is(public.reserve_daily_reel_analysis('00000000-0000-0000-0000-000000000701', current_date), 1, 'analysis reservation one');
-select is(public.reserve_daily_reel_analysis('00000000-0000-0000-0000-000000000701', current_date), 2, 'analysis reservation two');
-select is(public.reserve_daily_reel_analysis('00000000-0000-0000-0000-000000000701', current_date), 3, 'analysis reservation three');
-select is(public.reserve_daily_reel_analysis('00000000-0000-0000-0000-000000000701', current_date), 4, 'analysis reservation four');
-select is(public.reserve_daily_reel_analysis('00000000-0000-0000-0000-000000000701', current_date), 5, 'analysis reservation five');
-select is(public.reserve_daily_reel_analysis('00000000-0000-0000-0000-000000000701', current_date), null, 'sixth analysis reservation is capped');
-select is(public.refund_daily_reel_analysis('00000000-0000-0000-0000-000000000701', current_date), 4, 'analysis refund returns four');
-select is(public.reserve_daily_reel_analysis('00000000-0000-0000-0000-000000000701', current_date), 5, 'refunded analysis can be reserved again');
 
 select throws_ok(
   $$insert into public.user_daily_usage (user_id, usage_date, reel_analysis_count) values ('00000000-0000-0000-0000-000000000701', current_date - 1, -1)$$,
@@ -937,7 +937,7 @@ select throws_ok(
     ]::uuid[],
     'p2-6-overlap'
   )$$,
-  'P0001',
+  'AS409',
   'Saved Reel is already being organized',
   'overlapping active organize items are rejected as one request'
 );
@@ -974,7 +974,7 @@ select throws_ok(
     array[(select id from public.saved_reels where user_id = '00000000-0000-0000-0000-000000000701' and normalized_url = 'https://www.instagram.com/reel/ORGANIZE-A')]::uuid[],
     'p2-6-cross-owner'
   )$$,
-  'P0001',
+  'AS404',
   'Saved Reel not found',
   'cross-owner Saved Reel selection preserves not-found semantics'
 );
@@ -1050,8 +1050,13 @@ select ok(
   and position(
     'sr.user_id = m.user_id'
     in lower(pg_get_functiondef(to_regprocedure('private.can_select_verified_saved_reel_place(uuid)')))
+  ) > 0
+  -- B3: the read surface must require what authorize_place_ids requires.
+  and position(
+    'sr.analysis_status = ''organized'''
+    in lower(pg_get_functiondef(to_regprocedure('private.can_select_verified_saved_reel_place(uuid)')))
   ) > 0,
-  'verified Saved Reel place predicate remains trust-gated and owner-scoped'
+  'verified Saved Reel place predicate remains trust-gated, owner-scoped and organize-gated'
 );
 set local role authenticated;
 select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000701', true);
@@ -1093,12 +1098,6 @@ select throws_ok(
   '42501', null,
   'authenticated clients cannot mutate organize items'
 );
-select throws_ok(
-  $$select public.reserve_daily_reel_analysis('00000000-0000-0000-0000-000000000701', current_date)$$,
-  '42501', null,
-  'authenticated clients cannot reserve analysis quota'
-);
-
 reset role;
 set local role service_role;
 
@@ -1179,6 +1178,44 @@ select results_eq(
 );
 reset role;
 set local role service_role;
+
+-- ── the read surface matches authorize_place_ids ─────────────────────────────────────────
+-- The SAME user who organized once, then re-organized into a non-'organized' status, still
+-- OWNS their earlier mention rows — A3's owner scoping does not touch this case. Before this
+-- change they kept seeing pins that authorize_place_ids (which requires
+-- analysis_status = 'organized', backend/organizer.py) rejects, failing generation terminally.
+update public.saved_reels
+set analysis_status = 'failed'
+where user_id = '00000000-0000-0000-0000-000000000701'
+  and normalized_url = 'https://www.instagram.com/reel/ORGANIZE-A';
+select is(
+  (select count(*)::integer from public.reel_place_mentions
+   where user_id = '00000000-0000-0000-0000-000000000701'
+     and verification_version = 'mapbox-country-v1'),
+  1,
+  'the stale-status owner still holds their verified mention row'
+);
+reset role;
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '00000000-0000-0000-0000-000000000701', true);
+select set_config('request.jwt.claims', '{"sub":"00000000-0000-0000-0000-000000000701","role":"authenticated"}', true);
+select results_eq(
+  $$select places from public.saved_reel_cards where normalized_url = 'https://www.instagram.com/reel/ORGANIZE-A'$$,
+  $$values ('[]'::jsonb)$$,
+  'saved_reel_cards hides the owner''s own pins once the Reel is no longer organized'
+);
+select is(
+  (select count(*)::integer from public.places where id = '71000000-0000-0000-0000-000000000001'),
+  0,
+  'the verified place predicate rejects a place whose Reel is no longer organized'
+);
+reset role;
+set local role service_role;
+-- Restore the coherent organized state for the assertions that follow.
+update public.saved_reels
+set analysis_status = 'organized', analyzed_at = now()
+where user_id = '00000000-0000-0000-0000-000000000701'
+  and normalized_url = 'https://www.instagram.com/reel/ORGANIZE-A';
 
 -- ── replace_reel_place_mentions: the owner-scoped, transactional set replacement ──────────
 select has_function('public', 'replace_reel_place_mentions', array['uuid','uuid','text','jsonb'], 'the mention rewrite RPC exists');

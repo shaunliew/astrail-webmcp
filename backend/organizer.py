@@ -1,37 +1,37 @@
-"""Durable Saved Reel organizer: cache, extraction, grounding, and safe persistence."""
+"""Durable Saved Reel organize job: claim, lease, per-item work, events and recovery.
+
+Grounding a place against Mapbox and persisting the canonical `places` row live in
+`grounding.py` — this module owns the job lifecycle around them (B6 split).
+"""
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import hashlib
-import inspect
 import json
 import logging
 import os
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Callable
 
-from genagents.place_extractor import EXTRACTOR_VERSION, is_placeholder_url
-from models.geocode import CountryResult
+from genagents.place_extractor import EXTRACTOR_VERSION
+from grounding import LOCATION_VERIFICATION_VERSION, _ground_place, _persist_place
 from models.place import PlaceResult
 from postgrest.exceptions import APIError
-from pydantic import ValidationError
 from pipeline.cache import cache_places, get_cached_places
-from pipeline.dedup import DEFAULT_DISTANCE_M
 from scrape.apify_direct import scrape_reel
 from usage import refund_organize_item_analysis, reserve_organize_item_analysis
 
-LOCATION_VERIFICATION_VERSION = "mapbox-country-v1"
-GEOCODE_CACHE_TABLE = "geocode_country_cache"
-INITIALIZING_STALE_AFTER_S = 120
 ORGANIZE_LEASE_TTL_S = 300      # short on purpose: the heartbeat renews a live run, so a
                                 # real crash is reclaimed in ~5 min rather than ~15.
 ORGANIZE_LEASE_RENEW_S = 60     # comfortably under the TTL: several renewals may blip and be
                                 # retried before the lease is genuinely at risk of expiring.
 ORGANIZE_FAILURE_MESSAGE = "Organization failed"
+ORGANIZE_SUCCESS_MESSAGE = "Organized"
+ORGANIZE_NO_LOCATIONS_MESSAGE = "No locations found"     # succeeded, but zero places found
 logger = logging.getLogger(__name__)
 
 
@@ -39,8 +39,24 @@ class ActiveOrganizeConflict(RuntimeError):
     """The selected Saved Reel is already part of another active job."""
 
 
+class InvalidOrganizeRequest(ValueError):
+    """The RPC rejected the request itself (empty, oversized, null or duplicated ids)."""
+
+
 class LeaseLost(RuntimeError):
     """Another worker holds this job's lease; this run must stop writing immediately."""
+
+
+# SQLSTATE -> outcome, per 20260720130000_organize_job_error_codes.sql. Codes, never message
+# text: the prose in that migration is presentation, and an editor who reworded it used to
+# turn a 409 into a 500 with nothing able to catch it. P0001 is deliberately absent — after
+# this mapping it means "some other validation the RPC rejects", which must surface as a 500
+# rather than be absorbed into one of these three.
+_ORGANIZE_JOB_ERRORS: dict[str, type[Exception]] = {
+    "AS409": ActiveOrganizeConflict,
+    "AS404": PermissionError,
+    "AS422": InvalidOrganizeRequest,
+}
 
 
 def _now() -> str:
@@ -50,22 +66,6 @@ def _now() -> str:
 def _request_key(user_id: str, saved_reel_ids: list[str]) -> str:
     material = json.dumps([user_id, sorted(set(saved_reel_ids))], separators=(",", ":"))
     return hashlib.sha256(material.encode()).hexdigest()
-
-
-async def _maybe_await(value):
-    return await value if inspect.isawaitable(value) else value
-
-
-def _initializing_job_is_stale(job: dict) -> bool:
-    if job.get("status") != "initializing" or not job.get("created_at"):
-        return False
-    try:
-        created_at = datetime.fromisoformat(str(job["created_at"]).replace("Z", "+00:00"))
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
-    except (TypeError, ValueError):
-        return False
-    return created_at <= datetime.now(timezone.utc) - timedelta(seconds=INITIALIZING_STALE_AFTER_S)
 
 
 async def _find_cache_id(client, normalized_url: str) -> str | None:
@@ -90,12 +90,10 @@ async def create_organize_job(client, user_id: str, saved_reel_ids: list[str]) -
             },
         ).execute()
     except APIError as exc:
-        message = getattr(exc, "message", str(exc))
-        if exc.code == "P0001" and message == "Saved Reel is already being organized":
-            raise ActiveOrganizeConflict(message) from exc
-        if exc.code == "P0001" and message == "Saved Reel not found":
-            raise PermissionError(message) from exc
-        raise
+        error = _ORGANIZE_JOB_ERRORS.get(exc.code)
+        if error is None:
+            raise
+        raise error(getattr(exc, "message", str(exc))) from exc
     return result.data
 
 
@@ -202,147 +200,6 @@ async def get_organize_status(client, job_id: str, user_id: str) -> dict:
     }
 
 
-def _coord_cache_key(lat: float, lng: float) -> str:
-    """Lossless, stable cache key for one coordinate.
-
-    Python's float `repr` is the shortest string that round-trips exactly, so the key is a
-    faithful record of the coordinate Mapbox was actually asked about, and it is stable across
-    platforms. `+ 0.0` normalizes -0.0 to 0.0 so the two spellings of the same point share a
-    row; every other distinct float gets its own row BY DESIGN.
-
-    Do NOT bucket this (an earlier draft used `round(lat * 1e4)`, ~11 m cells). A hit must mean
-    Mapbox verified THIS coordinate, not a neighbour: two points ~11 m apart can straddle a
-    border, and a cached country that happens to match the extractor's CLAIMED country would
-    then pass `_ground_place`'s fail-closed comparison for a coordinate nobody verified.
-    Rounding also buys ZERO hit rate — the warm path hits on byte-identical coordinates
-    replayed from the extraction cache, not on re-derived ones.
-    """
-    return f"{lat + 0.0!r},{lng + 0.0!r}"
-
-
-async def _lookup_cached_country(client, lat: float, lng: float) -> CountryResult | None:
-    """The verified country for this exact coordinate at THIS verification version, or None.
-
-    Blip-tolerant on purpose: a read failure is a MISS, never an item failure — the caller
-    falls through to the live provider call. The write side (`_store_cached_country`) is the
-    opposite, and that asymmetry is the point: a cache is an optimization on the way in and a
-    durability guarantee on the way out.
-    """
-    try:
-        result = await (client.table(GEOCODE_CACHE_TABLE)
-                        .select("country_code,country_name")
-                        .eq("coord_key", _coord_cache_key(lat, lng))
-                        .eq("verification_version", LOCATION_VERIFICATION_VERSION)
-                        .maybe_single().execute())
-    except Exception as exc:
-        # Type only — never the exception text, which can carry connection strings.
-        logger.warning("geocode_country_cache_read_failed error=%s", type(exc).__name__)
-        return None
-    row = (result.data if result is not None else None) or {}
-    if not row:
-        return None
-    try:
-        return CountryResult(
-            country_code=row.get("country_code"), country_name=row.get("country_name")
-        )
-    except ValidationError:
-        return None     # a malformed cached row is a MISS; re-verify rather than trust it
-
-
-async def _store_cached_country(client, lat: float, lng: float, country: CountryResult) -> None:
-    """Persist one verified coordinate→country answer. RAISES on failure, by design.
-
-    Strict write-through (guardrail #7: persist before returning) — we do not hand back a
-    verified result we could not persist. `cache_places` at the equivalent seam in
-    `_process_item` is likewise unwrapped, so this matches the precedent exactly. Guardrail #3
-    bounds the blast radius: one item fails, it is retryable, and the retry reuses the
-    extraction cache.
-    """
-    await client.table(GEOCODE_CACHE_TABLE).upsert({
-        "coord_key": _coord_cache_key(lat, lng),
-        "verification_version": LOCATION_VERIFICATION_VERSION,
-        "country_code": country.country_code,
-        "country_name": country.country_name,
-    }, on_conflict="coord_key,verification_version").execute()
-
-
-async def _ground_place(client, place: PlaceResult, *, verify_country=None) -> dict | None:
-    """Verify one researched place against Mapbox, reusing a cached answer when we have one.
-
-    Every `reverse_country` call sets `permanent: "true"` — the storable-results tier — and
-    this is its only call site, so an uncached warm organize cost exactly as much as a cold
-    one and was quota-exempt besides (the daily quota charges on extraction-cache MISS). The
-    cache closes both.
-
-    A hit skips ONLY the provider question, which is pure in its inputs: the coordinates come
-    from the extraction cache, frozen per `EXTRACTOR_VERSION`. The load-bearing country
-    comparison below still runs on EVERY organize, on a cached answer as much as a live one.
-    """
-    token = os.environ.get("MAPBOX_SECRET_TOKEN")
-    if not token:
-        raise RuntimeError("Mapbox reverse-country verification is unavailable")
-    if (
-        place.lat is None
-        or place.lng is None
-        or is_placeholder_url(place.source_url)
-        or not place.country_code
-        or not place.country_name
-    ):
-        return None
-    country = await _lookup_cached_country(client, place.lat, place.lng)
-    if country is None:
-        if verify_country is None:
-            from geocode.mapbox_reverse import reverse_country
-            verify_country = reverse_country
-        country = await verify_country(place.lat, place.lng, token=token)
-        if country is not None:
-            # Only a SUCCESS is cached. A raise never reaches this line, and a `None` — "this
-            # coordinate does not verify" — is not an answer worth freezing for every later run.
-            await _store_cached_country(client, place.lat, place.lng, country)
-    if country is None or country.country_code != place.country_code:
-        return None
-    verified_place = place.model_copy(update={"country_name": country.country_name})
-    return {
-        "place": verified_place,
-        "country_code": country.country_code,
-        "country_name": country.country_name,
-    }
-
-
-async def _persist_place(client, grounded: dict) -> str:
-    place: PlaceResult = grounded["place"]
-    place_type = (place.category or "").lower().strip()
-    if place_type == "transport":
-        place_type = "station"
-    if place_type not in {"attraction", "restaurant", "hotel", "area", "city", "country", "station", "shop", "other"}:
-        place_type = "other"
-    # ONE round trip, and the database serializes it (20260720160000). This was a SELECT here
-    # and an INSERT there, with no unique key anywhere on `places` to catch what fell between:
-    # an expired worker and its replacement both looked, both saw nothing, and both inserted.
-    #
-    # That is worse than the same select-then-insert deferred in `pipeline/persist.py`. There
-    # one trip ends up pointing at one of two rows. Here `places` is the CROSS-TRIP dedup
-    # flywheel — the orphan is global and permanent, and every later organize resolves the same
-    # venue to an arbitrary one of the duplicates. Fencing the mention row cannot help; it only
-    # decides which duplicate gets referenced.
-    #
-    # The reuse rule (same name, same verified country, inside DEFAULT_DISTANCE_M, repairing
-    # the reused row's country labels) moved into the function unchanged. It stays a distance
-    # gate rather than a unique constraint because no constraint can express "within 500 m" —
-    # see the migration for why an advisory lock is the route and what it does not cover.
-    return (await client.rpc("find_or_create_place", {
-        "p_name": place.name,
-        "p_place_type": place_type,
-        "p_lat": place.lat,
-        "p_lng": place.lng,
-        "p_country": grounded["country_name"],
-        "p_country_code": grounded["country_code"],
-        "p_country_name": grounded["country_name"],
-        "p_city": place.city_or_region_guess,
-        "p_max_distance_m": DEFAULT_DISTANCE_M,
-    }).execute()).data
-
-
 async def _update_job_counts(client, job_id: str, user_id: str, *, lease_token: str) -> None:
     """Recompute the aggregate counts, FENCED on our lease.
 
@@ -441,6 +298,48 @@ async def _mark_organize_job_failed(client, job_id: str, user_id: str, *, lease_
         pass
 
 
+_TERMINAL_ITEM_STATUSES = ("organized", "location_not_found", "failed")
+
+
+async def _refund_dangling_reservations(client) -> None:
+    """Release quota units held by reservations on items that already finished.
+
+    An item reaches this state when `refund_organize_item_analysis` ITSELF fails inside
+    `_process_item`'s except-handler: the item is written terminal `failed`, the reservation
+    survives, and nothing else in the system ever revisits it. The user has been charged one
+    analysis forever, and the next organize of that Reel charges again.
+
+    BOTH predicates are load-bearing. `analysis_charge_state = 'reserved'` alone would refund
+    items a live worker is mid-run on — a legitimate reservation it is about to consume — so
+    the terminal-status filter is what makes this reconciliation rather than a quota giveaway.
+    (`refund_organize_item_analysis` is itself a CAS on `reserved`, so a concurrent consume
+    still cannot double-release; the filter is what stops us racing it in the first place.)
+
+    ENTIRELY best-effort, including the SELECT. This runs inside `recover_organize_jobs`,
+    whose real job is re-dispatching interrupted work (guardrail #12) — letting a janitorial
+    quota sweep raise would trade a leaked quota unit for a dropped job, which is the worse
+    bug by a wide margin. It re-runs on every reaper tick, so a blip costs at most one
+    interval. Log the error TYPE only: these exceptions can carry connection strings.
+    """
+    try:
+        dangling = (await client.table("organize_job_items").select("id,user_id")
+                    .eq("analysis_charge_state", "reserved")
+                    .in_("status", list(_TERMINAL_ITEM_STATUSES)).execute()).data or []
+    except Exception as exc:
+        logger.warning("organize_dangling_charge_scan_failed error=%s", type(exc).__name__)
+        return
+    for row in dangling:
+        try:
+            await refund_organize_item_analysis(client, row["id"], row["user_id"])
+        except Exception as exc:
+            logger.warning(
+                "organize_dangling_charge_refund_failed item_id=%s error=%s",
+                row["id"], type(exc).__name__,
+            )
+    if dangling:
+        logger.info("organize_dangling_charges_swept count=%d", len(dangling))
+
+
 async def recover_organize_jobs(client) -> list[dict]:
     """Reclaim organize jobs whose LEASE HAS EXPIRED, then return pending jobs to dispatch.
 
@@ -469,6 +368,9 @@ async def recover_organize_jobs(client) -> list[dict]:
     }).execute()).data or 0
     if reclaimed:
         logger.info("organize_leases_reclaimed count=%d", reclaimed)
+    # After the reclaim, and on every reaper tick rather than only at boot: an item whose
+    # refund failed has no other reader anywhere in the system.
+    await _refund_dangling_reservations(client)
     return (await client.table("organize_jobs").select("id,user_id").eq("status", "pending")
             .order("created_at").execute()).data or []
 
@@ -584,7 +486,7 @@ async def _ground_and_persist(
     grounded = [
         resolved
         for place in places
-        if (resolved := await _maybe_await(ctx.ground(place))) is not None
+        if (resolved := await ctx.ground(place)) is not None
     ]
     set_phase("database")
     if not grounded or not cache_id:
@@ -643,7 +545,25 @@ async def _process_item(ctx: _ItemContext, item: dict) -> bool:
         cache_id = await _find_cache_id(ctx.client, reel["normalized_url"])
     try:
         phase = "database"
-        places = await _maybe_await(get_cached_places(ctx.client, reel["normalized_url"], EXTRACTOR_VERSION))
+        try:
+            places = await get_cached_places(ctx.client, reel["normalized_url"], EXTRACTOR_VERSION)
+        except Exception as exc:
+            # LOG IT. Without this the handler is indistinguishable from a real programming
+            # error: a None client (AttributeError) or a renamed column (APIError) degrades
+            # PERMANENTLY into "always MISS, always re-scrape", and the only symptom is a
+            # quiet rise in Apify/OpenAI spend. A transient blip logs once; a broken cache
+            # read logs on every item of every job, which is the signal worth having.
+            logger.warning(
+                "organize_cache_read_blip item_id=%s error=%s", item["id"], type(exc).__name__
+            )
+            # A cache-READ blip is a MISS, never an item failure — the trip runner's exact
+            # behavior (`pipeline/runner.py:208-211`). ACCEPTED TRADE-OFF: on a reel we had
+            # cached, this triggers a fresh, quota-charged scrape. That is strictly cheaper
+            # than failing an item the user must retry, and consistency with the runner
+            # matters more than saving one scrape on a transient error. The WRITE side stays
+            # strict (`cache_places`, `_store_cached_country`) — a cache is an optimization
+            # on the way in and a durability guarantee on the way out.
+            places = None
         if places is None:
             quota_state = item.get("analysis_charge_state", "not_charged")
             if quota_state in {"not_charged", "refunded"}:
@@ -653,9 +573,9 @@ async def _process_item(ctx: _ItemContext, item: dict) -> bool:
                 quota_state = "reserved"
             try:
                 phase = "apify"
-                scraped = await _maybe_await(ctx.scrape(reel["normalized_url"]))
+                scraped = await ctx.scrape(reel["normalized_url"])
                 phase = "extractor"
-                places = await _maybe_await(ctx.extract(scraped))
+                places = await ctx.extract(scraped)
                 # The cache stores research provenance before provider verification. A
                 # Mapbox retry can therefore reuse research without paying for Apify again.
                 phase = "database"
@@ -672,8 +592,20 @@ async def _process_item(ctx: _ItemContext, item: dict) -> bool:
                     quota_state = "consumed"
             except Exception:
                 if quota_state == "reserved":
-                    phase = "quota"
+                    # `phase` must name what the ESCAPING exception broke, and which one
+                    # escapes depends on the refund. Overwriting it unconditionally (what
+                    # this replaced) logged `phase=quota` for every apify/extractor/
+                    # database failure — and since cache MISS is the common path, that was
+                    # MOST real failures, sending on-call to the quota system for an Apify
+                    # outage. Deleting the overwrite installs the mirror bug: a refund that
+                    # throws replaces the original exception, and a genuine quota-system
+                    # outage would then log `phase=apify`. So: claim "quota" for the
+                    # duration of the refund, and hand the phase back only once the refund
+                    # has RETURNED — if it raises, its own exception propagates and the
+                    # phase it leaves behind is already the correct one.
+                    failed_phase, phase = phase, "quota"
                     await refund_organize_item_analysis(ctx.client, item["id"], ctx.user_id)
+                    phase = failed_phase
                 raise
         else:
             if item.get("analysis_charge_state") == "reserved":
@@ -785,6 +717,18 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
                 await beat
         status = await get_organize_status(client, job_id, user_id)
         final_status = "failed" if status["failed_items"] and not status["organized_items"] and not status["location_not_found_items"] else "succeeded"
+        # The MESSAGE carries a third case the two-valued `final_status` cannot. A run of
+        # 4 failed + 1 location_not_found is `succeeded` — one item reached a terminal answer,
+        # so the job completed rather than crashed — but it produced no place, and calling
+        # that "Organized" is a lie the user reads twice (the polling status row and the
+        # terminal SSE event both carry this string). `final_status` itself is untouched: it
+        # is the frontend contract, and message content is non-breaking.
+        if final_status == "failed":
+            status_message = ORGANIZE_FAILURE_MESSAGE
+        elif not status["organized_items"]:
+            status_message = ORGANIZE_NO_LOCATIONS_MESSAGE
+        else:
+            status_message = ORGANIZE_SUCCESS_MESSAGE
         # FENCED. The loop's `lease_lost` gate sits BEFORE each item, so a superseded worker
         # parked in its LAST item never reaches a gate — the loop just ends and it arrives
         # here. Without the token predicate it would stamp its own terminal state over the
@@ -792,10 +736,10 @@ async def run_organize_job(job_id: str, user_id: str, *, client=None, scrape=Non
         # status endpoint reads this row, not the event log).
         await client.table("organize_jobs").update({
             "status": final_status,
-            "status_message": "Organization failed" if final_status == "failed" else "Organized",
+            "status_message": status_message,
             "completed_at": _now(), "locked_at": None, "lock_expires_at": None,
         }).eq("id", job_id).eq("user_id", user_id).eq("lease_token", lease_token).execute()
-        await _record_organize_event(client, job_id, user_id, "result", "Organization failed" if final_status == "failed" else "Organized", {"status": final_status}, lease_token=lease_token)
+        await _record_organize_event(client, job_id, user_id, "result", status_message, {"status": final_status}, lease_token=lease_token)
         return await get_organize_status(client, job_id, user_id)
     except Exception:
         await _mark_organize_job_failed(client, job_id, user_id, lease_token=lease_token)

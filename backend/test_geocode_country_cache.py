@@ -20,14 +20,14 @@ from __future__ import annotations
 import pytest
 
 from models.geocode import CountryResult
-from organizer import (
+from grounding import (
     GEOCODE_CACHE_TABLE,
     LOCATION_VERIFICATION_VERSION,
     _coord_cache_key,
     _ground_place,
-    run_organize_job,
 )
-from test_saved_reels_organize import _Client, _Table, _place
+from organizer import run_organize_job
+from test_saved_reels_organize import _cached, _Client, _Table, _place
 
 
 @pytest.fixture(autouse=True)
@@ -276,7 +276,7 @@ async def test_default_ground_binds_the_jobs_client(monkeypatch):
         return None
 
     monkeypatch.setattr("organizer._ground_place", fake_ground_place)
-    monkeypatch.setattr("organizer.get_cached_places", lambda *_a, **_k: [_place()])
+    monkeypatch.setattr("organizer.get_cached_places", _cached([_place()]))
 
     await run_organize_job("job-1", "user-a", client=client)
 

@@ -26,6 +26,8 @@ design-*.png
 
 # Local design reference/mockups, not shipped app code
 design-mockup/
+frontend/reference/yaay-corefeature/
+frontend/reference/yaay-onboarding/
 
 # Supabase
 supabase/.branches/

@@ -24,6 +24,9 @@ checkpoint*.png
 design-*.png
 .next-dev-*.log
 
+# Local design reference/mockups, not shipped app code
+design-mockup/
+
 # Supabase
 supabase/.branches/
 supabase/.temp/

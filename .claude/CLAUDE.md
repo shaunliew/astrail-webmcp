@@ -83,11 +83,12 @@ than chaining into another. A wrapper skill plus the sub-skills it documents (e.
 `astrail-plan-and-review` invoking gstack `/plan-eng-review`, `/review`, `/qa`,
 `/autoplan`) counts as one.
 
-**Subagent orchestration, delegation templates, judgment rubrics:** if
-`C:\Users\desmo\.claude\playbook\` exists on this machine (Zhi Hao's), follow
-`playbook/ORCHESTRATION.md` for when/how to delegate to subagents. Repo-local subagents:
-`astrail-developer`, `astrail-researcher`, `astrail-reviewer` (see `.claude/agents/`;
-dispatch by `subagent_type`, `model: opus` for the hard adversarial/final review).
+**Subagent orchestration, delegation templates, judgment rubrics:** follow
+`~/.claude/playbook/ORCHESTRATION.md` for when/how to delegate to subagents (Zhi Hao's
+machines; if that file is absent, use your own judgment — do not block on it). Repo-local
+subagents: `astrail-developer`, `astrail-researcher`, `astrail-reviewer` (see
+`.claude/agents/`; dispatch by `subagent_type`, `model: fable` for the hard
+adversarial/final review — the BUILD-LOOP.md model table is authoritative).
 **Standard Feature Build Loop (MANDATORY — full detail in `.claude/docs/BUILD-LOOP.md`;
 read it before building any feature):** research (`astrail-researcher`, if an unfamiliar
 API/algorithm) → plan (`astrail-plan-and-review`) → review the plan (`/plan-eng-review` +

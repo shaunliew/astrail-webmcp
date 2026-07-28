@@ -6,6 +6,17 @@ import type { TripBundle } from '@/lib/trip/backend-types'
 import { legsForDay, orderedDays, buildPlaceIndex, pinLabelForPlace } from '@/lib/trip/selectors'
 import { useSharedMap } from '@/components/map/MapProvider'
 
+// A place with missing/zero/out-of-range coords is unresolved (a "saved with gaps" trip
+// has these). It must not get a pin, and must NOT extend the map bounds — one (0,0) drags
+// the frame out to span half the globe instead of zooming to the real places.
+function hasRealCoords(lng: number, lat: number): boolean {
+  return (
+    Number.isFinite(lng) && Number.isFinite(lat) &&
+    Math.abs(lng) <= 180 && Math.abs(lat) <= 90 &&
+    (lng !== 0 || lat !== 0)
+  )
+}
+
 export default function TripMap({
   bundle, activeDayNumber, selectedPlaceId, onSelectPlace,
 }: {
@@ -52,7 +63,7 @@ export default function TripMap({
   function drawMarkers() {
     const map = getMap()
     if (!map) return
-    const markers = bundle.places.map((tp) => {
+    const markers = bundle.places.filter((tp) => hasRealCoords(tp.place.lng, tp.place.lat)).map((tp) => {
       const el = document.createElement('button')
       el.type = 'button'
       el.setAttribute('aria-label', tp.place.name)
@@ -141,11 +152,15 @@ export default function TripMap({
   function flyToTrip() {
     const map = getMap()
     if (!map) return
-    const pts = bundle.places.map((tp) => [tp.place.lng, tp.place.lat] as [number, number])
+    const pts = bundle.places
+      .filter((tp) => hasRealCoords(tp.place.lng, tp.place.lat))
+      .map((tp) => [tp.place.lng, tp.place.lat] as [number, number])
     if (pts.length === 0) return
     const bounds = new mapboxgl.LngLatBounds()
     pts.forEach((p) => bounds.extend(p))
-    map.fitBounds(bounds, { padding: 80, maxZoom: 13, pitch: 45, duration: 2200 })
+    // essential: framing is not decoration — reduced-motion must still land on the trip,
+    // not leave the camera wherever generation parked the globe.
+    map.fitBounds(bounds, { padding: 80, maxZoom: 13, pitch: 45, duration: 2200, essential: true })
   }
 
   // The shared map fires 'load' once ever, and this component usually mounts long after

@@ -28,7 +28,8 @@ implemented_in: design-mockup/css/{palette,type,skeleton}.css
 | `design-mockup/00-palette.html` | Live colour spec with computed contrast ratios. |
 
 Screens built: `01-dashboard`, `02-tray` (tray + plan sheet), `03-generating`,
-`04-trip` (trip + place detail).
+`04-trip` (trip + place detail), `05-signin` (email + code), `06-onboarding`
+(2 steps + Skip), `07-share` (4 intake states), `08-settings` (4 panes).
 
 **`design-mockup/` is gitignored** (`.gitignore:28`). Nothing in it is recoverable
 from git. Treat every file there as the only copy.
@@ -210,6 +211,15 @@ thing proving the agent is doing more than a competitor. Entrance curve:
 `cubic-bezier(0.16, 1, 0.3, 1)`. Register every new animation in the
 `prefers-reduced-motion` block.
 
+**The deferred map was never deferred** (fixed 2026-07-26). `palette.css` loads
+after `skeleton.css` and set `.map-backdrop { opacity: 1 }`, which beat
+`.map-backdrop--deferred { opacity: 0 }` on source order at equal specificity —
+so `03-generating` showed city streets from the first frame, which is exactly the
+guess the deferred map exists to prevent. Both states are now restated in
+`palette.css` after the base rule. **Any state class defined in `skeleton.css`
+that a later file's base rule can out-order has this bug**; check the cascade, not
+just the rule.
+
 ---
 
 ## 6. The evidence chip
@@ -286,8 +296,115 @@ receipts is a proof.
   them drift silently.
 - **`frontend/reference/current/*.png` are stale** and predate several fixes. Do not
   review against them.
-- Screens not yet designed: sign-in, onboarding (2 steps + Skip, see
-  `design-mockup/YAAY-ONBOARDING-TEARDOWN.md` §6), share-receive sheet, settings.
+
+### Decided 2026-07-26 while building the last four screens
+
+- **Behind sign-in and onboarding: the empty globe.** The map is the canvas
+  everywhere else, but these two screens have no user data, so a city map would be
+  a lie and pins would be invented. The wireframe globe with **no markers on it**
+  says the true thing — nothing is located yet — and it makes onboarding's first
+  marker mean something. Rejected: plain paper (throws away the canvas) and bare
+  night (indistinguishable from a loading state).
+
+- **The door is not a `.sheet`.** `05-signin` and `06-onboarding` use `.door`,
+  which borrows the rail's geometry (420px left on desktop, bottom card on mobile)
+  but does **not** retract. A `.sheet` retracts so the map underneath can be read;
+  there is nothing behind these worth uncovering, and collapsing one would hide the
+  only control on screen. `07-share` **is** a `.sheet` (`.sheet--compact`, hugs its
+  content) because dragging a share sheet away is how everyone expects to dismiss
+  one.
+
+- **Onboarding stays at two questions and creates no draft trip.** The tension in
+  `HANDOFF.md` is resolved against the container. `YAAY-ONBOARDING-TEARDOWN.md` §6
+  is right that Yaay's best move is handing back a container rather than filling in
+  a profile — but collections are cut from beta, and a `trips` row at
+  `status='draft'` with no destination in it is an *empty* container, which is worse
+  than none. **The reward is the landing instead**: on finish, the map flies to the
+  origin city from step 1. It is the first real coordinate Astrail holds, it proves
+  the answer was used rather than filed, and it needs no new schema and no empty row.
+  Skip lands identically, just without the answers — a skipped onboarding is still a
+  completed one (`onboarding_completed = true` on both paths).
+
+- **A disabled button states its blocker, and looks unplaced while it does.**
+  "Waiting for your email", not a greyed "Continue" — and the disabled style is
+  dashed + `ink-600`, the same shape language as an unplaced point, never a dead
+  grey slab. The rule is a property of *disabled*, not of *primary*: it is on
+  `.btn:disabled`, so a secondary path that is also waiting says so too.
+
+### Revised 2026-07-27 after a research pass
+
+The first cut of these screens was correct on the system and generic in its
+composition. Three habits did it, and they are the ones to watch for again:
+**a subtitle under every single headline** (10 of 10), **every control full-width
+and the same weight**, so hierarchy came only from colour, and **the stock
+template order** (wordmark → title → subtitle → labelled field → CTA → "or" rule →
+social → legal). None of those is wrong on its own screen; all four screens doing
+the same thing is what reads as generated.
+
+- **Google leads on sign-in; the emailed code is the second path.** NN/g's
+  passwordless research finds the two real costs of an OTP are waiting for
+  delivery and *getting at* the code — "accessing the OTP is more difficult when
+  the link is sent through email", because the user has to leave the app to fetch
+  it. One tap beats that. The two paths are ranked by weight (brass fill vs
+  outlined), not separated by an "or" divider, which framed them as equals and is
+  the most template-shaped component on the web. `.rule` was deleted, not
+  orphaned.
+
+- **Sign-in leads with the promise, not the word "Sign in".** The wordmark two
+  lines above already names the product and the form already says what it is for,
+  so a heading repeating both spends the most valuable slot on the screen. It is
+  the only screen with `.door__title--lead` (28px): every other door leads with
+  its question, which is already the largest thing on it.
+
+- **Onboarding starts at 1 of 3, not 0 of 2.** Endowed progress (Nunes & Drèze):
+  people who believe they have already started are markedly likelier to finish,
+  and the standard application is to count signing up as a completed step.
+  `.trailprog` now carries three points with the first already placed — and the
+  leg only draws when there is a second placed point to draw it to, which is the
+  Connected state from §1 doing real work instead of decorating.
+
+- **The origin city is guessed and confirmed, not asked.** NN/g's personalization
+  guidance is to personalize functionality as well as content — autofill what you
+  already know. Reverse-geocoding the browser location turns question one into a
+  confirmation, and it is the first evidence chip the user ever meets, attached to
+  the one claim they can check instantly: their own city. **Confirming a guess
+  promotes it**: accept it and the fact is stated (`You` in the memory receipt);
+  Skip and it stays a tool guess (`Mapbox`). The four suggestion chips under the
+  field are gone — with a filled answer they were noise.
+
+- **A payoff line is required; a subtitle is not.** §7 says every ask states its
+  payoff on the same screen. Onboarding step 2 now has no subtitle at all, because
+  the option descriptions state the payoff more concretely than a sentence above
+  them could ("Four or five stops, with room to sit down between them"). Satisfy
+  the principle with content where content can carry it.
+
+- **The memory receipt is the evidence chip contract applied to personalisation.**
+  Every remembered fact renders in plain English *with* its tier (`You` = stated,
+  `Memory` = inferred), and is individually removable. Removal is struck-through and
+  undoable in place, never a silent vanish; the bulk "Clear all memory" gets a bulk
+  undo, because undoing five rows one at a time is a punishment.
+
+### Still open
+
+- **Google's mark is monochrome in `05-signin`, and it is now the primary action.**
+  Google's brand terms want their four-colour logo; a five-role palette does not
+  have those four colours. Currently a bordered-circle placeholder (`.gmark`).
+  This was a detail when the button was secondary and is a blocker now that it
+  leads.
+- **`07-share` and `08-settings` have not had the same pass.** The share sheet
+  still leads with the word "Saved" rather than the Reel that was saved, and the
+  memory list still opens on a stat row rather than on a fact. Same three habits,
+  same fixes.
+- **NN/g also recommends offering the code by SMS as well as email**, since email
+  is the delivery method that forces an app switch. v1 is email only; Supabase Auth
+  does both.
+- **What "remove this fact" actually deletes.** The UI promises only "it takes
+  effect on your next trip" — deliberately the weaker claim. Whether it tombstones
+  the derived `user_preference_facts` row or also deletes the `memory_events` behind
+  it is undecided, and the copy must not outrun the implementation.
+- **The iOS Shortcut has no install moment.** `07-share` states the constraint
+  honestly (Safari has never shipped Web Share Target), but nothing in the product
+  yet hands the user the Shortcut.
 - Mobile trip detail is cramped — six stops with quotes and chips in a 55dvh sheet.
   A collapsed one-line-per-stop mode is unresolved.
 - No weather anywhere. PRD §15 wants a per-day note; the day header needs a slot

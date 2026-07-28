@@ -22,66 +22,79 @@ export const STAGE_LABEL: Record<GenerationStage, string> = {
   save: 'Saving trip',
 }
 
+// Provenance: which tool produced each line — the evidence-chip idea applied to progress
+// (DESIGN.md §6). Mono, because it names a source. Stages without a clear tool show no chip.
+const STAGE_SOURCE: Partial<Record<GenerationStage, string>> = {
+  scrape: 'Apify',
+  resolve: 'Mapbox',
+  preferences: 'Memory',
+  enrich: 'Research',
+  restaurants: 'Research',
+  hotels: 'Travala',
+  transport: 'Mapbox',
+}
+
 export default function GenerationProgress({ events }: { events: StreamEvent[] }) {
-  // The generation rail is the mascot's fourth spec'd surface (DESIGN-DRAFT §7) and the
-  // product's longest wait. Waiting is the only live state: once the result event lands,
-  // the trail stops flowing — a pulse on a finished run is motion telling a lie.
+  // Waiting is the only live state: once the result event lands, the trail stops flowing —
+  // a pulse on a finished run is motion telling a lie (DESIGN.md §5).
   const done = events.some((e) => e.type === 'result')
+
   return (
-    <section data-testid="generation-progress" className="flex w-full flex-col gap-4">
-      <Astronaut size={40} variant={done ? 'idle' : 'waiting'} />
-      <h1 className="type-display text-2xl text-[var(--starlight)]">Building your trip</h1>
-      <p className="type-body text-sm text-[var(--muted)]">
-        Astrail is turning your inspiration into a mapped route. Pins appear as places are verified.
-      </p>
+    <section data-testid="generation-progress" className="flex w-full flex-col gap-5 text-[color:var(--text)]">
+      <div className="flex items-center gap-3">
+        <Astronaut size={40} variant={done ? 'idle' : 'waiting'} />
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-[color:var(--text-muted)]">Building your trail</p>
+          <h1 className="font-display text-[22px] font-medium leading-[1.18] tracking-[-0.015em]" style={{ fontVariationSettings: "'SOFT' 28, 'WONK' 1, 'opsz' 22" }}>
+            Building your trip
+          </h1>
+        </div>
+      </div>
 
       {events.length === 0 ? (
-        <p className="type-label text-xs uppercase tracking-wide text-[var(--faint)]">Starting…</p>
+        <p className="text-[13px] text-[color:var(--text-muted)]">Starting…</p>
       ) : (
-        <ol className="flex flex-col gap-2">
+        <ol className="flex flex-col">
           {events.map((event, i) => {
             if (event.type === 'heartbeat') {
               return (
-                <li key={i} className="type-label pl-4 text-[10px] uppercase tracking-wide tabular-nums text-[var(--faint)]">
+                <li key={i} className="py-1 pl-5 font-mono text-[11px] tabular-nums text-[color:var(--text-faint)]">
                   {event.elapsed_s.toFixed(1)}s elapsed
                 </li>
               )
             }
             if (event.type === 'result') {
               return (
-                <li key={i} className="type-body flex items-center gap-2 text-sm text-[var(--brass-bright)]">
-                  <span aria-hidden>✓</span> Trip ready — opening your trip…
+                <li key={i} className="flex items-center gap-2 py-1.5 text-[14px] font-medium text-[color:var(--brass-deep)]">
+                  <span aria-hidden className="h-2 w-2 flex-none rounded-full bg-[color:var(--brass-deep)]" /> Trip ready — opening your trip…
                 </li>
               )
             }
             if (event.type === 'warning' || event.type === 'error' || event.type === 'decision') {
               return (
-                <li key={i} className="type-body flex items-start gap-2 pl-4 text-sm text-[var(--muted)]">
-                  <span aria-hidden>{event.type === 'decision' ? '·' : '⚠'}</span>
+                <li key={i} className="flex items-start gap-2.5 py-1.5 text-[13px] text-[color:var(--text-muted)]">
+                  <span aria-hidden className="mt-1.5 h-2 w-2 flex-none rounded-full border border-[color:var(--ink-400)] bg-[color:var(--surface-1)]" />
                   <span>{event.msg}</span>
                 </li>
               )
             }
-            const mapped = event.stage === 'dedup'
             const current = i === events.length - 1
+            const src = STAGE_SOURCE[event.stage]
             return (
-              <li
-                key={i}
-                className={[
-                  'flex flex-col gap-0.5 rounded-lg border px-3 py-2.5',
-                  current
-                    ? 'border-[rgba(201,151,78,0.3)] bg-[var(--brass-soft)] shadow-[0_0_14px_var(--brass-glow)]'
-                    : 'border-transparent bg-[rgba(247,243,232,0.04)]',
-                ].join(' ')}
-              >
-                <span className={[
-                  'type-label flex items-center gap-1.5 text-[10px] uppercase tracking-wide',
-                  mapped || current ? 'text-[var(--brass-bright)]' : 'text-[var(--muted)]',
-                ].join(' ')}>
-                  {current ? <span aria-hidden className="pulse-dot" /> : null}
-                  {STAGE_LABEL[event.stage]}
+              <li key={i} className="flex items-start gap-2.5 py-1.5">
+                <span
+                  aria-hidden
+                  className={`mt-1.5 h-2 w-2 flex-none rounded-full ${current ? 'pulse-dot bg-[color:var(--brass-deep)]' : 'bg-[color:var(--ink-900)]'}`}
+                />
+                <span className="min-w-0 flex-1">
+                  <span className={`block text-[11px] font-semibold uppercase tracking-wide ${current ? 'text-[color:var(--brass-deep)]' : 'text-[color:var(--text-muted)]'}`}>
+                    {STAGE_LABEL[event.stage]}
+                  </span>
+                  <span className="block text-[14px] text-[color:var(--text)]">
+                    {event.msg}
+                    {src ? <span className="ml-2 font-mono text-[11px] text-[color:var(--brass-deep)]">{src}</span> : null}
+                  </span>
                 </span>
-                <span className="type-body text-sm text-[var(--starlight)]">{event.msg}</span>
               </li>
             )
           })}

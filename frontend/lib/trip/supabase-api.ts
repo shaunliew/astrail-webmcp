@@ -8,7 +8,7 @@ import * as mockApi from '@/lib/trip/mock-api'
 import type { ProfileInput } from '@/lib/onboarding/onboarding'
 import type {
   GenerationEvent, HotelSuggestion, Place, RestaurantSuggestion, Trip, TripBundle,
-  TripDay, TripInspirationItem, TripPlace, TransportLeg, TravelerProfile,
+  TripDay, TripInspirationItem, TripPlace, TransportLeg, TravelerProfile, UserPreferenceFact,
 } from '@/lib/trip/backend-types'
 
 export async function saveProfile(input: ProfileInput): Promise<TravelerProfile> {
@@ -23,6 +23,25 @@ export async function saveProfile(input: ProfileInput): Promise<TravelerProfile>
     .single()
   if (error) throw new Error(`Could not save your preferences: ${error.message}`)
   return data as TravelerProfile
+}
+
+// Read the saved profile so the plan sheet can pre-fill inferred values (origin, style).
+// Facts (mem0 memory) are a separate concern — [] in real mode for now; the plan sheet
+// falls back to the profile's own travel_style_tags/notes.
+export async function getProfile(): Promise<{ profile: TravelerProfile; facts: UserPreferenceFact[] }> {
+  if (MOCK_AUTH_ENABLED) return mockApi.getProfile()
+  const supabase = createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) throw new Error('Not signed in')
+  const { data } = await supabase
+    .from('traveler_profiles')
+    .select('id,origin_city,travel_style_tags,preference_tags,preference_notes,onboarding_completed')
+    .eq('id', user.id)
+    .maybeSingle()
+  const profile: TravelerProfile = (data as TravelerProfile | null) ?? {
+    id: user.id, origin_city: null, travel_style_tags: [], preference_tags: [], preference_notes: null, onboarding_completed: false,
+  }
+  return { profile, facts: [] }
 }
 
 export async function getTrip(tripId: string): Promise<TripBundle | null> {

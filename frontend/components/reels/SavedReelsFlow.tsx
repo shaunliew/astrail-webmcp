@@ -8,15 +8,14 @@ import type { StreamEvent } from '@/lib/trip/backend-types'
 import { groupPlacesByCountry, type CountryTray } from '@/lib/reels/organize'
 import { getAccessToken } from '@/lib/supabase/session'
 import { generateTrip, streamGeneration } from '@/lib/trip/api'
-import { canGenerate, toGenerateRequest, type BriefInput, type DraftInspirationItem } from '@/lib/trip/parse-inspiration'
-import TripBriefForm from '@/components/create/TripBriefForm'
-import TripBriefReview from '@/components/create/TripBriefReview'
+import { toGenerateRequest, type BriefInput, type DraftInspirationItem } from '@/lib/trip/parse-inspiration'
 import { useSharedMap } from '@/components/map/MapProvider'
 import { relightDurationMs } from '@/components/map/relight'
 import GenerationScene from '@/components/create/GenerationScene'
 import DashboardHome from '@/components/dashboard/DashboardHome'
 import OrganizeGlobe from './OrganizeGlobe'
 import CountryTrays from './CountryTrays'
+import PlanSheet from './PlanSheet'
 
 type Phase = 'inbox' | 'organizing' | 'trays' | 'brief' | 'review' | 'generating'
 
@@ -232,12 +231,15 @@ export default function SavedReelsFlow() {
   if (phase === 'trays') return <CountryTrays trays={trays} selectedPlaceIds={selectedPlaceIds} onToggle={(id) => setSelectedPlaceIds((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])} onPlan={() => setPhase('brief')} />
   if (phase === 'generating') return <GenerationScene tripId={tripId} events={events} />
   if (phase === 'brief') return (
-    <main className="mx-auto flex min-h-[100dvh] w-full max-w-2xl flex-col gap-6 bg-[var(--void)] p-6">
-      <TripBriefForm brief={brief} onChange={setBrief} />
-      <button type="button" onClick={() => setPhase('review')} disabled={!canGenerate(briefItems, brief)} className="type-label min-h-11 rounded-lg border border-[var(--brass)] bg-[var(--brass-soft)] px-4 text-xs uppercase tracking-wide text-[var(--starlight)] disabled:cursor-not-allowed disabled:opacity-40">Review trip brief</button>
-    </main>
+    <PlanSheet
+      places={selectedPlaces}
+      reelCount={new Set(selectedPlaces.map((place) => place.source_reel_url)).size}
+      brief={brief}
+      onBrief={setBrief}
+      onBack={() => setPhase('trays')}
+      onGenerate={handleGenerate}
+    />
   )
-  if (phase === 'review') return <main className="mx-auto flex min-h-[100dvh] w-full max-w-2xl flex-col gap-6 bg-[var(--void)] p-6"><TripBriefReview items={briefItems} brief={brief} onBack={() => setPhase('brief')} onGenerate={handleGenerate} /></main>
   return (
     <div>
       {inboxMessage ? (

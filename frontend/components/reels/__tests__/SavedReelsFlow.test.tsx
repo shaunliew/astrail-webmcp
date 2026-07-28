@@ -207,12 +207,7 @@ describe('SavedReelsFlow', () => {
     fireEvent.click(screen.getByRole('button', { name: /plan this trip/i }))
     fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
     fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
-    fireEvent.click(screen.getByRole('button', { name: /review trip brief/i }))
-
-    expect(screen.getByText('Reels (1)')).toBeInTheDocument()
-    expect(screen.getByText(cards[0].normalized_url)).toBeInTheDocument()
-    expect(screen.getByText('Requested places (0)')).toBeInTheDocument()
-    fireEvent.click(await screen.findByRole('button', { name: /generate my trip/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
 
     await waitFor(() => expect(generateTrip).toHaveBeenCalledWith(
       expect.objectContaining({ place_ids: ['place-1'], reel_urls: [], requested_places: [] }),
@@ -242,8 +237,7 @@ describe('SavedReelsFlow', () => {
       fireEvent.click(screen.getByRole('button', { name: /plan this trip/i }))
       fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
       fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
-      fireEvent.click(screen.getByRole('button', { name: /review trip brief/i }))
-      fireEvent.click(await screen.findByRole('button', { name: /generate my trip/i }))
+      fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
 
       await waitFor(() => expect(push).toHaveBeenCalledWith('/app/trip/trip-1'))
       await act(async () => { await new Promise((r) => setTimeout(r, 0)) })

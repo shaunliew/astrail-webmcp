@@ -37,7 +37,7 @@ describe('/app mock-auth gate', () => {
   it('renders the offline CreateTripFlow without Saved Reels or backend calls', async () => {
     vi.resetModules()
     process.env.NEXT_PUBLIC_MOCK_AUTH = 'true'
-    const { default: AppHomePage } = await import('@/app/app/page')
+    const { default: AppHomePage } = await import('@/app/app/(shell)/page')
     // Same module registry as the page: resetModules gives MapProvider a fresh context
     // object, and a statically imported one would not match what the page consumes.
     const { default: MapProvider } = await import('@/components/map/MapProvider')

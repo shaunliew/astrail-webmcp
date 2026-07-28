@@ -39,6 +39,13 @@ _UNSET = object()
 logger = logging.getLogger(__name__)
 
 
+def _n(count: int, noun: str) -> str:
+    """'1 Reel' / '3 Reels'. Every `message=` below renders in the user-facing
+    decision rail, so `reel(s)` is not an option there — DESIGN.md §7 wants
+    decisions in English, not log lines."""
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
 async def _complete_trip_run(client, job_id, trip_id, lease_token, *,
                              status, stage, message, payload) -> bool:
     """Terminal write for a leased run: the job's status AND the `result` event in ONE
@@ -151,7 +158,7 @@ async def _fail(client, trip_id, user_id, job_id, stage, message, *, lease_token
         # the SSE stream ends on it.
         try:
             await record_event(client, trip_id, event_type="result", stage=stage,
-                                message="generation failed", payload={"error": message})
+                                message="Astrail couldn't finish this trip", payload={"error": message})
         except Exception:
             pass
         return {"error": message}
@@ -159,7 +166,7 @@ async def _fail(client, trip_id, user_id, job_id, stage, message, *, lease_token
         return {"error": message}     # never owned the job; the reaper owns this row
     try:
         await _complete_trip_run(client, job_id, trip_id, lease_token, status="failed",
-                                 stage=stage, message="generation failed",
+                                 stage=stage, message="Astrail couldn't finish this trip",
                                  payload={"error": message})
     except Exception:
         pass
@@ -233,7 +240,7 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                 city_or_region_guess=row.get("city"),
             ) for row in selected]
             await record_event(client, trip_id, event_type="stage", stage="cache_hit",
-                               message=f"using {len(places)} organized place(s)")
+                               message=f"Using the {_n(len(places), 'place')} you organized")
         else:
             # PHASE 1+2: SCRAPE + EXTRACT, with a per-reel EXTRACTION CACHE. A repeat
             # reel (same normalized URL + EXTRACTOR_VERSION) skips BOTH scrape and
@@ -264,11 +271,11 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                     miss_idx.append(i)
             if n_hit:
                 await record_event(client, trip_id, event_type="stage", stage="cache_hit",
-                                   message=f"{n_hit} reel(s) from cache (skipped scrape+extract)")
+                                   message=f"Reused {_n(n_hit, 'Reel')} Astrail had already read")
 
             if miss_idx:
                 await record_event(client, trip_id, event_type="stage", stage="scrape",
-                                   message=f"scraping {len(miss_idx)} reel(s)")
+                                   message=f"Reading {_n(len(miss_idx), 'Reel')}")
                 scraped = await asyncio.gather(*[scrape(reel_urls[i]) for i in miss_idx],
                                                return_exceptions=True)
                 to_extract: list[tuple[int, object]] = []
@@ -276,19 +283,19 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                     if isinstance(res, Exception):
                         degraded = True
                         await record_event(client, trip_id, event_type="warning", stage="scrape",
-                                           message=f"reel skipped: {reel_urls[i]}")
+                                           message=f"Couldn't read one Reel: {reel_urls[i]}")
                     else:
                         to_extract.append((i, res))
                 if to_extract:
                     await record_event(client, trip_id, event_type="stage", stage="extract",
-                                       message=f"extracting places from {len(to_extract)} reel(s)")
+                                       message=f"Finding places in {_n(len(to_extract), 'Reel')}")
                     extracted = await asyncio.gather(*[extract(reel) for _i, reel in to_extract],
                                                      return_exceptions=True)
                     for (i, reel), res in zip(to_extract, extracted):
                         if isinstance(res, Exception):
                             degraded = True
                             await record_event(client, trip_id, event_type="warning", stage="extract",
-                                               message="extraction failed for one reel")
+                                               message="Couldn't find places in one Reel")
                         else:
                             results[i] = res
                             try:
@@ -302,12 +309,12 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                                 "no verified places after extraction", lease_token=lease_token)
 
         await record_event(client, trip_id, event_type="stage", stage="dedup",
-                            message=f"deduping {len(places)} place(s)")
+                            message=f"Checking {_n(len(places), 'place')} for duplicates")
         canonical = dedupe_places(places).places
 
         # NARRATE — route assembly (deterministic)
         await record_event(client, trip_id, event_type="stage", stage="narrate",
-                            message="assembling itinerary")
+                            message="Putting your days in order")
         dates = _date_range(start_date, end_date)
         itinerary = assemble_itinerary(canonical, dates, pace=pace)
         if any(w.severity == "flag" for w in itinerary.feasibility_warnings):
@@ -324,7 +331,7 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
             center = centroid(canonical)
             if center is not None:
                 await record_event(client, trip_id, event_type="stage", stage="weather",
-                                   message="fetching weather")
+                                   message="Checking the forecast")
                 weather_reports = await weather(center[0], center[1], dates)
         except Exception as exc:
             weather_reports = []
@@ -341,8 +348,10 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
             # means `trip_days.weather_summary` is null on the COMMON path, not an edge case.
             logger.warning("weather_unavailable trip_id=%s error=%s", trip_id, type(exc).__name__)
             try:
+                # The common cause is the ~16-day horizon above, not a fault — say the
+                # thing that is true rather than implying something broke.
                 await record_event(client, trip_id, event_type="warning", stage="weather",
-                                   message="weather unavailable")
+                                   message="No forecast available this far ahead")
             except Exception:
                 pass   # best-effort: a warning-write failure must not fail the trip either
 
@@ -353,7 +362,7 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
             raise LeaseLost(f"trip job {job_id} lease superseded")
 
         status = "saved_with_gaps" if degraded else "complete"
-        await record_event(client, trip_id, event_type="stage", stage="save", message="saving trip")
+        await record_event(client, trip_id, event_type="stage", stage="save", message="Saving your trip")
 
         async def _save_and_enrich() -> None:
             nonlocal status
@@ -371,8 +380,8 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                 if dropped:
                     status = "saved_with_gaps"
                     await record_event(client, trip_id, event_type="warning", stage="save",
-                                       message=f"{dropped} place(s) shown in the itinerary were not saved "
-                                               "(missing coordinates or merged with an existing place)")
+                                       message=f"Dropped {_n(dropped, 'place')} — no coordinates found, "
+                                               "or already on your list")
 
                 # TRADEOFF NOTES — the FeasibilityWarnings feasibility.py flagged as "the seam".
                 # Computed here (warnings + groups in scope); WRITTEN once after the enrich gather.
@@ -389,7 +398,7 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                     except Exception:
                         try:
                             await record_event(client, trip_id, event_type="warning", stage="weather",
-                                               message="weather persist failed")
+                                               message="Couldn't save the forecast")
                         except Exception:
                             pass   # best-effort — weather persist failure is non-critical
 
@@ -413,7 +422,7 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                 async def _stage_transport():
                     try:
                         await record_event(client, trip_id, event_type="stage", stage="transport",
-                                           message="computing routes")
+                                           message="Working out how to get between stops")
                         await persist_transport(client, trip_id, fetch_legs=transport)
                         # persist_transport isolates per-day fetch failures internally (status="failed"
                         # rows, never raises) — surface that as the same non-critical warning.
@@ -421,35 +430,35 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                                        .eq("trip_id", trip_id).eq("status", "failed").execute()).data
                         if failed_legs:
                             await record_event(client, trip_id, event_type="warning", stage="transport",
-                                               message="transport legs unavailable")
+                                               message="Couldn't route some stops — check transit")
                     except Exception:
                         try:
                             await record_event(client, trip_id, event_type="warning", stage="transport",
-                                               message="transport legs unavailable")
+                                               message="Couldn't route some stops — check transit")
                         except Exception:
                             pass   # best-effort — transport failure is non-critical
 
                 async def _stage_restaurants():
                     try:
                         await record_event(client, trip_id, event_type="stage", stage="restaurants",
-                                           message="suggesting restaurants")
+                                           message="Looking for places to eat")
                         await persist_restaurants(client, trip_id, suggest=restaurant, preference_block=pref_block)
                     except Exception:
                         try:
                             await record_event(client, trip_id, event_type="warning", stage="restaurants",
-                                               message="restaurant suggestions unavailable")
+                                               message="Couldn't find restaurants near your route")
                         except Exception:
                             pass   # best-effort — restaurant failure is non-critical
 
                 async def _stage_hotels():
                     try:
                         await record_event(client, trip_id, event_type="stage", stage="hotels",
-                                           message="searching hotels")
+                                           message="Looking for somewhere to stay")
                         await persist_hotels(client, trip_id, fetch=hotel)
                     except Exception:
                         try:
                             await record_event(client, trip_id, event_type="warning", stage="hotels",
-                                               message="hotel suggestions unavailable")
+                                               message="Couldn't find hotels near your route")
                         except Exception:
                             pass   # best-effort — hotel failure is non-critical
 
@@ -457,12 +466,12 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                     # MUST run after persist_weather (above): reads trip_days.weather_summary.
                     try:
                         await record_event(client, trip_id, event_type="stage", stage="summarize",
-                                           message="narrating the trip")
+                                           message="Writing your day summaries")
                         await persist_narration(client, trip_id, user_id, narrate=narrator, preference_block=pref_block)
                     except Exception:
                         try:
                             await record_event(client, trip_id, event_type="warning", stage="summarize",
-                                               message="narration unavailable")
+                                               message="Couldn't write the day summaries")
                         except Exception:
                             pass   # best-effort — narration failure is non-critical
 
@@ -509,14 +518,14 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
         payload = {"itinerary": itinerary.model_dump()}
         if job_id is None:
             await record_event(client, trip_id, event_type="result", stage="save",
-                                message="generation complete", payload=payload)
+                                message="Your trip is ready", payload=payload)
         else:
             # The job status and the terminal result land together or not at all.
             superseded = False
             try:
                 superseded = not await _complete_trip_run(
                     client, job_id, trip_id, lease_token, status="succeeded", stage="save",
-                    message="generation complete", payload=payload)
+                    message="Your trip is ready", payload=payload)
             except Exception:
                 try:
                     await record_event(client, trip_id, event_type="warning", stage="save",

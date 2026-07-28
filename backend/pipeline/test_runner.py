@@ -454,7 +454,9 @@ async def test_runner_degrades_when_persist_drops_a_place():
                                        "2026-08-01", job_id="job-1", client=c, scrape=scrape, extract=extract,
                                        mem0=None, weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
     assert out["itinerary"]["days"]                       # itinerary still shows both places
-    assert any(e["event_type"] == "warning" and "not saved" in e["message"] for e in c.events)
+    # Assert the CONTRACT (a save-stage warning is emitted), not the prose — this line
+    # previously pinned the exact wording and broke when the copy moved into DESIGN.md §7 voice.
+    assert any(e["event_type"] == "warning" and e["stage"] == "save" for e in c.events)
     assert c.trip_updates[-1]["status"] == "saved_with_gaps"
     assert c.db["jobs"][0]["status"] == "succeeded"        # a dropped place is non-critical
 
@@ -883,7 +885,7 @@ async def test_runner_write_back_raise_does_not_double_result_or_flip_status(mon
     assert out["itinerary"]["days"]
     result_events = [e for e in c.events if e["event_type"] == "result"]
     assert len(result_events) == 1   # never a second (error) result event
-    assert result_events[0]["message"] == "generation complete"
+    assert result_events[0]["message"] == "Your trip is ready"
     assert c.trip_updates[-1]["status"] != "failed"
     assert c.db["jobs"][0]["status"] == "succeeded"   # never flipped to failed
     # Finding (Important, re-review): the write-back guard must not be a silent

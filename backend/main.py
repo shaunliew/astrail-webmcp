@@ -290,7 +290,7 @@ async def generate_trip(
         ).data[0]
         trip_id = trip["id"]
         await record_event(
-            client, trip_id, event_type="stage", stage="create_trip", message="trip created",
+            client, trip_id, event_type="stage", stage="create_trip", message="Starting your trip",
             payload={
                 "reel_urls": req.reel_urls,
                 "start_date": req.start_date,

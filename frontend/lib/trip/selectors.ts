@@ -29,7 +29,13 @@ export function tripHotels(bundle: TripBundle): HotelSuggestion[] {
 }
 
 export function buildPlaceIndex(bundle: TripBundle): Map<string, Place> {
-  return new Map(bundle.places.map((tp) => [tp.place_id, tp.place]))
+  /* Trip stops FIRST, then suggestion-only places, so a place that is both a stop and
+     a suggestion target keeps the trip's own row. */
+  const index = new Map(bundle.places.map((tp) => [tp.place_id, tp.place]))
+  for (const p of bundle.suggestion_places ?? []) {
+    if (!index.has(p.id)) index.set(p.id, p)
+  }
+  return index
 }
 
 export function findTripPlace(bundle: TripBundle, placeId: string | null): TripPlace | null {

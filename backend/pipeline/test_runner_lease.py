@@ -92,7 +92,7 @@ async def test_the_terminal_result_and_the_job_status_land_together_through_one_
     out = await run(client)
 
     assert out["itinerary"]["days"][0]["place_names"] == ["Tokyo Tower"]
-    assert [event["message"] for event in results(client)] == ["generation complete"]
+    assert [event["message"] for event in results(client)] == ["Your trip is ready"]
     assert job_row(client)["status"] == "succeeded"
     # The claim, then BOTH fenced writes, in order. The claim leads because every lease
     # instant is the database's now; the itinerary rewrite is a destructive delete-reinsert
@@ -112,7 +112,7 @@ async def test_a_run_without_a_job_id_still_writes_its_terminal_result():
 
     await run(client, job_id=None)
 
-    assert [event["message"] for event in results(client)] == ["generation complete"]
+    assert [event["message"] for event in results(client)] == ["Your trip is ready"]
     assert client.rpc_calls == []
 
 
@@ -177,7 +177,7 @@ async def test_a_superseded_worker_writes_neither_the_job_status_nor_a_result_ev
     # The replacement finishes on its own terms, and the stream sees its result and only its.
     assert replacement["itinerary"]["days"]
     assert job_row(client)["status"] == "succeeded"
-    assert [event["message"] for event in results(client)] == ["generation complete"]
+    assert [event["message"] for event in results(client)] == ["Your trip is ready"]
 
 
 async def test_a_superseded_workers_failure_terminal_is_fenced_too(monkeypatch):
@@ -655,7 +655,7 @@ async def test_a_worker_whose_heartbeat_cannot_reach_postgres_stops(monkeypatch)
     # had a replacement claimed, the token would differ and this worker would write nothing.
     # It also matters that SOMETHING terminal lands, because the SSE stream ends on it
     # (guardrail #12: re-queued or explicitly failed, never silently dropped).
-    assert [event["message"] for event in results(client)] == ["generation failed"]
+    assert [event["message"] for event in results(client)] == ["Astrail couldn't finish this trip"]
     assert job_row(client)["status"] == "failed"
 
 

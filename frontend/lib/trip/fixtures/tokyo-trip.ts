@@ -231,4 +231,7 @@ const events: GenerationEvent[] = [
 
 export const TOKYO_TRIP: TripBundle = {
   trip, inspiration, places, days, transport_legs, restaurants, hotels, events,
+  // The mock's restaurants point at places already on the trip, so nothing extra
+  // is needed to resolve their names.
+  suggestion_places: [],
 }

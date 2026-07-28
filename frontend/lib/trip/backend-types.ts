@@ -202,6 +202,11 @@ export type TripBundle = {
   restaurants: RestaurantSuggestion[]
   hotels: HotelSuggestion[]
   events: GenerationEvent[]
+  /* Places referenced BY suggestions (restaurant_place_id, near_place_id) but which
+     are not themselves stops on the trip. Without these the restaurant strip cannot
+     resolve a name and every card read "Suggested spot". Frontend-only aggregate —
+     TripBundle has no Pydantic mirror; it is assembled here from separate queries. */
+  suggestion_places: Place[]
 }
 
 export type TravelerProfile = {

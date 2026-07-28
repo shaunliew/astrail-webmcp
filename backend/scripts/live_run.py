@@ -181,7 +181,7 @@ async def _run(args: argparse.Namespace) -> None:
     ).data[0]
     trip_id = trip["id"]
     await record_event(
-        client, trip_id, event_type="stage", stage="create_trip", message="trip created",
+        client, trip_id, event_type="stage", stage="create_trip", message="Starting your trip",
         payload={"reel_urls": reels, "start_date": start, "end_date": end, "pace": args.pace,
                  "preferences": args.preferences, "destination_hint": args.dest},
     )

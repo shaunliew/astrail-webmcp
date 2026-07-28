@@ -9,6 +9,21 @@ const SOURCE_BADGE: Record<PlaceSourceType, string> = {
   agent_suggested: 'Astrail pick',
 }
 
+/* A quote earns its space only when it says something the heading did not.
+   Real captions very often yield an evidence quote that IS the place name —
+   "📍Tokyo Dream Park" against a stop called Tokyo Dream Park — and rendering it
+   prints the same words twice, the second time in a decorative face. The evidence
+   chip still carries the provenance, so nothing is hidden by dropping the echo. */
+function addsNothing(quote: string, name: string): boolean {
+  const norm = (s: string) =>
+    s.toLowerCase()
+      .replace(/[^\p{Letter}\p{Number}]+/gu, ' ')   // strips 📍, quotes, dashes, punctuation
+      .trim()
+  const q = norm(quote)
+  const n = norm(name)
+  return q.length === 0 || q === n || n.includes(q)
+}
+
 export default function ItineraryCards({
   places, selectedPlaceId, onSelectPlace,
 }: {
@@ -50,7 +65,7 @@ export default function ItineraryCards({
                   {SOURCE_BADGE[tp.source_type]}
                 </span>
               </div>
-              {tp.evidence_json.quote ? (
+              {tp.evidence_json.quote && !addsNothing(tp.evidence_json.quote, tp.place.name) ? (
                 /* Compact quote preview: sans-italic on purpose — the serif quote face
                    never drops below 18px (DESIGN.md G2), and this caption is 12px. */
                 <p className="type-body mt-2 border-l border-[var(--brass)] pl-2 text-xs italic text-[var(--muted)]">

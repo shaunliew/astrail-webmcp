@@ -7,7 +7,7 @@ import { MOCK_AUTH_ENABLED } from '@/lib/auth/mock-auth'
 import * as mockApi from '@/lib/trip/mock-api'
 import type { ProfileInput } from '@/lib/onboarding/onboarding'
 import type {
-  GenerationEvent, HotelSuggestion, RestaurantSuggestion, Trip, TripBundle,
+  GenerationEvent, HotelSuggestion, Place, RestaurantSuggestion, Trip, TripBundle,
   TripDay, TripInspirationItem, TripPlace, TransportLeg, TravelerProfile,
 } from '@/lib/trip/backend-types'
 
@@ -44,15 +44,34 @@ export async function getTrip(tripId: string): Promise<TripBundle | null> {
       .order('created_at').order('id'),
   ])
 
+  const tripPlaces = (places.data ?? []) as unknown as TripPlace[]
+  const restaurantRows = (restaurants.data ?? []) as RestaurantSuggestion[]
+
+  /* Suggestion places are NOT trip stops, so the `trip_places` join above never
+     returns them and the place index built from it cannot name them. Fetch the
+     ones a suggestion actually references, skipping any already on the trip. */
+  const onTrip = new Set(tripPlaces.map((tp) => tp.place_id))
+  const wanted = [
+    ...new Set(
+      restaurantRows
+        .flatMap((r) => [r.restaurant_place_id, r.near_place_id])
+        .filter((id): id is string => Boolean(id) && !onTrip.has(id as string)),
+    ),
+  ]
+  const suggestionPlaces = wanted.length
+    ? ((await supabase.from('places').select('*').in('id', wanted)).data ?? [])
+    : []
+
   return {
     trip: trip as Trip,
     inspiration: (inspiration.data ?? []) as TripInspirationItem[],
-    places: (places.data ?? []) as unknown as TripPlace[],
+    places: tripPlaces,
     days: (days.data ?? []) as TripDay[],
     transport_legs: (legs.data ?? []) as TransportLeg[],
-    restaurants: (restaurants.data ?? []) as RestaurantSuggestion[],
+    restaurants: restaurantRows,
     hotels: (hotels.data ?? []) as HotelSuggestion[],
     events: (events.data ?? []) as GenerationEvent[],
+    suggestion_places: suggestionPlaces as Place[],
   }
 }
 

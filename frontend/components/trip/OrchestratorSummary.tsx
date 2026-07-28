@@ -9,6 +9,20 @@ function Stat({ value, label }: { value: string | number; label: string }) {
   )
 }
 
+/* NO "SOURCES" STAT — deliberately, until it can be sourced.
+   It read `bundle.inspiration.length`, which is ALWAYS 0: nothing writes
+   `trip_inspiration_items` (grep for a producer — there is none), so every real trip
+   showed "0 SOURCES" beside six places that plainly came from somewhere.
+
+   The obvious substitute is wrong too. `evidence_json.source_url` is the RESEARCH
+   citation that verified the place (mapcarta, tabelog), one per place — counting it
+   yields exactly the place count and calls research "sources". The trip stores no
+   reel_urls column either, so the number of Reels behind a trip is not derivable.
+
+   Ship three true numbers rather than a fourth invented one. Restoring it needs
+   `trip_inspiration_items` populated — the same migration that unblocks the real
+   "not planned yet" list. */
+
 export default function OrchestratorSummary({ bundle }: { bundle: TripBundle }) {
   const withGaps = bundle.trip.status === 'saved_with_gaps'
   return (
@@ -22,11 +36,10 @@ export default function OrchestratorSummary({ bundle }: { bundle: TripBundle }) 
           </span>
         ) : null}
       </div>
-      <div className="mt-3 grid grid-cols-4 gap-2">
+      <div className="mt-3 grid grid-cols-3 gap-2">
         <Stat value={bundle.places.length} label="places" />
         <Stat value={bundle.days.length} label="days" />
         <Stat value={bundle.transport_legs.length} label="legs" />
-        <Stat value={bundle.inspiration.length} label="sources" />
       </div>
     </div>
   )

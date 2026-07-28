@@ -93,6 +93,14 @@ def group_places_by_day(
     return groups
 
 
+def _human_km(metres: float) -> str:
+    """Distance as a person states it. Under a km stays in metres, rounded to 50m —
+    '640 m' is a real claim about a straight-line estimate that '637 m' is not."""
+    if metres < 950:
+        return f"{round(metres / 50) * 50:.0f} m"
+    return f"{metres / 1000:.1f} km"
+
+
 def assess_feasibility(
     numbered_days: list[tuple[int, list[CanonicalPlace]]], *, pace: str = DEFAULT_PACE
 ) -> list[FeasibilityWarning]:
@@ -105,12 +113,12 @@ def assess_feasibility(
         if len(day) == 0:
             warnings.append(FeasibilityWarning(
                 kind="empty_day", day_number=day_number,
-                detail="day has no stops", severity="flag"))
+                detail="This day has no stops yet", severity="flag"))
             continue
         if len(day) > cap:
             warnings.append(FeasibilityWarning(
                 kind="overpacked_day", day_number=day_number,
-                detail=f"{len(day)} stops exceeds the {pace} pace cap of {cap}",
+                detail=f"{len(day)} stops is more than a {pace} day usually holds ({cap})",
                 severity="warn"))
         for i in range(len(day) - 1):
             d = _leg_m(day[i], day[i + 1])
@@ -118,6 +126,10 @@ def assess_feasibility(
                 severity = "flag" if d >= LONG_LEG_FLAG_M else "warn"
                 warnings.append(FeasibilityWarning(
                     kind="long_leg", day_number=day_number, leg_m=d,
-                    detail=f"{d:.0f} m {day[i].name} -> {day[i + 1].name} ({severity})",
+                    # `detail` is user-facing copy. It carries no raw enum — severity is
+                    # already a structured field on the warning, and DESIGN.md §7 is
+                    # explicit that raw enums never render. Distance is stated the way a
+                    # person says it, not in metres.
+                    detail=f"{_human_km(d)} from {day[i].name} to {day[i + 1].name}",
                     severity=severity))
     return warnings

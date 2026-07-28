@@ -14,6 +14,12 @@ dist/
 .env.*.local
 backend/env
 frontend/env.local
+# Copies of an env file are still an env file. A backup taken before flipping a
+# flag (.env.local.bak-mockauth) carries every key the original did, and the
+# rules above do not match it.
+.env*.bak*
+.env*.backup*
+*.env.bak
 
 # Node
 node_modules/

@@ -1,178 +1,184 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { saveProfile } from '@/lib/trip/supabase-api'
-import {
-  EMPTY_DRAFT, STEPS, TRAVEL_STYLE_OPTIONS, INTEREST_OPTIONS,
-  toggleTag, toProfileInput, canFinish, type OnboardingDraft,
-} from '@/lib/onboarding/onboarding'
-import ChipMultiSelect from './ChipMultiSelect'
-import Astronaut from '@/components/mascot/Astronaut'
+import { EMPTY_DRAFT, toProfileInput, type OnboardingDraft } from '@/lib/onboarding/onboarding'
+import { DoorBrand, DoorStage, FOCUS_RING } from '@/components/door/DoorChrome'
 
-function ReviewRow({ label, value }: { label: string; value: string }) {
+/* Two questions and a skip — the whole of onboarding (DESIGN.md §9). Least friction:
+   origin (skippable) + pace (skippable). Both paths call saveProfile, which sets
+   onboarding_completed=true, then land the user in /app. No draft trip, no interests/
+   notes/review. Pace is stored as a free-form travel_style_tag (lib/onboarding note).
+
+   Deferred (add friction/integration, tracked as follow-ups): reverse-geocoding the
+   browser location to pre-fill origin, and the fly-to-origin map landing on finish. */
+
+const PACE = [
+  { tag: 'relaxed', name: 'Relaxed', what: 'Two or three stops a day, long meals, slow mornings.' },
+  { tag: 'balanced', name: 'Balanced', what: 'Four or five stops, with room to sit down between them.' },
+  { tag: 'packed', name: 'Packed', what: 'Six or more. You’d rather be tired than miss something.' },
+] as const
+
+// Primary (brass fill); disabled states its blocker in dashed + muted, never a grey slab.
+const BTN_PRIMARY = `flex min-h-11 w-full items-center justify-center rounded-lg border border-[color:var(--accent)] bg-[color:var(--accent)] px-5 text-[14px] font-medium text-[color:var(--accent-text)] transition-opacity duration-150 hover:opacity-90 disabled:cursor-default disabled:border-dashed disabled:border-[color:var(--line-soft)] disabled:bg-transparent disabled:text-[color:var(--text-muted)] disabled:hover:opacity-100 ${FOCUS_RING}`
+// Skip is visible, not hidden in a corner (DESIGN.md §9).
+const BTN_GHOST = `mt-3 flex min-h-11 w-full items-center justify-center rounded-lg px-5 text-[14px] font-medium text-[color:var(--text-muted)] transition-colors hover:bg-[color:var(--surface-2)] disabled:cursor-default disabled:opacity-60 ${FOCUS_RING}`
+
+function Dot({ done }: { done: boolean }) {
   return (
-    <div className="flex flex-col gap-0.5">
-      <dt className="type-label text-[10px] uppercase tracking-wide text-[var(--faint)]">{label}</dt>
-      <dd className="type-body text-sm text-[var(--starlight)]">{value}</dd>
-    </div>
+    <span
+      className={`h-2.5 w-2.5 flex-none rounded-full border-[1.5px] transition-colors duration-300 ${
+        done ? 'border-[color:var(--brass-deep)] bg-[color:var(--brass-deep)]' : 'border-dashed border-[color:var(--ink-400)] bg-transparent'
+      }`}
+    />
+  )
+}
+
+function Line({ drawn }: { drawn: boolean }) {
+  return (
+    <span className="relative h-[1.5px] flex-1 overflow-hidden bg-[color:var(--line-soft)]">
+      <span
+        className={`absolute inset-y-0 left-0 bg-[color:var(--brass-deep)] transition-[width] duration-500 ${drawn ? 'w-full' : 'w-0'}`}
+      />
+    </span>
   )
 }
 
 export default function OnboardingWizard() {
   const router = useRouter()
   const [draft, setDraft] = useState<OnboardingDraft>(EMPTY_DRAFT)
-  const [stepIndex, setStepIndex] = useState(0)
+  const [pace, setPace] = useState<string | null>(null)
+  const [stepNum, setStepNum] = useState<1 | 2>(1)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
-  const activeRef = useRef(true)
 
-  // Mounted-guard: saveProfile is async. Do not navigate on an unmounted component.
-  useEffect(() => {
-    activeRef.current = true
-    return () => { activeRef.current = false }
-  }, [])
+  const originValid = draft.origin_city.trim().length >= 2
 
-  const step = STEPS[stepIndex]
-  const isLast = stepIndex === STEPS.length - 1
-  const set = <K extends keyof OnboardingDraft>(key: K, value: OnboardingDraft[K]) =>
-    setDraft((d) => ({ ...d, [key]: value }))
-
-  async function finish() {
+  async function finish(withPace: string | null) {
     setSaving(true)
     setSaveError(null)
+    const input = toProfileInput({ ...draft, travel_style_tags: withPace ? [withPace] : [] })
     try {
-      await saveProfile(toProfileInput(draft))
+      await saveProfile(input)
     } catch (err) {
-      if (activeRef.current) {
-        setSaving(false)
-        setSaveError(err instanceof Error ? err.message : 'Could not save your preferences.')
-      }
+      setSaving(false)
+      setSaveError(err instanceof Error ? err.message : 'Could not save your preferences.')
       return
     }
-    if (!activeRef.current) return
     router.push('/app')
   }
 
   return (
-    <main className="app-shell flex min-h-[100dvh] w-full items-center justify-center p-6">
-      <div className="flex w-full max-w-lg flex-col gap-6">
-      <div className="flex flex-col gap-2">
-        <span className="type-label text-[10px] uppercase tracking-wide text-[var(--faint)]">
-          Step {stepIndex + 1} of {STEPS.length}
-        </span>
-        <div
-          className="h-1.5 overflow-hidden rounded-full bg-[rgba(247,243,232,0.08)]"
-          role="progressbar"
-          aria-valuenow={stepIndex + 1}
-          aria-valuemin={1}
-          aria-valuemax={STEPS.length}
-        >
-          <span
-            className="block h-full rounded-full bg-[var(--brass)] transition-[width] duration-200"
-            style={{ width: `${((stepIndex + 1) / STEPS.length) * 100}%` }}
-          />
-        </div>
-        <h1 className="type-display text-3xl text-[var(--starlight)]">{step.title}</h1>
+    <DoorStage caption={stepNum === 1 ? 'Nothing on your map yet.' : 'Almost there.'}>
+      <DoorBrand />
+
+      {/* Progress = the point and the line. Endowed: dot 1 (signing in) is already placed;
+          the line only draws once a second point exists to draw it to (DESIGN.md §1, §9). */}
+      <div
+        className="mb-8 flex w-[104px] items-center"
+        role="progressbar"
+        aria-valuemin={1}
+        aria-valuemax={3}
+        aria-valuenow={stepNum + 1}
+        aria-label={`Step ${stepNum} of 2`}
+      >
+        <Dot done />
+        <Line drawn={stepNum >= 2} />
+        <Dot done={stepNum >= 2} />
+        <Line drawn={false} />
+        <Dot done={false} />
       </div>
 
-      <section className="surface flex flex-col gap-6 p-6 sm:p-8">
-        {step.key === 'origin' ? (
-          <div className="flex flex-col gap-2">
-            <label htmlFor="origin-city" className="type-label text-[11px] uppercase tracking-wide text-[var(--muted)]">
-              Origin city
-            </label>
-            <input
-              id="origin-city"
-              value={draft.origin_city}
-              onChange={(e) => set('origin_city', e.target.value)}
-              placeholder="e.g. Kuala Lumpur"
-              className="surface type-body rounded-lg p-2.5 text-sm text-[var(--starlight)] placeholder:text-[var(--faint)]"
-            />
+      {stepNum === 1 ? (
+        <section>
+          <h1
+            className="mb-2 font-display text-[22px] font-medium leading-[1.22] tracking-[-0.015em]"
+            style={{ fontVariationSettings: "'SOFT' 28, 'WONK' 1, 'opsz' 22" }}
+          >
+            Where do you travel from?
+          </h1>
+          {/* Every ask states its payoff on the same screen. One clause. */}
+          <p className="mb-6 text-[14px] text-[color:var(--text-muted)]">Flight times and prices are worked out from here.</p>
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault()
+              if (originValid) setStepNum(2)
+            }}
+          >
+            <div className="mb-6">
+              <label htmlFor="origin" className="sr-only">
+                Home city
+              </label>
+              <input
+                id="origin"
+                type="text"
+                autoComplete="address-level2"
+                value={draft.origin_city}
+                onChange={(e) => setDraft((d) => ({ ...d, origin_city: e.target.value }))}
+                placeholder="Kuala Lumpur"
+                className={`min-h-11 w-full rounded-lg border border-[color:var(--line-soft)] bg-[color:var(--surface-1)] px-4 text-[color:var(--text)] placeholder:text-[color:var(--text-faint)] ${FOCUS_RING}`}
+              />
+            </div>
+
+            <button type="submit" disabled={!originValid} className={BTN_PRIMARY}>
+              {originValid ? 'Continue' : 'Waiting for your city'}
+            </button>
+          </form>
+
+          <button type="button" onClick={() => void finish(null)} disabled={saving} className={BTN_GHOST}>
+            {saving ? 'Saving…' : 'Skip for now'}
+          </button>
+        </section>
+      ) : (
+        <section>
+          <h1
+            className="mb-6 font-display text-[22px] font-medium leading-[1.22] tracking-[-0.015em]"
+            style={{ fontVariationSettings: "'SOFT' 28, 'WONK' 1, 'opsz' 22" }}
+          >
+            What pace do you like?
+          </h1>
+
+          <div role="group" aria-label="Travel pace" className="flex flex-col gap-2">
+            {PACE.map((p) => {
+              const on = pace === p.tag
+              return (
+                <button
+                  key={p.tag}
+                  type="button"
+                  aria-pressed={on}
+                  onClick={() => setPace(p.tag)}
+                  className={`block w-full rounded-lg border bg-[color:var(--surface-1)] px-4 py-3 text-left transition-colors ${FOCUS_RING} ${
+                    on ? 'border-[color:var(--accent)]' : 'border-[color:var(--line-soft)] hover:bg-[color:var(--surface-2)]'
+                  }`}
+                >
+                  <span className="block text-[15px] font-semibold text-[color:var(--text)]">{p.name}</span>
+                  <span className="mt-0.5 block text-[13px] text-[color:var(--text-muted)]">{p.what}</span>
+                </button>
+              )
+            })}
           </div>
-        ) : null}
 
-        {step.key === 'style' ? (
-          <ChipMultiSelect
-            ariaLabel="Travel style"
-            options={TRAVEL_STYLE_OPTIONS}
-            selected={draft.travel_style_tags}
-            onToggle={(t) => set('travel_style_tags', toggleTag(draft.travel_style_tags, t))}
-          />
-        ) : null}
+          <button type="button" onClick={() => void finish(pace)} disabled={!pace || saving} className={`${BTN_PRIMARY} mt-6`}>
+            {saving ? 'Saving…' : pace ? 'Finish' : 'Waiting for your pace'}
+          </button>
 
-        {step.key === 'interests' ? (
-          <ChipMultiSelect
-            ariaLabel="Interests"
-            options={INTEREST_OPTIONS}
-            selected={draft.preference_tags}
-            onToggle={(t) => set('preference_tags', toggleTag(draft.preference_tags, t))}
-          />
-        ) : null}
+          <button type="button" onClick={() => void finish(null)} disabled={saving} className={BTN_GHOST}>
+            Skip for now
+          </button>
 
-        {step.key === 'notes' ? (
-          <div className="flex flex-col gap-2">
-            <label htmlFor="notes" className="type-label text-[11px] uppercase tracking-wide text-[var(--muted)]">
-              Anything Astrail should remember?
-            </label>
-            <textarea
-              id="notes"
-              rows={4}
-              value={draft.preference_notes}
-              onChange={(e) => set('preference_notes', e.target.value)}
-              placeholder="Budget style, pace, things you avoid…"
-              className="surface type-body rounded-lg p-3 text-sm text-[var(--starlight)] placeholder:text-[var(--faint)]"
-            />
-          </div>
-        ) : null}
-
-        {step.key === 'review' ? (
-          <>
-            <Astronaut size={48} className="self-center" />
-            <dl className="flex flex-col gap-3">
-              <ReviewRow label="Origin" value={draft.origin_city || 'Not set'} />
-              <ReviewRow label="Style" value={draft.travel_style_tags.join(', ') || 'None yet'} />
-              <ReviewRow label="Interests" value={draft.preference_tags.join(', ') || 'None yet'} />
-              <ReviewRow label="Notes" value={draft.preference_notes || 'None'} />
-            </dl>
-          </>
-        ) : null}
-      </section>
+          <p className="mt-6 border-t border-[color:var(--line-soft)] pt-4 text-[13px] text-[color:var(--text-muted)]">
+            Both answers live in your settings. Astrail also learns from the trips you keep.
+          </p>
+        </section>
+      )}
 
       {saveError ? (
-        <p className="type-body text-xs text-[var(--fail)]" role="alert">{saveError}</p>
+        <p role="alert" className="mt-3 text-[13px] text-[color:var(--fail)]">
+          {saveError}
+        </p>
       ) : null}
-
-      <div className="mt-auto flex items-center justify-between gap-3">
-        <button
-          type="button"
-          onClick={() => setStepIndex((i) => Math.max(0, i - 1))}
-          disabled={stepIndex === 0}
-          className="type-label rounded-lg px-4 py-3 text-sm uppercase tracking-wide text-[var(--faint)] transition-colors hover:bg-[rgba(247,243,232,0.06)] hover:text-[var(--muted)] disabled:opacity-30"
-        >
-          Back
-        </button>
-
-        {isLast ? (
-          <button
-            type="button"
-            onClick={finish}
-            disabled={!canFinish(draft) || saving}
-            className="type-label rounded-lg border border-[var(--brass)] bg-[var(--brass-glow)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] transition-colors hover:bg-[rgba(201,151,78,0.38)] disabled:opacity-40"
-          >
-            {saving ? 'Saving…' : 'Finish'}
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => setStepIndex((i) => Math.min(STEPS.length - 1, i + 1))}
-            className="type-label rounded-lg border border-[var(--brass)] bg-[var(--brass-glow)] px-4 py-3 text-sm uppercase tracking-wide text-[var(--starlight)] transition-colors hover:bg-[rgba(201,151,78,0.38)]"
-          >
-            Next
-          </button>
-        )}
-      </div>
-      </div>
-    </main>
+    </DoorStage>
   )
 }

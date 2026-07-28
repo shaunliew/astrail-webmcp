@@ -10,54 +10,66 @@ vi.mock('@/lib/trip/supabase-api', () => ({ saveProfile }))
 
 import OnboardingWizard from '@/components/onboarding/OnboardingWizard'
 
-const clickNext = () => fireEvent.click(screen.getByRole('button', { name: /^next$/i }))
-
 describe('OnboardingWizard', () => {
-  beforeEach(() => { push.mockClear(); saveProfile.mockClear() })
+  beforeEach(() => {
+    push.mockClear()
+    saveProfile.mockClear()
+  })
 
-  it('walks the steps, saves the profile, and routes to /app', async () => {
+  it('answers origin + pace, saves the profile, and routes to /app', async () => {
     render(<OnboardingWizard />)
-    fireEvent.change(screen.getByLabelText(/origin city/i), { target: { value: 'Tokyo' } })
-    clickNext()
-    fireEvent.click(screen.getByRole('button', { name: /^food-led$/i }))
-    clickNext()
-    fireEvent.click(screen.getByRole('button', { name: /^ramen$/i }))
-    clickNext()
-    fireEvent.change(screen.getByLabelText(/remember/i), { target: { value: 'avoid rushing' } })
-    clickNext()
-    fireEvent.click(screen.getByRole('button', { name: /finish/i }))
+    fireEvent.change(screen.getByLabelText(/home city/i), { target: { value: 'Tokyo' } })
+    fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /balanced/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^finish$/i }))
 
     await waitFor(() => expect(saveProfile).toHaveBeenCalledTimes(1))
     expect(saveProfile).toHaveBeenCalledWith({
       origin_city: 'Tokyo',
-      travel_style_tags: ['food-led'],
-      preference_tags: ['ramen'],
-      preference_notes: 'avoid rushing',
+      travel_style_tags: ['balanced'],
+      preference_tags: [],
+      preference_notes: null,
     })
     await waitFor(() => expect(push).toHaveBeenCalledWith('/app'))
   })
 
-  it('disables Finish until at least one style or interest tag is chosen', () => {
+  it('keeps the origin CTA disabled (stating its blocker) until a city is entered', () => {
     render(<OnboardingWizard />)
-    for (let i = 0; i < 4; i++) clickNext() // advance to the review step selecting nothing
-    expect(screen.getByRole('button', { name: /finish/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /waiting for your city/i })).toBeDisabled()
+    fireEvent.change(screen.getByLabelText(/home city/i), { target: { value: 'Tokyo' } })
+    expect(screen.getByRole('button', { name: /^continue$/i })).toBeEnabled()
   })
 
-  it('shows the decorative astronaut on the final review step only', () => {
-    const { container } = render(<OnboardingWizard />)
-    expect(container.querySelector('[data-mascot="astronaut"]')).toBeNull()
-    for (let i = 0; i < 4; i++) clickNext() // advance to the review step
-    const mascot = container.querySelector('[data-mascot="astronaut"]')
-    expect(mascot).not.toBeNull()
-    expect(mascot).toHaveAttribute('aria-hidden', 'true')
+  it('keeps Finish disabled until a pace is chosen', () => {
+    render(<OnboardingWizard />)
+    fireEvent.change(screen.getByLabelText(/home city/i), { target: { value: 'Tokyo' } })
+    fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
+    expect(screen.getByRole('button', { name: /waiting for your pace/i })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: /packed/i }))
+    expect(screen.getByRole('button', { name: /^finish$/i })).toBeEnabled()
   })
 
-  it('toggles a chip aria-pressed on click', () => {
+  it('skipping still completes onboarding (empty profile) and routes to /app', async () => {
     render(<OnboardingWizard />)
-    clickNext() // to the style step
-    const chip = screen.getByRole('button', { name: /^food-led$/i })
-    expect(chip).toHaveAttribute('aria-pressed', 'false')
-    fireEvent.click(chip)
-    expect(chip).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.click(screen.getByRole('button', { name: /skip for now/i }))
+    await waitFor(() =>
+      expect(saveProfile).toHaveBeenCalledWith({
+        origin_city: null,
+        travel_style_tags: [],
+        preference_tags: [],
+        preference_notes: null,
+      }),
+    )
+    await waitFor(() => expect(push).toHaveBeenCalledWith('/app'))
+  })
+
+  it('toggles a pace choice aria-pressed on click', () => {
+    render(<OnboardingWizard />)
+    fireEvent.change(screen.getByLabelText(/home city/i), { target: { value: 'Tokyo' } })
+    fireEvent.click(screen.getByRole('button', { name: /^continue$/i }))
+    const choice = screen.getByRole('button', { name: /relaxed/i })
+    expect(choice).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(choice)
+    expect(choice).toHaveAttribute('aria-pressed', 'true')
   })
 })

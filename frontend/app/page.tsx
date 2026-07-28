@@ -11,7 +11,7 @@ import WaitlistSection from "@/components/landing/WaitlistSection";
 
 export default function LandingPage() {
   return (
-    <main className="min-h-[100dvh] overflow-hidden bg-[color:var(--void)] text-[color:var(--starlight)]">
+    <main className="landing min-h-[100dvh] overflow-hidden bg-[color:var(--void)] text-[color:var(--starlight)]">
       <LandingNav />
       <div className="relative overflow-hidden">
         <LandingMotionScene />

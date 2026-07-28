@@ -1,0 +1,234 @@
+/* ============================================================
+   ASTRAIL — TYPOGRAPHY
+   Single system. Locked 2026-07-26. No alternates.
+
+     Display    Fraunces        variable serif, SOFT + WONK axes
+     UI         Figtree         variable warm geometric sans
+     Evidence   IBM Plex Mono   built for information-dense text
+
+   Deliberately absent: Inter. It is simultaneously the dominant UI
+   font and the most recognisable AI-slop tell. With a palette this
+   restrained the type carries the brand, so it cannot be the face
+   every other product ships.
+
+   Two rules that are not negotiable:
+
+   1. MONO MEANS PROVENANCE. Monospace on screen has exactly one
+      meaning — this is verbatim data from a source. Evidence chips,
+      coordinates, durations, prices, counts, timestamps. Used for a
+      UI label it dilutes to nothing.
+
+   2. THE QUOTE IS ITALIC DISPLAY, NEVER ITALIC UI. A slanted
+      interface font is still the interface talking. Only a change of
+      face is a change of voice.
+   ============================================================ */
+
+:root {
+  /* Families loaded via next/font in layout.tsx; literal names kept as fallback. */
+  --font-display: var(--font-fraunces), 'Fraunces', Georgia, 'Times New Roman', serif;
+  --font-ui:      var(--font-figtree), 'Figtree', system-ui, -apple-system, sans-serif;
+  --font-mono:    var(--font-ibm-plex-mono), 'IBM Plex Mono', ui-monospace, Menlo, monospace;
+
+  /* Fraunces axes. SOFT rounds the terminals, WONK lets a few
+     letters lean. Both kept low — at full strength it reads twee
+     rather than crafted. opsz is set per size below, because that
+     is the entire point of an optical-size axis. */
+  --wonk: 1;
+  --soft: 28;
+}
+
+body,
+button, input, select, textarea {
+  font-family: var(--font-ui);
+  font-weight: 400;
+}
+
+/* ============================================================
+   DISPLAY
+   opsz tracks the rendered size. Fraunces thins its strokes and
+   tightens spacing as opsz rises, which is what keeps a 28px
+   headline and a 15px day heading looking like one family.
+   ============================================================ */
+
+.trip-head__title,
+.gen-head__title,
+.greeting__name,
+.section__title,
+.group__title,
+.continue__title,
+.trip-card__name,
+.stop__name,
+.hotel__name,
+.empty__title,
+.door__title,
+.pane__title,
+h1 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: -0.015em;
+}
+
+.greeting__name {
+  font-size: 28px;
+  font-variation-settings: 'SOFT' var(--soft), 'WONK' var(--wonk), 'opsz' 28;
+}
+
+.trip-head__title,
+.pane__title {
+  font-size: 24px;
+  line-height: 1.18;
+  font-variation-settings: 'SOFT' var(--soft), 'WONK' var(--wonk), 'opsz' 24;
+}
+
+/* The question on a door screen. One display line per screen, so
+   WONK stays on — this is the once-per-screen place for it.
+
+   `text-wrap: balance` because a display line that breaks one word
+   before the end ("…as one / route.") is the difference between a
+   headline and a paragraph that happens to be large. */
+.door__title {
+  font-size: 22px;
+  line-height: 1.22;
+  text-wrap: balance;
+  font-variation-settings: 'SOFT' var(--soft), 'WONK' var(--wonk), 'opsz' 22;
+}
+
+/* Sign-in only. The first screen needs one element that is plainly
+   the largest thing on it; every other door leads with its question,
+   which already is. */
+.door__title--lead {
+  font-size: 28px;
+  line-height: 1.14;
+  font-variation-settings: 'SOFT' var(--soft), 'WONK' var(--wonk), 'opsz' 28;
+}
+
+.gen-head__title {
+  font-size: 22px;
+  font-variation-settings: 'SOFT' var(--soft), 'WONK' var(--wonk), 'opsz' 22;
+}
+
+.continue__title,
+.empty__title {
+  font-size: 20px;
+  font-variation-settings: 'SOFT' var(--soft), 'WONK' var(--wonk), 'opsz' 20;
+}
+
+.section__title {
+  font-size: 18px;
+  font-variation-settings: 'SOFT' var(--soft), 'WONK' var(--wonk), 'opsz' 18;
+}
+
+/* The wordmark sits next to the display headline on the door
+   screens, so it drops WONK — the headline is already carrying it. */
+.door__word {
+  font-family: var(--font-display);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  font-variation-settings: 'SOFT' var(--soft), 'WONK' 0, 'opsz' 16;
+}
+
+/* Names in a list are scanned, not read as headlines. They sit near
+   body size, keep normal tracking, and drop WONK — a leaning letter
+   is charming once per screen and noisy six times. */
+.stop__name,
+.trip-card__name,
+.hotel__name {
+  font-size: 16px;
+  letter-spacing: 0;
+  font-variation-settings: 'SOFT' var(--soft), 'WONK' 0, 'opsz' 16;
+}
+
+.group__title {
+  font-size: 15px;
+  letter-spacing: 0;
+  font-weight: 600;
+  font-variation-settings: 'SOFT' var(--soft), 'WONK' 0, 'opsz' 15;
+}
+
+/* ============================================================
+   THE SOURCE QUOTE  ·  the voice of the Reel, not of Astrail
+   ============================================================ */
+
+.quote {
+  font-family: var(--font-display);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 15px;
+  line-height: 1.45;
+  letter-spacing: 0;
+  font-variation-settings: 'SOFT' 40, 'WONK' 1, 'opsz' 15;
+}
+
+/* ============================================================
+   EVIDENCE  ·  monospace, provenance only
+   ============================================================ */
+
+/* Each of these is either the NAME OF A SOURCE or a MEASURED VALUE
+   returned by one. Nothing here is written by Astrail. */
+.evchip,          /* Reel · Mapbox · Travala · Memory — the source itself */
+.stat__n,         /* counts of real rows */
+.leg__t,          /* duration Mapbox returned */
+.timeline__time,  /* elapsed time */
+.timeline__src,   /* which tool produced the line */
+.hotel__price,    /* price Travala returned */
+.globe__count,
+.chip__count,
+.linkcard__url,  /* saved_reels.normalized_url, verbatim as it arrived */
+.otp__box,       /* a machine-issued token, transcribed from mail */
+.stamp {
+  font-family: var(--font-mono);
+}
+
+/* NOT mono, though the first draft had them here:
+   .tile__type        is place_type translated to English
+   .reel-card__status is analysis_status translated to English
+   .fact__text        is a remembered fact written out in English
+   .fact__when        is Astrail's phrasing of a timestamp, not one
+   Both are Astrail's own words for a state, not data from a source.
+   Mono on them dilutes the one thing mono is for. */
+.tile__type,
+.reel-card__status {
+  font-family: var(--font-ui);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
+
+/* Numerals that align in a column or tick in place must not jitter. */
+.stat__n,
+.leg__t,
+.hotel__price,
+.timeline__time {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============================================================
+   UI  ·  labels, controls, body
+   Uppercase tracked micro-labels are reserved for form labels and
+   data captions. Section headers are display, sentence case —
+   never an uppercase eyebrow.
+   ============================================================ */
+
+.field__label,
+.callout__k,
+.stat__k,
+.continue__label,
+.gen-head__label,
+.known__from,
+.sidebar__label,
+.sheet__peek-cta {
+  font-family: var(--font-ui);
+  font-weight: 600;
+}
+
+.btn, .fab, .pill, .chip { font-weight: 500; }
+
+/* Figtree runs a little wide; pull long-form copy in slightly so
+   line length stays comfortable in a 420px rail. */
+.callout,
+.trip-head__where,
+.stop__meta,
+.hotel__line,
+.timeline__text {
+  letter-spacing: -0.005em;
+}

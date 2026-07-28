@@ -1,0 +1,261 @@
+/* ============================================================
+   ASTRAIL — COLOUR PALETTE
+   Single scheme. Locked 2026-07-26. This file is the source of
+   truth for colour; there are no alternate themes.
+
+   Five roles:
+     1  MAIN         Brass      the colour to be remembered
+     2  2ND MAIN     Night      the ground brass lives on
+     3  HIGHLIGHTER  Spruce     cool counterweight / verified
+     4  BASE         Paper      warm neutral surfaces
+     5  BASE         Ink        warm neutral text
+
+   Every pair below was measured, not eyeballed. Ratios are in
+   the comments. Two results changed the palette:
+
+   · brass mid (#C9974E) is 2.32:1 on paper — it is NOT a text
+     colour. Fills, the trail core and large marks only.
+   · spruce and brass at equal lightness sat 1.03:1 apart, i.e.
+     identical in greyscale. Spruce was darkened to #0E4239 for
+     1.92:1 separation.
+   ============================================================ */
+
+:root {
+  /* ---------- 1 · MAIN — BRASS ---------- */
+  /* Astra + Trail. The star-gold of the route. The only brand hue. */
+  --brass-bright: #E8B667;   /* on night   10.47:1  small-text safe */
+  --brass:        #C9974E;   /* fills, trail core, large marks ONLY */
+  --brass-deep:   #8A5A18;   /* on paper    5.23:1  small-text safe */
+  --brass-glow:   rgba(232, 182, 103, 0.34);
+  --brass-wash:   rgba(232, 182, 103, 0.09);
+
+  /* ---------- 2 · 2ND MAIN — NIGHT ---------- */
+  /* Blue-black, never neutral grey: it has to read as sky.
+     This is the map, and the map is the only dark surface. */
+  --night-900:    #0A0D14;   /* map ground, page ground */
+  --night-800:    #12161F;   /* pin discs, raised chrome over the map */
+  --night-700:    #1B2130;   /* recessed on night */
+  --night-line:   rgba(232, 220, 200, 0.14);
+
+  --starlight:    #F5F1E8;   /* on night-900  17.24:1 */
+  --starlight-70: #BDB6A6;   /* on night-800   8.97:1 */
+  --starlight-50: #8C8578;   /* on night-800   4.95:1  captions */
+
+  /* ---------- 3 · HIGHLIGHTER — SPRUCE ---------- */
+  /* The cool counterweight. Stops the palette being all-warm, and
+     carries "verified / ok / live". Darkened from the first pick so
+     it separates from brass in luminance, not just in hue. */
+  --spruce-deep:   #0E4239;  /* on paper   10.02:1 · vs brass-deep 1.92:1 */
+  --spruce-bright: #6FC9B4;  /* on night    9.89:1 */
+
+  /* ---------- 4 · BASE — PAPER ---------- */
+  --paper-0:      #FCFAF3;   /* cards, raised */
+  --paper-1:      #F5F1E6;   /* page ground */
+  --paper-2:      #EDE7D8;   /* recessed, inputs, wells */
+  --paper-line:   #D8CFB9;   /* hairlines */
+  --paper-line-2: #B9AB90;   /* stronger divisions */
+
+  /* ---------- 5 · BASE — INK ---------- */
+  --ink-900:      #1C1710;   /* on paper-1  15.78:1  primary */
+  --ink-600:      #635945;   /* on paper-1   6.11:1  secondary */
+  --ink-400:      #93876C;   /* on paper-1   3.14:1  captions only */
+
+  /* ---------- SEMANTIC STATES ---------- */
+  /* Never colour-only: every state ships with a label or a shape.
+
+     WARN HAS NO HUE, deliberately. Amber is the brand colour, so an
+     amber warning would collide with the accent and stop meaning
+     "verified". Warnings use ink-600 plus a dashed border instead. */
+  --ok:           var(--spruce-deep);    /* paper  10.02:1 */
+  --ok-night:     var(--spruce-bright);  /* night   9.89:1 */
+  --warn:         var(--ink-600);        /* + dashed border, no hue */
+  --warn-night:   var(--starlight-70);
+  --fail:         #7C2718;               /* paper   8.61:1 · vs brass 1.65:1 */
+  --fail-night:   #E38A78;               /* night   7.56:1 */
+
+  /* ============================================================
+     APPLIED TOKENS
+     What the components actually consume. The five roles above are
+     the vocabulary; these are the assignments.
+     ============================================================ */
+
+  --bg:          var(--paper-1);
+  --surface-0:   var(--paper-1);
+  --surface-1:   var(--paper-0);
+  --surface-2:   var(--paper-2);
+
+  --line:        var(--paper-line-2);
+  --line-soft:   var(--paper-line);
+  --line-w:      1px;
+
+  --text:        var(--ink-900);
+  --text-muted:  var(--ink-600);
+  --text-faint:  var(--ink-400);
+
+  --accent:      var(--brass-deep);
+  --accent-text: var(--paper-0);
+  --accent-ink:  var(--brass-deep);
+
+  /* The map, always dark, always the same. Product state changes the
+     basemap's lightPreset — never the UI palette. */
+  --map-ink:     var(--night-900);
+}
+
+/* ============================================================
+   THE MAP  ·  the one dark surface
+   ============================================================ */
+
+.map-backdrop {
+  background-color: var(--map-ink);
+  background-image:
+    linear-gradient(var(--night-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--night-line) 1px, transparent 1px);
+  opacity: 1;
+}
+
+/* This file loads after skeleton.css, so the rule above was beating
+   `.map-backdrop--deferred { opacity: 0 }` on source order alone —
+   the city grid was visible on 03-generating and 06-onboarding from
+   the first frame, which is exactly the guess the deferred map exists
+   to avoid. Restate both states here, after the base. */
+.map-backdrop--deferred { opacity: 0; }
+.map-backdrop--deferred.map-backdrop--revealed { opacity: 1; }
+
+.stage {
+  background-color: var(--map-ink);
+  background-image:
+    radial-gradient(ellipse 90% 46% at 52% -12%, var(--brass-wash), transparent 72%),
+    radial-gradient(ellipse 64% 48% at 88% 12%, rgba(52, 68, 132, 0.30), transparent 68%);
+}
+
+/* Vignette, so the constellation is the brightest thing in frame. */
+.stage::after {
+  content: '';
+  position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(ellipse 72% 62% at 58% 42%,
+              transparent 32%, rgba(0, 0, 0, 0.55) 100%);
+}
+
+/* Panels float on paper; shadows carry the depth, not borders. */
+.sheet, .app, .door {
+  box-shadow: 0 1px 2px rgba(28, 23, 16, 0.08), 0 16px 40px rgba(28, 23, 16, 0.14);
+}
+
+/* ============================================================
+   BRASS IN TWO LIGHTING CONDITIONS
+   Same hue. Bright against the map, deep inside the paper panels —
+   which is what gold actually does.
+   ============================================================ */
+
+.pin {
+  background: var(--night-800);
+  border-color: var(--brass-bright);
+  color: var(--brass-bright);
+  box-shadow: 0 0 0 6px var(--brass-wash), 0 0 26px var(--brass-glow);
+}
+
+.pin--active { background: var(--brass-bright); color: var(--night-900); }
+.pin--muted  { box-shadow: none; }
+
+.pin__label {
+  background: var(--night-800);
+  border-color: rgba(232, 182, 103, 0.28);
+  color: var(--starlight);
+}
+
+.trail__line {
+  stroke: var(--brass-bright);
+  filter: drop-shadow(0 0 5px rgba(232, 182, 103, 0.5));
+}
+
+/* A leg that could not be routed. Neutral, not alarming — a missing
+   leg is a fact about the world, not an error the user caused. */
+.trail__gap { stroke: var(--starlight-50); }
+
+/* ---------- Globe ---------- */
+.globe__sphere { stroke: rgba(255, 255, 255, 0.20); }
+.globe__grid   { stroke: rgba(255, 255, 255, 0.07); }
+.globe__marker { fill: var(--brass-bright); filter: drop-shadow(0 0 6px rgba(232, 182, 103, 0.85)); }
+.globe__ring   { stroke: rgba(232, 182, 103, 0.50); }
+.globe__label  { fill: var(--starlight); }
+.globe__count  { fill: var(--starlight-70); }
+.globe-cap     { color: var(--starlight-70); }
+
+.constellation__node { fill: var(--brass-deep); }
+.constellation__line { stroke: var(--ink-400); }
+
+/* ---------- Chrome floating over the map has to invert ---------- */
+.iconbtn {
+  background: rgba(18, 22, 31, 0.82);
+  border-color: rgba(232, 182, 103, 0.30);
+  color: var(--starlight);
+}
+.iconbtn:hover { background: var(--night-700); }
+
+.title-pill {
+  background: var(--brass-bright);
+  border-color: var(--brass-bright);
+  color: var(--night-900);
+}
+
+/* ============================================================
+   EVIDENCE CHIPS  ·  three epistemic tiers
+   Structure carries the meaning; colour only reinforces it. The
+   tiers survive greyscale, print and colour-blindness.
+     evidence  solid border + filled mark  → proven, verbatim
+     tool      plain border, no mark       → a tool said so
+     inferred  dashed border               → Astrail's own guess
+   ============================================================ */
+
+.evchip--evidence { border-color: var(--brass-deep); color: var(--brass-deep); }
+.evchip--evidence::before { background: var(--brass-deep); }
+.evchip--inferred { border-style: dashed; color: var(--ink-600); }
+
+/* The source quote speaks in the Reel's voice, not the UI's. */
+.quote { border-left-color: var(--brass-deep); }
+
+/* ---------- Generation timeline ---------- */
+.timeline__dot { background: var(--ink-900); }
+.timeline__dot--live { background: var(--paper-0); border-color: var(--ink-900); }
+.timeline__dot--warn { background: var(--paper-0); border-color: var(--ink-400); }
+
+.genbar__fill { background-image: repeating-linear-gradient(
+  -45deg, var(--brass-deep) 0 8px, transparent 8px 16px); }
+
+/* ============================================================
+   THE DOOR  ·  sign-in and onboarding
+   Paper panel over the empty globe. The one brass thing on the
+   screen is the brand lockup, which is the trail primitive itself
+   — so the budget is not being spent on decoration.
+   ============================================================ */
+
+.mark__line {
+  stroke: var(--brass-deep);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
+.mark__dot   { fill: var(--brass-deep); }               /* verified */
+.mark__ghost { fill: none; stroke: var(--ink-400);       /* unplaced */
+               stroke-width: 1.2; stroke-dasharray: 2 2; }
+
+/* The empty globe: a wireframe with no markers on it, because
+   nothing has been located yet. Only the lighting is present. */
+.globe-scene--empty .globe__sphere { stroke: rgba(255, 255, 255, 0.16); }
+
+/* Onboarding step 1 answered — the first real coordinate Astrail
+   has. It is the origin city, geocoded, not a decorative star. */
+.globe__marker--origin { fill: var(--brass-bright); }
+
+/* ============================================================
+   MEMORY RECEIPT + DESTRUCTIVE ACTIONS  ·  settings
+   ============================================================ */
+
+.fact--removed { border-color: var(--paper-line); }
+
+/* Delete is the one place --fail belongs on a control: the user is
+   causing it and cannot take it back. Warnings about the world
+   still get ink-600 + dashed, with no hue. */
+.btn--danger { border-color: var(--fail); color: var(--fail); }
+
+.saved__mark { border-color: var(--ok); color: var(--ok); }

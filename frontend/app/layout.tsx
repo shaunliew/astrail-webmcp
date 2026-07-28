@@ -1,24 +1,34 @@
 import type { Metadata } from "next";
-import { Geist, Instrument_Serif, JetBrains_Mono } from "next/font/google";
+import { Fraunces, Figtree, IBM_Plex_Mono } from "next/font/google";
 import "./globals.css";
+// Locked paper design system (2026-07-26). Imported AFTER globals so its :root tokens
+// win over the retired Night & Daybreak values by source order — palette.css is
+// authoritative. Un-ported app screens stay readable via the structural night tokens
+// kept in globals.css; the marketing landing is pinned under `.landing`.
+import "./palette.css";
+import "./type.css";
 
-const instrumentSerif = Instrument_Serif({
+// Locked type system (DESIGN.md §3, 2026-07-26):
+//   Display   Fraunces      variable serif — opsz + SOFT + WONK axes, ital for the source quote
+//   UI        Figtree       variable warm geometric sans
+//   Evidence  IBM Plex Mono provenance only (not variable — explicit weights)
+// Inter is deliberately absent: the type carries the brand, so it can't be the AI-slop default.
+const fraunces = Fraunces({
   subsets: ["latin"],
-  variable: "--font-instrument-serif",
-  weight: "400",
+  axes: ["SOFT", "WONK", "opsz"],
   style: ["normal", "italic"],
+  variable: "--font-fraunces",
 });
 
-const geist = Geist({
+const figtree = Figtree({
   subsets: ["latin"],
-  variable: "--font-geist",
-  weight: ["300", "400", "500", "600"],
+  variable: "--font-figtree",
 });
 
-const jetbrainsMono = JetBrains_Mono({
+const ibmPlexMono = IBM_Plex_Mono({
   subsets: ["latin"],
-  variable: "--font-jetbrains-mono",
-  weight: ["300", "400", "500"],
+  weight: ["400", "500"],
+  variable: "--font-ibm-plex-mono",
 });
 
 export const metadata: Metadata = {
@@ -35,7 +45,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`${instrumentSerif.variable} ${geist.variable} ${jetbrainsMono.variable}`}
+      className={`${fraunces.variable} ${figtree.variable} ${ibmPlexMono.variable}`}
     >
       <body>{children}</body>
     </html>

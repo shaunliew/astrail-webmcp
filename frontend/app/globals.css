@@ -1,6 +1,18 @@
 @import "tailwindcss";
 
 :root {
+  /* ——— Type: locked system 2026-07-26 (DESIGN.md §3). Families loaded in layout.tsx. ———
+     New semantic names the ported components will consume: */
+  --font-display: var(--font-fraunces), Georgia, "Times New Roman", serif;
+  --font-ui:      var(--font-figtree), system-ui, -apple-system, sans-serif;
+  --font-mono:    var(--font-ibm-plex-mono), ui-monospace, Menlo, monospace;
+  /* Back-compat aliases — un-ported screens still reference the old names; point them
+     at the new families so the whole app flips type in one change, no component edits.
+     Retire each alias as its screen is migrated. */
+  --font-instrument-serif: var(--font-fraunces);
+  --font-geist:            var(--font-figtree);
+  --font-jetbrains-mono:   var(--font-ibm-plex-mono);
+
   --void: #050506;
   --deep: #0B0C10;
   --elevated: #141416;
@@ -51,6 +63,80 @@
   --astronaut-visor: var(--night-deep);
 }
 
+/* ============================================================
+   LANDING PIN — the marketing page keeps the retired dark system
+   in full, scoped to its subtree (main.landing), so the paper base
+   at :root never touches it. Token inheritance is tree-based, so this
+   wins for the landing subtree regardless of stylesheet order.
+   Delete this block only when the landing itself is reskinned.
+   ============================================================ */
+.landing {
+  --void: #050506;
+  --deep: #0B0C10;
+  --elevated: #141416;
+  --line: rgba(242, 236, 224, 0.14);
+  --starlight: #F2ECE0;
+  --muted: rgba(242, 236, 224, 0.55);
+  --faint: rgba(242, 236, 224, 0.25);
+  --brass: #C9974E;
+  --brass-soft: rgba(201, 151, 78, 0.15);
+  --paper: #F2ECE0;
+  --ink: #060818;
+  --night-void: #0A0B14;
+  --night-deep: #111322;
+  --night-surface: #191C2E;
+  --night-line: rgba(200, 205, 255, 0.1);
+  --starlight-bright: #F7F3E8;
+  --paper-0: #FBF8F1;
+  --paper-1: #F3EEE2;
+  --paper-line: rgba(26, 24, 16, 0.08);
+  --ink-day: #1A1810;
+  --brass-bright: #EFC98D;
+  --brass-deep: #8A6023;
+  --brass-glow: rgba(201, 151, 78, 0.28);
+  --ok: #7BC9A6;
+  --ok-day: #2E7D5B;
+  --warn: #D9A441;
+  --warn-day: #9A731F;
+  --fail: #D0705F;
+  --fail-day: #A8453A;
+}
+
+/* ============================================================
+   Paper tokens (palette.css) → Tailwind v4 utilities. `inline` emits the
+   var() reference directly, so scope overrides (.landing / .app-shell)
+   still apply where they redefine a token.
+   ============================================================ */
+@theme inline {
+  --font-display: var(--font-display);
+  --font-ui:      var(--font-ui);
+  --font-mono:    var(--font-mono);
+
+  --color-brass-bright:  var(--brass-bright);
+  --color-brass:         var(--brass);
+  --color-brass-deep:    var(--brass-deep);
+  --color-night-900:     var(--night-900);
+  --color-night-800:     var(--night-800);
+  --color-night-700:     var(--night-700);
+  --color-starlight:     var(--starlight);
+  --color-spruce-deep:   var(--spruce-deep);
+  --color-spruce-bright: var(--spruce-bright);
+  --color-paper-0:       var(--paper-0);
+  --color-paper-1:       var(--paper-1);
+  --color-paper-2:       var(--paper-2);
+  --color-paper-line:    var(--paper-line);
+  --color-ink-900:       var(--ink-900);
+  --color-ink-600:       var(--ink-600);
+  --color-ink-400:       var(--ink-400);
+  --color-ok:            var(--ok);
+  --color-warn:          var(--warn);
+  --color-fail:          var(--fail);
+  --color-bg:            var(--bg);
+  --color-surface:       var(--surface-1);
+  --color-line:          var(--line);
+  --color-accent:        var(--accent);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -58,17 +144,15 @@
 html {
   scroll-behavior: smooth;
   scroll-padding-top: 84px;
-  background: var(--void);
+  background: var(--bg); /* paper base (palette.css); .landing repaints its own dark bg */
 }
 
 body {
   margin: 0;
   min-width: 320px;
-  background:
-    linear-gradient(180deg, rgba(201, 151, 78, 0.03), transparent 480px),
-    var(--void);
-  color: var(--starlight);
-  font-family: var(--font-geist), system-ui, sans-serif;
+  background: var(--bg);        /* paper-1 */
+  color: var(--text);          /* ink-900 */
+  font-family: var(--font-ui);
   font-synthesis-weight: none;
   text-rendering: geometricPrecision;
 }
@@ -568,6 +652,17 @@ button:focus-visible {
   to {
     opacity: 1;
   }
+}
+
+/* Empty-globe drift on the door screens (sign-in / onboarding). Slow enough to read as
+   drift, not a loading spinner. Disabled under reduced-motion just below. */
+@keyframes globe-drift { to { transform: rotate(360deg); } }
+.globe-grid-drift {
+  transform-origin: 100px 100px;
+  animation: globe-drift 48s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .globe-grid-drift { animation: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

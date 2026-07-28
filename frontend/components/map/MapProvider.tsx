@@ -107,6 +107,11 @@ export default function MapProvider({ children }: { children: React.ReactNode })
     const map = mapRef.current
     const desired = desiredPresetRef.current
     if (!map || !desired || appliedPresetRef.current === desired) return
+    // The style must be parsed before setTransition/setConfigProperty. Called too early
+    // (acquire fires applyPreset right after `new Map()`, before the 'load' event), Mapbox's
+    // setTransition throws "reading 'transition' of undefined". Bail — the map's own 'load'
+    // handler re-runs applyPreset, and transitionMsRef is preserved so the relight still lands.
+    if (typeof map.isStyleLoaded === 'function' && !map.isStyleLoaded()) return
     const duration = transitionMsRef.current ?? DEFAULT_TRANSITION_MS
     transitionMsRef.current = null
     map.style?.setTransition({ duration, delay: 0 })

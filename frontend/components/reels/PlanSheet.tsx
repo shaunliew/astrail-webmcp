@@ -44,6 +44,7 @@ export default function PlanSheet({
   onBrief,
   onBack,
   onGenerate,
+  error,
 }: {
   places: SavedReelPlaceProof[]
   reelCount: number
@@ -51,6 +52,7 @@ export default function PlanSheet({
   onBrief: (updater: (b: BriefInput) => BriefInput) => void
   onBack: () => void
   onGenerate: () => void
+  error?: string | null
 }) {
   const [originFromProfile, setOriginFromProfile] = useState<string | null>(null)
   const [styleFromProfile, setStyleFromProfile] = useState<string | null>(null)
@@ -200,7 +202,12 @@ export default function PlanSheet({
           </button>
         </div>
 
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 p-4">
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col gap-2 p-4">
+          {error ? (
+            <p role="alert" className="pointer-events-auto max-h-24 overflow-y-auto rounded-lg border border-dashed border-[color:var(--fail)] bg-[color:var(--surface-1)] px-3 py-2 text-[12px] text-[color:var(--fail)]">
+              {error}
+            </p>
+          ) : null}
           <button
             type="button"
             onClick={onGenerate}

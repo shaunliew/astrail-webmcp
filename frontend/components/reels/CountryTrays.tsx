@@ -15,11 +15,13 @@ import VerifiedPlacesMap from './VerifiedPlacesMap'
 export default function CountryTrays({
   trays,
   selectedPlaceIds,
+  maxSelected,
   onToggle,
   onPlan,
 }: {
   trays: CountryTray[]
   selectedPlaceIds: string[]
+  maxSelected?: number
   onToggle: (placeId: string) => void
   onPlan: () => void
 }) {
@@ -27,6 +29,8 @@ export default function CountryTrays({
   const [collapsed, setCollapsed] = useState(false)
   const total = verifiedPlaces.length
   const countries = trays.length
+  const cap = maxSelected ?? Infinity
+  const atMax = selectedPlaceIds.length >= cap
 
   return (
     <div className="fixed inset-0 z-50 overflow-hidden bg-[color:var(--night-900)]">
@@ -80,8 +84,9 @@ export default function CountryTrays({
                           type="checkbox"
                           aria-label={`Select ${place.name}`}
                           checked={on}
+                          disabled={!on && atMax}
                           onChange={() => onToggle(place.place_id)}
-                          className="mt-0.5 h-5 w-5 shrink-0 accent-[color:var(--brass-deep)]"
+                          className="mt-0.5 h-5 w-5 shrink-0 accent-[color:var(--brass-deep)] disabled:cursor-not-allowed disabled:opacity-40"
                         />
                         <span className="min-w-0 flex-1">
                           <span className="flex items-center gap-2 text-[15px] font-medium text-[color:var(--text)]">
@@ -113,14 +118,19 @@ export default function CountryTrays({
         </div>
 
         {/* FAB pinned at the sheet bottom */}
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 p-4">
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col items-stretch gap-2 p-4">
+          {maxSelected && atMax ? (
+            <p className="self-center rounded-full bg-[color:var(--surface-2)] px-3 py-1 text-[12px] text-[color:var(--text-muted)]">
+              Up to {maxSelected} places per trip
+            </p>
+          ) : null}
           <button
             type="button"
             onClick={onPlan}
             disabled={!selectedPlaceIds.length}
             className="pointer-events-auto flex min-h-[52px] w-full items-center justify-center rounded-full border border-[color:var(--accent)] bg-[color:var(--accent)] px-5 text-[14px] font-medium text-[color:var(--accent-text)] shadow-[0_10px_28px_-8px_rgba(138,90,24,0.55)] transition-opacity hover:opacity-90 disabled:cursor-default disabled:border-dashed disabled:border-[color:var(--line-soft)] disabled:bg-transparent disabled:text-[color:var(--text-muted)]"
           >
-            {selectedPlaceIds.length ? `Plan this trip · ${selectedPlaceIds.length}` : 'Select places to plan this trip'}
+            {selectedPlaceIds.length ? `Plan this trip · ${selectedPlaceIds.length}${maxSelected ? ` / ${maxSelected}` : ''}` : 'Select places to plan this trip'}
           </button>
         </div>
       </section>

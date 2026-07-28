@@ -23,6 +23,10 @@ const EMPTY_BRIEF: BriefInput = {
   destination_hint: '', start_date: '', end_date: '', origin_city: '', budget_level: '', preferences: '',
 }
 
+// The backend GenerateTripRequest caps place_ids at 5 (api/schemas.py, max_length=5);
+// enforce it in the picker so a 6th selection can't produce a terminal 422.
+const MAX_PLACES = 5
+
 function tripIdFromResult(content: string, fallback: string): string {
   try { return (JSON.parse(content) as { trip_id?: string }).trip_id ?? fallback } catch { return fallback }
 }
@@ -52,6 +56,7 @@ export default function SavedReelsFlow() {
   const [brief, setBrief] = useState<BriefInput>(EMPTY_BRIEF)
   const [events, setEvents] = useState<StreamEvent[]>([])
   const [tripId, setTripId] = useState<string | null>(null)
+  const [generateError, setGenerateError] = useState<string | null>(null)
   const activeRef = useRef(true)
   const submittedReelIdsRef = useRef<string[]>([])
   const organizeCursorRef = useRef<string | null>(null)
@@ -200,6 +205,7 @@ export default function SavedReelsFlow() {
   async function handleGenerate() {
     setPhase('generating')
     setEvents([])
+    setGenerateError(null)
     try {
       const token = await getAccessToken()
       const request = toGenerateRequest(briefItems, brief)
@@ -222,13 +228,16 @@ export default function SavedReelsFlow() {
         () => { if (activeRef.current) setEvents([]) },
         () => { if (activeRef.current) router.push(`/app/trip/${response.trip_id}`) },
       )
-    } catch {
-      if (activeRef.current) setPhase('brief')
+    } catch (err) {
+      if (activeRef.current) {
+        setGenerateError(err instanceof Error ? err.message : 'Could not start generating your trip.')
+        setPhase('brief')
+      }
     }
   }
 
   if (phase === 'organizing') return <OrganizeGlobe message={organizeMessage} />
-  if (phase === 'trays') return <CountryTrays trays={trays} selectedPlaceIds={selectedPlaceIds} onToggle={(id) => setSelectedPlaceIds((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])} onPlan={() => setPhase('brief')} />
+  if (phase === 'trays') return <CountryTrays trays={trays} selectedPlaceIds={selectedPlaceIds} maxSelected={MAX_PLACES} onToggle={(id) => setSelectedPlaceIds((current) => current.includes(id) ? current.filter((value) => value !== id) : current.length < MAX_PLACES ? [...current, id] : current)} onPlan={() => setPhase('brief')} />
   if (phase === 'generating') return <GenerationScene tripId={tripId} events={events} />
   if (phase === 'brief') return (
     <PlanSheet
@@ -238,6 +247,7 @@ export default function SavedReelsFlow() {
       onBrief={setBrief}
       onBack={() => setPhase('trays')}
       onGenerate={handleGenerate}
+      error={generateError}
     />
   )
   return (

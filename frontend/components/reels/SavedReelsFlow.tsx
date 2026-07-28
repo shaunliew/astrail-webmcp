@@ -14,7 +14,7 @@ import TripBriefReview from '@/components/create/TripBriefReview'
 import { useSharedMap } from '@/components/map/MapProvider'
 import { relightDurationMs } from '@/components/map/relight'
 import GenerationScene from '@/components/create/GenerationScene'
-import SavedReelsInbox from './SavedReelsInbox'
+import DashboardHome from '@/components/dashboard/DashboardHome'
 import OrganizeGlobe from './OrganizeGlobe'
 import CountryTrays from './CountryTrays'
 
@@ -239,15 +239,13 @@ export default function SavedReelsFlow() {
   )
   if (phase === 'review') return <main className="mx-auto flex min-h-[100dvh] w-full max-w-2xl flex-col gap-6 bg-[var(--void)] p-6"><TripBriefReview items={briefItems} brief={brief} onBack={() => setPhase('brief')} onGenerate={handleGenerate} /></main>
   return (
-    <div className="min-h-[100dvh] bg-[var(--void)]">
+    <div>
       {inboxMessage ? (
-        <div className="mx-auto w-full max-w-4xl px-6 pt-6">
-          <p role="alert" className="surface type-body border border-[var(--warn)] p-3 text-sm text-[var(--starlight)]">
-            {inboxMessage}
-          </p>
-        </div>
+        <p role="alert" className="mb-6 rounded-lg border border-dashed border-[color:var(--line-soft)] bg-[color:var(--surface-2)] p-3 text-[13px] text-[color:var(--text-muted)]">
+          {inboxMessage}
+        </p>
       ) : null}
-      <SavedReelsInbox cards={cards} onCapture={handleCapture} onOrganize={handleOrganize} />
+      <DashboardHome cards={cards} onCapture={handleCapture} onOrganize={handleOrganize} />
     </div>
   )
 }

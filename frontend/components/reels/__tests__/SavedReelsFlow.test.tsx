@@ -27,6 +27,18 @@ vi.mock('next/link', () => ({ default: ({ children, ...props }: { children: Reac
 vi.mock('@/lib/supabase/session', () => ({ getAccessToken }))
 vi.mock('@/lib/reels/api', () => ({ listSavedReelCards, startOrganize, streamOrganize, getOrganizeStatus }))
 vi.mock('@/lib/trip/api', () => ({ generateTrip, streamGeneration }))
+// The inbox is now DashboardHome (paper). Its own UI (status labels, filter chips,
+// selection, empty state) is covered by DashboardHome.test.tsx; here we mock it down to
+// the one thing the flow needs — a trigger that submits saved-1 for organization — so
+// these tests stay about the organize/stream/poll/generate LOGIC, not inbox markup.
+vi.mock('@/components/dashboard/DashboardHome', () => ({
+  default: ({ cards, onOrganize }: { cards: { id: string; caption: string | null; normalized_url: string }[]; onOrganize: (ids: string[]) => void }) => (
+    <div>
+      {cards.map((c) => <span key={c.id}>{c.caption ?? c.normalized_url}</span>)}
+      <button type="button" onClick={() => onOrganize([cards[0]?.id ?? ''])}>mock-plan-trip</button>
+    </div>
+  ),
+}))
 vi.mock('mapbox-gl', () => ({
   default: {
     Map: vi.fn(() => mapInstance),
@@ -79,12 +91,18 @@ const mixedOrganizedCards: SavedReelCard[] = [
   },
 ]
 
+// Wait for the inbox to load its cards, then trigger organization of saved-1.
+async function loadedInbox() {
+  await screen.findByText('Tokyo Tower at sunset')
+}
+function planTrip() {
+  fireEvent.click(screen.getByRole('button', { name: 'mock-plan-trip' }))
+}
+
 async function startSelectedOrganize() {
   const rendered = render(<MapProvider><SavedReelsFlow /></MapProvider>)
-  await screen.findByText(/cache ready/i)
-  fireEvent.click(screen.getByRole('button', { name: /select reels/i }))
-  fireEvent.click(screen.getByRole('checkbox', { name: /select .*AAA/i }))
-  fireEvent.click(screen.getByRole('button', { name: /organize selected/i }))
+  await loadedInbox()
+  planTrip()
   await screen.findByTestId('organize-globe')
   await waitFor(() => expect(streamOrganize).toHaveBeenCalledTimes(1))
   return {
@@ -134,21 +152,15 @@ describe('SavedReelsFlow', () => {
     })
   })
 
-  it('shows cached and uncached cards, then enters temporary selection mode with quota copy', async () => {
+  it('loads saved Reels into the inbox', async () => {
     render(<MapProvider><SavedReelsFlow /></MapProvider>)
-    expect(await screen.findByText(/cache ready/i)).toBeInTheDocument()
-    expect(screen.getByText(/not analyzed yet/i)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /select reels/i }))
-    expect(screen.getByText(/0 \/ 5 selected/i)).toBeInTheDocument()
-    expect(screen.getByText(/cached reels are free/i)).toBeInTheDocument()
+    expect(await screen.findByText('Tokyo Tower at sunset')).toBeInTheDocument()
   })
 
   it('organizes selected Reels, shows the replacing globe status, and opens country trays', async () => {
     render(<MapProvider><SavedReelsFlow /></MapProvider>)
-    await screen.findByText(/cache ready/i)
-    fireEvent.click(screen.getByRole('button', { name: /select reels/i }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /select .*AAA/i }))
-    fireEvent.click(screen.getByRole('button', { name: /organize selected/i }))
+    await loadedInbox()
+    planTrip()
     listSavedReelCards.mockResolvedValueOnce(organizedCards)
 
     expect(await screen.findByTestId('organize-globe')).toBeInTheDocument()
@@ -165,10 +177,8 @@ describe('SavedReelsFlow', () => {
 
   it('shows grounded places only from the Reels submitted in the current organize action', async () => {
     render(<MapProvider><SavedReelsFlow /></MapProvider>)
-    await screen.findByText(/cache ready/i)
-    fireEvent.click(screen.getByRole('button', { name: /select reels/i }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /select .*AAA/i }))
-    fireEvent.click(screen.getByRole('button', { name: /organize selected/i }))
+    await loadedInbox()
+    planTrip()
     listSavedReelCards.mockResolvedValueOnce(mixedOrganizedCards)
 
     await screen.findByTestId('organize-globe')
@@ -184,10 +194,8 @@ describe('SavedReelsFlow', () => {
 
   it('passes selected place_ids through the brief into the existing generation stream', async () => {
     render(<MapProvider><SavedReelsFlow /></MapProvider>)
-    await screen.findByText(/cache ready/i)
-    fireEvent.click(screen.getByRole('button', { name: /select reels/i }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /select .*AAA/i }))
-    fireEvent.click(screen.getByRole('button', { name: /organize selected/i }))
+    await loadedInbox()
+    planTrip()
     listSavedReelCards.mockResolvedValueOnce(organizedCards)
     await screen.findByTestId('organize-globe')
     await waitFor(() => expect(streamOrganize).toHaveBeenCalledTimes(1))
@@ -221,10 +229,8 @@ describe('SavedReelsFlow', () => {
     process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN = 'pk.test'
     try {
       render(<MapProvider><SavedReelsFlow /></MapProvider>)
-      await screen.findByText(/cache ready/i)
-      fireEvent.click(screen.getByRole('button', { name: /select reels/i }))
-      fireEvent.click(screen.getByRole('checkbox', { name: /select .*AAA/i }))
-      fireEvent.click(screen.getByRole('button', { name: /organize selected/i }))
+      await loadedInbox()
+      planTrip()
       listSavedReelCards.mockResolvedValueOnce(organizedCards)
       await screen.findByTestId('organize-globe')
       await waitFor(() => expect(streamOrganize).toHaveBeenCalledTimes(1))
@@ -259,19 +265,15 @@ describe('SavedReelsFlow', () => {
     })
 
     render(<MapProvider><SavedReelsFlow /></MapProvider>)
-    await screen.findByText(/cache ready/i)
-    fireEvent.click(screen.getByRole('button', { name: /select reels/i }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /select .*AAA/i }))
-    fireEvent.click(screen.getByRole('button', { name: /organize selected/i }))
+    await loadedInbox()
+    planTrip()
     await screen.findByTestId('organize-globe')
     await waitFor(() => expect(streamOrganize).toHaveBeenCalledTimes(1))
     const onEvent = streamOrganize.mock.calls[0][2] as (event: unknown) => void
     onEvent({ type: 'result', content: JSON.stringify({ status: 'failed' }) })
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Location verification provider unavailable. Try again.')
-    fireEvent.click(screen.getByRole('button', { name: /select reels/i }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /select .*AAA/i }))
-    fireEvent.click(screen.getByRole('button', { name: /organize selected/i }))
+    planTrip()
     await waitFor(() => expect(startOrganize).toHaveBeenCalledTimes(2))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
@@ -284,10 +286,8 @@ describe('SavedReelsFlow', () => {
     })
 
     render(<MapProvider><SavedReelsFlow /></MapProvider>)
-    await screen.findByText(/cache ready/i)
-    fireEvent.click(screen.getByRole('button', { name: /select reels/i }))
-    fireEvent.click(screen.getByRole('checkbox', { name: /select .*AAA/i }))
-    fireEvent.click(screen.getByRole('button', { name: /organize selected/i }))
+    await loadedInbox()
+    planTrip()
     await screen.findByTestId('organize-globe')
     await waitFor(() => expect(streamOrganize).toHaveBeenCalledTimes(1))
     const onEvent = streamOrganize.mock.calls[0][2] as (event: unknown) => void
@@ -295,7 +295,7 @@ describe('SavedReelsFlow', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent(/could not verify any locations/i)
     expect(screen.queryByRole('button', { name: /plan this trip/i })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /select reels/i })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'mock-plan-trip' })).toBeInTheDocument()
   })
 
   it('starts one durable poll when a stream result says the job is still processing', async () => {
@@ -433,7 +433,7 @@ describe('SavedReelsFlow', () => {
     unmount()
     resolveCards(cards)
     await Promise.resolve(); await Promise.resolve()
-    expect(screen.queryByText(/cache ready/i)).not.toBeInTheDocument()
+    expect(screen.queryByText('Tokyo Tower at sunset')).not.toBeInTheDocument()
     expect(streamOrganize).not.toHaveBeenCalled()
   })
 })

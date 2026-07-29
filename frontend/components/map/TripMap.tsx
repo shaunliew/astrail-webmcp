@@ -167,12 +167,25 @@ export default function TripMap({
   // that — so first draw keys off `ready`, not a load listener that will never fire.
   // Framing is explicit for the same reason: the camera no longer resets on navigation,
   // so without this the trip would inherit wherever generation left the globe.
+  //
+  // Deferred to the next frame, deliberately. Two teardown paths call release() ->
+  // map.stop(), which cancels an in-flight fitBounds: React Strict Mode's dev
+  // mount->cleanup->remount, and the generation->trip handoff (the outgoing scene's
+  // release races our fit). Both run their cleanup synchronously before the next frame,
+  // so scheduling the fit in an rAF lets stop() fire first and our framing win. The
+  // effect's own cleanup cancels a still-pending frame, so the remount reschedules a
+  // fresh one instead of being locked out by a one-shot guard.
   useEffect(() => {
-    if (!ready || framedRef.current) return
-    framedRef.current = true
-    drawMarkers()
-    drawRoutes()
-    flyToTrip()
+    if (!ready) return
+    let cancelled = false
+    const raf = requestAnimationFrame(() => {
+      if (cancelled) return
+      framedRef.current = true
+      drawMarkers()
+      drawRoutes()
+      flyToTrip()
+    })
+    return () => { cancelled = true; cancelAnimationFrame(raf) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready])
 

@@ -63,8 +63,16 @@ describe('TripMap', () => {
     vi.clearAllMocks()
     markerElements.length = 0
     process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN = 'pk.test'
+    // Framing is scheduled via requestAnimationFrame (so a Strict Mode remount /
+    // generation handoff can't cancel the fit — see TripMap). Run it synchronously
+    // here so these effect assertions observe the framing without a frame wait.
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { cb(0); return 1 })
+    vi.stubGlobal('cancelAnimationFrame', () => {})
   })
-  afterEach(() => { delete process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN })
+  afterEach(() => {
+    delete process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN
+    vi.unstubAllGlobals()
+  })
 
   // It drives the shell's instance rather than building one, so the map arriving from
   // generation is the same object — that is what lets it relight instead of restart.

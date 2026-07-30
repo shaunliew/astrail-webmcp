@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/client'
 import { listTrips } from '@/lib/trip/supabase-api'
 import type { SavedReelCard, SavedReelAnalysisStatus } from '@/lib/reels/backend-types'
 import type { Trip, TripStatus } from '@/lib/trip/backend-types'
+import FolderGallery, { type FolderPhoto } from '@/components/ui/folder-gallery'
 
 /* The paper dashboard home. Replaces the old dark inbox: greeting + quick-capture +
    Saved Reels (with filter chips + select-to-plan) + Your trails grid + empty state.
@@ -123,6 +124,18 @@ export default function DashboardHome({
   const visibleCards = reelFilter === 'all' ? cards : cards.filter((card) => reelBucket(card.analysis_status) === reelFilter)
   const visibleTrips = trailFilter === 'all' ? trips : trips.filter((trip) => trailBucket(trip.status) === trailFilter)
 
+  // The reel wallet fans a handful of thumbnails; cap so a large inbox stays legible.
+  // Per-trail folders await a per-trip place/thumbnail fetch (see file-top NOTE) — for now
+  // this is one folder over the whole saved-Reel set, the collection concept not yet split.
+  const folderPhotos = useMemo<FolderPhoto[]>(
+    () => cards.slice(0, 8).map((card) => ({
+      id: card.id,
+      image: card.thumbnail_url,
+      alt: card.personal_label ?? card.caption ?? '',
+    })),
+    [cards],
+  )
+
   async function capture() {
     if (!url.trim()) return
     setBusy(true); setMessage(null)
@@ -202,6 +215,17 @@ export default function DashboardHome({
         </div>
       ) : (
         <>
+          {/* Reel wallet — tap to fan out your saved Reels, drag one down to close. */}
+          {cards.length ? (
+            <section className="mb-6">
+              <div className="mb-2 flex items-baseline justify-between gap-4">
+                <h2 className="font-display text-[18px] font-medium text-[color:var(--text)]">Your reel folder</h2>
+                <span className="text-[13px] text-[color:var(--text-faint)]">Tap to open</span>
+              </div>
+              <FolderGallery photos={folderPhotos} folderName="Saved reels" className="w-full" />
+            </section>
+          ) : null}
+
           {/* Saved Reels */}
           {cards.length ? (
             <section className="mb-10">

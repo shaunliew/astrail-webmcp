@@ -21,6 +21,7 @@
 | Layer | Technology |
 |---|---|
 | Frontend | Next.js 15 (App Router) + React 19 + Tailwind v4 |
+| Frontend animation | `motion` (framer-motion 12) — drag gestures + spring physics. **Added 2026-07-30 (Zhi Hao)** for the reel-folder interaction (`components/ui/folder-gallery.tsx`): drag-a-photo-down-to-close needs real pointer-drag + spring, which CSS transitions can't express. First animation lib in the stack; reach for CSS/Tailwind transitions first, `motion` only where a gesture/physics genuinely needs it |
 | Map (frontend) | Mapbox GL JS 3.24.0 — 3D tilted globe → city map (public `pk`, URL-restricted) |
 | Places / geocoding | Mapbox Search Box API — backend resolution (secret `sk`, server-side). **Replaces Google Places.** Live business metadata comes from the research agent |
 | Frontend hosting | Vercel (free tier) |

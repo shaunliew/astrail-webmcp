@@ -26,6 +26,28 @@ function GoogleG() {
   )
 }
 
+/* Leading input glyph (lucide "mail", inlined — same choice as GoogleG above, so the sign-in
+   pulls in no icon dependency). Stroke = currentColor, so it inherits the label's muted ink. */
+function MailIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+      className={className}
+    >
+      <rect width="20" height="16" x="2" y="4" rx="2" />
+      <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
+    </svg>
+  )
+}
+
 export default function SignInPage() {
   const router = useRouter()
   const [step, setStep] = useState<'email' | 'code'>('email')
@@ -154,80 +176,104 @@ export default function SignInPage() {
 
       {step === 'email' ? (
         <section>
-          {/* First fixation = the promise, not the word "Sign in" (DESIGN.md §9). */}
-          <h1
-            className="mb-6 font-display text-[28px] font-medium leading-[1.14] tracking-[-0.015em]"
-            style={{ fontVariationSettings: "'SOFT' 28, 'WONK' 1, 'opsz' 28" }}
-          >
-            Your saved Reels, as one route.
-          </h1>
+          {/* Card header — shadcn pattern: title + one muted supporting line. The title is the
+              promise, not the word "Sign in" (DESIGN.md §9); the description carries the model. */}
+          <header className="mb-6">
+            <h1
+              className="font-display text-[24px] font-medium leading-[1.16] tracking-[-0.015em]"
+              style={{ fontVariationSettings: "'SOFT' 28, 'WONK' 1, 'opsz' 24" }}
+            >
+              Your saved Reels, as one route.
+            </h1>
+            <p className="mt-2 text-[14px] leading-[1.4] text-[color:var(--text-muted)]">
+              Sign in or create your account. No password — we email you a code.
+            </p>
+          </header>
 
-          {/* Google leads: one tap beats waiting for and fetching an emailed code (NN/g). */}
-          <button
-            type="button"
-            onClick={() => void signInWithGoogle()}
-            disabled={pending}
-            className={`flex min-h-11 w-full items-center justify-center gap-2.5 rounded-lg border border-[color:var(--paper-line-2)] bg-[color:var(--surface-1)] px-5 text-[14px] font-medium text-[color:var(--text)] shadow-[0_1px_2px_rgba(28,23,16,0.06)] transition-[background,opacity] duration-150 hover:bg-[color:var(--surface-2)] disabled:cursor-default disabled:opacity-60 ${FOCUS_RING}`}
-          >
-            <GoogleG />
-            Continue with Google
-          </button>
-
-          {/* A quiet lead-in to the slower path — not an "or" divider framing them as equals. */}
-          <p className="mb-3 mt-6 text-[13px] text-[color:var(--text-muted)]">Or get a 6-digit code by email</p>
-
-          <form
-            onSubmit={(e) => {
-              e.preventDefault()
-              void sendCode()
-            }}
-          >
-            <div className="mb-6">
-              <label htmlFor="email" className="sr-only">
-                Email
-              </label>
-              <input
-                id="email"
-                type="email"
-                required
-                autoComplete="email"
-                inputMode="email"
-                value={email}
-                onChange={(e) => {
-                  setEmail(e.target.value)
-                  setEmailError(null)
-                }}
-                onBlur={() => {
-                  const v = email.trim()
-                  if (v.length > 0 && !looksLikeEmail(v)) {
-                    setEmailError('That doesn’t look like an email address.')
-                  }
-                }}
-                placeholder="you@example.com"
-                aria-invalid={emailError ? true : undefined}
-                aria-describedby={emailError ? 'emailErr' : undefined}
-                className={`min-h-11 w-full rounded-lg border bg-[color:var(--surface-1)] px-4 text-[color:var(--text)] placeholder:text-[color:var(--text-faint)] ${FOCUS_RING} ${
-                  emailError ? 'border-[color:var(--fail)]' : 'border-[color:var(--line-soft)]'
-                }`}
-              />
-              {emailError ? (
-                <p id="emailErr" role="alert" className="mt-2 flex items-center gap-1.5 text-[13px] text-[color:var(--fail)]">
-                  <span aria-hidden>✕</span>
-                  {emailError}
-                </p>
-              ) : null}
+          <div className="space-y-5">
+            {/* Social sign-in. One provider, so a full-width labelled button reads cleaner than a
+                single-cell icon grid — but the "Sign in with" caption keeps the shadcn shape. */}
+            <div className="space-y-2">
+              <p className="text-[12px] font-medium text-[color:var(--text-muted)]">Sign in with</p>
+              <button
+                type="button"
+                onClick={() => void signInWithGoogle()}
+                disabled={pending}
+                className={`flex min-h-11 w-full items-center justify-center gap-2.5 rounded-lg border border-[color:var(--paper-line-2)] bg-[color:var(--surface-1)] px-5 text-[14px] font-medium text-[color:var(--text)] shadow-[0_1px_2px_rgba(28,23,16,0.06)] transition-[background,opacity] duration-150 hover:bg-[color:var(--surface-2)] disabled:cursor-default disabled:opacity-60 ${FOCUS_RING}`}
+              >
+                <GoogleG />
+                Continue with Google
+              </button>
             </div>
 
-            {/* Outlined (secondary weight). Disabled states its own blocker in dashed + muted,
-                never a dead grey slab — the same shape language as an unplaced point. */}
-            <button
-              type="submit"
-              disabled={!emailValid || pending}
-              className={`flex min-h-11 w-full items-center justify-center rounded-lg border border-[color:var(--paper-line-2)] bg-transparent px-5 text-[14px] font-medium text-[color:var(--text)] transition-[background,opacity] duration-150 hover:bg-[color:var(--surface-2)] disabled:cursor-default disabled:border-dashed disabled:border-[color:var(--line-soft)] disabled:bg-transparent disabled:text-[color:var(--text-muted)] disabled:hover:bg-transparent ${FOCUS_RING}`}
+            {/* Divider — the shadcn "or" rule. The pill sits on the card surface (--surface-1). */}
+            <div className="relative">
+              <div className="absolute inset-0 flex items-center" aria-hidden>
+                <span className="w-full border-t border-[color:var(--line-soft)]" />
+              </div>
+              <div className="relative flex justify-center text-[11px] uppercase tracking-[0.08em]">
+                <span className="bg-[color:var(--surface-1)] px-2 text-[color:var(--text-faint)]">or</span>
+              </div>
+            </div>
+
+            {/* Email code form. Labelled input with a leading glyph — the shadcn input pattern. */}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                void sendCode()
+              }}
+              className="space-y-4"
             >
-              {pending ? 'Sending…' : emailValid ? 'Email me a 6-digit code' : 'Waiting for your email'}
-            </button>
-          </form>
+              <div className="space-y-2">
+                <label htmlFor="email" className="block text-[13px] font-medium text-[color:var(--text)]">
+                  Email
+                </label>
+                <div className="relative">
+                  <MailIcon className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--text-muted)]" />
+                  <input
+                    id="email"
+                    type="email"
+                    required
+                    autoComplete="email"
+                    inputMode="email"
+                    value={email}
+                    onChange={(e) => {
+                      setEmail(e.target.value)
+                      setEmailError(null)
+                    }}
+                    onBlur={() => {
+                      const v = email.trim()
+                      if (v.length > 0 && !looksLikeEmail(v)) {
+                        setEmailError('That doesn’t look like an email address.')
+                      }
+                    }}
+                    placeholder="you@example.com"
+                    aria-invalid={emailError ? true : undefined}
+                    aria-describedby={emailError ? 'emailErr' : undefined}
+                    className={`min-h-11 w-full rounded-lg border bg-[color:var(--surface-1)] pl-9 pr-4 text-[color:var(--text)] placeholder:text-[color:var(--text-faint)] ${FOCUS_RING} ${
+                      emailError ? 'border-[color:var(--fail)]' : 'border-[color:var(--line-soft)]'
+                    }`}
+                  />
+                </div>
+                {emailError ? (
+                  <p id="emailErr" role="alert" className="flex items-center gap-1.5 text-[13px] text-[color:var(--fail)]">
+                    <span aria-hidden>✕</span>
+                    {emailError}
+                  </p>
+                ) : null}
+              </div>
+
+              {/* Primary action of this step: brass fill (the shadcn solid primary weight).
+                  Disabled states its own blocker — dashed + muted, never a dead grey slab. */}
+              <button
+                type="submit"
+                disabled={!emailValid || pending}
+                className={`flex min-h-11 w-full items-center justify-center rounded-lg border border-[color:var(--accent)] bg-[color:var(--accent)] px-5 text-[14px] font-medium text-[color:var(--accent-text)] transition-opacity duration-150 hover:opacity-90 disabled:cursor-default disabled:border-dashed disabled:border-[color:var(--line-soft)] disabled:bg-transparent disabled:text-[color:var(--text-muted)] disabled:hover:opacity-100 ${FOCUS_RING}`}
+              >
+                {pending ? 'Sending…' : emailValid ? 'Email me a 6-digit code' : 'Waiting for your email'}
+              </button>
+            </form>
+          </div>
 
           <p className="mt-6 border-t border-[color:var(--line-soft)] pt-4 text-[13px] text-[color:var(--text-muted)]">
             No account? Enter your email and we’ll make you one. We only ever send sign-in codes.

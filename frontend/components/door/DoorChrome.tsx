@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, type ReactNode } from 'react'
+import { memo, useEffect, useState, type ReactNode } from 'react'
 import { Globe } from '@/components/ui/cobe-globe'
 
 /* Shared chrome for the two "door" screens (sign-in, onboarding): a dark map stage,
@@ -74,12 +74,22 @@ const GLOBE_ARCS = [
   { id: 'nyc-london', from: [40.7128, -74.006] as [number, number], to: [51.5074, -0.1278] as [number, number] },
 ]
 
+// Globe colours as module constants (normalized RGB). These MUST be stable references:
+// Globe's init effect keys on them, so an inline `[…]` literal here re-creates the whole
+// globe on every parent re-render (e.g. each keystroke in the sign-in email field).
+const GLOBE_BASE_COLOR: [number, number, number] = [0.28, 0.31, 0.4]
+const GLOBE_MARKER_COLOR: [number, number, number] = [0.91, 0.71, 0.4]
+const GLOBE_ARC_COLOR: [number, number, number] = [0.91, 0.71, 0.4]
+const GLOBE_GLOW_COLOR: [number, number, number] = [0.12, 0.16, 0.3]
+
 // Spinning cobe globe for the dark door stage: brass pins + arcs on a night-toned sphere.
 // Colours are the palette tokens as normalized RGB (cobe wants [0..1], not CSS vars):
 //   marker/arc = brass-bright #E8B667 · land dots = a cool night grey · glow = night-blue.
 // On desktop it sits to the right, clear of the left-rail card; on mobile it centres above
 // the bottom card. The wrapper is pointer-events-auto so only the sphere is draggable.
-export function DoorGlobe() {
+// memo'd: takes no props, so it renders once and is immune to parent re-renders (typing in
+// the door card's inputs). Without this the whole globe would re-mount on every keystroke.
+export const DoorGlobe = memo(function DoorGlobe() {
   const reduced = usePrefersReducedMotion()
   return (
     <div
@@ -93,10 +103,10 @@ export function DoorGlobe() {
         dark={1}
         diffuse={1.2}
         mapBrightness={5}
-        baseColor={[0.28, 0.31, 0.4]}
-        markerColor={[0.91, 0.71, 0.4]}
-        arcColor={[0.91, 0.71, 0.4]}
-        glowColor={[0.12, 0.16, 0.3]}
+        baseColor={GLOBE_BASE_COLOR}
+        markerColor={GLOBE_MARKER_COLOR}
+        arcColor={GLOBE_ARC_COLOR}
+        glowColor={GLOBE_GLOW_COLOR}
         markerSize={0.03}
         markerElevation={0.012}
         arcWidth={0.5}
@@ -106,7 +116,7 @@ export function DoorGlobe() {
       />
     </div>
   )
-}
+})
 
 // The door screen shell. `caption` floats over the globe; `children` fill the paper card.
 // Border uses --paper-line-2 (not --line) so the card is correct even inside the /app

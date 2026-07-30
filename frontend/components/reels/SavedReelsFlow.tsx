@@ -12,7 +12,7 @@ import { toGenerateRequest, type BriefInput, type DraftInspirationItem } from '@
 import { useSharedMap } from '@/components/map/MapProvider'
 import { relightDurationMs } from '@/components/map/relight'
 import GenerationScene from '@/components/create/GenerationScene'
-import DashboardHome from '@/components/dashboard/DashboardHome'
+import TraysScreen from './TraysScreen'
 import OrganizeGlobe from './OrganizeGlobe'
 import CountryTrays from './CountryTrays'
 import PlanSheet from './PlanSheet'
@@ -257,7 +257,7 @@ export default function SavedReelsFlow() {
           {inboxMessage}
         </p>
       ) : null}
-      <DashboardHome cards={cards} onCapture={handleCapture} onOrganize={handleOrganize} />
+      <TraysScreen cards={cards} onCapture={handleCapture} onOrganize={handleOrganize} />
     </div>
   )
 }

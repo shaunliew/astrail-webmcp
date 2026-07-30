@@ -27,11 +27,11 @@ vi.mock('next/link', () => ({ default: ({ children, ...props }: { children: Reac
 vi.mock('@/lib/supabase/session', () => ({ getAccessToken }))
 vi.mock('@/lib/reels/api', () => ({ listSavedReelCards, startOrganize, streamOrganize, getOrganizeStatus }))
 vi.mock('@/lib/trip/api', () => ({ generateTrip, streamGeneration }))
-// The inbox is now DashboardHome (paper). Its own UI (status labels, filter chips,
-// selection, empty state) is covered by DashboardHome.test.tsx; here we mock it down to
+// The inbox is now TraysScreen (paper). Its own UI (trays grid, Library banner,
+// capture, empty state) is covered by TraysScreen.test.tsx; here we mock it down to
 // the one thing the flow needs — a trigger that submits saved-1 for organization — so
 // these tests stay about the organize/stream/poll/generate LOGIC, not inbox markup.
-vi.mock('@/components/dashboard/DashboardHome', () => ({
+vi.mock('@/components/reels/TraysScreen', () => ({
   default: ({ cards, onOrganize }: { cards: { id: string; caption: string | null; normalized_url: string }[]; onOrganize: (ids: string[]) => void }) => (
     <div>
       {cards.map((c) => <span key={c.id}>{c.caption ?? c.normalized_url}</span>)}

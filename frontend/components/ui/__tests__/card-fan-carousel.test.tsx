@@ -45,4 +45,14 @@ describe('CardFanCarousel', () => {
 
     expect(container).toBeEmptyDOMElement()
   })
+
+  it('positions fan cards absolutely so the fan cannot collapse to 0px', () => {
+    render(<CardFanCarousel cards={[card(1), card(2), card(3)]} />)
+
+    const fanCard = document.querySelector('.fan-card')
+    expect(fanCard).not.toBeNull()
+    // Guards the 0px-collapse bug: without `absolute` the cards share flow and the
+    // gsap-driven fan has no sized, stacked stage to spread across.
+    expect(fanCard?.className).toContain('absolute')
+  })
 })

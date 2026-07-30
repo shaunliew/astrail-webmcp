@@ -260,7 +260,7 @@ export default function SocialCards({ cards }: SocialCardsProps) {
   return (
     <section className="flex flex-col items-center w-full py-4 lg:py-8 px-4 md:px-8 relative z-20">
       <div className="flex items-center justify-center w-full max-w-[90rem]">
-        <div ref={containerRef} className="fan-layout flex relative justify-center items-center w-full max-w-[80rem]">
+        <div ref={containerRef} className="fan-layout flex relative justify-center items-center w-full max-w-[80rem] min-h-[22rem] min-[480px]:min-h-[26rem] sm:min-h-[28rem] md:min-h-[34rem] lg:min-h-[38rem]">
           {cards.map((card, index) => {
             const image = (
               <div className="relative w-full h-full overflow-hidden">
@@ -269,9 +269,9 @@ export default function SocialCards({ cards }: SocialCardsProps) {
               </div>
             );
             return card.linkUrl ? (
-              <a key={index} href={card.linkUrl} target={card.linkUrl.startsWith("http") ? "_blank" : "_self"} rel="noopener noreferrer" className="fan-card block cursor-pointer">{image}</a>
+              <a key={index} href={card.linkUrl} target={card.linkUrl.startsWith("http") ? "_blank" : "_self"} rel="noopener noreferrer" className="fan-card block cursor-pointer absolute left-1/2 top-0 overflow-hidden rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.25)] h-[18rem] w-[10rem] ml-[-5rem] min-[480px]:h-[21rem] min-[480px]:w-[12rem] min-[480px]:ml-[-6rem] sm:h-[23rem] sm:w-[13rem] sm:ml-[-6.5rem] md:h-[28rem] md:w-[16rem] md:ml-[-8rem] lg:h-[31rem] lg:w-[17rem] lg:ml-[-8.5rem]">{image}</a>
             ) : (
-              <div key={index} className="fan-card">{image}</div>
+              <div key={index} className="fan-card absolute left-1/2 top-0 overflow-hidden rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.25)] h-[18rem] w-[10rem] ml-[-5rem] min-[480px]:h-[21rem] min-[480px]:w-[12rem] min-[480px]:ml-[-6rem] sm:h-[23rem] sm:w-[13rem] sm:ml-[-6.5rem] md:h-[28rem] md:w-[16rem] md:ml-[-8rem] lg:h-[31rem] lg:w-[17rem] lg:ml-[-8.5rem]">{image}</div>
             );
           })}
         </div>

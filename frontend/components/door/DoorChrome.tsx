@@ -1,4 +1,7 @@
-import type { ReactNode } from 'react'
+'use client'
+
+import { useEffect, useState, type ReactNode } from 'react'
+import { Globe } from '@/components/ui/cobe-globe'
 
 /* Shared chrome for the two "door" screens (sign-in, onboarding): a dark map stage,
    the empty wireframe globe, a floating caption, and the paper door card (left rail on
@@ -38,22 +41,69 @@ export function DoorBrand() {
   )
 }
 
-// Empty wireframe globe — no markers, because nothing is located yet (DESIGN.md §9).
-// Drawn on the dark stage; the grid drifts slowly (reduced-motion-safe via CSS).
-export function EmptyGlobe() {
+// Pause auto-rotation when the OS asks for reduced motion — the wireframe globe this
+// replaced honoured the same preference (via CSS on .globe-grid-drift).
+function usePrefersReducedMotion() {
+  const [reduced, setReduced] = useState(false)
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
+    setReduced(mq.matches)
+    const onChange = () => setReduced(mq.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+  return reduced
+}
+
+// A few well-known cities as inspirational pins — not the user's map (that's still empty,
+// per the "Nothing on your map yet" caption), just a hint of what a route can span.
+const GLOBE_MARKERS = [
+  { id: 'sf', location: [37.7595, -122.4367] as [number, number], label: 'San Francisco' },
+  { id: 'nyc', location: [40.7128, -74.006] as [number, number], label: 'New York' },
+  { id: 'tokyo', location: [35.6762, 139.6503] as [number, number], label: 'Tokyo' },
+  { id: 'london', location: [51.5074, -0.1278] as [number, number], label: 'London' },
+  { id: 'sydney', location: [-33.8688, 151.2093] as [number, number], label: 'Sydney' },
+  { id: 'capetown', location: [-33.9249, 18.4241] as [number, number], label: 'Cape Town' },
+  { id: 'dubai', location: [25.2048, 55.2708] as [number, number], label: 'Dubai' },
+  { id: 'paris', location: [48.8566, 2.3522] as [number, number], label: 'Paris' },
+  { id: 'saopaulo', location: [-23.5505, -46.6333] as [number, number], label: 'São Paulo' },
+]
+
+const GLOBE_ARCS = [
+  { id: 'sf-tokyo', from: [37.7595, -122.4367] as [number, number], to: [35.6762, 139.6503] as [number, number] },
+  { id: 'nyc-london', from: [40.7128, -74.006] as [number, number], to: [51.5074, -0.1278] as [number, number] },
+]
+
+// Spinning cobe globe for the dark door stage: brass pins + arcs on a night-toned sphere.
+// Colours are the palette tokens as normalized RGB (cobe wants [0..1], not CSS vars):
+//   marker/arc = brass-bright #E8B667 · land dots = a cool night grey · glow = night-blue.
+// On desktop it sits to the right, clear of the left-rail card; on mobile it centres above
+// the bottom card. The wrapper is pointer-events-auto so only the sphere is draggable.
+export function DoorGlobe() {
+  const reduced = usePrefersReducedMotion()
   return (
-    <div aria-hidden className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-center">
-      <svg viewBox="0 0 200 200" className="h-auto w-[min(62vmin,460px)] overflow-visible">
-        <circle cx="100" cy="100" r="86" fill="none" stroke="rgba(255,255,255,0.16)" strokeWidth={1.5} />
-        <g className="globe-grid-drift" fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth={1}>
-          <ellipse cx="100" cy="100" rx="86" ry="30" />
-          <ellipse cx="100" cy="100" rx="86" ry="58" />
-          <ellipse cx="100" cy="100" rx="30" ry="86" />
-          <ellipse cx="100" cy="100" rx="58" ry="86" />
-          <line x1="14" y1="100" x2="186" y2="100" />
-          <line x1="100" y1="14" x2="100" y2="186" />
-        </g>
-      </svg>
+    <div
+      aria-hidden
+      className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-center md:justify-end md:pr-[6vw]"
+    >
+      <Globe
+        className="pointer-events-auto w-[min(66vmin,520px)] max-w-[88vw]"
+        markers={GLOBE_MARKERS}
+        arcs={GLOBE_ARCS}
+        dark={1}
+        diffuse={1.2}
+        mapBrightness={5}
+        baseColor={[0.28, 0.31, 0.4]}
+        markerColor={[0.91, 0.71, 0.4]}
+        arcColor={[0.91, 0.71, 0.4]}
+        glowColor={[0.12, 0.16, 0.3]}
+        markerSize={0.03}
+        markerElevation={0.012}
+        arcWidth={0.5}
+        arcHeight={0.28}
+        theta={0.25}
+        speed={reduced ? 0 : 0.004}
+      />
     </div>
   )
 }
@@ -64,7 +114,7 @@ export function EmptyGlobe() {
 export function DoorStage({ caption, children }: { caption: string; children: ReactNode }) {
   return (
     <div className="stage relative flex min-h-[100dvh] w-full items-end justify-center overflow-hidden md:items-center md:justify-start">
-      <EmptyGlobe />
+      <DoorGlobe />
       <p className="pointer-events-none absolute inset-x-0 top-8 z-[1] text-center text-[13px] text-[color:var(--starlight-70)] md:bottom-[12%] md:top-auto">
         {caption}
       </p>

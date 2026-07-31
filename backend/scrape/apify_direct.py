@@ -28,6 +28,7 @@ def map_item_to_reeldata(item: dict, reel_url: str) -> ReelData:
         short_code=item.get("shortCode"),
         capture_status="CAPTURED",
         transcript=item.get("transcript"),
+        display_url=item.get("displayUrl"),   # cover frame (verified live 2026-07-31); `images` was empty — don't use it
     )
 
 

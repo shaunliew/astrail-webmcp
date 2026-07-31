@@ -18,3 +18,4 @@ class ReelData(BaseModel):
     location_name: str | None = None
     capture_status: str = "NEEDS_CAPTURE"
     transcript: str | None = None
+    display_url: str | None = None   # raw, EPHEMERAL Apify cover URL (fbcdn, expires) — re-hosted at cache time, never persisted as-is

@@ -18,12 +18,16 @@ export default function CountryTrays({
   maxSelected,
   onToggle,
   onPlan,
+  onBack,
 }: {
   trays: CountryTray[]
   selectedPlaceIds: string[]
   maxSelected?: number
   onToggle: (placeId: string) => void
   onPlan: () => void
+  // Additive escape hatch (T3.1b): create-trail enters this picker with no way back otherwise.
+  // Optional so the organize path stays source-agnostic; the Back control renders only when given.
+  onBack?: () => void
 }) {
   const verifiedPlaces = useMemo(() => trays.flatMap((tray) => tray.places), [trays])
   const [collapsed, setCollapsed] = useState(false)
@@ -39,6 +43,15 @@ export default function CountryTrays({
 
       {/* Floating collection title over the map */}
       <div className="pointer-events-none absolute inset-x-0 top-0 z-10 flex flex-wrap items-center gap-3 p-4 md:pl-[460px]">
+        {onBack ? (
+          <button
+            type="button"
+            onClick={onBack}
+            className="pointer-events-auto inline-flex min-h-11 items-center gap-1.5 rounded-full bg-[color:var(--surface-1)] px-4 py-2 text-[13px] font-medium text-[color:var(--text)] shadow-[0_2px_12px_rgba(0,0,0,0.35)] transition-colors hover:bg-[color:var(--surface-2)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]"
+          >
+            <span aria-hidden>←</span> Back
+          </button>
+        ) : null}
         <span className="rounded-full bg-[color:var(--brass-bright)] px-4 py-2 text-[14px] font-medium text-[color:var(--night-900)] shadow-[0_2px_12px_rgba(0,0,0,0.35)]">
           Your grounded places
         </span>

@@ -236,8 +236,22 @@ export default function SavedReelsFlow() {
     }
   }
 
+  // Create-trail from an opened tray (T3.1b): route the tray's grounded places into the SAME
+  // generate seam the organize path uses (CountryTrays ≤5 → PlanSheet → handleGenerate).
+  // groupPlacesByCountry dedups by place_id. The empty guard is master B3 step-4 defense-in-depth:
+  // TrayDetail's disabled button is the UX, but a stale/programmatic call must never enter an
+  // empty, non-dismissible picker — so on no places we return without changing phase. Every tray
+  // enters the picker with zero pre-selection; the user picks ≤5 (never auto-submit, master :268).
+  function onCreateTrail(trayCards: SavedReelCard[]) {
+    const nextTrays = groupPlacesByCountry(trayCards.flatMap((c) => c.places))
+    if (!nextTrays.length) return
+    setTrays(nextTrays)
+    setSelectedPlaceIds([])
+    setPhase('trays')
+  }
+
   if (phase === 'organizing') return <OrganizeGlobe message={organizeMessage} />
-  if (phase === 'trays') return <CountryTrays trays={trays} selectedPlaceIds={selectedPlaceIds} maxSelected={MAX_PLACES} onToggle={(id) => setSelectedPlaceIds((current) => current.includes(id) ? current.filter((value) => value !== id) : current.length < MAX_PLACES ? [...current, id] : current)} onPlan={() => setPhase('brief')} />
+  if (phase === 'trays') return <CountryTrays trays={trays} selectedPlaceIds={selectedPlaceIds} maxSelected={MAX_PLACES} onToggle={(id) => setSelectedPlaceIds((current) => current.includes(id) ? current.filter((value) => value !== id) : current.length < MAX_PLACES ? [...current, id] : current)} onPlan={() => setPhase('brief')} onBack={() => setPhase('inbox')} />
   if (phase === 'generating') return <GenerationScene tripId={tripId} events={events} />
   if (phase === 'brief') return (
     <PlanSheet
@@ -257,7 +271,7 @@ export default function SavedReelsFlow() {
           {inboxMessage}
         </p>
       ) : null}
-      <TraysScreen cards={cards} onCapture={handleCapture} onOrganize={handleOrganize} onCreateTrail={() => {}} />
+      <TraysScreen cards={cards} onCapture={handleCapture} onOrganize={handleOrganize} onCreateTrail={onCreateTrail} />
     </div>
   )
 }

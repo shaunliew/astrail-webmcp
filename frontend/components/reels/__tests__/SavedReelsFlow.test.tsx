@@ -8,7 +8,7 @@ const { push, getAccessToken, listSavedReelCards, startOrganize, streamOrganize,
   startOrganize: vi.fn(),
   streamOrganize: vi.fn(),
   getOrganizeStatus: vi.fn(),
-  generateTrip: vi.fn(async () => ({ trip_id: 'trip-1' })),
+  generateTrip: vi.fn(async (_req: { place_ids: string[]; reel_urls: string[]; requested_places: unknown[] }, _token: string) => ({ trip_id: 'trip-1' })),
   streamGeneration: vi.fn(),
   mapInstance: (() => {
     const handler = () => ({ enable: vi.fn(), disable: vi.fn() })
@@ -31,11 +31,15 @@ vi.mock('@/lib/trip/api', () => ({ generateTrip, streamGeneration }))
 // capture, empty state) is covered by TraysScreen.test.tsx; here we mock it down to
 // the one thing the flow needs — a trigger that submits saved-1 for organization — so
 // these tests stay about the organize/stream/poll/generate LOGIC, not inbox markup.
+type MockTrayCard = { id: string; caption: string | null; normalized_url: string }
 vi.mock('@/components/reels/TraysScreen', () => ({
-  default: ({ cards, onOrganize }: { cards: { id: string; caption: string | null; normalized_url: string }[]; onOrganize: (ids: string[]) => void }) => (
+  default: ({ cards, onOrganize, onCreateTrail }: { cards: MockTrayCard[]; onOrganize: (ids: string[]) => void; onCreateTrail: (trayCards: MockTrayCard[]) => void }) => (
     <div>
       {cards.map((c) => <span key={c.id}>{c.caption ?? c.normalized_url}</span>)}
       <button type="button" onClick={() => onOrganize([cards[0]?.id ?? ''])}>mock-plan-trip</button>
+      {/* Create-trail (T3.1b): forward the loaded cards straight into the flow's real handler,
+          so a test controls the tray's places via the listSavedReelCards mock. */}
+      <button type="button" onClick={() => onCreateTrail(cards)}>mock-create-trail</button>
     </div>
   ),
 }))
@@ -54,7 +58,7 @@ vi.mock('mapbox-gl/dist/mapbox-gl.css', () => ({}))
 
 import SavedReelsFlow, { toReelBriefItem } from '@/components/reels/SavedReelsFlow'
 import MapProvider from '@/components/map/MapProvider'
-import type { SavedReelCard } from '@/lib/reels/backend-types'
+import type { SavedReelCard, SavedReelPlaceProof } from '@/lib/reels/backend-types'
 
 const cards: SavedReelCard[] = [
   {
@@ -91,9 +95,24 @@ const mixedOrganizedCards: SavedReelCard[] = [
   },
 ]
 
+// Builders for the create-trail path (T3.1b): a tray card carrying grounded places, fed to
+// the flow's real onCreateTrail via the TraysScreen mock's mock-create-trail button.
+function placeProof(over: Partial<SavedReelPlaceProof>): SavedReelPlaceProof {
+  return {
+    place_id: 'p1', name: 'Place', lat: 0, lng: 0, country_code: 'JP', country_name: 'Japan',
+    evidence_quote: 'q', source_url: null, source_reel_url: 'https://ig/reel/x', confidence: 1, ...over,
+  }
+}
+function cardWithPlaces(id: string, caption: string, places: SavedReelPlaceProof[]): SavedReelCard {
+  return { ...cards[0], id, caption, places }
+}
+
 // Wait for the inbox to load its cards, then trigger organization of saved-1.
 async function loadedInbox() {
   await screen.findByText('Tokyo Tower at sunset')
+}
+function createTrail() {
+  fireEvent.click(screen.getByRole('button', { name: 'mock-create-trail' }))
 }
 function planTrip() {
   fireEvent.click(screen.getByRole('button', { name: 'mock-plan-trip' }))
@@ -429,5 +448,106 @@ describe('SavedReelsFlow', () => {
     await Promise.resolve(); await Promise.resolve()
     expect(screen.queryByText('Tokyo Tower at sunset')).not.toBeInTheDocument()
     expect(streamOrganize).not.toHaveBeenCalled()
+  })
+
+  // --- T3.1b: create-trail from a tray reuses the generate seam (place_ids-only). ---
+
+  it('blocks create-trail for a tray with no grounded places (master B3 step-4 handler guard)', async () => {
+    // Reels present, but none organized → the handler must NOT change phase and never generate.
+    listSavedReelCards.mockResolvedValue([cardWithPlaces('r1', 'Ungrounded reel', [])])
+    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    await screen.findByText('Ungrounded reel')
+
+    createTrail()
+
+    // Still on the inbox (the mocked TraysScreen surface), CountryTrays never mounted.
+    expect(screen.getByRole('button', { name: 'mock-create-trail' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /plan this trip/i })).not.toBeInTheDocument()
+    expect(generateTrip).not.toHaveBeenCalled()
+  })
+
+  it('dedups a multi-country tray by place_id when opening the picker', async () => {
+    // place-1 (JP) appears in two cards; place-us (US) once → each place shows exactly once.
+    const jp = placeProof({ place_id: 'place-1', name: 'Tokyo Tower', country_code: 'JP', country_name: 'Japan' })
+    const us = placeProof({ place_id: 'place-us', name: 'Golden Gate Bridge', country_code: 'US', country_name: 'United States' })
+    listSavedReelCards.mockResolvedValue([
+      cardWithPlaces('r1', 'Reel A', [jp]),
+      cardWithPlaces('r2', 'Reel B', [jp, us]),
+    ])
+    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    await screen.findByText('Reel A')
+
+    createTrail()
+
+    expect(await screen.findByRole('heading', { name: 'Japan' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'United States' })).toBeInTheDocument()
+    expect(screen.getAllByRole('checkbox', { name: /select Tokyo Tower/i })).toHaveLength(1)
+    expect(screen.getAllByRole('checkbox', { name: /select Golden Gate Bridge/i })).toHaveLength(1)
+  })
+
+  it('generates with exactly the 5 selected place_ids and empty reel_urls + requested_places', async () => {
+    const places = Array.from({ length: 5 }, (_, i) => placeProof({ place_id: `p${i + 1}`, name: `Place ${i + 1}` }))
+    listSavedReelCards.mockResolvedValue([cardWithPlaces('r1', 'Five-place reel', places)])
+    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    await screen.findByText('Five-place reel')
+
+    createTrail()
+    await screen.findByRole('heading', { name: 'Japan' })
+    for (const cb of screen.getAllByRole('checkbox')) fireEvent.click(cb)
+    fireEvent.click(screen.getByRole('button', { name: /plan this trip/i }))
+    fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
+    fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
+    fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
+
+    await waitFor(() => expect(generateTrip).toHaveBeenCalled())
+    const request = generateTrip.mock.calls[0][0]
+    expect(request.reel_urls).toEqual([])
+    expect(request.requested_places).toEqual([])
+    expect(request.place_ids).toHaveLength(5)
+    expect(new Set(request.place_ids)).toEqual(new Set(['p1', 'p2', 'p3', 'p4', 'p5']))
+  })
+
+  it('caps selection at 5: the 6th checkbox is disabled and generate never gets >5 place_ids', async () => {
+    const places = Array.from({ length: 6 }, (_, i) => placeProof({ place_id: `p${i + 1}`, name: `Place ${i + 1}` }))
+    listSavedReelCards.mockResolvedValue([cardWithPlaces('r1', 'Six-place reel', places)])
+    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    await screen.findByText('Six-place reel')
+
+    createTrail()
+    await screen.findByRole('heading', { name: 'Japan' })
+    const checkboxes = screen.getAllByRole('checkbox')
+    expect(checkboxes).toHaveLength(6)
+    for (const cb of checkboxes) fireEvent.click(cb) // the 6th is disabled and cannot toggle
+
+    // Five selected, the untouched 6th checkbox is disabled by CountryTrays' count guard.
+    expect(checkboxes.filter((cb) => (cb as HTMLInputElement).checked)).toHaveLength(5)
+    expect(checkboxes.some((cb) => (cb as HTMLInputElement).disabled)).toBe(true)
+
+    fireEvent.click(screen.getByRole('button', { name: /plan this trip/i }))
+    fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
+    fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
+    fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
+
+    await waitFor(() => expect(generateTrip).toHaveBeenCalled())
+    const request = generateTrip.mock.calls[0][0]
+    expect(request.place_ids).toHaveLength(5)
+  })
+
+  it('returns to the inbox grid when CountryTrays Back is clicked', async () => {
+    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    await loadedInbox()
+    planTrip()
+    listSavedReelCards.mockResolvedValueOnce(organizedCards)
+    await screen.findByTestId('organize-globe')
+    await waitFor(() => expect(streamOrganize).toHaveBeenCalledTimes(1))
+    const onEvent = streamOrganize.mock.calls[0][2] as (event: unknown) => void
+    onEvent({ type: 'result', content: JSON.stringify({ status: 'succeeded' }) })
+    await screen.findByRole('heading', { name: 'Japan' })
+
+    fireEvent.click(screen.getByRole('button', { name: /back/i }))
+
+    // Back on the inbox grid: the picker is gone and the TraysScreen surface is back.
+    expect(await screen.findByRole('button', { name: 'mock-plan-trip' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Japan' })).not.toBeInTheDocument()
   })
 })

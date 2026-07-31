@@ -2,11 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { getMembershipsByCollection, listCollections } from '@/lib/reels/collections'
+import { addReelsToCollection, getMembershipsByCollection, listCollections } from '@/lib/reels/collections'
 import type { ReelCollection, SavedReelCard } from '@/lib/reels/backend-types'
 import TrayCard, { type TrayCover } from './TrayCard'
 import LibraryPanel from './LibraryPanel'
 import CreateTrayDialog from './CreateTrayDialog'
+import ReelInfoCard from './ReelInfoCard'
 
 /* TraysScreen — the /app home. Replaces the old DashboardHome inbox body with:
    greeting + quick-capture + a Library banner + a "Your trays" grid (one TrayCard per
@@ -41,6 +42,9 @@ export default function TraysScreen({
   const [url, setUrl] = useState('')
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
+  const [viewingReel, setViewingReel] = useState<SavedReelCard | null>(null)
+  // consumed by CreateTrayDialog preselect in T2.1c
+  const [createPreselect, setCreatePreselect] = useState<string[]>([])
   const activeRef = useRef(true)
 
   // Single source of truth for collections. Exposed so T1.4's CreateTrayDialog can
@@ -98,28 +102,59 @@ export default function TraysScreen({
   // Phase 3 (T3.1) wires TrayDetail; for now Open is a stubbed seam the parent owns.
   function handleOpenTray(_collection: ReelCollection) { /* T3.1 wires TrayDetail (plan Phase 3) */ }
 
-  // P2 (T2.1) wires ReelInfoCard; opening a reel from the Library is a no-op stub in P1.
-  function handleOpenReel(_card: SavedReelCard) { /* T2.1 wires ReelInfoCard (plan Phase 2) */ }
+  // P2 (T2.1) — opening a reel from the Library shows the reel-info card overlay.
+  function handleOpenReel(card: SavedReelCard) { setViewingReel(card) }
 
   // Gate the empty state on the absence of an error too: a transient trays-fetch failure must
   // surface the error banner, not the misleading "No trails yet" state (they'd otherwise co-render).
   const isEmpty = !loading && !error && cards.length === 0 && collections.length === 0
 
+  const traysWithReel = useMemo(
+    () =>
+      new Set(
+        viewingReel
+          ? collections.filter((c) => (membershipByCollection[c.id] ?? []).includes(viewingReel.id)).map((c) => c.id)
+          : [],
+      ),
+    [collections, membershipByCollection, viewingReel],
+  )
+
+  // Built once and rendered in BOTH return branches — the reel is opened from the Library
+  // early-return, so it must float over that branch too (fixed inset-0 z-50 handles the layering).
+  const reelOverlay = viewingReel ? (
+    <ReelInfoCard
+      card={viewingReel}
+      collections={collections}
+      traysState={loading ? 'loading' : error ? 'error' : 'ready'}
+      traysWithReel={traysWithReel}
+      onAddToTray={async (id) => { await addReelsToCollection(id, [viewingReel.id]); await refresh() }}
+      onRequestNewTray={() => { setCreatePreselect([viewingReel.id]); setViewingReel(null); setLibraryOpen(false); setCreateOpen(true) }}
+      onClose={() => setViewingReel(null)}
+    />
+  ) : null
+
   // Full-surface swap: the Library replaces the home content (greeting/capture/banner/trays)
   // rather than expanding inline. The /app home has no map behind it, so this is a plain
-  // paper panel, not a fixed inset-0 overlay.
+  // paper panel, not a fixed inset-0 overlay. While a reel card floats over it, the Library
+  // is made `inert` (C2) so focus and its Back control can't be reached under the modal.
   if (libraryOpen) {
     return (
-      <LibraryPanel
-        cards={cards}
-        onClose={() => setLibraryOpen(false)}
-        onOpenReel={handleOpenReel}
-        onOrganize={onOrganize}
-      />
+      <>
+        <div inert={viewingReel !== null}>
+          <LibraryPanel
+            cards={cards}
+            onClose={() => setLibraryOpen(false)}
+            onOpenReel={handleOpenReel}
+            onOrganize={onOrganize}
+          />
+        </div>
+        {reelOverlay}
+      </>
     )
   }
 
   return (
+    <>
     <div className="mx-auto flex w-full max-w-5xl flex-col">
       <header className="mb-8">
         <p className="text-[13px] text-[color:var(--text-muted)]">Welcome back,</p>
@@ -220,12 +255,14 @@ export default function TraysScreen({
                 cards={cards}
                 existingNames={collections.map((c) => c.name)}
                 onCreated={refresh}
-                onClose={() => setCreateOpen(false)}
+                onClose={() => { setCreateOpen(false); setCreatePreselect([]) }}
               />
             ) : null}
           </section>
         </>
       )}
     </div>
+    {reelOverlay}
+    </>
   )
 }

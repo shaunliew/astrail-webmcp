@@ -16,12 +16,19 @@ vi.mock('@/lib/reels/collections', () => ({ listCollections, getMembershipsByCol
 vi.mock('gsap', () => ({ default: { to: vi.fn(), set: vi.fn(), killTweensOf: vi.fn() } }))
 
 import TraysScreen from '@/components/reels/TraysScreen'
-import type { ReelCollection, SavedReelCard } from '@/lib/reels/backend-types'
+import type { ReelCollection, SavedReelCard, SavedReelPlaceProof } from '@/lib/reels/backend-types'
 
 function collection(over: Partial<ReelCollection>): ReelCollection {
   return {
     id: 'c1', user_id: 'u1', name: 'Tray', sort_order: 0,
     created_at: '2026-07-18T00:00:00Z', updated_at: '2026-07-18T00:00:00Z', ...over,
+  }
+}
+
+function place(over: Partial<SavedReelPlaceProof>): SavedReelPlaceProof {
+  return {
+    place_id: 'p1', name: 'Place', lat: 0, lng: 0, country_code: 'JP', country_name: 'Japan',
+    evidence_quote: 'q', source_url: null, source_reel_url: 'https://ig/reel/x', confidence: 1, ...over,
   }
 }
 
@@ -185,5 +192,75 @@ describe('TraysScreen', () => {
     expect(addReelsToCollection).toHaveBeenCalledWith('new-tray', ['r1'])
     // onClose fired on success: the dialog unmounts.
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('opens a reel from the Library fan into a ReelInfoCard showing its places', async () => {
+    const cards = [card({ id: 'r1', caption: 'Osaka nights', places: [place({ name: 'Dotonbori' })] })]
+
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /your inspiration starts here/i }))
+    // Browse is the fan's default mode; the reel renders as a button named by its alt (gsap mocked).
+    fireEvent.click(screen.getByRole('button', { name: /osaka nights/i }))
+
+    // The no-op stub is gone: tapping the fan card floats the ReelInfoCard with the reel's places.
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Dotonbori')).toBeInTheDocument()
+  })
+
+  it('adds the open reel to a tray through the data layer then re-fetches memberships', async () => {
+    listCollections.mockResolvedValue([collection({ id: 'c1', name: 'Tokyo' })])
+    getMembershipsByCollection.mockResolvedValue({})
+    addReelsToCollection.mockResolvedValue(undefined)
+    const cards = [card({ id: 'r1', caption: 'Osaka nights', places: [place({ name: 'Dotonbori' })] })]
+
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /your inspiration starts here/i }))
+    fireEvent.click(screen.getByRole('button', { name: /osaka nights/i }))
+
+    // The tray row appears once the live collections load into the open card (traysState ready).
+    const trayRow = await screen.findByRole('button', { name: /tokyo/i })
+    const fetchesBefore = getMembershipsByCollection.mock.calls.length
+    fireEvent.click(trayRow)
+
+    await waitFor(() => expect(addReelsToCollection).toHaveBeenCalledWith('c1', ['r1']))
+    // refresh() re-reads memberships so the grid counts stay in sync.
+    await waitFor(() => expect(getMembershipsByCollection.mock.calls.length).toBeGreaterThan(fetchesBefore))
+    // The row is optimistically marked Added.
+    expect(await screen.findByRole('button', { name: /tokyo/i })).toHaveTextContent(/Added/)
+  })
+
+  it('closes the Library and opens CreateTrayDialog when New tray… is chosen from a reel (B1)', async () => {
+    listCollections.mockResolvedValue([collection({ id: 'c1', name: 'Tokyo' })])
+    const cards = [card({ id: 'r1', caption: 'Osaka nights', places: [place({ name: 'Dotonbori' })] })]
+
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /your inspiration starts here/i }))
+    fireEvent.click(screen.getByRole('button', { name: /osaka nights/i }))
+    await screen.findByRole('dialog') // ReelInfoCard
+    fireEvent.click(screen.getByRole('button', { name: /new tray/i }))
+
+    // B1: CreateTrayDialog mounts ONLY in the main return, so New tray… must leave the Library
+    // (setLibraryOpen(false)) or the early-return would keep it up and the dialog never appears.
+    expect(await screen.findByText(/name a new tray/i)).toBeInTheDocument()
+    expect(screen.queryByText(/your saved reels live here/i)).not.toBeInTheDocument()
+  })
+
+  it('makes the Library inert while a reel card floats over it (C2)', async () => {
+    const cards = [card({ id: 'r1', caption: 'Osaka nights' })]
+
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /your inspiration starts here/i }))
+    // Before a card opens the Library is interactive — no inert wrapper.
+    expect(screen.getByText(/your saved reels live here/i).closest('[inert]')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /osaka nights/i }))
+    await screen.findByRole('dialog')
+
+    // With the card open the Library sits inside an inert wrapper (focus + Back are sealed off).
+    expect(screen.getByText(/your saved reels live here/i).closest('[inert]')).not.toBeNull()
   })
 })

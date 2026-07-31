@@ -94,6 +94,20 @@ describe('TraysScreen', () => {
     expect(await screen.findByRole('button', { name: /your inspiration starts here/i })).toBeInTheDocument()
   })
 
+  it('threads its own onOrganize through the Library select→plan flow', async () => {
+    const onOrganize = vi.fn(async () => {})
+    const cards = [card({ id: 'r1', caption: 'Tokyo Tower' }), card({ id: 'r2', caption: 'Shibuya' })]
+
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={onOrganize} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /your inspiration starts here/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^select$/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Select Tokyo Tower' }))
+    fireEvent.click(screen.getByRole('button', { name: /^plan a trip$/i }))
+
+    await waitFor(() => expect(onOrganize).toHaveBeenCalledWith(['r1']))
+  })
+
   it('captures a Reel URL through onCapture', async () => {
     const onCapture = vi.fn(async () => {})
 

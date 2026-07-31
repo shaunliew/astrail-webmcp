@@ -278,7 +278,7 @@ export default function SocialCards({ cards, onOpen }: SocialCardsProps) {
             // `.fan-card` class regardless of element type, so a button fans identically.
             if (onOpen) {
               return (
-                <button key={index} type="button" onClick={() => onOpen(card)} aria-label={card.alt || `Card ${index}`} className="fan-card block cursor-pointer appearance-none text-left absolute left-1/2 top-0 overflow-hidden rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.25)] h-[18rem] w-[10rem] ml-[-5rem] min-[480px]:h-[21rem] min-[480px]:w-[12rem] min-[480px]:ml-[-6rem] sm:h-[23rem] sm:w-[13rem] sm:ml-[-6.5rem] md:h-[28rem] md:w-[16rem] md:ml-[-8rem] lg:h-[31rem] lg:w-[17rem] lg:ml-[-8.5rem]">{image}</button>
+                <button key={index} type="button" onClick={() => onOpen(card)} aria-label={card.alt || `Card ${index}`} className="fan-card block cursor-pointer appearance-none text-left absolute left-1/2 top-0 overflow-hidden rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.25)] h-[18rem] w-[10rem] ml-[-5rem] min-[480px]:h-[21rem] min-[480px]:w-[12rem] min-[480px]:ml-[-6rem] sm:h-[23rem] sm:w-[13rem] sm:ml-[-6.5rem] md:h-[28rem] md:w-[16rem] md:ml-[-8rem] lg:h-[31rem] lg:w-[17rem] lg:ml-[-8.5rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]">{image}</button>
               );
             }
             return card.linkUrl ? (

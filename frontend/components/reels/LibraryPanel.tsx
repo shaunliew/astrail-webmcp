@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import SocialCards, { type CardItem } from '@/components/ui/card-fan-carousel'
 import type { SavedReelAnalysisStatus, SavedReelCard } from '@/lib/reels/backend-types'
 
@@ -71,6 +71,15 @@ export default function LibraryPanel({
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
 
+  // Mounted-guard: the parent unmounts this panel on "Back", which can fire while an
+  // organize() promise is still in flight. Mirrors TraysScreen's activeRef pattern so a
+  // late resolve/reject never runs setState on an unmounted component.
+  const activeRef = useRef(true)
+  useEffect(() => {
+    activeRef.current = true
+    return () => { activeRef.current = false }
+  }, [])
+
   const cardById = useMemo(() => new Map(cards.map((c) => [c.id, c])), [cards])
 
   // Country chips are derived from every card's places (not the filtered list), so switching
@@ -134,8 +143,10 @@ export default function LibraryPanel({
       // On success the parent flow advances (organize job) and unmounts this panel; leave
       // busy set so a double-submit can't slip through the transition.
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : 'Could not organize those Reels.')
-      setBusy(false)
+      if (activeRef.current) {
+        setMessage(err instanceof Error ? err.message : 'Could not organize those Reels.')
+        setBusy(false)
+      }
     }
   }
 

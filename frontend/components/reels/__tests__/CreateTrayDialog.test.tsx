@@ -195,6 +195,85 @@ describe('CreateTrayDialog', () => {
     expect(messageReads).toBe(0)
   })
 
+  // Execution-based unmount guards for the three async-setState branches other than the
+  // outer-catch (covered above). Each proves the activeRef guard is load-bearing by observing
+  // that the post-await work — a state-derived read or a parent callback — never runs after
+  // unmount; without the guard React 19 would silently drop the setState (no console warning).
+
+  it('skips setCreatedId when createCollection resolves after unmount (create-success guard)', async () => {
+    let resolveCreate!: (v: unknown) => void
+    createCollection.mockImplementation(() => new Promise((resolve) => { resolveCreate = resolve }))
+    const row = collection({ name: 'Kyoto' })
+    let idReads = 0
+    Object.defineProperty(row, 'id', { configurable: true, get() { idReads++; return 'kept' } })
+
+    const { unmount } = render(
+      <CreateTrayDialog cards={[]} existingNames={[]} onCreated={noop} onClose={vi.fn()} />,
+    )
+    fireEvent.change(nameField(), { target: { value: 'Kyoto' } })
+    fireEvent.click(createBtn())
+
+    await waitFor(() => expect(createCollection).toHaveBeenCalledTimes(1))
+    unmount()
+
+    await act(async () => {
+      resolveCreate(row)
+      await Promise.resolve()
+    })
+
+    // The guard returned before `collectionId = created.id` / setCreatedId ran.
+    expect(idReads).toBe(0)
+  })
+
+  it('skips the grid refresh when the attach rejects after unmount (attach-fail guard)', async () => {
+    createCollection.mockResolvedValue(collection({ id: 'kept', name: 'Osaka' }))
+    let rejectAttach!: (err: unknown) => void
+    addReelsToCollection.mockImplementation(() => new Promise((_, reject) => { rejectAttach = reject }))
+    const onCreated = vi.fn(async () => {})
+
+    const { unmount } = render(
+      <CreateTrayDialog cards={[card({ id: 'r1', caption: 'Dotonbori' })]} existingNames={[]} onCreated={onCreated} onClose={vi.fn()} />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Select Dotonbori' }))
+    fireEvent.change(nameField(), { target: { value: 'Osaka' } })
+    fireEvent.click(createBtn())
+
+    await waitFor(() => expect(addReelsToCollection).toHaveBeenCalledTimes(1))
+    unmount()
+
+    await act(async () => {
+      rejectAttach(new Error('network'))
+      await Promise.resolve()
+    })
+
+    // The inner catch's guard returned before onCreated()/setError ran.
+    expect(onCreated).not.toHaveBeenCalled()
+  })
+
+  it('skips onClose when onCreated resolves after unmount (full-success guard)', async () => {
+    createCollection.mockResolvedValue(collection({ id: 'done', name: 'Nara' }))
+    let resolveCreated!: () => void
+    const onCreated = vi.fn(() => new Promise<void>((resolve) => { resolveCreated = resolve }))
+    const onClose = vi.fn()
+
+    const { unmount } = render(
+      <CreateTrayDialog cards={[]} existingNames={[]} onCreated={onCreated} onClose={onClose} />,
+    )
+    fireEvent.change(nameField(), { target: { value: 'Nara' } })
+    fireEvent.click(createBtn())
+
+    await waitFor(() => expect(onCreated).toHaveBeenCalledTimes(1))
+    unmount()
+
+    await act(async () => {
+      resolveCreated()
+      await Promise.resolve()
+    })
+
+    // The post-onCreated guard returned before onClose() ran.
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
   it('closes on Escape and via Cancel', () => {
     const onClose = vi.fn()
     const { rerender } = render(<CreateTrayDialog cards={[]} existingNames={[]} onCreated={noop} onClose={onClose} />)
@@ -205,5 +284,49 @@ describe('CreateTrayDialog', () => {
     rerender(<CreateTrayDialog cards={[]} existingNames={[]} onCreated={noop} onClose={onClose} />)
     fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }))
     expect(onClose).toHaveBeenCalledTimes(2)
+  })
+
+  it('disables the name input once the tray exists (partial-failure retry state)', async () => {
+    createCollection.mockResolvedValue(collection({ id: 'kept-tray', name: 'Osaka' }))
+    addReelsToCollection.mockRejectedValueOnce(new Error('network'))
+
+    render(<CreateTrayDialog cards={[card({ id: 'r1', caption: 'Dotonbori' })]} existingNames={[]} onCreated={noop} onClose={vi.fn()} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select Dotonbori' }))
+    fireEvent.change(nameField(), { target: { value: 'Osaka' } })
+    expect(nameField()).not.toBeDisabled()
+    fireEvent.click(createBtn())
+
+    // Partial failure → Retry state: the name is now fixed on the server, so the field locks.
+    expect(await screen.findByRole('button', { name: /^retry$/i })).toBeInTheDocument()
+    expect(nameField()).toBeDisabled()
+  })
+
+  it('does not mislabel a non-duplicate error that merely contains "unique"', async () => {
+    createCollection.mockRejectedValue(new Error('connection reset on a unique constraint check timeout'))
+    const onClose = vi.fn()
+
+    render(<CreateTrayDialog cards={[]} existingNames={[]} onCreated={noop} onClose={onClose} />)
+
+    fireEvent.change(nameField(), { target: { value: 'Sapporo' } })
+    fireEvent.click(createBtn())
+
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/unique/i)
+    expect(screen.queryByText(/already used/i)).not.toBeInTheDocument()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('still flags a raw 23505 PostgrestError as a duplicate name via the code branch', async () => {
+    createCollection.mockRejectedValue({ code: '23505', message: 'duplicate key value violates unique constraint' })
+    const onClose = vi.fn()
+
+    render(<CreateTrayDialog cards={[]} existingNames={[]} onCreated={noop} onClose={onClose} />)
+
+    fireEvent.change(nameField(), { target: { value: 'Nara' } })
+    fireEvent.click(createBtn())
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/already used/i)
+    expect(onClose).not.toHaveBeenCalled()
   })
 })

@@ -101,6 +101,13 @@ describe('reel collections data layer', () => {
     expect(from).not.toHaveBeenCalled()
   })
 
+  it('refuses to add reels when there is no authenticated user (before any table write)', async () => {
+    getUser.mockResolvedValueOnce({ data: { user: null }, error: null })
+
+    await expect(addReelsToCollection('c1', ['r1'])).rejects.toThrow('Not authenticated')
+    expect(from).not.toHaveBeenCalled()
+  })
+
   it('renames a collection filtered by id and maps 23505 the same way', async () => {
     const okQuery = makeQuery({ data: { id: 'c1', name: 'Kyoto' }, error: null })
     from.mockReturnValue(okQuery)

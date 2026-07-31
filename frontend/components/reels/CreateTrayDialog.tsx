@@ -27,8 +27,11 @@ function reelLabel(card: SavedReelCard): string {
 // the same "already used" hint the client-side disable uses (the DB is the source of truth).
 function isDuplicateNameError(err: unknown): boolean {
   if (typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505') return true
+  // Match ONLY the exact phrase collectionWriteError emits for a 23505 (`… already exists.`).
+  // The broad /duplicate|unique/ would mislabel unrelated Postgres errors whose text happens to
+  // contain those words; the `.code === '23505'` branch above stays the primary/defensive guard.
   const message = err instanceof Error ? err.message.toLowerCase() : ''
-  return /already exists|duplicate|unique/.test(message)
+  return /already exists/.test(message)
 }
 
 const NAME_MAX = 80
@@ -181,10 +184,14 @@ export default function CreateTrayDialog({
               type="text"
               value={name}
               maxLength={NAME_MAX}
+              // Once the tray exists (retry state) the name is fixed on the server, so a Retry
+              // ignores field edits — lock and mute the input to stop the misleading dup hint next
+              // to an edit-proof Retry.
+              disabled={createdId !== null}
               onChange={(e) => setName(e.target.value)}
               placeholder="Tokyo winter 2026"
               aria-invalid={isDuplicate}
-              className="min-h-11 w-full rounded-lg border border-[color:var(--line-soft)] bg-[color:var(--surface-1)] px-4 text-[color:var(--text)] placeholder:text-[color:var(--text-faint)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]"
+              className="min-h-11 w-full rounded-lg border border-[color:var(--line-soft)] bg-[color:var(--surface-1)] px-4 text-[color:var(--text)] placeholder:text-[color:var(--text-faint)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)] disabled:cursor-default disabled:opacity-60"
             />
             {isDuplicate ? (
               <p className="mt-1.5 text-[12px] text-[color:var(--text-muted)]">{DUPLICATE_HINT}</p>

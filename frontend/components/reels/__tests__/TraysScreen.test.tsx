@@ -1,14 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
-const { getUser, listCollections, getMembershipsByCollection } = vi.hoisted(() => ({
+const { getUser, listCollections, getMembershipsByCollection, createCollection, addReelsToCollection } = vi.hoisted(() => ({
   getUser: vi.fn(async () => ({ data: { user: { email: 'zh@astrail.app', user_metadata: { full_name: 'Zhi Hao' } } } })),
   listCollections: vi.fn(),
   getMembershipsByCollection: vi.fn(),
+  createCollection: vi.fn(),
+  addReelsToCollection: vi.fn(),
 }))
 
 vi.mock('@/lib/supabase/client', () => ({ createClient: () => ({ auth: { getUser } }) }))
-vi.mock('@/lib/reels/collections', () => ({ listCollections, getMembershipsByCollection }))
+vi.mock('@/lib/reels/collections', () => ({ listCollections, getMembershipsByCollection, createCollection, addReelsToCollection }))
 // Opening the Library swaps in LibraryPanel, whose card-fan drives gsap in a useEffect;
 // no-op it so the fan cannot flake in jsdom during this integration test.
 vi.mock('gsap', () => ({ default: { to: vi.fn(), set: vi.fn(), killTweensOf: vi.fn() } }))
@@ -39,6 +41,8 @@ describe('TraysScreen', () => {
     getUser.mockClear()
     listCollections.mockReset(); listCollections.mockResolvedValue([])
     getMembershipsByCollection.mockReset(); getMembershipsByCollection.mockResolvedValue({})
+    createCollection.mockReset()
+    addReelsToCollection.mockReset()
   })
   afterEach(() => { cleanup() })
 
@@ -127,6 +131,16 @@ describe('TraysScreen', () => {
     expect(await screen.findByText(/no trails yet/i)).toBeInTheDocument()
   })
 
+  it('shows the error banner (not the empty state) when the trays fetch fails with no reels', async () => {
+    listCollections.mockRejectedValue(new Error('network down'))
+
+    render(<TraysScreen cards={[]} onCapture={noop} onOrganize={noop} />)
+
+    // A transient listCollections failure must surface the error, not the misleading empty state.
+    expect(await screen.findByText(/could not load your trays/i)).toBeInTheDocument()
+    expect(screen.queryByText(/no trails yet/i)).not.toBeInTheDocument()
+  })
+
   it('keeps capture working and surfaces a soft error when the trays fetch fails', async () => {
     listCollections.mockRejectedValue(new Error('network down'))
     const onCapture = vi.fn(async () => {})
@@ -137,5 +151,31 @@ describe('TraysScreen', () => {
     fireEvent.change(screen.getByLabelText(/paste a reel link/i), { target: { value: 'https://ig/reel/z' } })
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
     await waitFor(() => expect(onCapture).toHaveBeenCalledWith('https://ig/reel/z'))
+  })
+
+  it('wires CreateTrayDialog to the live collections and creates a tray through the data layer', async () => {
+    listCollections.mockResolvedValue([collection({ id: 'c1', name: 'Tokyo winter' })])
+    createCollection.mockResolvedValue(collection({ id: 'new-tray', name: 'Kyoto autumn' }))
+    addReelsToCollection.mockResolvedValue(undefined)
+    const cards = [card({ id: 'r1', caption: 'Kyoto temple' })]
+
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: /create a tray/i }))
+
+    const dialog = screen.getByRole('dialog')
+    // existingNames is wired from the live collections: the loaded 'Tokyo winter' reads as a dup.
+    fireEvent.change(within(dialog).getByLabelText(/tray name/i), { target: { value: 'tokyo winter' } })
+    expect(within(dialog).getByText(/already used/i)).toBeInTheDocument()
+
+    // Pick a reel + a fresh name + Create → the data layer runs with the created id and picked ids.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Select Kyoto temple' }))
+    fireEvent.change(within(dialog).getByLabelText(/tray name/i), { target: { value: 'Kyoto autumn' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: /^create$/i }))
+
+    await waitFor(() => expect(createCollection).toHaveBeenCalledWith('Kyoto autumn'))
+    expect(addReelsToCollection).toHaveBeenCalledWith('new-tray', ['r1'])
+    // onClose fired on success: the dialog unmounts.
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 })

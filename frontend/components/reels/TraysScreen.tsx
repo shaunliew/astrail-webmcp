@@ -102,7 +102,9 @@ export default function TraysScreen({
   // P2 (T2.1) wires ReelInfoCard; opening a reel from the Library is a no-op stub in P1.
   function handleOpenReel(_card: SavedReelCard) { /* T2.1 wires ReelInfoCard (plan Phase 2) */ }
 
-  const isEmpty = !loading && cards.length === 0 && collections.length === 0
+  // Gate the empty state on the absence of an error too: a transient trays-fetch failure must
+  // surface the error banner, not the misleading "No trails yet" state (they'd otherwise co-render).
+  const isEmpty = !loading && !error && cards.length === 0 && collections.length === 0
 
   // Full-surface swap: the Library replaces the home content (greeting/capture/banner/trays)
   // rather than expanding inline. The /app home has no map behind it, so this is a plain

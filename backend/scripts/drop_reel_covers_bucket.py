@@ -9,6 +9,11 @@ DESTRUCTIVE and IRREVERSIBLE — it erases every re-hosted cover. It therefore R
 without an explicit `--confirm`, and prints what it will do before doing it. Idempotent: if the
 bucket is already gone a 404 from `empty_bucket` degrades to a clean success.
 
+After the bucket is dropped it ALSO nulls the now-dead `reel_cache.thumbnail_url` pointers into that
+bucket (scoped by a `%/reel-covers/%` LIKE) so the Library/Trays UI reverts to placeholders instead
+of rendering 404 tiles. This DB clear is idempotent (a no-op when none remain) and runs even on the
+already-gone path.
+
 Import stays keyless: `supabase_client` (which reads SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY)
 is imported inside the run body, never at module scope — so this file imports with no env set.
 
@@ -24,6 +29,8 @@ import sys
 from collections.abc import Awaitable, Callable
 
 BUCKET = "reel-covers"
+TABLE = "reel_cache"
+_POINTER_LIKE = f"%/{BUCKET}/%"     # matches only thumbnail_url values that point into OUR bucket
 
 # Duck-typed against storage3.StorageApiError.status: a bucket that no longer exists yields a
 # 404 on the empty/delete endpoints, which we treat as "already gone" rather than an error.
@@ -40,26 +47,34 @@ def _is_absent_error(exc: Exception) -> bool:
     return getattr(exc, "status", None) in _NOT_FOUND_STATUSES
 
 
+async def _clear_dead_pointers(client) -> None:
+    """Null the now-dead `reel_cache.thumbnail_url` pointers into the just-dropped bucket so the UI
+    reverts to placeholders instead of rendering 404 tiles. Scoped by the `%/reel-covers/%` LIKE so it
+    only touches our bucket's URLs; idempotent (NULL values never match LIKE, so a re-run is a no-op)."""
+    await (
+        client.table(TABLE)
+        .update({"thumbnail_url": None})
+        .like("thumbnail_url", _POINTER_LIKE)
+        .execute()
+    )
+    print(f"  [drop] nulled dead reel_cache.thumbnail_url pointers into {BUCKET!r}", file=sys.stderr)
+
+
 async def _drop_bucket(client) -> int:
-    """Empty the bucket (objects first) then delete it. Idempotent on a 404; re-raises otherwise."""
+    """Empty the bucket (objects first) then delete it, then null the now-dead DB pointers. Idempotent
+    on a 404 (bucket already gone); a genuine (non-404) storage error re-raises before any DB clear."""
     storage = client.storage
     try:
         await storage.empty_bucket(BUCKET)
-    except Exception as exc:  # noqa: BLE001 — inspect status; genuine errors re-raise below
-        if _is_absent_error(exc):
-            print(f"  [drop] bucket {BUCKET!r} already absent — nothing to do", file=sys.stderr)
-            return 0
-        raise
-    print(f"  [drop] emptied bucket {BUCKET!r}", file=sys.stderr)
-
-    try:
+        print(f"  [drop] emptied bucket {BUCKET!r}", file=sys.stderr)
         await storage.delete_bucket(BUCKET)
-    except Exception as exc:  # noqa: BLE001 — a racing delete may 404; that is success
-        if _is_absent_error(exc):
-            print(f"  [drop] bucket {BUCKET!r} already absent — nothing to do", file=sys.stderr)
-            return 0
-        raise
-    print(f"  [drop] deleted bucket {BUCKET!r}", file=sys.stderr)
+        print(f"  [drop] deleted bucket {BUCKET!r}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 — inspect status; genuine errors re-raise below
+        if not _is_absent_error(exc):
+            raise
+        print(f"  [drop] bucket {BUCKET!r} already absent — nothing to do", file=sys.stderr)
+
+    await _clear_dead_pointers(client)     # runs even on the already-gone path (idempotent)
     return 0
 
 

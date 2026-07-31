@@ -1,13 +1,17 @@
 """One-time backfill of NULL `reel_cache.thumbnail_url` covers (migration 20260731120000 companion).
 
-Existing `reel_cache` rows predate the cover wiring, so their `thumbnail_url` is NULL and their raw
-Apify `displayUrl` has long expired. This re-scrapes each such reel through Apify to obtain a FRESH
-`displayUrl`, re-hosts it into the public `reel-covers` Storage bucket, and writes the stable public URL
-(plus the `display_url` repair pointer in `raw_payload`) back to the row.
+Existing `reel_cache` rows predate the cover wiring, so their `thumbnail_url` is NULL. Each row is
+repaired POINTER-FIRST (decision B): if the row carries a saved `raw_payload.display_url`, re-host from
+THAT into the public `reel-covers` Storage bucket — a FREE repair, NO Apify call. Only a row with no
+saved pointer, or whose saved pointer has expired (re-host returns None), falls back to a fresh Apify
+scrape → fresh `displayUrl` → re-host (refreshing the saved pointer). The stable public URL is written
+back via a compare-and-set (still-NULL) update.
 
-SPENDS APIFY CREDITS (one actor run per NULL reel). It therefore REFUSES to run without an explicit
-`--confirm`, and a `--dry-run` COUNTS the NULL rows without scraping (no credits). Re-runnable and
-idempotent: only still-NULL rows are ever touched.
+SPENDS APIFY CREDITS only on the re-scrape fallback. It therefore REFUSES to run without an explicit
+`--confirm`, and a `--dry-run` COUNTS the NULL rows without scraping (no credits). On the confirmed run
+it FIRST verifies the `reel-covers` bucket exists (preflight) and aborts non-zero if it does not, so a
+backend-first deploy never scrapes every row only to fail every upload. Re-runnable and idempotent:
+only still-NULL rows are ever touched.
 
 PAGINATION — keyset, not offset and not drain-the-first-page. Each page selects
 `where thumbnail_url is null and source_platform='instagram' and normalized_url > :cursor
@@ -37,6 +41,7 @@ from collections.abc import Awaitable, Callable
 from pipeline.cache import _cover_key
 
 TABLE = "reel_cache"
+BUCKET = "reel-covers"
 _BATCH_SIZE = 100
 _CONCURRENCY = 4
 
@@ -46,14 +51,29 @@ _REFUSE_MSG = (
     "with --confirm to proceed."
 )
 
+_BUCKET_MISSING_MSG = (
+    f"{BUCKET} bucket not found — apply migration 20260731120000 first; "
+    "aborting before spending Apify credits"
+)
+
+
+async def _bucket_exists(client) -> bool:
+    """Preflight: does the `reel-covers` bucket exist? Verified on the confirmed run BEFORE any Apify
+    scrape so a backend-first deploy (bucket not yet created) aborts without spending a single credit,
+    rather than scraping every row and then failing every upload."""
+    buckets = await client.storage.list_buckets()
+    return any(getattr(b, "id", None) == BUCKET or getattr(b, "name", None) == BUCKET for b in buckets)
+
 
 def _null_query(client, cursor: str, batch_size: int):
     """The keyset page of NULL-cover Instagram rows after `cursor`, ordered by `normalized_url`.
 
-    The strict `> cursor` bound is added only when `cursor` is set; the first page is unbounded below."""
+    Selects `raw_payload` alongside `normalized_url` so each row carries its saved `display_url` repair
+    pointer (decision B — repair from the saved URL without a re-scrape). The strict `> cursor` bound is
+    added only when `cursor` is set; the first page is unbounded below."""
     query = (
         client.table(TABLE)
-        .select("normalized_url")
+        .select("normalized_url, raw_payload")
         .is_("thumbnail_url", "null")
         .eq("source_platform", "instagram")
     )
@@ -74,6 +94,19 @@ async def _count_null(client) -> int:
     return resp.count or 0
 
 
+async def _write_cover(client, normalized_url: str, thumbnail_url: str, display_url: str) -> None:
+    """Compare-and-set the cover: write ONLY while the row is still NULL (`thumbnail_url IS NULL`), so a
+    row covered concurrently — e.g. by the organize job — between page-selection and here is never
+    clobbered. Also (re)writes the `raw_payload.display_url` repair pointer to the URL that succeeded."""
+    await (
+        client.table(TABLE)
+        .update({"thumbnail_url": thumbnail_url, "raw_payload": {"display_url": display_url}})
+        .eq("normalized_url", normalized_url)
+        .is_("thumbnail_url", "null")
+        .execute()
+    )
+
+
 async def _process_row(
     client,
     row: dict,
@@ -85,31 +118,43 @@ async def _process_row(
     lock: asyncio.Lock,
     semaphore: asyncio.Semaphore,
 ) -> None:
-    """Re-scrape + re-host one row's cover, updating it on success. Never raises: a bad row is counted
-    and isolated so it can never abort the run. Outcomes: done (re-hosted + written) / failed (scrape
-    raised or re-host returned None) / skipped (the reel exposes no cover to re-host)."""
+    """Repair one row's cover, updating it on success. Never raises: a bad row is counted and isolated
+    so it can never abort the run. Outcomes: done (re-hosted + written) / failed (scrape raised or
+    re-host returned None) / skipped (the reel exposes no cover to re-host).
+
+    POINTER-FIRST (decision B): if the row carries a saved `raw_payload.display_url`, re-host from THAT
+    first — a FREE repair, no Apify call. Only if there is no saved pointer, or the saved pointer's
+    re-host returns None (expired CDN URL → 4xx), fall back to a fresh Apify scrape and re-host the fresh
+    `display_url` (refreshing the saved pointer). Both success paths share the `done` tally."""
     normalized_url = row["normalized_url"]
+    cover_key = _cover_key(normalized_url)
     async with semaphore:
         try:
+            saved_display_url = (row.get("raw_payload") or {}).get("display_url")
+            if saved_display_url:
+                thumbnail_url = await rehost(client, saved_display_url, cover_key)
+                if thumbnail_url:
+                    await _write_cover(client, normalized_url, thumbnail_url, saved_display_url)
+                    async with lock:
+                        tally["done"] += 1
+                    print(f"  [backfill] repaired {normalized_url} from saved pointer (no Apify)", file=sys.stderr)
+                    return
+
             reel = await scrape(normalized_url, token=token)
             display_url = getattr(reel, "display_url", None)
             if not display_url:
                 async with lock:
                     tally["skipped"] += 1
                 return
-            thumbnail_url = await rehost(client, display_url, _cover_key(normalized_url))
+            thumbnail_url = await rehost(client, display_url, cover_key)
             if not thumbnail_url:
                 async with lock:
                     tally["failed"] += 1
                 return
-            await (
-                client.table(TABLE)
-                .update({"thumbnail_url": thumbnail_url, "raw_payload": {"display_url": display_url}})
-                .eq("normalized_url", normalized_url)
-                .execute()
-            )
+            await _write_cover(client, normalized_url, thumbnail_url, display_url)
             async with lock:
                 tally["done"] += 1
+            print(f"  [backfill] repaired {normalized_url} via re-scrape", file=sys.stderr)
         except Exception as exc:  # noqa: BLE001 — isolate one bad row; log the type only (token-safe)
             async with lock:
                 tally["failed"] += 1
@@ -148,6 +193,15 @@ async def run_backfill(
     return tally
 
 
+def _positive_int(value: str) -> int:
+    """argparse `type=` helper: reject non-positive ints. `--concurrency 0` would build `Semaphore(0)`
+    (every row blocks forever); a zero/negative `--batch-size` would never make keyset progress."""
+    ivalue = int(value)
+    if ivalue <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive integer, got {value!r}")
+    return ivalue
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="backfill_reel_covers",
@@ -163,8 +217,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="only COUNT the NULL-cover rows; no scrape, no credits, no writes",
     )
-    parser.add_argument("--batch-size", type=int, default=_BATCH_SIZE, help="keyset page size")
-    parser.add_argument("--concurrency", type=int, default=_CONCURRENCY, help="max concurrent rows")
+    parser.add_argument("--batch-size", type=_positive_int, default=_BATCH_SIZE, help="keyset page size (positive)")
+    parser.add_argument("--concurrency", type=_positive_int, default=_CONCURRENCY, help="max concurrent rows (positive)")
     return parser.parse_args(argv)
 
 
@@ -217,6 +271,11 @@ async def main(
         token = os.environ["APIFY_TOKEN"]
 
     client = await _resolve_client(client_factory)
+
+    if not await _bucket_exists(client):                 # preflight BEFORE spending any Apify credits
+        print(_BUCKET_MISSING_MSG, file=sys.stderr)
+        return 3
+
     print("Backfilling NULL reel covers (re-scraping via Apify — this SPENDS credits)…", file=sys.stderr)
     tally = await run_backfill(
         client, scrape=scrape, rehost=rehost, token=token,

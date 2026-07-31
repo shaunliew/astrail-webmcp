@@ -130,9 +130,30 @@ class _FakeTable:
         return _FakeQuery(self).update(values)
 
 
+class _FakeBucket:
+    """Duck-types storage3.Bucket's `.id`/`.name` for the preflight existence check."""
+
+    def __init__(self, bucket_id: str):
+        self.id = bucket_id
+        self.name = bucket_id
+
+
+class _FakeStorage:
+    """Records list_buckets calls; returns the configured bucket list (default: reel-covers present)."""
+
+    def __init__(self, *, buckets=None):
+        self.buckets = [_FakeBucket("reel-covers")] if buckets is None else buckets
+        self.list_calls = 0
+
+    async def list_buckets(self):
+        self.list_calls += 1
+        return list(self.buckets)
+
+
 class _FakeClient:
-    def __init__(self, rows, *, max_fetches=20):
+    def __init__(self, rows, *, max_fetches=20, buckets=None):
         self.reel_cache = _FakeTable(rows, max_fetches=max_fetches)
+        self.storage = _FakeStorage(buckets=buckets)
 
     def table(self, name):
         assert name == "reel_cache"
@@ -161,14 +182,17 @@ class _FakeScrape:
 
 
 class _FakeRehost:
-    """Records (display_url, cover_key); returns a fixed result (str URL / None)."""
+    """Records (display_url, cover_key); returns a per-URL override if given, else a fixed result."""
 
-    def __init__(self, result):
+    def __init__(self, result=_REHOSTED, *, results_by_url: dict[str, str | None] | None = None):
         self.result = result
+        self.results_by_url = results_by_url or {}
         self.calls: list[tuple[str, str]] = []
 
     async def __call__(self, client, display_url, cover_key):
         self.calls.append((display_url, cover_key))
+        if display_url in self.results_by_url:
+            return self.results_by_url[display_url]
         return self.result
 
 
@@ -189,6 +213,13 @@ def _null_row(code: str) -> dict:
         "source_platform": "instagram",
         "thumbnail_url": None,
     }
+
+
+def _pointer_row(code: str, display_url: str) -> dict:
+    """A NULL-cover row that DOES carry a saved `raw_payload.display_url` repair pointer."""
+    row = _null_row(code)
+    row["raw_payload"] = {"display_url": display_url}
+    return row
 
 
 # --- run_backfill: the core loop -----------------------------------------------------------------
@@ -327,7 +358,126 @@ async def test_scrape_error_is_counted_failed_and_isolated():
     assert rows[1]["thumbnail_url"] == _REHOSTED                # the good row still processed
 
 
+# --- pointer-first repair (decision B: repair from the saved display_url, no re-scrape) ----------
+
+
+async def test_pointer_first_repairs_without_scraping():
+    """A row with a fresh saved pointer repairs for FREE: rehost the SAVED display_url and write it —
+    NO Apify scrape (decision B). The saved pointer is preserved on the row."""
+    saved = "https://scontent.cdninstagram.com/v/t51/saved.jpg"
+    rows = [_pointer_row("PTR001", saved)]
+    client = _FakeClient(rows)
+    scrape, rehost = _FakeScrape(), _FakeRehost(_REHOSTED)
+
+    tally = await run_backfill(client, scrape=scrape, rehost=rehost, token="tok")
+
+    assert tally == {"done": 1, "failed": 0, "skipped": 0}
+    assert scrape.calls == []                                    # NO Apify credit spent
+    assert rehost.calls == [(saved, "PTR001")]                   # rehosted the SAVED pointer, validated key
+    assert rows[0]["thumbnail_url"] == _REHOSTED
+    assert rows[0]["raw_payload"] == {"display_url": saved}      # pointer preserved
+
+
+async def test_pointer_stale_falls_back_to_scrape():
+    """A saved pointer whose rehost returns None (expired CDN URL → 4xx) falls back to a FRESH Apify
+    scrape, rehosts the fresh display_url, and REFRESHES the saved pointer with it."""
+    stale = "https://scontent.cdninstagram.com/v/t51/stale.jpg"
+    rows = [_pointer_row("PTR002", stale)]
+    client = _FakeClient(rows)
+    scrape = _FakeScrape(display_url=_COVER)                     # fresh scrape yields _COVER
+    rehost = _FakeRehost(_REHOSTED, results_by_url={stale: None})  # stale fails, fresh succeeds
+
+    tally = await run_backfill(client, scrape=scrape, rehost=rehost, token="tok")
+
+    assert tally == {"done": 1, "failed": 0, "skipped": 0}
+    assert scrape.calls == [("https://www.instagram.com/reel/PTR002", "tok")]   # scraped once (fallback)
+    assert rehost.calls == [(stale, "PTR002"), (_COVER, "PTR002")]              # stale THEN fresh
+    assert rows[0]["thumbnail_url"] == _REHOSTED
+    assert rows[0]["raw_payload"] == {"display_url": _COVER}                    # pointer REFRESHED to fresh
+
+
+async def test_no_pointer_scrapes():
+    """A row with NO saved pointer (pre-existing long-NULL row) re-scrapes via Apify as before."""
+    rows = [_null_row("NOP003")]                                # _null_row carries no raw_payload
+    client = _FakeClient(rows)
+    scrape, rehost = _FakeScrape(), _FakeRehost(_REHOSTED)
+
+    tally = await run_backfill(client, scrape=scrape, rehost=rehost, token="tok")
+
+    assert tally == {"done": 1, "failed": 0, "skipped": 0}
+    assert scrape.calls == [("https://www.instagram.com/reel/NOP003", "tok")]  # re-scraped
+    assert rehost.calls == [(_COVER, "NOP003")]
+
+
+async def test_success_update_is_compare_and_set():
+    """The success update is a compare-and-set: it filters `thumbnail_url IS NULL` alongside the
+    normalized_url eq, so a row covered concurrently (e.g. by an organize job) between page-selection
+    and write is never clobbered."""
+    rows = [_null_row("CAS123")]
+    client = _FakeClient(rows)
+    scrape, rehost = _FakeScrape(), _FakeRehost(_REHOSTED)
+
+    await run_backfill(client, scrape=scrape, rehost=rehost, token="tok")
+
+    assert client.reel_cache.updates, "expected one update to be issued"
+    _values, filters = client.reel_cache.updates[0]
+    assert ("eq", "normalized_url", "https://www.instagram.com/reel/CAS123") in filters
+    assert ("is", "thumbnail_url", "null") in filters           # the compare-and-set guard
+
+
 # --- main: the CLI gate --------------------------------------------------------------------------
+
+
+async def test_confirm_aborts_when_bucket_missing():
+    """Preflight: on --confirm, an absent reel-covers bucket (backend-first deploy) aborts BEFORE any
+    Apify scrape — no scrape, no rehost, non-zero exit, no DB fetch/update (zero credits spent)."""
+    client = _FakeClient([_null_row("ABC123")], buckets=[])     # bucket MISSING
+    factory = _factory_for(client)
+    scrape, rehost = _FakeScrape(), _FakeRehost(_REHOSTED)
+
+    rc = await main(["--confirm"], client_factory=factory, scrape=scrape, rehost=rehost, token="tok")
+
+    assert rc != 0
+    assert scrape.calls == [] and rehost.calls == []            # nothing scraped or re-hosted
+    assert client.reel_cache.fetches == 0 and client.reel_cache.updates == []
+    assert client.storage.list_calls == 1                       # the preflight ran
+
+
+async def test_confirm_concurrency_zero_errors_before_running():
+    """--concurrency 0 would build Semaphore(0) → every row blocks forever. It must error out (argparse
+    ArgumentTypeError → SystemExit) before any client is built or row scraped."""
+    client = _FakeClient([_null_row("ABC123")])
+    factory = _factory_for(client)
+    scrape, rehost = _FakeScrape(), _FakeRehost(_REHOSTED)
+
+    with pytest.raises(SystemExit):
+        await main(["--confirm", "--concurrency", "0"], client_factory=factory, scrape=scrape, rehost=rehost, token="tok")
+
+    assert factory.calls["n"] == 0 and scrape.calls == []
+
+
+async def test_confirm_concurrency_negative_errors_before_running():
+    """--concurrency -1 is likewise rejected as a non-positive integer before any run."""
+    client = _FakeClient([_null_row("ABC123")])
+    factory = _factory_for(client)
+    scrape, rehost = _FakeScrape(), _FakeRehost(_REHOSTED)
+
+    with pytest.raises(SystemExit):
+        await main(["--confirm", "--concurrency", "-1"], client_factory=factory, scrape=scrape, rehost=rehost, token="tok")
+
+    assert factory.calls["n"] == 0 and scrape.calls == []
+
+
+async def test_confirm_batch_size_zero_errors_before_running():
+    """--batch-size 0 is also rejected (a zero-size keyset page would never make progress)."""
+    client = _FakeClient([_null_row("ABC123")])
+    factory = _factory_for(client)
+    scrape, rehost = _FakeScrape(), _FakeRehost(_REHOSTED)
+
+    with pytest.raises(SystemExit):
+        await main(["--confirm", "--batch-size", "0"], client_factory=factory, scrape=scrape, rehost=rehost, token="tok")
+
+    assert factory.calls["n"] == 0 and scrape.calls == []
 
 
 async def test_without_confirm_refuses_and_touches_nothing():

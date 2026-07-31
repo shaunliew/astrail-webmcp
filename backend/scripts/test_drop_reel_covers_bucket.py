@@ -42,9 +42,43 @@ class _FakeStorage:
         return {"message": "Successfully deleted"}
 
 
+class _FakeQuery:
+    """Records the `.update(...).like(...).execute()` chain used to null the dead thumbnail pointers."""
+
+    def __init__(self, table: "_FakeTable") -> None:
+        self._t = table
+        self._values: dict | None = None
+        self._filters: list[tuple[str, str, str]] = []
+
+    def update(self, values: dict) -> "_FakeQuery":
+        self._values = values
+        return self
+
+    def like(self, col: str, pattern: str) -> "_FakeQuery":
+        self._filters.append(("like", col, pattern))
+        return self
+
+    async def execute(self) -> dict:
+        self._t.updates.append((self._values, list(self._filters)))
+        return {"data": []}
+
+
+class _FakeTable:
+    def __init__(self) -> None:
+        self.updates: list[tuple[dict | None, list]] = []
+
+    def update(self, values: dict) -> _FakeQuery:
+        return _FakeQuery(self).update(values)
+
+
 class _FakeClient:
     def __init__(self, storage: _FakeStorage) -> None:
         self.storage = storage
+        self.reel_cache = _FakeTable()
+
+    def table(self, name: str) -> _FakeTable:
+        assert name == "reel_cache"
+        return self.reel_cache
 
 
 class _FakeStorageApiError(Exception):
@@ -55,36 +89,60 @@ class _FakeStorageApiError(Exception):
         self.status = status
 
 
-def _factory_for(storage: _FakeStorage):
-    async def _make():
-        return _FakeClient(storage)
+def _factory_for(client: _FakeClient):
+    calls = {"n": 0}
 
+    async def _make():
+        calls["n"] += 1
+        return client
+
+    _make.calls = calls
     return _make
 
 
 async def test_confirm_empties_then_deletes_in_order() -> None:
-    storage = _FakeStorage()
-    rc = await main(["--confirm"], client_factory=_factory_for(storage))
+    client = _FakeClient(_FakeStorage())
+    rc = await main(["--confirm"], client_factory=_factory_for(client))
     assert rc == 0
-    assert storage.calls == [("empty_bucket", BUCKET), ("delete_bucket", BUCKET)]
+    assert client.storage.calls == [("empty_bucket", BUCKET), ("delete_bucket", BUCKET)]
+
+
+async def test_confirm_nulls_dead_pointers_after_delete() -> None:
+    """After emptying+deleting the bucket, the rollback also nulls the now-dead thumbnail_url pointers
+    (scoped by the `%/reel-covers/%` LIKE) so the UI reverts to placeholders instead of 404 tiles."""
+    client = _FakeClient(_FakeStorage())
+    rc = await main(["--confirm"], client_factory=_factory_for(client))
+    assert rc == 0
+    assert client.reel_cache.updates == [
+        ({"thumbnail_url": None}, [("like", "thumbnail_url", f"%/{BUCKET}/%")]),
+    ]
 
 
 async def test_without_confirm_refuses_and_touches_nothing() -> None:
-    storage = _FakeStorage()
-    rc = await main([], client_factory=_factory_for(storage))
+    client = _FakeClient(_FakeStorage())
+    factory = _factory_for(client)
+    rc = await main([], client_factory=factory)
     assert rc != 0
-    assert storage.calls == []
+    assert factory.calls["n"] == 0            # no client even built
+    assert client.storage.calls == []         # no storage op
+    assert client.reel_cache.updates == []    # no DB pointer nulling
 
 
 async def test_already_gone_is_idempotent() -> None:
-    storage = _FakeStorage(empty_error=_FakeStorageApiError(404))
-    rc = await main(["--confirm"], client_factory=_factory_for(storage))
+    client = _FakeClient(_FakeStorage(empty_error=_FakeStorageApiError(404)))
+    rc = await main(["--confirm"], client_factory=_factory_for(client))
     assert rc == 0
     # empty_bucket ran and 404'd; delete_bucket is skipped — the bucket is already absent.
-    assert storage.calls == [("empty_bucket", BUCKET)]
+    assert client.storage.calls == [("empty_bucket", BUCKET)]
+    # pointers are still cleared (idempotent) even when the bucket had already vanished.
+    assert client.reel_cache.updates == [
+        ({"thumbnail_url": None}, [("like", "thumbnail_url", f"%/{BUCKET}/%")]),
+    ]
 
 
 async def test_unexpected_error_propagates() -> None:
-    storage = _FakeStorage(empty_error=_FakeStorageApiError(500))
+    client = _FakeClient(_FakeStorage(empty_error=_FakeStorageApiError(500)))
     with pytest.raises(_FakeStorageApiError):
-        await main(["--confirm"], client_factory=_factory_for(storage))
+        await main(["--confirm"], client_factory=_factory_for(client))
+    # a genuine (non-404) storage error propagates BEFORE any DB pointer clearing.
+    assert client.reel_cache.updates == []

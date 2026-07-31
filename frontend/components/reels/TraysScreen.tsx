@@ -7,6 +7,7 @@ import type { ReelCollection, SavedReelCard } from '@/lib/reels/backend-types'
 import type { FolderPhoto } from '@/components/ui/folder-gallery'
 import TrayCard from './TrayCard'
 import LibraryPanel from './LibraryPanel'
+import CreateTrayDialog from './CreateTrayDialog'
 
 /* TraysScreen — the /app home. Replaces the old DashboardHome inbox body with:
    greeting + quick-capture + a Library banner + a "Your trays" grid (one TrayCard per
@@ -21,8 +22,6 @@ import LibraryPanel from './LibraryPanel'
 
 const BTN_PRIMARY =
   'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-[color:var(--accent)] bg-[color:var(--accent)] px-4 text-[13px] font-medium text-[color:var(--accent-text)] transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]'
-const BTN_SECONDARY =
-  'inline-flex min-h-11 items-center justify-center rounded-lg border border-[color:var(--paper-line-2)] bg-transparent px-4 text-[13px] font-medium text-[color:var(--text)] transition-colors hover:bg-[color:var(--surface-2)] disabled:cursor-default disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]'
 
 export default function TraysScreen({
   cards,
@@ -216,13 +215,12 @@ export default function TraysScreen({
             </div>
 
             {createOpen ? (
-              // interim — replaced by <CreateTrayDialog/> in T1.4 (plan T1.4). No create
-              // logic lives here yet; this only proves the seam.
-              <div role="dialog" aria-label="Create a tray" className="mt-5 rounded-2xl border border-[color:var(--paper-line-2)] bg-[color:var(--surface-1)] p-5">
-                <h3 className="font-display text-[16px] font-medium text-[color:var(--text)]">Name a new tray</h3>
-                <p className="mt-1 text-[14px] text-[color:var(--text-muted)]">Picking reels and naming a tray arrives in the next step.</p>
-                <button type="button" className={`mt-4 ${BTN_SECONDARY}`} onClick={() => setCreateOpen(false)}>Close</button>
-              </div>
+              <CreateTrayDialog
+                cards={cards}
+                existingNames={collections.map((c) => c.name)}
+                onCreated={refresh}
+                onClose={() => setCreateOpen(false)}
+              />
             ) : null}
           </section>
         </>

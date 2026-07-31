@@ -214,8 +214,8 @@ async def test_cache_cover_key_is_validated_not_apify_short_code():
 
 @pytest.mark.integration
 @pytest.mark.skipif(
-    not os.environ.get("SUPABASE_URL"),
-    reason="dev-DB round-trip: set SUPABASE_URL (+ SUPABASE_SERVICE_ROLE_KEY) to run against dev Supabase",
+    os.environ.get("RUN_DB_INTEGRATION") != "1",
+    reason="dev-DB round-trip: set RUN_DB_INTEGRATION=1 (+ SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY) to run against dev Supabase",
 )
 async def test_cache_upsert_omit_preserves_thumbnail_on_dev_db():
     """Proves the real PostgREST 'omit-preserves-value' semantics the offline fake only mimics: an upsert

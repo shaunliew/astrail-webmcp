@@ -1,9 +1,13 @@
 # Plan — Durable reel-cover thumbnails (re-host Apify `displayUrl` → Supabase Storage)
 
-> Status: **REVIEWED & AMENDED 2026-07-31** — passed `/plan-eng-review` + Codex outside voice after folding
-> all findings (Codex initial: 6.1/10 DO-NOT-IMPLEMENT → all 7 P2 + 4 P3 amended below). Ready for
-> `superpowers:subagent-driven-development`.
-> Author: planning session 2026-07-31. Feature branch target: a fresh `feat/reel-cover-thumbnails` off `dev`.
+> Status: **IMPLEMENTED 2026-07-31** on `feat/reel-cover-thumbnails` (worktree off `zh`, per user — merges to
+> `zh` to test covers in the Library/Trays UI). All per-task reviews + BOTH whole-branch reviews (fable SHIP +
+> Codex cross-model) passed after folding every finding. Remaining = human-gated: dev migration apply, live
+> smoke (spends Apify), `/qa` on Library covers, backfill on user's go, then merge → `zh`. See **Implementation
+> outcome** at the end. *(Plan-review history: passed `/plan-eng-review` + Codex outside voice after folding
+> Codex's initial 6.1/10 DO-NOT-IMPLEMENT → 7 P2 + 4 P3.)*
+> Author: planning session 2026-07-31. Branch: `feat/reel-cover-thumbnails` off `zh` (not `dev` — user will
+> merge to `zh`; the backend deps are byte-identical on `dev` and `zh`).
 
 ## 0. Review amendments folded (2026-07-31)
 
@@ -394,3 +398,51 @@ contain a filled row so "skips filled" is a real assertion).
   `superpowers:subagent-driven-development`.
 
 NO UNRESOLVED DECISIONS
+
+## Implementation outcome (2026-07-31)
+
+Built task-by-task via `superpowers:subagent-driven-development` (astrail-developer opus + astrail-reviewer
+sonnet per-task, every guard fault-injected). Branch `feat/reel-cover-thumbnails` off `zh`. Commits:
+
+| Unit | Commit | Notes |
+|---|---|---|
+| plan + ledger | `60e600b` | this doc |
+| T1+T2 | `36fbce0` | `ReelData.display_url` + `apify_direct` maps `displayUrl` |
+| T3 | `1ff6b5a` | `pipeline/thumbnails.py` `rehost_cover` — reviewer probed 17 SSRF URLs, no holes |
+| T4 | `5e82809` + `28fad60` | `cache_places` cover write; fix gated dev-DB test on `RUN_DB_INTEGRATION` |
+| T5 | `d574022` | bucket migration + drop helper — **migration verified live** (`supabase db start`+`test db` green) |
+| T6 | `d69c360` | `backfill_reel_covers.py` — **keyset** pagination (supersedes the plan §5 Task 6 "drain-page" text, which infinite-loops on a persistent failure) |
+| T7 | `c1810eb` | folded the whole-branch-review findings (below) |
+
+**Whole-branch reviews (BUILD-LOOP steps 5+6):** fable = **SHIP** (proved the core is safe: cover failure
+can't fail a trip or an organize item — two load-bearing guard layers; all 12 guardrails pass; eval-safety
+empirical). Codex cross-model = **DO-NOT-MERGE** initially, catching 3 P2 + 2 P3 the per-task reviews missed —
+**all folded in T7:**
+1. **Backfill bucket preflight** — abort before spending Apify credits if the `reel-covers` bucket is absent
+   (backend-first deploy order otherwise burns credits for zero covers, exit 0).
+2. **Rollback DB-null** — the drop script now nulls `reel_cache.thumbnail_url` for `%/reel-covers/%` URLs, so
+   rollback reverts to placeholders instead of 404 tiles.
+3. **Backfill CAS** — the success `update` now `.is_("thumbnail_url","null")`, so it won't clobber a row
+   covered concurrently.
+4. **Arg validation** — `--concurrency`/`--batch-size` must be `> 0` (0 → `Semaphore(0)` hangs forever).
+5. **Pointer-first repair (user decision — delivers "B")** — the backfill now re-hosts from the saved
+   `raw_payload.display_url` FIRST (no Apify), falling back to a fresh re-scrape only when the pointer is
+   missing/expired. This makes the stored pointer live (it was write-only before) and delivers §2's
+   "repair from the saved URL without a re-scrape" promise for future transient failures. (Pre-existing
+   long-NULL rows still re-scrape — their URLs are long gone.)
+
+**Test posture at completion:** full backend suite **811 passed / 8 skipped**; `evals/` **49 passed**, anchor
+`mean_intra_day_travel_m = 6229.0` unchanged; both new scripts import keyless.
+
+**Accepted deferred Minors (non-blocking):** (a) `_cover_key`'s dead `try/except` around `short_code_of`
+(never raises) — remove on next touch; (b) host-based SSRF allowlist's inherent DNS-rebinding residual
+(Meta owns the DNS); (c) backfill reads `APIFY_TOKEN` before the bucket preflight → raw `KeyError` (not the
+friendly message) if BOTH are missing — fails safe either way; (d) backfill `done` tally can overcount by 1
+if a concurrent writer wins the CAS race — reporting nit, row still ends covered.
+
+**Remaining — human-gated (needs user's go; NOT run by the build):**
+1. Apply migration `20260731120000` to **dev** Supabase; confirm `reel-covers` exists + `public=true`.
+2. **Live smoke** (spends Apify): scrape one real reel through organize → confirm the object in `reel-covers`,
+   `thumbnail_url` = public URL, `raw_payload.display_url` set, URL loads a JPG. gstack `/qa` on Library/Trays.
+3. Backfill: `--dry-run` count, then `--confirm` against dev on the user's go; re-verify a sample.
+4. Merge `feat/reel-cover-thumbnails` → `zh`.

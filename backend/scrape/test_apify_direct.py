@@ -5,7 +5,8 @@ import pytest
 from scrape.apify_direct import ApifyScrapeError, map_item_to_reeldata, scrape_reel
 
 _ITEM = {"caption": "📍Tokyo Dream Park", "locationName": "Tokyo, Japan",
-         "shortCode": "DYbmT-SNzVK", "url": "https://www.instagram.com/reel/DYbmT-SNzVK/"}
+         "shortCode": "DYbmT-SNzVK", "url": "https://www.instagram.com/reel/DYbmT-SNzVK/",
+         "displayUrl": "https://cdn.example/cover.jpg"}
 _URL = "https://www.instagram.com/reel/DYbmT-SNzVK/"
 
 
@@ -16,6 +17,13 @@ def test_map_item_to_reeldata():
     assert rd.short_code == "DYbmT-SNzVK"
     assert rd.reel_url == _URL
     assert rd.capture_status == "CAPTURED"
+    assert rd.display_url == "https://cdn.example/cover.jpg"
+
+
+def test_map_item_to_reeldata_without_display_url_is_none():
+    item = {k: v for k, v in _ITEM.items() if k != "displayUrl"}
+    rd = map_item_to_reeldata(item, _URL)
+    assert rd.display_url is None
 
 
 async def test_scrape_reel_posts_to_run_sync_and_maps():

@@ -45,6 +45,44 @@ describe('CreateTrayDialog', () => {
     addReelsToCollection.mockReset()
   })
 
+  it('seeds the picker from preselectedReelIds and attaches it on Create', async () => {
+    createCollection.mockResolvedValue(collection({ id: 'new-tray', name: 'Tokyo winter' }))
+    addReelsToCollection.mockResolvedValue(undefined)
+    const onCreated = vi.fn(async () => {})
+    const onClose = vi.fn()
+    const cards = [card({ id: 'r1', caption: 'Tokyo Tower' }), card({ id: 'r2', caption: 'Shibuya' })]
+
+    render(
+      <CreateTrayDialog
+        cards={cards}
+        existingNames={[]}
+        preselectedReelIds={['r1']}
+        onCreated={onCreated}
+        onClose={onClose}
+      />,
+    )
+
+    // r1 opens preselected from the prop; r2 does not.
+    expect(screen.getByRole('button', { name: 'Select Tokyo Tower', pressed: true })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Select Shibuya', pressed: false })).toBeInTheDocument()
+    expect(screen.getByText('1 selected')).toBeInTheDocument()
+
+    // Create carries the seeded selection through to the data layer.
+    fireEvent.change(nameField(), { target: { value: 'Tokyo winter' } })
+    fireEvent.click(createBtn())
+
+    await waitFor(() => expect(createCollection).toHaveBeenCalledWith('Tokyo winter'))
+    expect(addReelsToCollection).toHaveBeenCalledWith('new-tray', ['r1'])
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
+  })
+
+  it('starts with an empty selection when preselectedReelIds is omitted (default guard)', () => {
+    render(<CreateTrayDialog cards={[card({ id: 'r1', caption: 'Tokyo Tower' })]} existingNames={[]} onCreated={noop} onClose={vi.fn()} />)
+
+    expect(screen.getByText('0 selected')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Select Tokyo Tower', pressed: false })).toBeInTheDocument()
+  })
+
   it('creates the tray then attaches exactly the picked reel ids', async () => {
     createCollection.mockResolvedValue(collection({ id: 'new-tray', name: 'Tokyo winter' }))
     addReelsToCollection.mockResolvedValue(undefined)

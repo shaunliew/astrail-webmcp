@@ -49,17 +49,21 @@ const CHIP_OFF = 'border-[color:var(--paper-line-2)] bg-transparent text-[color:
 export default function CreateTrayDialog({
   cards,
   existingNames,
+  preselectedReelIds = [],
   onCreated,
   onClose,
 }: {
   cards: SavedReelCard[]
   existingNames: string[]
+  preselectedReelIds?: string[]
   onCreated: () => void | Promise<void>
   onClose: () => void
 }) {
   const [name, setName] = useState('')
   const [country, setCountry] = useState<string | null>(null)
-  const [selected, setSelected] = useState<string[]>([])
+  // Lazy initializer runs once at mount and COPIES the prop, so later toggleSelect edits
+  // never mutate the caller's array; a fresh dialog mount seeds from the current preselect.
+  const [selected, setSelected] = useState<string[]>(() => [...preselectedReelIds])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // Set once createCollection succeeds. Its presence means the tray exists; a Retry after a

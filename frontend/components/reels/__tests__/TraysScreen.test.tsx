@@ -263,4 +263,33 @@ describe('TraysScreen', () => {
     // With the card open the Library sits inside an inert wrapper (focus + Back are sealed off).
     expect(screen.getByText(/your saved reels live here/i).closest('[inert]')).not.toBeNull()
   })
+
+  it('resets createPreselect so preselect never leaks into an ordinary New tray open (T2.1c)', async () => {
+    listCollections.mockResolvedValue([collection({ id: 'c1', name: 'Tokyo' })])
+    const cards = [card({ id: 'r1', caption: 'Osaka nights', places: [place({ name: 'Dotonbori' })] })]
+
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} />)
+
+    // Open Library → open reel r1 → ReelInfoCard.
+    fireEvent.click(await screen.findByRole('button', { name: /your inspiration starts here/i }))
+    fireEvent.click(screen.getByRole('button', { name: /osaka nights/i }))
+    await screen.findByRole('dialog') // ReelInfoCard
+
+    // New tray… from the reel card → CreateTrayDialog opens with r1 preselected.
+    fireEvent.click(await screen.findByRole('button', { name: /new tray/i }))
+    expect(await screen.findByText(/name a new tray/i)).toBeInTheDocument()
+    const preselected = screen.getByRole('dialog')
+    expect(within(preselected).getByText('1 selected')).toBeInTheDocument()
+    expect(within(preselected).getByRole('button', { name: 'Select Osaka nights', pressed: true })).toBeInTheDocument()
+
+    // Cancel → createPreselect resets to [].
+    fireEvent.click(within(preselected).getByRole('button', { name: /^cancel$/i }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    // Ordinary New tray tile → dialog reopens with NOTHING preselected (proves the reset).
+    fireEvent.click(screen.getByRole('button', { name: /create a tray/i }))
+    const fresh = screen.getByRole('dialog')
+    expect(within(fresh).getByText('0 selected')).toBeInTheDocument()
+    expect(within(fresh).getByRole('button', { name: 'Select Osaka nights', pressed: false })).toBeInTheDocument()
+  })
 })

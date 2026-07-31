@@ -43,7 +43,8 @@ export default function TraysScreen({
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [viewingReel, setViewingReel] = useState<SavedReelCard | null>(null)
-  // consumed by CreateTrayDialog preselect in T2.1c
+  // Seeds CreateTrayDialog's picker when "New tray…" is chosen from an open reel (T2.1c);
+  // reset to [] on dialog close so it never leaks into an ordinary "New tray" open.
   const [createPreselect, setCreatePreselect] = useState<string[]>([])
   const activeRef = useRef(true)
 
@@ -254,6 +255,7 @@ export default function TraysScreen({
               <CreateTrayDialog
                 cards={cards}
                 existingNames={collections.map((c) => c.name)}
+                preselectedReelIds={createPreselect}
                 onCreated={refresh}
                 onClose={() => { setCreateOpen(false); setCreatePreselect([]) }}
               />

@@ -132,6 +132,27 @@ describe('ReelInfoCard', () => {
     expect(screen.queryByText(/Couldn't load your trays/i)).not.toBeInTheDocument()
   })
 
+  it('keeps the tray list + optimistic Added when a refresh fails after ready (C1 error-path)', async () => {
+    const { rerender, props } = setup({
+      collections: [collection({ id: 't1', name: 'Japan trip' }), collection({ id: 't2', name: 'Osaka' })],
+      traysState: 'ready',
+      onAddToTray: vi.fn().mockResolvedValue(undefined),
+    })
+
+    fireEvent.click(trayRow(/Japan trip/i))
+    await waitFor(() => expect(trayRow(/Japan trip/i)).toHaveTextContent(/Added/))
+
+    // refresh() fails AFTER the successful add → parent flips traysState to 'error'.
+    rerender(<ReelInfoCard {...props} traysState="error" />)
+
+    // The list is NOT replaced by the load-error; the rows + the optimistic Added survive,
+    // shown alongside a non-blocking refresh notice instead.
+    expect(screen.queryByText(/Couldn't load your trays/i)).not.toBeInTheDocument()
+    expect(trayRow(/Japan trip/i)).toHaveTextContent(/Added/)
+    expect(screen.getByText('Osaka')).toBeInTheDocument()
+    expect(screen.getByText(/Couldn't refresh your trays/i)).toBeInTheDocument()
+  })
+
   it('serializes adds via one global lock: all rows disabled while pending, no second call (C3)', async () => {
     let resolveAdd!: () => void
     const onAddToTray = vi.fn(() => new Promise<void>((resolve) => { resolveAdd = resolve }))

@@ -69,6 +69,10 @@ export default function ReelInfoCard({
   const [locallyAdded, setLocallyAdded] = useState<Set<string>>(new Set())
   const [addingId, setAddingId] = useState<string | null>(null)
   const [addError, setAddError] = useState<string | null>(null)
+  // C1 (error-path): once the tray list has rendered `ready`, latch it — a later best-effort
+  // refresh() that flips traysState to loading/error must NOT replace the list (that would hide
+  // the optimistic "Added ✓"). Later loading/error then shows as a non-blocking inline notice.
+  const hasBeenReadyRef = useRef(false)
 
   const activeRef = useRef(true)
   const closeButtonRef = useRef<HTMLButtonElement>(null)
@@ -93,6 +97,10 @@ export default function ReelInfoCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  useEffect(() => {
+    if (traysState === 'ready') hasBeenReadyRef.current = true
+  }, [traysState])
+
   async function handleAdd(id: string) {
     setAddingId(id)
     setAddError(null)
@@ -107,6 +115,9 @@ export default function ReelInfoCard({
       if (activeRef.current) setAddingId(null)
     }
   }
+
+  // C1: keep showing the list once it has been ready, so a later refresh flip can't hide adds.
+  const listReady = traysState === 'ready' || hasBeenReadyRef.current
 
   return (
     <div
@@ -193,46 +204,55 @@ export default function ReelInfoCard({
               </p>
             ) : null}
 
-            {traysState === 'loading' ? (
+            {!listReady && traysState === 'loading' ? (
               <p className="text-[13px] text-[color:var(--text-muted)]">Loading your trays…</p>
             ) : (
-              <ul className="flex flex-col gap-2">
-                {traysState === 'error' ? (
-                  <li className="rounded-lg border border-dashed border-[color:var(--line-soft)] p-3 text-[13px] text-[color:var(--text-muted)]">
-                    {"Couldn't load your trays."}
+              <>
+                {listReady && traysState !== 'ready' ? (
+                  <p role="status" className="mb-2 text-[13px] text-[color:var(--text-muted)]">
+                    {traysState === 'loading'
+                      ? 'Refreshing your trays…'
+                      : "Couldn't refresh your trays — showing your last version."}
+                  </p>
+                ) : null}
+                <ul className="flex flex-col gap-2">
+                  {!listReady && traysState === 'error' ? (
+                    <li className="rounded-lg border border-dashed border-[color:var(--line-soft)] p-3 text-[13px] text-[color:var(--text-muted)]">
+                      {"Couldn't load your trays."}
+                    </li>
+                  ) : (
+                    collections.map((c) => {
+                      const added = traysWithReel.has(c.id) || locallyAdded.has(c.id)
+                      const isAdding = addingId === c.id
+                      return (
+                        <li key={c.id}>
+                          <button
+                            type="button"
+                            disabled={added || addingId !== null}
+                            onClick={() => void handleAdd(c.id)}
+                            className={TRAY_ROW}
+                          >
+                            <span className="truncate">{c.name}</span>
+                            <span className="shrink-0 text-[color:var(--brass-deep)]">
+                              {added ? 'Added ✓' : isAdding ? 'Adding…' : 'Add'}
+                            </span>
+                          </button>
+                        </li>
+                      )
+                    })
+                  )}
+                  <li>
+                    <button
+                      type="button"
+                      disabled={addingId !== null}
+                      onClick={onRequestNewTray}
+                      className={`${TRAY_ROW} border-dashed text-[color:var(--brass-deep)]`}
+                    >
+                      + New tray…
+                    </button>
                   </li>
-                ) : (
-                  collections.map((c) => {
-                    const added = traysWithReel.has(c.id) || locallyAdded.has(c.id)
-                    const isAdding = addingId === c.id
-                    return (
-                      <li key={c.id}>
-                        <button
-                          type="button"
-                          disabled={added || addingId !== null}
-                          onClick={() => void handleAdd(c.id)}
-                          className={TRAY_ROW}
-                        >
-                          <span className="truncate">{c.name}</span>
-                          <span className="shrink-0 text-[color:var(--brass-deep)]">
-                            {added ? 'Added ✓' : isAdding ? 'Adding…' : 'Add'}
-                          </span>
-                        </button>
-                      </li>
-                    )
-                  })
-                )}
-                <li>
-                  <button
-                    type="button"
-                    disabled={addingId !== null}
-                    onClick={onRequestNewTray}
-                    className={`${TRAY_ROW} border-dashed text-[color:var(--brass-deep)]`}
-                  >
-                    + New tray…
-                  </button>
-                </li>
-              </ul>
+                </ul>
+              </>
             )}
           </div>
         </div>

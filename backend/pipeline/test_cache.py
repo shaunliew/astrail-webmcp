@@ -1,9 +1,19 @@
 """Extraction-cache unit tests. Offline: an in-memory fake client with select/eq/upsert. No network,
-no key. Covers hit / miss / version-mismatch / non-reel-URL / round-trip / 0-place caching."""
+no key. Covers hit / miss / version-mismatch / non-reel-URL / round-trip / 0-place caching, plus the
+re-hosted-cover wiring (Task 4).
+
+DI property (why the `.storage`-less fake client stays valid): `cache_places` only calls the injected
+`rehost` when the reel carries a truthy `display_url`. The `_Reel` fixture defines no `display_url`, so
+every EXISTING test skips the cover branch entirely — `rehost` (and thus `client.storage`, which this
+fake never implements) is never touched. The cover tests inject a fake `rehost`, so they never hit
+`.storage` either."""
+import os
+
 import pytest
 
 from models.place import PlaceResult
 from pipeline.cache import cache_places, get_cached_places
+from scrape.reel_url import short_code_of
 
 _REEL = "https://www.instagram.com/reel/ABC123/"
 _KEY = "https://www.instagram.com/reel/ABC123"   # normalized (no trailing slash)
@@ -14,11 +24,18 @@ class _Result:
 
 
 class _Table:
-    def __init__(self, name, db):
+    def __init__(self, name, db, upserts=None):
         self.name, self.db, self._op, self._f, self._conflict = name, db, None, {}, None
+        self._upserts = upserts   # shared list; records each upserted payload for shape assertions
 
     def select(self, *_): self._op = ("select", None); return self
-    def upsert(self, row, on_conflict=None): self._op = ("upsert", row); self._conflict = on_conflict; return self
+
+    def upsert(self, row, on_conflict=None):
+        self._op = ("upsert", row); self._conflict = on_conflict
+        if self._upserts is not None:
+            self._upserts.append(row)
+        return self
+
     def eq(self, c, v): self._f[c] = v; return self
 
     async def execute(self):
@@ -36,8 +53,8 @@ class _Table:
 
 
 class _Client:
-    def __init__(self, db=None): self.db = db if db is not None else {}
-    def table(self, name): return _Table(name, self.db)
+    def __init__(self, db=None): self.db = db if db is not None else {}; self.upserts = []
+    def table(self, name): return _Table(name, self.db, self.upserts)
 
 
 class _Reel:
@@ -131,3 +148,102 @@ def test_import_needs_no_keys(monkeypatch):
     import pipeline.cache as m
     importlib.reload(m)
     assert m.EXTRACTION_CACHE_TABLE == "reel_cache"
+
+
+# --- Task 4: re-hosted cover wiring ---------------------------------------------------------------
+
+_COVER = "https://scontent.cdninstagram.com/v/t51/cover.jpg"
+
+
+class _CoverRehost:
+    """Records the args `cache_places` passes to the injected `rehost`, returns a fixed result."""
+    def __init__(self, result):
+        self.result, self.calls = result, []
+
+    async def __call__(self, client, display_url, cover_key):
+        self.calls.append((client, display_url, cover_key))
+        return self.result
+
+
+@pytest.mark.asyncio
+async def test_cache_writes_rehosted_cover_and_pointer():
+    c = _Client()
+    reel = _Reel()
+    reel.display_url = _COVER
+    rehost = _CoverRehost("https://storage.example/reel-covers/x.jpg")
+
+    await cache_places(c, _REEL, reel, [_place()], "v1", rehost=rehost)
+
+    payload = c.upserts[-1]
+    assert payload["thumbnail_url"] == "https://storage.example/reel-covers/x.jpg"
+    assert payload["raw_payload"] == {"display_url": _COVER}          # durable repair pointer
+    # cover key is derived from the VALIDATED normalized URL, and the raw display_url is forwarded
+    assert rehost.calls == [(c, _COVER, short_code_of(_KEY))]
+    assert short_code_of(_KEY) == "ABC123"
+
+
+@pytest.mark.asyncio
+async def test_cache_omits_thumbnail_when_rehost_fails():
+    c = _Client()
+    reel = _Reel()
+    reel.display_url = _COVER
+    rehost = _CoverRehost(None)                                       # cover download/upload failed
+
+    await cache_places(c, _REEL, reel, [_place()], "v1", rehost=rehost)
+
+    payload = c.upserts[-1]
+    assert "thumbnail_url" not in payload            # OMIT on failure => a re-cache never nulls a prior value
+    assert payload["raw_payload"] == {"display_url": _COVER}          # pointer still persisted
+    assert rehost.calls[0][1] == _COVER
+
+
+@pytest.mark.asyncio
+async def test_cache_cover_key_is_validated_not_apify_short_code():
+    c = _Client()
+    reel = _Reel()
+    reel.short_code = "../evil"                       # attacker-controlled Apify field — must NOT be the key
+    reel.display_url = _COVER
+    rehost = _CoverRehost("https://storage.example/reel-covers/x.jpg")
+
+    await cache_places(c, _REEL, reel, [_place()], "v1", rehost=rehost)
+
+    cover_key = rehost.calls[0][2]
+    assert cover_key == short_code_of(_KEY) == "ABC123"   # URL-derived, NOT "../evil"
+    assert ".." not in cover_key and "/" not in cover_key  # path-traversal guard is load-bearing
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(
+    not os.environ.get("SUPABASE_URL"),
+    reason="dev-DB round-trip: set SUPABASE_URL (+ SUPABASE_SERVICE_ROLE_KEY) to run against dev Supabase",
+)
+async def test_cache_upsert_omit_preserves_thumbnail_on_dev_db():
+    """Proves the real PostgREST 'omit-preserves-value' semantics the offline fake only mimics: an upsert
+    that OMITS thumbnail_url must not null a previously-written value (§9 item 1, Codex-verified). Gated —
+    skipped by default so CI spends no credits and needs no live DB. Lazy imports keep supabase out of the
+    unit-test collection graph."""
+    from uuid import uuid4
+
+    from supabase import acreate_client
+
+    key = f"https://www.instagram.com/reel/{uuid4().hex[:11]}"
+    client = await acreate_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SERVICE_ROLE_KEY"])
+    table = client.table("reel_cache")
+    try:
+        # 1) seed a row WITH a non-NULL thumbnail_url
+        await table.upsert(
+            {"normalized_url": key, "source_platform": "instagram",
+             "thumbnail_url": "https://storage.example/reel-covers/seed.jpg"},
+            on_conflict="normalized_url",
+        ).execute()
+        # 2) re-cache the SAME normalized_url WITHOUT thumbnail_url (mirrors a cover-less re-scrape)
+        await table.upsert(
+            {"normalized_url": key, "source_platform": "instagram", "caption": "re-cached"},
+            on_conflict="normalized_url",
+        ).execute()
+        # 3) the earlier value must survive
+        rows = (await table.select("thumbnail_url,caption").eq("normalized_url", key).execute()).data
+        assert rows and rows[0]["thumbnail_url"] == "https://storage.example/reel-covers/seed.jpg"
+        assert rows[0]["caption"] == "re-cached"
+    finally:
+        await table.delete().eq("normalized_url", key).execute()

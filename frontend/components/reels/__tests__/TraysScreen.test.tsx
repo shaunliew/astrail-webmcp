@@ -1,16 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
-const { getUser, listCollections, getMembershipsByCollection, createCollection, addReelsToCollection } = vi.hoisted(() => ({
+const { getUser, listCollections, getMembershipsByCollection, createCollection, addReelsToCollection, renameCollection, deleteCollection, removeReelFromCollection } = vi.hoisted(() => ({
   getUser: vi.fn(async () => ({ data: { user: { email: 'zh@astrail.app', user_metadata: { full_name: 'Zhi Hao' } } } })),
   listCollections: vi.fn(),
   getMembershipsByCollection: vi.fn(),
   createCollection: vi.fn(),
   addReelsToCollection: vi.fn(),
+  renameCollection: vi.fn(),
+  deleteCollection: vi.fn(),
+  removeReelFromCollection: vi.fn(),
 }))
 
 vi.mock('@/lib/supabase/client', () => ({ createClient: () => ({ auth: { getUser } }) }))
-vi.mock('@/lib/reels/collections', () => ({ listCollections, getMembershipsByCollection, createCollection, addReelsToCollection }))
+vi.mock('@/lib/reels/collections', () => ({ listCollections, getMembershipsByCollection, createCollection, addReelsToCollection, renameCollection, deleteCollection, removeReelFromCollection }))
 // Opening the Library swaps in LibraryPanel, whose card-fan drives gsap in a useEffect;
 // no-op it so the fan cannot flake in jsdom during this integration test.
 vi.mock('gsap', () => ({ default: { to: vi.fn(), set: vi.fn(), killTweensOf: vi.fn() } }))
@@ -58,6 +61,9 @@ describe('TraysScreen', () => {
     getMembershipsByCollection.mockReset(); getMembershipsByCollection.mockResolvedValue({})
     createCollection.mockReset()
     addReelsToCollection.mockReset()
+    renameCollection.mockReset()
+    deleteCollection.mockReset(); deleteCollection.mockResolvedValue(undefined)
+    removeReelFromCollection.mockReset(); removeReelFromCollection.mockResolvedValue(undefined)
   })
   afterEach(() => { cleanup() })
 
@@ -69,7 +75,7 @@ describe('TraysScreen', () => {
     getMembershipsByCollection.mockResolvedValue({ c1: ['r1', 'r2'], c2: ['r1'] })
     const cards = [card({ id: 'r1', caption: 'Tokyo Tower' }), card({ id: 'r2', caption: 'Shibuya' })]
 
-    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} />)
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
 
     expect(await screen.findByRole('button', { name: 'Tokyo winter' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Korea Myeongdong' })).toBeInTheDocument()
@@ -81,7 +87,7 @@ describe('TraysScreen', () => {
     listCollections.mockResolvedValue([collection({ id: 'c2', name: 'Empty tray' })])
     getMembershipsByCollection.mockResolvedValue({})
 
-    render(<TraysScreen cards={[]} onCapture={noop} onOrganize={noop} />)
+    render(<TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
 
     expect(await screen.findByRole('button', { name: 'Empty tray' })).toBeInTheDocument()
     expect(countBadge('0 reels')).toBeInTheDocument()
@@ -90,7 +96,7 @@ describe('TraysScreen', () => {
   it('shows the create tile and the Library banner', async () => {
     listCollections.mockResolvedValue([collection({ id: 'c1', name: 'Tokyo winter' })])
 
-    render(<TraysScreen cards={[]} onCapture={noop} onOrganize={noop} />)
+    render(<TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
 
     expect(await screen.findByRole('button', { name: 'Tokyo winter' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /create a tray/i })).toBeInTheDocument()
@@ -100,7 +106,7 @@ describe('TraysScreen', () => {
   it('opens the Library panel from the banner as a full-surface swap and returns home on back', async () => {
     const cards = [card({ id: 'r1', caption: 'Tokyo Tower at sunset' })]
 
-    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} />)
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
 
     fireEvent.click(await screen.findByRole('button', { name: /your inspiration starts here/i }))
 
@@ -117,7 +123,7 @@ describe('TraysScreen', () => {
     const onOrganize = vi.fn(async () => {})
     const cards = [card({ id: 'r1', caption: 'Tokyo Tower' }), card({ id: 'r2', caption: 'Shibuya' })]
 
-    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={onOrganize} />)
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={onOrganize} onCreateTrail={noop} />)
 
     fireEvent.click(await screen.findByRole('button', { name: /your inspiration starts here/i }))
     fireEvent.click(screen.getByRole('button', { name: /^select$/i }))
@@ -130,7 +136,7 @@ describe('TraysScreen', () => {
   it('captures a Reel URL through onCapture', async () => {
     const onCapture = vi.fn(async () => {})
 
-    render(<TraysScreen cards={[]} onCapture={onCapture} onOrganize={noop} />)
+    render(<TraysScreen cards={[]} onCapture={onCapture} onOrganize={noop} onCreateTrail={noop} />)
 
     fireEvent.change(screen.getByLabelText(/paste a reel link/i), {
       target: { value: 'https://www.instagram.com/reel/AAA/' },
@@ -141,7 +147,7 @@ describe('TraysScreen', () => {
   })
 
   it('shows the empty state when there are no reels and no trays', async () => {
-    render(<TraysScreen cards={[]} onCapture={noop} onOrganize={noop} />)
+    render(<TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
 
     expect(await screen.findByText(/no trails yet/i)).toBeInTheDocument()
   })
@@ -149,7 +155,7 @@ describe('TraysScreen', () => {
   it('shows the error banner (not the empty state) when the trays fetch fails with no reels', async () => {
     listCollections.mockRejectedValue(new Error('network down'))
 
-    render(<TraysScreen cards={[]} onCapture={noop} onOrganize={noop} />)
+    render(<TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
 
     // A transient listCollections failure must surface the error, not the misleading empty state.
     expect(await screen.findByText(/could not load your trays/i)).toBeInTheDocument()
@@ -160,7 +166,7 @@ describe('TraysScreen', () => {
     listCollections.mockRejectedValue(new Error('network down'))
     const onCapture = vi.fn(async () => {})
 
-    render(<TraysScreen cards={[card({ id: 'r1', caption: 'Kyoto' })]} onCapture={onCapture} onOrganize={noop} />)
+    render(<TraysScreen cards={[card({ id: 'r1', caption: 'Kyoto' })]} onCapture={onCapture} onOrganize={noop} onCreateTrail={noop} />)
 
     expect(await screen.findByText(/could not load your trays/i)).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText(/paste a reel link/i), { target: { value: 'https://ig/reel/z' } })
@@ -174,7 +180,7 @@ describe('TraysScreen', () => {
     addReelsToCollection.mockResolvedValue(undefined)
     const cards = [card({ id: 'r1', caption: 'Kyoto temple' })]
 
-    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} />)
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
 
     fireEvent.click(await screen.findByRole('button', { name: /create a tray/i }))
 
@@ -197,7 +203,7 @@ describe('TraysScreen', () => {
   it('opens a reel from the Library fan into a ReelInfoCard showing its places', async () => {
     const cards = [card({ id: 'r1', caption: 'Osaka nights', places: [place({ name: 'Dotonbori' })] })]
 
-    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} />)
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
 
     fireEvent.click(await screen.findByRole('button', { name: /your inspiration starts here/i }))
     // Browse is the fan's default mode; the reel renders as a button named by its alt (gsap mocked).
@@ -214,7 +220,7 @@ describe('TraysScreen', () => {
     addReelsToCollection.mockResolvedValue(undefined)
     const cards = [card({ id: 'r1', caption: 'Osaka nights', places: [place({ name: 'Dotonbori' })] })]
 
-    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} />)
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
 
     fireEvent.click(await screen.findByRole('button', { name: /your inspiration starts here/i }))
     fireEvent.click(screen.getByRole('button', { name: /osaka nights/i }))
@@ -235,7 +241,7 @@ describe('TraysScreen', () => {
     listCollections.mockResolvedValue([collection({ id: 'c1', name: 'Tokyo' })])
     const cards = [card({ id: 'r1', caption: 'Osaka nights', places: [place({ name: 'Dotonbori' })] })]
 
-    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} />)
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
 
     fireEvent.click(await screen.findByRole('button', { name: /your inspiration starts here/i }))
     fireEvent.click(screen.getByRole('button', { name: /osaka nights/i }))
@@ -251,7 +257,7 @@ describe('TraysScreen', () => {
   it('makes the Library inert while a reel card floats over it (C2)', async () => {
     const cards = [card({ id: 'r1', caption: 'Osaka nights' })]
 
-    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} />)
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
 
     fireEvent.click(await screen.findByRole('button', { name: /your inspiration starts here/i }))
     // Before a card opens the Library is interactive — no inert wrapper.
@@ -268,7 +274,7 @@ describe('TraysScreen', () => {
     listCollections.mockResolvedValue([collection({ id: 'c1', name: 'Tokyo' })])
     const cards = [card({ id: 'r1', caption: 'Osaka nights', places: [place({ name: 'Dotonbori' })] })]
 
-    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} />)
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
 
     // Open Library → open reel r1 → ReelInfoCard.
     fireEvent.click(await screen.findByRole('button', { name: /your inspiration starts here/i }))
@@ -291,5 +297,87 @@ describe('TraysScreen', () => {
     const fresh = screen.getByRole('dialog')
     expect(within(fresh).getByText('0 selected')).toBeInTheDocument()
     expect(within(fresh).getByRole('button', { name: 'Select Osaka nights', pressed: false })).toBeInTheDocument()
+  })
+
+  it('opens a tray into TrayDetail listing its reels (T3.1a)', async () => {
+    listCollections.mockResolvedValue([collection({ id: 'c1', name: 'Tokyo winter' })])
+    getMembershipsByCollection.mockResolvedValue({ c1: ['r1'] })
+    const cards = [card({ id: 'r1', caption: 'Tokyo Tower' })]
+
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Tokyo winter' }))
+
+    // The old no-op stub is gone: Open swaps in TrayDetail listing the tray's member reels.
+    expect(await screen.findByRole('heading', { name: 'Tokyo winter' })).toBeInTheDocument()
+    expect(screen.getByText('Tokyo Tower')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Remove Tokyo Tower' })).toBeInTheDocument()
+  })
+
+  it("forwards the open tray's member cards to onCreateTrail (T3.1a seam)", async () => {
+    listCollections.mockResolvedValue([collection({ id: 'c1', name: 'Tokyo winter' })])
+    getMembershipsByCollection.mockResolvedValue({ c1: ['r1'] })
+    const onCreateTrail = vi.fn()
+    const cards = [card({ id: 'r1', caption: 'Tokyo Tower', places: [place({})] })]
+
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} onCreateTrail={onCreateTrail} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Tokyo winter' }))
+    fireEvent.click(await screen.findByRole('button', { name: /create trail/i }))
+
+    expect(onCreateTrail).toHaveBeenCalledTimes(1)
+    expect(onCreateTrail.mock.calls[0][0]).toHaveLength(1)
+    expect(onCreateTrail.mock.calls[0][0][0].id).toBe('r1')
+  })
+
+  it('deletes a tray, returns to the grid, and re-runs refresh (T3.1a)', async () => {
+    listCollections.mockResolvedValue([collection({ id: 'c1', name: 'Tokyo winter' })])
+    getMembershipsByCollection.mockResolvedValue({ c1: ['r1'] })
+    const cards = [card({ id: 'r1', caption: 'Tokyo Tower' })]
+
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Tokyo winter' }))
+    await screen.findByRole('heading', { name: 'Tokyo winter' })
+
+    const listCallsBefore = listCollections.mock.calls.length
+    listCollections.mockResolvedValue([]) // the tray is gone after the delete
+    getMembershipsByCollection.mockResolvedValue({})
+
+    fireEvent.click(screen.getByRole('button', { name: /delete tray/i }))
+    fireEvent.click(screen.getByRole('button', { name: /confirm delete/i }))
+
+    await waitFor(() => expect(deleteCollection).toHaveBeenCalledWith('c1'))
+    // Back on the grid — the create tile reappears and TrayDetail is gone.
+    expect(await screen.findByRole('button', { name: /create a tray/i })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Tokyo winter' })).not.toBeInTheDocument()
+    // refresh() re-ran after the delete (best-effort re-sync, Decision 5).
+    await waitFor(() => expect(listCollections.mock.calls.length).toBeGreaterThan(listCallsBefore))
+  })
+
+  it('renames a tray so the header and grid show the new name (stale-object regression, T3.1a)', async () => {
+    listCollections.mockResolvedValue([collection({ id: 'c1', name: 'Old name' })])
+    getMembershipsByCollection.mockResolvedValue({})
+    renameCollection.mockResolvedValue(collection({ id: 'c1', name: 'New name' }))
+
+    render(<TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Old name' }))
+    await screen.findByRole('heading', { name: 'Old name' })
+
+    // The write lands and the server reflects the new name on the next read.
+    listCollections.mockResolvedValue([collection({ id: 'c1', name: 'New name' })])
+
+    fireEvent.click(screen.getByRole('button', { name: /^rename$/i }))
+    fireEvent.change(screen.getByLabelText(/tray name/i), { target: { value: 'New name' } })
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+
+    await waitFor(() => expect(renameCollection).toHaveBeenCalledWith('c1', 'New name'))
+    // Derived-by-id, not a stored object: the header re-renders with the new name.
+    expect(await screen.findByRole('heading', { name: 'New name' })).toBeInTheDocument()
+
+    // Back on the grid, the TrayCard shows the new name too.
+    fireEvent.click(screen.getByRole('button', { name: /back/i }))
+    expect(await screen.findByRole('button', { name: 'New name' })).toBeInTheDocument()
   })
 })

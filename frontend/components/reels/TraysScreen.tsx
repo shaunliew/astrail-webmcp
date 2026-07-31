@@ -2,9 +2,17 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { addReelsToCollection, getMembershipsByCollection, listCollections } from '@/lib/reels/collections'
+import {
+  addReelsToCollection,
+  deleteCollection,
+  getMembershipsByCollection,
+  listCollections,
+  removeReelFromCollection,
+  renameCollection,
+} from '@/lib/reels/collections'
 import type { ReelCollection, SavedReelCard } from '@/lib/reels/backend-types'
 import TrayCard, { type TrayCover } from './TrayCard'
+import TrayDetail from './TrayDetail'
 import LibraryPanel from './LibraryPanel'
 import CreateTrayDialog from './CreateTrayDialog'
 import ReelInfoCard from './ReelInfoCard'
@@ -27,10 +35,12 @@ export default function TraysScreen({
   cards,
   onCapture,
   onOrganize,
+  onCreateTrail,
 }: {
   cards: SavedReelCard[]
   onCapture: (url: string) => Promise<void>
   onOrganize: (ids: string[]) => Promise<void>
+  onCreateTrail: (trayCards: SavedReelCard[]) => void
 }) {
   const [name, setName] = useState('traveler')
   const [collections, setCollections] = useState<ReelCollection[]>([])
@@ -43,6 +53,9 @@ export default function TraysScreen({
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [viewingReel, setViewingReel] = useState<SavedReelCard | null>(null)
+  // Key the open tray by ID (Decision 4), never the object: the collection is derived from
+  // `collections` state below, so a rename re-renders the shown name instead of going stale.
+  const [openTrayId, setOpenTrayId] = useState<string | null>(null)
   // Seeds CreateTrayDialog's picker when "New tray…" is chosen from an open reel (T2.1c);
   // reset to [] on dialog close so it never leaks into an ordinary "New tray" open.
   const [createPreselect, setCreatePreselect] = useState<string[]>([])
@@ -105,8 +118,8 @@ export default function TraysScreen({
     }
   }
 
-  // Phase 3 (T3.1) wires TrayDetail; for now Open is a stubbed seam the parent owns.
-  function handleOpenTray(_collection: ReelCollection) { /* T3.1 wires TrayDetail (plan Phase 3) */ }
+  // Open a tray into TrayDetail (Decision 4): store only the id, derive the collection below.
+  function handleOpenTray(collection: ReelCollection) { setOpenTrayId(collection.id) }
 
   // P2 (T2.1) — opening a reel from the Library shows the reel-info card overlay.
   function handleOpenReel(card: SavedReelCard) { setViewingReel(card) }
@@ -138,6 +151,58 @@ export default function TraysScreen({
       onClose={() => setViewingReel(null)}
     />
   ) : null
+
+  // TrayDetail early-return (Decision 4) — derive the open tray from state (never a stored
+  // object) so a rename re-renders its name; if the tray vanished (deleted elsewhere) openTray
+  // is undefined → fall through to the grid. Placed BEFORE the Library early-return: a tray is
+  // only ever opened from the ungated grid, so no both-branches overlay trick is needed.
+  const openTray = collections.find((c) => c.id === openTrayId)
+  if (openTray) {
+    const trayCards = (membershipByCollection[openTray.id] ?? [])
+      .map((id) => cardById.get(id))
+      .filter((card): card is SavedReelCard => Boolean(card))
+    return (
+      <TrayDetail
+        collection={openTray}
+        cards={trayCards}
+        existingNames={collections.filter((c) => c.id !== openTray.id).map((c) => c.name)}
+        onRemoveReel={async (rid) => {
+          await removeReelFromCollection(openTray.id, rid)
+          // Reconcile locally on success, then refresh best-effort (Decision 5): refresh()
+          // swallows read failures, so a bare await-refresh could resurrect the removed member.
+          if (activeRef.current) {
+            setMembershipByCollection((prev) => ({
+              ...prev,
+              [openTray.id]: (prev[openTray.id] ?? []).filter((id) => id !== rid),
+            }))
+          }
+          await refresh()
+        }}
+        onRename={async (name) => {
+          const updated = await renameCollection(openTray.id, name)
+          if (activeRef.current) {
+            setCollections((prev) => prev.map((c) => (c.id === openTray.id ? { ...c, name: updated.name } : c)))
+          }
+          await refresh()
+        }}
+        onDelete={async () => {
+          await deleteCollection(openTray.id)
+          if (activeRef.current) {
+            setOpenTrayId(null)
+            setCollections((prev) => prev.filter((c) => c.id !== openTray.id))
+            setMembershipByCollection((prev) => {
+              const next = { ...prev }
+              delete next[openTray.id]
+              return next
+            })
+          }
+          await refresh()
+        }}
+        onCreateTrail={() => onCreateTrail(trayCards)}
+        onBack={() => setOpenTrayId(null)}
+      />
+    )
+  }
 
   // Full-surface swap: the Library replaces the home content (greeting/capture/banner/trays)
   // rather than expanding inline. The /app home has no map behind it, so this is a plain

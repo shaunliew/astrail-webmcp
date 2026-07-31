@@ -257,7 +257,7 @@ export default function SavedReelsFlow() {
           {inboxMessage}
         </p>
       ) : null}
-      <TraysScreen cards={cards} onCapture={handleCapture} onOrganize={handleOrganize} />
+      <TraysScreen cards={cards} onCapture={handleCapture} onOrganize={handleOrganize} onCreateTrail={() => {}} />
     </div>
   )
 }

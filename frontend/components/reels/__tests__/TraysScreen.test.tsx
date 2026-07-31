@@ -380,4 +380,25 @@ describe('TraysScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: /back/i }))
     expect(await screen.findByRole('button', { name: 'New name' })).toBeInTheDocument()
   })
+
+  it('falls through to the grid when the open tray vanishes (deleted elsewhere), without crashing (Decision 4)', async () => {
+    listCollections.mockResolvedValue([collection({ id: 'c1', name: 'Tokyo winter' })])
+    getMembershipsByCollection.mockResolvedValue({ c1: ['r1'] })
+    const cards = [card({ id: 'r1', caption: 'Tokyo Tower' })]
+
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Tokyo winter' }))
+    await screen.findByRole('heading', { name: 'Tokyo winter' })
+
+    // The tray was deleted elsewhere: the next refresh (here after a reel remove) returns without it,
+    // so the openTrayId-keyed lookup yields undefined.
+    listCollections.mockResolvedValue([])
+    getMembershipsByCollection.mockResolvedValue({})
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Tokyo Tower' }))
+
+    // The `if (openTray)` guard holds: TrayDetail unmounts and the grid renders — no crash.
+    expect(await screen.findByRole('button', { name: /create a tray/i })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Tokyo winter' })).not.toBeInTheDocument()
+  })
 })

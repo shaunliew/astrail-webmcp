@@ -178,8 +178,8 @@ export default function TraysScreen({
           }
           await refresh()
         }}
-        onRename={async (name) => {
-          const updated = await renameCollection(openTray.id, name)
+        onRename={async (newName) => {
+          const updated = await renameCollection(openTray.id, newName)
           if (activeRef.current) {
             setCollections((prev) => prev.map((c) => (c.id === openTray.id ? { ...c, name: updated.name } : c)))
           }

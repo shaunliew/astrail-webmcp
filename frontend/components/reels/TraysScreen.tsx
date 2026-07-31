@@ -4,8 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { getMembershipsByCollection, listCollections } from '@/lib/reels/collections'
 import type { ReelCollection, SavedReelCard } from '@/lib/reels/backend-types'
-import type { FolderPhoto } from '@/components/ui/folder-gallery'
-import TrayCard from './TrayCard'
+import TrayCard, { type TrayCover } from './TrayCard'
 import LibraryPanel from './LibraryPanel'
 import CreateTrayDialog from './CreateTrayDialog'
 
@@ -189,7 +188,7 @@ export default function TraysScreen({
             <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
               {collections.map((collection) => {
                 const memberIds = membershipByCollection[collection.id] ?? []
-                const photos: FolderPhoto[] = memberIds
+                const photos: TrayCover[] = memberIds
                   .map((id) => cardById.get(id))
                   .filter((card): card is SavedReelCard => Boolean(card))
                   .map((card) => ({ id: card.id, image: card.thumbnail_url ?? null, alt: card.personal_label ?? card.caption ?? '' }))
@@ -209,7 +208,7 @@ export default function TraysScreen({
                 type="button"
                 onClick={() => setCreateOpen(true)}
                 aria-label="Create a tray"
-                className="flex min-h-[280px] flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-[color:var(--paper-line-2)] bg-transparent text-[color:var(--text-muted)] transition-colors hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]"
+                className="flex min-h-[264px] flex-col items-center justify-center gap-2 rounded-2xl border border-dashed border-[color:var(--paper-line-2)] bg-transparent text-[color:var(--text-muted)] transition-colors hover:bg-[color:var(--surface-2)] hover:text-[color:var(--text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]"
               >
                 <span aria-hidden className="flex h-12 w-12 items-center justify-center rounded-full border border-[color:var(--brass-deep)] text-[24px] leading-none text-[color:var(--brass-deep)]">+</span>
                 <span className="text-[14px] font-medium">New tray</span>

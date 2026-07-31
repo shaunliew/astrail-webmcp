@@ -19,13 +19,13 @@ const MAX_VISIBLE = 7;
 const HALF = 3;
 
 const FAN_POSITIONS = [
-  { rot: -21, scale: 0.7756, x: -30, y: 7.3, zIndex: 1 },
-  { rot: -14, scale: 0.8498, x: -22, y: 4.0, zIndex: 2 },
-  { rot: -7,  scale: 0.9346, x: -11, y: 1.3, zIndex: 3 },
-  { rot: 0,   scale: 1.0,    x: 0,   y: 0.0, zIndex: 10 },
-  { rot: 7,   scale: 0.9346, x: 11,  y: 1.3, zIndex: 3 },
-  { rot: 14,  scale: 0.8498, x: 22,  y: 4.0, zIndex: 2 },
-  { rot: 21,  scale: 0.7756, x: 30,  y: 7.3, zIndex: 1 },
+  { rot: -21, scale: 0.7756, x: -13.75, y: 7.3, zIndex: 1 },
+  { rot: -14, scale: 0.8498, x: -10,    y: 4.0, zIndex: 2 },
+  { rot: -7,  scale: 0.9346, x: -5,     y: 1.3, zIndex: 3 },
+  { rot: 0,   scale: 1.0,    x: 0,      y: 0.0, zIndex: 10 },
+  { rot: 7,   scale: 0.9346, x: 5,      y: 1.3, zIndex: 3 },
+  { rot: 14,  scale: 0.8498, x: 10,     y: 4.0, zIndex: 2 },
+  { rot: 21,  scale: 0.7756, x: 13.75,  y: 7.3, zIndex: 1 },
 ];
 
 function getResponsiveMultiplier(width: number) {
@@ -43,11 +43,11 @@ function getResponsiveMultiplier(width: number) {
 function getHeightMultiplier(width: number) {
   // Ideal layout heights (in px at 16px root) matching the CSS breakpoints
   let idealPx: number;
-  if (width < 480) idealPx = 22 * 16;       // 352px
-  else if (width < 640) idealPx = 26 * 16;  // 416px
-  else if (width < 768) idealPx = 28 * 16;  // 448px
-  else if (width < 1024) idealPx = 34 * 16; // 544px
-  else idealPx = 38 * 16;                    // 608px
+  if (width < 480) idealPx = 13 * 16;       // 208px
+  else if (width < 640) idealPx = 15 * 16;  // 240px
+  else if (width < 768) idealPx = 17 * 16;  // 272px
+  else if (width < 1024) idealPx = 19 * 16; // 304px
+  else idealPx = 21 * 16;                    // 336px
 
   const available = window.innerHeight * 0.7; // 70vh budget
   if (available >= idealPx) return 1;
@@ -62,7 +62,7 @@ function getSlotConfig(totalCards: number, slot: number) {
   return {
     rot: distance * 21,
     scale: 1.0 - 0.2244 * absDistance * absDistance,
-    x: distance * 30,
+    x: distance * 10,
     y: absDistance * absDistance * 7.3,
     zIndex: 10 - Math.abs(slot - center),
   };
@@ -262,7 +262,7 @@ export default function SocialCards({ cards, onOpen }: SocialCardsProps) {
   return (
     <section className="flex flex-col items-center w-full py-4 lg:py-8 px-4 md:px-8 relative z-20">
       <div className="flex items-center justify-center w-full max-w-[90rem]">
-        <div ref={containerRef} className="fan-layout flex relative justify-center items-center w-full max-w-[80rem] min-h-[22rem] min-[480px]:min-h-[26rem] sm:min-h-[28rem] md:min-h-[34rem] lg:min-h-[38rem]">
+        <div ref={containerRef} className="fan-layout flex relative justify-center items-center w-full max-w-[80rem] min-h-[13rem] min-[480px]:min-h-[15rem] sm:min-h-[17rem] md:min-h-[19rem] lg:min-h-[21rem]">
           {cards.map((card, index) => {
             // Current data has null thumbnails (mapped to ""); render a neutral placeholder
             // surface instead of a broken <img>. Only draw the <img> for a real URL.
@@ -278,13 +278,13 @@ export default function SocialCards({ cards, onOpen }: SocialCardsProps) {
             // `.fan-card` class regardless of element type, so a button fans identically.
             if (onOpen) {
               return (
-                <button key={index} type="button" onClick={() => onOpen(card)} aria-label={card.alt || `Card ${index}`} className="fan-card block cursor-pointer appearance-none text-left absolute left-1/2 top-0 overflow-hidden rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.25)] h-[18rem] w-[10rem] ml-[-5rem] min-[480px]:h-[21rem] min-[480px]:w-[12rem] min-[480px]:ml-[-6rem] sm:h-[23rem] sm:w-[13rem] sm:ml-[-6.5rem] md:h-[28rem] md:w-[16rem] md:ml-[-8rem] lg:h-[31rem] lg:w-[17rem] lg:ml-[-8.5rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]">{image}</button>
+                <button key={index} type="button" onClick={() => onOpen(card)} aria-label={card.alt || `Card ${index}`} className="fan-card block cursor-pointer appearance-none text-left absolute left-1/2 top-0 overflow-hidden rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.25)] h-[10.5rem] w-[6rem] ml-[-3rem] min-[480px]:h-[12.5rem] min-[480px]:w-[7rem] min-[480px]:ml-[-3.5rem] sm:h-[14rem] sm:w-[8rem] sm:ml-[-4rem] md:h-[16rem] md:w-[9rem] md:ml-[-4.5rem] lg:h-[17.5rem] lg:w-[10rem] lg:ml-[-5rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]">{image}</button>
               );
             }
             return card.linkUrl ? (
-              <a key={index} href={card.linkUrl} target={card.linkUrl.startsWith("http") ? "_blank" : "_self"} rel="noopener noreferrer" className="fan-card block cursor-pointer absolute left-1/2 top-0 overflow-hidden rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.25)] h-[18rem] w-[10rem] ml-[-5rem] min-[480px]:h-[21rem] min-[480px]:w-[12rem] min-[480px]:ml-[-6rem] sm:h-[23rem] sm:w-[13rem] sm:ml-[-6.5rem] md:h-[28rem] md:w-[16rem] md:ml-[-8rem] lg:h-[31rem] lg:w-[17rem] lg:ml-[-8.5rem]">{image}</a>
+              <a key={index} href={card.linkUrl} target={card.linkUrl.startsWith("http") ? "_blank" : "_self"} rel="noopener noreferrer" className="fan-card block cursor-pointer absolute left-1/2 top-0 overflow-hidden rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.25)] h-[10.5rem] w-[6rem] ml-[-3rem] min-[480px]:h-[12.5rem] min-[480px]:w-[7rem] min-[480px]:ml-[-3.5rem] sm:h-[14rem] sm:w-[8rem] sm:ml-[-4rem] md:h-[16rem] md:w-[9rem] md:ml-[-4.5rem] lg:h-[17.5rem] lg:w-[10rem] lg:ml-[-5rem]">{image}</a>
             ) : (
-              <div key={index} className="fan-card absolute left-1/2 top-0 overflow-hidden rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.25)] h-[18rem] w-[10rem] ml-[-5rem] min-[480px]:h-[21rem] min-[480px]:w-[12rem] min-[480px]:ml-[-6rem] sm:h-[23rem] sm:w-[13rem] sm:ml-[-6.5rem] md:h-[28rem] md:w-[16rem] md:ml-[-8rem] lg:h-[31rem] lg:w-[17rem] lg:ml-[-8.5rem]">{image}</div>
+              <div key={index} className="fan-card absolute left-1/2 top-0 overflow-hidden rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.25)] h-[10.5rem] w-[6rem] ml-[-3rem] min-[480px]:h-[12.5rem] min-[480px]:w-[7rem] min-[480px]:ml-[-3.5rem] sm:h-[14rem] sm:w-[8rem] sm:ml-[-4rem] md:h-[16rem] md:w-[9rem] md:ml-[-4.5rem] lg:h-[17.5rem] lg:w-[10rem] lg:ml-[-5rem]">{image}</div>
             );
           })}
         </div>

@@ -36,6 +36,14 @@ function card(over: Partial<SavedReelCard>): SavedReelCard {
 
 const noop = async () => {}
 
+// The tray count renders as an image icon + the number, with an sr-only unit — so
+// "3" shows but a screen reader hears "3 reels". The visible number and the sr-only
+// word live in separate nodes, so match the count <span> by its full text.
+const countBadge = (label: string) =>
+  screen.getByText(
+    (_content, el) => el?.tagName === 'SPAN' && el.textContent?.replace(/\s+/g, ' ').trim() === label,
+  )
+
 describe('TraysScreen', () => {
   beforeEach(() => {
     getUser.mockClear()
@@ -58,8 +66,8 @@ describe('TraysScreen', () => {
 
     expect(await screen.findByRole('button', { name: 'Tokyo winter' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Korea Myeongdong' })).toBeInTheDocument()
-    expect(screen.getByText('2 reels')).toBeInTheDocument()
-    expect(screen.getByText('1 reel')).toBeInTheDocument()
+    expect(countBadge('2 reels')).toBeInTheDocument()
+    expect(countBadge('1 reel')).toBeInTheDocument()
   })
 
   it('renders an empty tray (zero memberships) with an Open control and a zero count', async () => {
@@ -69,7 +77,7 @@ describe('TraysScreen', () => {
     render(<TraysScreen cards={[]} onCapture={noop} onOrganize={noop} />)
 
     expect(await screen.findByRole('button', { name: 'Empty tray' })).toBeInTheDocument()
-    expect(screen.getByText('0 reels')).toBeInTheDocument()
+    expect(countBadge('0 reels')).toBeInTheDocument()
   })
 
   it('shows the create tile and the Library banner', async () => {

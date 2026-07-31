@@ -47,22 +47,27 @@ export default function TraysScreen({
   // reset to [] on dialog close so it never leaks into an ordinary "New tray" open.
   const [createPreselect, setCreatePreselect] = useState<string[]>([])
   const activeRef = useRef(true)
+  // Monotonic refresh id: overlapping refreshes (e.g. two adds from separate reel-card
+  // instances, one opened after Escaping the other) can resolve out of order. Only the newest
+  // refresh may write state, so a stale read can never overwrite newer membership (Codex race).
+  const refreshGenRef = useRef(0)
 
   // Single source of truth for collections. Exposed so T1.4's CreateTrayDialog can
   // re-sync the grid after a create/add without a full remount.
   async function refresh() {
+    const gen = ++refreshGenRef.current
     setLoading(true)
     setError(null)
     try {
       const [nextCollections, memberships] = await Promise.all([listCollections(), getMembershipsByCollection()])
-      if (!activeRef.current) return
+      if (!activeRef.current || gen !== refreshGenRef.current) return // superseded by a newer refresh
       setCollections(nextCollections)
       setMembershipByCollection(memberships)
     } catch {
       // Never crash the home on a trays fetch failure — keep capture + Library usable.
-      if (activeRef.current) setError('We could not load your trays just now. Your saved Reels are still here.')
+      if (activeRef.current && gen === refreshGenRef.current) setError('We could not load your trays just now. Your saved Reels are still here.')
     } finally {
-      if (activeRef.current) setLoading(false)
+      if (activeRef.current && gen === refreshGenRef.current) setLoading(false)
     }
   }
 

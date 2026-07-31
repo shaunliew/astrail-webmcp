@@ -21,7 +21,7 @@ const contentSecurityPolicy = [
   "default-src 'self'",
   `script-src ${scriptSrc}`,
   "style-src 'self' 'unsafe-inline'",
-  `img-src 'self' data: blob: https://img.youtube.com https://i.ytimg.com https://*.cdninstagram.com https://*.fbcdn.net ${supabaseUrl} https://*.supabase.co`,
+  `img-src 'self' data: blob: https://img.youtube.com https://i.ytimg.com https://*.cdninstagram.com https://*.fbcdn.net ${supabaseUrl}`,
   "font-src 'self' data:",
   `connect-src 'self' ${backendUrl} ${supabaseUrl} https://tally.so https://*.supabase.co https://api.mapbox.com https://events.mapbox.com https://us.i.posthog.com`,
   "frame-src https://tally.so https://www.youtube.com https://www.youtube-nocookie.com",

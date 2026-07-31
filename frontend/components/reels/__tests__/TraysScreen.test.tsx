@@ -9,6 +9,9 @@ const { getUser, listCollections, getMembershipsByCollection } = vi.hoisted(() =
 
 vi.mock('@/lib/supabase/client', () => ({ createClient: () => ({ auth: { getUser } }) }))
 vi.mock('@/lib/reels/collections', () => ({ listCollections, getMembershipsByCollection }))
+// Opening the Library swaps in LibraryPanel, whose card-fan drives gsap in a useEffect;
+// no-op it so the fan cannot flake in jsdom during this integration test.
+vi.mock('gsap', () => ({ default: { to: vi.fn(), set: vi.fn(), killTweensOf: vi.fn() } }))
 
 import TraysScreen from '@/components/reels/TraysScreen'
 import type { ReelCollection, SavedReelCard } from '@/lib/reels/backend-types'
@@ -75,17 +78,20 @@ describe('TraysScreen', () => {
     expect(screen.getByRole('button', { name: /your inspiration starts here/i })).toBeInTheDocument()
   })
 
-  it('opens the interim Library panel and organizes selected reels through onOrganize', async () => {
-    const onOrganize = vi.fn(async () => {})
+  it('opens the Library panel from the banner as a full-surface swap and returns home on back', async () => {
     const cards = [card({ id: 'r1', caption: 'Tokyo Tower at sunset' })]
 
-    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={onOrganize} />)
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} />)
 
     fireEvent.click(await screen.findByRole('button', { name: /your inspiration starts here/i }))
-    fireEvent.click(await screen.findByRole('button', { name: /select Tokyo Tower at sunset/i }))
-    fireEvent.click(screen.getByRole('button', { name: /^plan a trip$/i }))
 
-    await waitFor(() => expect(onOrganize).toHaveBeenCalledWith(['r1']))
+    // LibraryPanel replaces the home content — its header shows and the greeting is gone.
+    expect(screen.getByText(/your saved reels live here/i)).toBeInTheDocument()
+    expect(screen.queryByText(/welcome back/i)).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: /back/i }))
+
+    expect(await screen.findByRole('button', { name: /your inspiration starts here/i })).toBeInTheDocument()
   })
 
   it('captures a Reel URL through onCapture', async () => {

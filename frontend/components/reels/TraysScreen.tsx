@@ -6,6 +6,7 @@ import { getMembershipsByCollection, listCollections } from '@/lib/reels/collect
 import type { ReelCollection, SavedReelCard } from '@/lib/reels/backend-types'
 import type { FolderPhoto } from '@/components/ui/folder-gallery'
 import TrayCard from './TrayCard'
+import LibraryPanel from './LibraryPanel'
 
 /* TraysScreen — the /app home. Replaces the old DashboardHome inbox body with:
    greeting + quick-capture + a Library banner + a "Your trays" grid (one TrayCard per
@@ -17,10 +18,6 @@ import TrayCard from './TrayCard'
    the only wiring for those callbacks and the capture→organize→generate journey must
    survive (plan T1.2 / B2 / DECISION B). LibraryPanel (T1.3) and CreateTrayDialog (T1.4)
    are not built yet, so their seams here are interim placeholders, not the real panels. */
-
-// Backend GenerateTripRequest caps place_ids at 5 (api/schemas.py); the interim Library
-// select→organize path mirrors SavedReelsFlow's MAX_PLACES so a 6th pick can't 422.
-const MAX_SELECTED = 5
 
 const BTN_PRIMARY =
   'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-[color:var(--accent)] bg-[color:var(--accent)] px-4 text-[13px] font-medium text-[color:var(--accent-text)] transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]'
@@ -46,7 +43,6 @@ export default function TraysScreen({
   const [url, setUrl] = useState('')
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
-  const [selected, setSelected] = useState<string[]>([])
   const activeRef = useRef(true)
 
   // Single source of truth for collections. Exposed so T1.4's CreateTrayDialog can
@@ -101,26 +97,27 @@ export default function TraysScreen({
     }
   }
 
-  function toggleSelect(id: string) {
-    setSelected((current) =>
-      current.includes(id) ? current.filter((v) => v !== id) : current.length < MAX_SELECTED ? [...current, id] : current,
-    )
-  }
-
-  async function organize() {
-    if (!selected.length) return
-    setBusy(true); setMessage(null)
-    try {
-      await onOrganize(selected)
-    } catch (err) {
-      if (activeRef.current) { setMessage(err instanceof Error ? err.message : 'Could not organize those Reels.'); setBusy(false) }
-    }
-  }
-
   // Phase 3 (T3.1) wires TrayDetail; for now Open is a stubbed seam the parent owns.
   function handleOpenTray(_collection: ReelCollection) { /* T3.1 wires TrayDetail (plan Phase 3) */ }
 
+  // P2 (T2.1) wires ReelInfoCard; opening a reel from the Library is a no-op stub in P1.
+  function handleOpenReel(_card: SavedReelCard) { /* T2.1 wires ReelInfoCard (plan Phase 2) */ }
+
   const isEmpty = !loading && cards.length === 0 && collections.length === 0
+
+  // Full-surface swap: the Library replaces the home content (greeting/capture/banner/trays)
+  // rather than expanding inline. The /app home has no map behind it, so this is a plain
+  // paper panel, not a fixed inset-0 overlay.
+  if (libraryOpen) {
+    return (
+      <LibraryPanel
+        cards={cards}
+        onClose={() => setLibraryOpen(false)}
+        onOpenReel={handleOpenReel}
+        onOrganize={onOrganize}
+      />
+    )
+  }
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col">
@@ -167,79 +164,19 @@ export default function TraysScreen({
         </div>
       ) : (
         <>
-          {/* Library banner — the doorway into every saved reel. */}
+          {/* Library banner — the doorway into every saved reel. Opens the full-surface
+              LibraryPanel (T1.3), which owns filter/search/browse-fan/select→organize. */}
           <button
             type="button"
-            onClick={() => setLibraryOpen((open) => !open)}
-            aria-expanded={libraryOpen}
+            onClick={() => setLibraryOpen(true)}
             className="mb-8 flex w-full items-center justify-between gap-4 rounded-2xl border border-[color:var(--brass-deep)] bg-[color:var(--brass-wash)] px-6 py-7 text-left transition-colors hover:bg-[color:var(--surface-2)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]"
           >
             <span>
               <span className="block font-display text-[20px] font-medium text-[color:var(--text)]">Your inspiration starts here</span>
               <span className="mt-1 block text-[13px] text-[color:var(--text-muted)]">Every reel you saved, in one place.</span>
             </span>
-            <span aria-hidden className="text-[13px] font-medium text-[color:var(--brass-deep)]">{libraryOpen ? 'Close' : 'Open'}</span>
+            <span aria-hidden className="text-[13px] font-medium text-[color:var(--brass-deep)]">Open</span>
           </button>
-
-          {libraryOpen ? (
-            // interim — replaced by <LibraryPanel/> in T1.3 (plan T1.3 / DECISION B).
-            // Keeps the select→organize→generate journey alive across the T1.2→T1.3 window:
-            // the same onOrganize DashboardHome used, capped at MAX_SELECTED.
-            <section aria-label="Library" className="mb-10 rounded-2xl border border-[color:var(--paper-line-2)] bg-[color:var(--surface-1)] p-5">
-              <div className="mb-4 flex items-baseline justify-between gap-4">
-                <h2 className="font-display text-[18px] font-medium text-[color:var(--text)]">Your saved reels live here</h2>
-                <span className="text-[13px] text-[color:var(--text-faint)]">{cards.length} saved</span>
-              </div>
-              {cards.length ? (
-                <>
-                  <ul className="flex gap-4 overflow-x-auto pb-3">
-                    {cards.map((card) => {
-                      const on = selected.includes(card.id)
-                      const label = card.personal_label ?? card.caption ?? 'Untitled reel'
-                      return (
-                        <li key={card.id} className="flex-none" style={{ width: 132 }}>
-                          <button
-                            type="button"
-                            aria-pressed={on}
-                            aria-label={`Select ${label}`}
-                            onClick={() => toggleSelect(card.id)}
-                            className={`w-full overflow-hidden rounded-lg border text-left transition-transform hover:-translate-y-0.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)] ${
-                              on ? 'border-[color:var(--accent)]' : 'border-[color:var(--paper-line-2)]'
-                            }`}
-                          >
-                            <div className="relative aspect-[9/16] bg-[color:var(--surface-2)]">
-                              {card.thumbnail_url ? (
-                                /* eslint-disable-next-line @next/next/no-img-element */
-                                <img src={card.thumbnail_url} alt="" className="h-full w-full object-cover" />
-                              ) : null}
-                              <span
-                                aria-hidden
-                                className={`absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full border text-[11px] ${
-                                  on ? 'border-[color:var(--accent)] bg-[color:var(--accent)] text-[color:var(--accent-text)]' : 'border-[color:var(--paper-line-2)] bg-[color:var(--surface-1)]'
-                                }`}
-                              >
-                                {on ? '✓' : ''}
-                              </span>
-                            </div>
-                            <span className="block truncate px-3 py-2 text-[13px] text-[color:var(--text)]">{label}</span>
-                          </button>
-                        </li>
-                      )
-                    })}
-                  </ul>
-                  <div className="mt-4 flex flex-wrap items-center gap-3">
-                    <span className="text-[12px] text-[color:var(--text-muted)]">{selected.length} / {MAX_SELECTED} selected</span>
-                    <button type="button" disabled={busy || !selected.length} className={BTN_PRIMARY} onClick={() => void organize()}>Plan a trip</button>
-                    {selected.length ? (
-                      <button type="button" className="min-h-9 px-2 text-[13px] text-[color:var(--text-muted)] hover:underline" onClick={() => setSelected([])}>Clear</button>
-                    ) : null}
-                  </div>
-                </>
-              ) : (
-                <p className="text-[14px] text-[color:var(--text-muted)]">No saved reels yet. Paste a Reel link above to start your library.</p>
-              )}
-            </section>
-          ) : null}
 
           {/* Your trays */}
           <section>

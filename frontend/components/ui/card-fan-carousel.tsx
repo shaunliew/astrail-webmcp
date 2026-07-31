@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import gsap from "gsap";
 
 export interface CardItem {
+  id?: string;
   imgUrl: string;
   alt?: string;
   linkUrl?: string;
@@ -11,6 +12,7 @@ export interface CardItem {
 
 interface SocialCardsProps {
   cards: CardItem[];
+  onOpen?: (card: CardItem) => void;
 }
 
 const MAX_VISIBLE = 7;
@@ -69,7 +71,7 @@ function getSlotConfig(totalCards: number, slot: number) {
 const ARROW_CLASSES =
   "relative flex items-center justify-center rounded-full border-[1.5px] border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 backdrop-blur-[16px] text-black/40 dark:text-white/55 cursor-pointer shrink-0 z-30 outline-none shadow-[0_4px_20px_rgba(0,0,0,0.1)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.4)] hover:border-black/25 dark:hover:border-white/25 hover:text-black/70 dark:hover:text-white/80 active:opacity-70 transition-colors duration-300 before:content-[''] before:absolute before:inset-[3px] before:rounded-full before:border before:border-black/[0.04] dark:before:border-white/[0.04] before:pointer-events-none";
 
-export default function SocialCards({ cards }: SocialCardsProps) {
+export default function SocialCards({ cards, onOpen }: SocialCardsProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const isAnimating = useRef(false);
   const hasEntered = useRef(false);
@@ -262,12 +264,23 @@ export default function SocialCards({ cards }: SocialCardsProps) {
       <div className="flex items-center justify-center w-full max-w-[90rem]">
         <div ref={containerRef} className="fan-layout flex relative justify-center items-center w-full max-w-[80rem] min-h-[22rem] min-[480px]:min-h-[26rem] sm:min-h-[28rem] md:min-h-[34rem] lg:min-h-[38rem]">
           {cards.map((card, index) => {
-            const image = (
+            // Current data has null thumbnails (mapped to ""); render a neutral placeholder
+            // surface instead of a broken <img>. Only draw the <img> for a real URL.
+            const image = card.imgUrl ? (
               <div className="relative w-full h-full overflow-hidden">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
                 <img src={card.imgUrl} loading="lazy" alt={card.alt || `Card ${index}`} className="absolute inset-0 w-full h-full object-cover z-10" />
               </div>
+            ) : (
+              <div aria-hidden className="h-full w-full bg-[color:var(--surface-2)]" />
             );
+            // Interactive fan (onOpen) takes precedence over linkUrl. gsap animates by the
+            // `.fan-card` class regardless of element type, so a button fans identically.
+            if (onOpen) {
+              return (
+                <button key={index} type="button" onClick={() => onOpen(card)} aria-label={card.alt || `Card ${index}`} className="fan-card block cursor-pointer appearance-none text-left absolute left-1/2 top-0 overflow-hidden rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.25)] h-[18rem] w-[10rem] ml-[-5rem] min-[480px]:h-[21rem] min-[480px]:w-[12rem] min-[480px]:ml-[-6rem] sm:h-[23rem] sm:w-[13rem] sm:ml-[-6.5rem] md:h-[28rem] md:w-[16rem] md:ml-[-8rem] lg:h-[31rem] lg:w-[17rem] lg:ml-[-8.5rem]">{image}</button>
+              );
+            }
             return card.linkUrl ? (
               <a key={index} href={card.linkUrl} target={card.linkUrl.startsWith("http") ? "_blank" : "_self"} rel="noopener noreferrer" className="fan-card block cursor-pointer absolute left-1/2 top-0 overflow-hidden rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.25)] h-[18rem] w-[10rem] ml-[-5rem] min-[480px]:h-[21rem] min-[480px]:w-[12rem] min-[480px]:ml-[-6rem] sm:h-[23rem] sm:w-[13rem] sm:ml-[-6.5rem] md:h-[28rem] md:w-[16rem] md:ml-[-8rem] lg:h-[31rem] lg:w-[17rem] lg:ml-[-8.5rem]">{image}</a>
             ) : (

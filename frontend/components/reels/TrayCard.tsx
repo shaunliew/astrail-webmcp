@@ -63,7 +63,7 @@ export default function TrayCard({
       <div className="absolute inset-x-4 top-0 h-[160px] overflow-hidden rounded-xl border border-[color:var(--paper-line-2)] bg-[color:var(--surface-2)] shadow-[0_6px_16px_rgba(28,23,16,0.12)]">
         {cover?.image ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={cover.image} alt={cover.alt ?? ''} className="h-full w-full object-cover object-top" />
+          <img src={cover.image} alt={cover.alt ?? ''} className="h-full w-full object-cover" />
         ) : (
           <div className="flex h-full w-full items-center justify-center text-[color:var(--brass-deep)]">
             <ImageIcon size={28} opacity={0.4} />

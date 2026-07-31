@@ -135,7 +135,7 @@ export default function ReelInfoCard({
           <div className="relative h-[280px] w-full shrink-0 bg-[color:var(--surface-2)]">
             {card.thumbnail_url ? (
               // eslint-disable-next-line @next/next/no-img-element
-              <img src={card.thumbnail_url} alt="" className="h-full w-full object-cover object-top" />
+              <img src={card.thumbnail_url} alt="" className="h-full w-full object-cover" />
             ) : (
               <div className="flex h-full w-full items-center justify-center text-[color:var(--brass-deep)]">
                 <ImageIcon size={40} opacity={0.4} />
@@ -145,7 +145,7 @@ export default function ReelInfoCard({
 
           {/* Heading */}
           <div className="px-6 pt-5">
-            <h2 id="reel-info-heading" className="font-display text-[20px] font-medium tracking-[-0.01em] text-[color:var(--text)]">
+            <h2 id="reel-info-heading" className="line-clamp-2 font-display text-[20px] font-medium tracking-[-0.01em] text-[color:var(--text)]">
               {reelLabel(card)}
             </h2>
             <div className="mt-1 flex items-center justify-between gap-3">

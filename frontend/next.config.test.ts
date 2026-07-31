@@ -10,5 +10,9 @@ describe('production security headers', () => {
     expect(csp).toContain("script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'")
     expect(csp).toContain('https://*.cdninstagram.com')
     expect(csp).toContain('https://*.fbcdn.net')
+
+    // Re-hosted reel covers live in Supabase Storage — img-src must allow the host or every cover is CSP-blocked.
+    const imgSrc = csp?.split('; ').find((directive) => directive.startsWith('img-src'))
+    expect(imgSrc).toContain('supabase.co')
   })
 })

@@ -44,11 +44,12 @@ const BTN_SECONDARY =
 const BTN_DANGER =
   'inline-flex min-h-11 items-center justify-center rounded-lg border border-[color:var(--fail)] bg-transparent px-4 text-[13px] font-medium text-[color:var(--fail)] transition-colors hover:bg-[color:var(--surface-2)] disabled:cursor-default disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]'
 const BTN_BACK =
-  'mb-4 inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-[13px] font-medium text-[color:var(--text-muted)] transition-colors hover:text-[color:var(--text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]'
+  'mb-4 inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-[13px] font-medium text-[color:var(--text-muted)] transition-colors hover:text-[color:var(--text)] disabled:cursor-default disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]'
 
 export default function TrayDetail({
   collection,
   cards,
+  cardsStatus = 'ready',
   existingNames,
   onRemoveReel,
   onRename,
@@ -58,6 +59,10 @@ export default function TrayDetail({
 }: {
   collection: ReelCollection
   cards: SavedReelCard[]
+  // The parent's saved-reel fetch state. When cards are still loading (or failed), an
+  // empty `cards` here is NOT a genuinely-empty tray — distinguish the two so a tray with
+  // members never shows "No reels yet" while its covers are mid-flight (Codex M3).
+  cardsStatus?: 'loading' | 'error' | 'ready'
   existingNames: string[]
   onRemoveReel: (savedReelId: string) => Promise<void>
   onRename: (name: string) => Promise<void>
@@ -137,7 +142,7 @@ export default function TrayDetail({
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col">
       <header className="mb-6">
-        <button type="button" onClick={onBack} className={BTN_BACK}>
+        <button type="button" disabled={mutating} onClick={onBack} className={BTN_BACK}>
           <span aria-hidden>←</span> Back
         </button>
 
@@ -155,6 +160,7 @@ export default function TrayDetail({
                   value={renameValue}
                   disabled={mutating}
                   autoFocus
+                  maxLength={NAME_MAX}
                   onChange={(e) => setRenameValue(e.target.value)}
                   aria-invalid={isDuplicate}
                   className="min-h-11 min-w-0 flex-1 rounded-lg border border-[color:var(--line-soft)] bg-[color:var(--surface-1)] px-4 text-[color:var(--text)] placeholder:text-[color:var(--text-faint)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)] disabled:cursor-default disabled:opacity-60"
@@ -225,7 +231,11 @@ export default function TrayDetail({
       {/* Reels list */}
       {cards.length === 0 ? (
         <p className="rounded-2xl border border-dashed border-[color:var(--line-soft)] px-6 py-16 text-center text-[14px] text-[color:var(--text-muted)]">
-          No reels in this tray yet.
+          {cardsStatus === 'loading'
+            ? "Loading this tray's reels…"
+            : cardsStatus === 'error'
+              ? "We could not load this tray's reels just now."
+              : 'No reels in this tray yet.'}
         </p>
       ) : (
         <ul className="flex flex-col gap-3">

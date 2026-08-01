@@ -205,4 +205,45 @@ describe('TrayDetail', () => {
     fireEvent.click(screen.getByRole('button', { name: /back/i }))
     expect(props.onBack).toHaveBeenCalledTimes(1)
   })
+
+  it('keeps the rename form open and preserves the typed value when a rename rejects', async () => {
+    setup({ collection: collection({ name: 'Old' }), onRename: vi.fn().mockRejectedValue(new Error('rename failed')) })
+
+    fireEvent.click(screen.getByRole('button', { name: /^rename$/i }))
+    fireEvent.change(screen.getByLabelText(/tray name/i), { target: { value: 'New name' } })
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('rename failed')
+    // The form stays open with the typed value preserved (not reset to the old name), lock released.
+    expect(screen.getByLabelText(/tray name/i)).toHaveValue('New name')
+    expect(screen.getByLabelText(/tray name/i)).not.toBeDisabled()
+  })
+
+  it('keeps the delete confirm open with an inline error when a delete rejects', async () => {
+    setup({ onDelete: vi.fn().mockRejectedValue(new Error('delete failed')) })
+
+    fireEvent.click(screen.getByRole('button', { name: /delete tray/i }))
+    fireEvent.click(screen.getByRole('button', { name: /confirm delete/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('delete failed')
+    // The confirm stays open so the user can retry.
+    expect(screen.getByRole('button', { name: /confirm delete/i })).toBeInTheDocument()
+  })
+
+  it("shows a loading placeholder (not an empty-tray message) while cards are still loading (M3)", () => {
+    setup({ cards: [], cardsStatus: 'loading' })
+    expect(screen.getByText(/loading this tray's reels/i)).toBeInTheDocument()
+    expect(screen.queryByText(/no reels in this tray yet/i)).not.toBeInTheDocument()
+  })
+
+  it("shows an error placeholder when the tray's cards failed to load (M3)", () => {
+    setup({ cards: [], cardsStatus: 'error' })
+    expect(screen.getByText(/could not load this tray's reels/i)).toBeInTheDocument()
+    expect(screen.queryByText(/no reels in this tray yet/i)).not.toBeInTheDocument()
+  })
+
+  it("keeps the genuine empty-tray message when cards are ready (M3 regression)", () => {
+    setup({ cards: [], cardsStatus: 'ready' })
+    expect(screen.getByText(/no reels in this tray yet/i)).toBeInTheDocument()
+  })
 })

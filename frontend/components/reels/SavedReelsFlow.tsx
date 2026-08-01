@@ -57,6 +57,9 @@ export default function SavedReelsFlow() {
   const [events, setEvents] = useState<StreamEvent[]>([])
   const [tripId, setTripId] = useState<string | null>(null)
   const [generateError, setGenerateError] = useState<string | null>(null)
+  // The saved-reel fetch state, forwarded to TraysScreen/TrayDetail so a tray with members
+  // never reads as "0 reels" / "No reels yet" while the cards are still loading or failed (M3).
+  const [cardsStatus, setCardsStatus] = useState<'loading' | 'error' | 'ready'>('loading')
   const activeRef = useRef(true)
   const submittedReelIdsRef = useRef<string[]>([])
   const organizeCursorRef = useRef<string | null>(null)
@@ -68,8 +71,8 @@ export default function SavedReelsFlow() {
     activeRef.current = true
     let cancelled = false
     listSavedReelCards()
-      .then((nextCards) => { if (activeRef.current && !cancelled) setCards(nextCards) })
-      .catch(() => { /* the inbox remains usable for a first capture */ })
+      .then((nextCards) => { if (activeRef.current && !cancelled) { setCards(nextCards); setCardsStatus('ready') } })
+      .catch(() => { if (activeRef.current && !cancelled) setCardsStatus('error') /* the inbox remains usable for a first capture */ })
     return () => { cancelled = true; activeRef.current = false }
   }, [])
 
@@ -81,7 +84,7 @@ export default function SavedReelsFlow() {
 
   async function reloadCards() {
     const nextCards = await listSavedReelCards()
-    if (activeRef.current) setCards(nextCards)
+    if (activeRef.current) { setCards(nextCards); setCardsStatus('ready') }
   }
 
   async function handleCapture(url: string) {
@@ -135,8 +138,10 @@ export default function SavedReelsFlow() {
       const submittedCards = nextCards.filter((card) => submittedIds.has(card.id))
       const nextTrays = groupPlacesByCountry(submittedCards.flatMap((card) => card.places))
       setCards(nextCards)
+      setCardsStatus('ready')
       setTrays(nextTrays)
       setSelectedPlaceIds([])
+      setGenerateError(null) // a fresh organize→trays run must not surface a prior attempt's generate error
       if (!nextTrays.length) {
         setInboxMessage('We could not verify any locations from those Reels. Nothing was pinned. Please retry from your inbox.')
         setPhase('inbox')
@@ -245,6 +250,7 @@ export default function SavedReelsFlow() {
   function onCreateTrail(trayCards: SavedReelCard[]) {
     const nextTrays = groupPlacesByCountry(trayCards.flatMap((c) => c.places))
     if (!nextTrays.length) return
+    setGenerateError(null) // don't carry a failed tray-A generate's error into tray B's brief (Codex)
     setTrays(nextTrays)
     setSelectedPlaceIds([])
     setPhase('trays')
@@ -271,7 +277,7 @@ export default function SavedReelsFlow() {
           {inboxMessage}
         </p>
       ) : null}
-      <TraysScreen cards={cards} onCapture={handleCapture} onOrganize={handleOrganize} onCreateTrail={onCreateTrail} />
+      <TraysScreen cards={cards} cardsStatus={cardsStatus} onCapture={handleCapture} onOrganize={handleOrganize} onCreateTrail={onCreateTrail} />
     </div>
   )
 }

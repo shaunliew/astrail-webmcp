@@ -401,4 +401,79 @@ describe('TraysScreen', () => {
     expect(await screen.findByRole('button', { name: /create a tray/i })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Tokyo winter' })).not.toBeInTheDocument()
   })
+
+  it('shows a tray reel count from membership even before the cards prop resolves (M3)', async () => {
+    listCollections.mockResolvedValue([collection({ id: 'c1', name: 'Tokyo winter' })])
+    getMembershipsByCollection.mockResolvedValue({ c1: ['r1', 'r2'] })
+
+    // The cards prop is still empty (the parent's listSavedReelCards hasn't resolved yet). The
+    // count must come from membership, not resolved covers — else the tray reads "0 reels".
+    render(<TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
+
+    expect(await screen.findByRole('button', { name: 'Tokyo winter' })).toBeInTheDocument()
+    expect(countBadge('2 reels')).toBeInTheDocument()
+  })
+
+  it('keeps the renamed name when the post-write refresh READ fails (reconciliation is load-bearing, C-new-2)', async () => {
+    listCollections.mockResolvedValue([collection({ id: 'c1', name: 'Old name' })])
+    getMembershipsByCollection.mockResolvedValue({})
+    renameCollection.mockResolvedValue(collection({ id: 'c1', name: 'New name' }))
+
+    render(<TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Old name' }))
+    await screen.findByRole('heading', { name: 'Old name' })
+
+    // Write lands, but the best-effort refresh READ fails (refresh swallows it). Only the local
+    // reconciliation keeps the new name; drop it and the stale read resurrects 'Old name'.
+    listCollections.mockRejectedValue(new Error('read down'))
+    getMembershipsByCollection.mockRejectedValue(new Error('read down'))
+
+    fireEvent.click(screen.getByRole('button', { name: /^rename$/i }))
+    fireEvent.change(screen.getByLabelText(/tray name/i), { target: { value: 'New name' } })
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+
+    await waitFor(() => expect(renameCollection).toHaveBeenCalledWith('c1', 'New name'))
+    expect(await screen.findByRole('heading', { name: 'New name' })).toBeInTheDocument()
+  })
+
+  it('keeps a removed reel gone when the post-write refresh READ fails (reconciliation is load-bearing, C-new-2)', async () => {
+    listCollections.mockResolvedValue([collection({ id: 'c1', name: 'Tokyo winter' })])
+    getMembershipsByCollection.mockResolvedValue({ c1: ['r1'] })
+    const cards = [card({ id: 'r1', caption: 'Tokyo Tower' })]
+
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Tokyo winter' }))
+    await screen.findByRole('heading', { name: 'Tokyo winter' })
+    expect(screen.getByText('Tokyo Tower')).toBeInTheDocument()
+
+    listCollections.mockRejectedValue(new Error('read down'))
+    getMembershipsByCollection.mockRejectedValue(new Error('read down'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Tokyo Tower' }))
+
+    await waitFor(() => expect(removeReelFromCollection).toHaveBeenCalledWith('c1', 'r1'))
+    // Local membership reconciliation dropped r1; the failed refresh cannot resurrect it.
+    await waitFor(() => expect(screen.queryByText('Tokyo Tower')).not.toBeInTheDocument())
+  })
+
+  it('keeps a deleted tray off the grid when the post-write refresh READ fails (reconciliation is load-bearing, C-new-2)', async () => {
+    listCollections.mockResolvedValue([collection({ id: 'c1', name: 'Tokyo winter' })])
+    getMembershipsByCollection.mockResolvedValue({ c1: ['r1'] })
+    const cards = [card({ id: 'r1', caption: 'Tokyo Tower' })]
+
+    render(<TraysScreen cards={cards} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Tokyo winter' }))
+    await screen.findByRole('heading', { name: 'Tokyo winter' })
+
+    listCollections.mockRejectedValue(new Error('read down'))
+    getMembershipsByCollection.mockRejectedValue(new Error('read down'))
+
+    fireEvent.click(screen.getByRole('button', { name: /delete tray/i }))
+    fireEvent.click(screen.getByRole('button', { name: /confirm delete/i }))
+
+    await waitFor(() => expect(deleteCollection).toHaveBeenCalledWith('c1'))
+    // Local reconciliation removed the tray; the failed refresh cannot resurrect it on the grid.
+    expect(await screen.findByRole('button', { name: /create a tray/i })).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Tokyo winter' })).not.toBeInTheDocument())
+  })
 })

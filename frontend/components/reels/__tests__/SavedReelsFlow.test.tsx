@@ -550,4 +550,56 @@ describe('SavedReelsFlow', () => {
     expect(await screen.findByRole('button', { name: 'mock-plan-trip' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Japan' })).not.toBeInTheDocument()
   })
+
+  it('opens the create-trail picker with zero preselection even after a prior selection (no-auto-submit, M4)', async () => {
+    const places = [placeProof({ place_id: 'p1', name: 'Place 1' }), placeProof({ place_id: 'p2', name: 'Place 2' })]
+    listSavedReelCards.mockResolvedValue([cardWithPlaces('r1', 'Two-place reel', places)])
+    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    await screen.findByText('Two-place reel')
+
+    // First entry: select both places.
+    createTrail()
+    await screen.findByRole('heading', { name: 'Japan' })
+    for (const cb of screen.getAllByRole('checkbox')) fireEvent.click(cb)
+    expect(screen.getAllByRole('checkbox').filter((cb) => (cb as HTMLInputElement).checked)).toHaveLength(2)
+
+    // Back to the inbox grid — Back does NOT reset the selection — then re-enter create-trail.
+    fireEvent.click(screen.getByRole('button', { name: /^back$/i }))
+    await screen.findByRole('button', { name: 'mock-create-trail' })
+    createTrail()
+    await screen.findByRole('heading', { name: 'Japan' })
+
+    // The picker reopens with NOTHING checked: onCreateTrail's setSelectedPlaceIds([]) reset is load-bearing.
+    expect(screen.getAllByRole('checkbox').every((cb) => !(cb as HTMLInputElement).checked)).toBe(true)
+  })
+
+  it('clears a prior failed-generate error when re-entering create-trail (Codex C-new-1)', async () => {
+    const places = [placeProof({ place_id: 'p1', name: 'Place 1' })]
+    listSavedReelCards.mockResolvedValue([cardWithPlaces('r1', 'One-place reel', places)])
+    generateTrip.mockRejectedValueOnce(new Error('generation service down'))
+
+    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    await screen.findByText('One-place reel')
+
+    // Attempt 1: create-trail → pick → Plan → brief → Generate FAILS → the error surfaces on the brief.
+    createTrail()
+    await screen.findByRole('heading', { name: 'Japan' })
+    fireEvent.click(screen.getByRole('checkbox', { name: /select Place 1/i }))
+    fireEvent.click(screen.getByRole('button', { name: /plan this trip/i }))
+    fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
+    fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
+    fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
+    expect(await screen.findByText(/generation service down/i)).toBeInTheDocument()
+
+    // Back out to the inbox grid (brief → trays → inbox), then re-enter create-trail.
+    fireEvent.click(screen.getByRole('button', { name: /back to places/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /^back$/i }))
+    await screen.findByRole('button', { name: 'mock-create-trail' })
+    createTrail()
+    await screen.findByRole('heading', { name: 'Japan' })
+    fireEvent.click(screen.getByRole('button', { name: /plan this trip/i }))
+
+    // The brief re-opens WITHOUT the prior attempt's stale error.
+    expect(screen.queryByText(/generation service down/i)).not.toBeInTheDocument()
+  })
 })

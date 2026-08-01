@@ -33,11 +33,15 @@ const BTN_PRIMARY =
 
 export default function TraysScreen({
   cards,
+  cardsStatus = 'ready',
   onCapture,
   onOrganize,
   onCreateTrail,
 }: {
   cards: SavedReelCard[]
+  // Parent's saved-reel fetch state; forwarded to TrayDetail so an in-flight/failed cards
+  // load doesn't read as an empty tray. Tray COUNTS come from membership (below), not cards.
+  cardsStatus?: 'loading' | 'error' | 'ready'
   onCapture: (url: string) => Promise<void>
   onOrganize: (ids: string[]) => Promise<void>
   onCreateTrail: (trayCards: SavedReelCard[]) => void
@@ -165,6 +169,7 @@ export default function TraysScreen({
       <TrayDetail
         collection={openTray}
         cards={trayCards}
+        cardsStatus={cardsStatus}
         existingNames={collections.filter((c) => c.id !== openTray.id).map((c) => c.name)}
         onRemoveReel={async (rid) => {
           await removeReelFromCollection(openTray.id, rid)
@@ -302,7 +307,9 @@ export default function TraysScreen({
                   <TrayCard
                     key={collection.id}
                     collection={collection}
-                    reelCount={photos.length}
+                    // Count from membership (source of truth), NOT resolved covers — so a
+                    // tray with members never shows "0 reels" while cards load/fail (M3).
+                    reelCount={memberIds.length}
                     photos={photos}
                     onOpen={handleOpenTray}
                   />

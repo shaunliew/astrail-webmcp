@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react'
 import mapboxgl from 'mapbox-gl'
 import type { TripBundle } from '@/lib/trip/backend-types'
-import { legsForDay, orderedDays, buildPlaceIndex, pinLabelForPlace } from '@/lib/trip/selectors'
+import { legsForDay, orderedDays, buildPlaceIndex, pinLabelForPlace, placesForDay } from '@/lib/trip/selectors'
 import { useSharedMap } from '@/components/map/MapProvider'
 
 // A place with missing/zero/out-of-range coords is unresolved (a "saved with gaps" trip
@@ -149,18 +149,40 @@ export default function TripMap({
     }
   }
 
-  function flyToTrip() {
+  // The details panel overlays the map — the left 440px on desktop, a bottom sheet on
+  // mobile — so uniform padding would frame a day's pins right underneath it. Bias the
+  // padding toward the panel's edge so framed pins always land in the visible strip.
+  function framePadding() {
+    if (typeof window === 'undefined') return { top: 80, right: 80, bottom: 80, left: 80 }
+    if (window.innerWidth >= 768) return { top: 80, right: 80, bottom: 80, left: 480 }
+    return { top: 80, right: 60, bottom: Math.round(window.innerHeight * 0.42) + 40, left: 60 }
+  }
+
+  // essential: framing is not decoration — reduced-motion must still land on the pins,
+  // not leave the camera wherever the last gesture (or generation) parked the globe.
+  function frame(pts: [number, number][], duration: number) {
     const map = getMap()
-    if (!map) return
+    if (!map || pts.length === 0) return
+    if (pts.length === 1) {
+      map.flyTo({ center: pts[0], zoom: 13.5, pitch: 45, padding: framePadding(), duration, essential: true })
+      return
+    }
+    const bounds = new mapboxgl.LngLatBounds()
+    pts.forEach((p) => bounds.extend(p))
+    map.fitBounds(bounds, { padding: framePadding(), maxZoom: 14, pitch: 45, duration, essential: true })
+  }
+
+  function pointsForDay(dayNumber: number): [number, number][] {
+    return placesForDay(bundle, dayNumber)
+      .filter((tp) => hasRealCoords(tp.place.lng, tp.place.lat))
+      .map((tp) => [tp.place.lng, tp.place.lat] as [number, number])
+  }
+
+  function flyToTrip() {
     const pts = bundle.places
       .filter((tp) => hasRealCoords(tp.place.lng, tp.place.lat))
       .map((tp) => [tp.place.lng, tp.place.lat] as [number, number])
-    if (pts.length === 0) return
-    const bounds = new mapboxgl.LngLatBounds()
-    pts.forEach((p) => bounds.extend(p))
-    // essential: framing is not decoration — reduced-motion must still land on the trip,
-    // not leave the camera wherever generation parked the globe.
-    map.fitBounds(bounds, { padding: 80, maxZoom: 13, pitch: 45, duration: 2200, essential: true })
+    frame(pts, 2200)
   }
 
   // The shared map fires 'load' once ever, and this component usually mounts long after
@@ -189,11 +211,18 @@ export default function TripMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready])
 
-  // Redraw markers and routes when the active day changes.
+  // Redraw markers/routes AND fly to the day's pins when the active day changes.
+  // Without the reframe, switching days only relabels pins in place — the whole point of
+  // picking a day is to see that day's stops enlarged on the map. Falls back to the whole
+  // trip when a day has no resolved-coordinate places, so the camera is never stranded.
   useEffect(() => {
     if (!ready || !framedRef.current) return
     drawMarkers()
     drawRoutes()
+    const pts = pointsForDay(activeDayNumber)
+    frame(pts.length ? pts : bundle.places
+      .filter((tp) => hasRealCoords(tp.place.lng, tp.place.lat))
+      .map((tp) => [tp.place.lng, tp.place.lat] as [number, number]), 1400)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeDayNumber])
 
@@ -204,7 +233,9 @@ export default function TripMap({
     const map = getMap()
     if (!map || !selectedPlaceId) return
     const place = buildPlaceIndex(bundle).get(selectedPlaceId)
-    if (place) map.flyTo({ center: [place.lng, place.lat], zoom: 14, pitch: 55, duration: 1400, essential: true })
+    if (place && hasRealCoords(place.lng, place.lat)) {
+      map.flyTo({ center: [place.lng, place.lat], zoom: 14, pitch: 55, padding: framePadding(), duration: 1400, essential: true })
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPlaceId])
 

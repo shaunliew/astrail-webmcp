@@ -124,8 +124,12 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
   }
 
   return (
-    <main className="relative h-[100dvh] w-full overflow-hidden">
-      <div className="absolute inset-0">
+    // The interactive Mapbox canvas is a FIXED layer behind this route (MapProvider's
+    // `.shared-map`). This overlay must be click-through, or it swallows every pan/zoom/
+    // pin-tap before the map beneath ever sees it. Interactive children re-enable
+    // pointer events explicitly (the panel + its buttons below).
+    <main className="pointer-events-none relative h-[100dvh] w-full overflow-hidden">
+      <div className="pointer-events-none absolute inset-0">
         <TripMap
           bundle={bundle}
           activeDayNumber={activeDayNumber}
@@ -140,7 +144,7 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
         <button
           type="button"
           onClick={() => setPanelOpen(true)}
-          className="surface type-label absolute inset-x-0 bottom-5 z-10 mx-auto flex w-fit items-center gap-2 rounded-full px-4 py-2.5 text-[11px] uppercase tracking-wide text-[var(--starlight)] md:inset-x-auto md:inset-y-0 md:left-5 md:my-auto md:h-fit"
+          className="surface type-label pointer-events-auto absolute inset-x-0 bottom-5 z-10 mx-auto flex w-fit items-center gap-2 rounded-full px-4 py-2.5 text-[11px] uppercase tracking-wide text-[var(--starlight)] md:inset-x-auto md:inset-y-0 md:left-5 md:my-auto md:h-fit"
         >
           <span aria-hidden>&uarr;</span>
           Trip details
@@ -149,7 +153,7 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
 
       <aside
         className={[
-          'trip-details-panel absolute z-10 overflow-y-auto paper-scope bg-[rgba(243,238,226,0.55)] backdrop-blur-sm',
+          'trip-details-panel pointer-events-auto absolute z-10 overflow-y-auto paper-scope bg-[rgba(243,238,226,0.55)] backdrop-blur-sm',
           'inset-x-0 bottom-0 rounded-t-[var(--radius-card)] transition-all duration-300 ease-out',
           expanded ? 'h-[82dvh]' : 'h-[42dvh]',
           panelOpen ? 'translate-y-[0%]' : 'translate-y-[100%]',

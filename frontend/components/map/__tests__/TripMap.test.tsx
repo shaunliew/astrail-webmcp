@@ -101,7 +101,7 @@ describe('TripMap', () => {
 
     expect(mapInstance.fitBounds).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ maxZoom: 13, pitch: 45 }),
+      expect.objectContaining({ maxZoom: 14, pitch: 45 }),
     )
   })
 

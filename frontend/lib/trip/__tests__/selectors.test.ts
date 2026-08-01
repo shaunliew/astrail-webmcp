@@ -3,7 +3,7 @@ import { TOKYO_TRIP } from '@/lib/trip/fixtures'
 import {
   orderedDays, placesForDay, legsForDay, restaurantsForDay,
   tripHotels, buildPlaceIndex, findTripPlace,
-  pinLabelForPlace,
+  orderedTripPlaces, pinLabelForPlace,
 } from '@/lib/trip/selectors'
 
 describe('trip selectors', () => {
@@ -48,11 +48,23 @@ describe('trip selectors', () => {
     expect(findTripPlace(TOKYO_TRIP, null)).toBeNull()
   })
 
-  it('pinLabelForPlace numbers only the active day in itinerary order', () => {
-    const day1 = placesForDay(TOKYO_TRIP, 1)
-    expect(pinLabelForPlace(TOKYO_TRIP, day1[0], 1)).toBe('1')
-    expect(pinLabelForPlace(TOKYO_TRIP, day1[1], 1)).toBe('2')
-    expect(pinLabelForPlace(TOKYO_TRIP, placesForDay(TOKYO_TRIP, 2)[0], 1)).toBeNull()
-    expect(pinLabelForPlace(TOKYO_TRIP, TOKYO_TRIP.places.find((tp) => tp.day_number === null)!, 1)).toBeNull()
+  it('orderedTripPlaces threads every dayed stop across all days by (day, sort_order)', () => {
+    const stops = orderedTripPlaces(TOKYO_TRIP)
+    expect(stops.map((tp) => tp.place.name)).toEqual([
+      'Senso-ji Temple', 'teamLab Planets', // Day 1
+      'Shibuya Sky', 'Ichiran Shibuya',     // Day 2
+      'Tokyo Disneyland',                    // Day 3
+    ])
+    // the undayed base hotel is not a stop on the journey line
+    expect(stops.some((tp) => tp.day_number === null)).toBe(false)
+  })
+
+  it('pinLabelForPlace numbers stops globally 1..N across the whole trip', () => {
+    const stops = orderedTripPlaces(TOKYO_TRIP)
+    expect(pinLabelForPlace(TOKYO_TRIP, stops[0])).toBe('1')  // Day 1's first stop
+    expect(pinLabelForPlace(TOKYO_TRIP, stops[2])).toBe('3')  // Day 2 continues the sequence
+    expect(pinLabelForPlace(TOKYO_TRIP, stops[4])).toBe('5')  // last day carries the highest number
+    // pins that are not stops (the undayed base hotel) recede — no number
+    expect(pinLabelForPlace(TOKYO_TRIP, TOKYO_TRIP.places.find((tp) => tp.day_number === null)!)).toBeNull()
   })
 })

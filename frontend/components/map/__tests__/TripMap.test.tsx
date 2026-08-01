@@ -154,48 +154,68 @@ describe('TripMap', () => {
     expect(mapInstance.addLayer).toHaveBeenCalled()
 
     view.rerender(<MapProvider><div /></MapProvider>)
-    expect(mapInstance.removeLayer).toHaveBeenCalledWith('route-leg_1-core')
-    expect(mapInstance.removeSource).toHaveBeenCalledWith('route-leg_1')
+    expect(mapInstance.removeLayer).toHaveBeenCalledWith('trip-trail-core')
+    expect(mapInstance.removeSource).toHaveBeenCalledWith('trip-trail')
     mapInstance.getLayer.mockReturnValue(undefined as never)
     mapInstance.getSource.mockReturnValue(undefined as never)
   })
 
-  it('draws a two-layer trail, an honest failed stub, and constellation markers', async () => {
+  it('draws one continuous trail through every stop and numbers them globally', async () => {
+    renderMap()
+    await flush()
+    fireLoad()
+
+    // one brass journey line (casing + dashed core), not per-leg segments
+    expect(mapInstance.addLayer).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'trip-trail-casing',
+      paint: expect.objectContaining({ 'line-width': 9, 'line-opacity': 0.18 }),
+    }))
+    expect(mapInstance.addLayer).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'trip-trail-core',
+      paint: expect.objectContaining({ 'line-width': 2.6, 'line-dasharray': [0.1, 1.6] }),
+    }))
+    // the line threads every dayed stop in (day, sort_order) order, Day 1 → last day
+    expect(mapInstance.addSource).toHaveBeenCalledWith('trip-trail', expect.objectContaining({
+      data: expect.objectContaining({
+        geometry: {
+          type: 'LineString',
+          coordinates: [
+            [139.7967, 35.7148], // Senso-ji   (Day 1, stop 1)
+            [139.7906, 35.6497], // teamLab     (Day 1, stop 2)
+            [139.7016, 35.658],  // Shibuya Sky (Day 2, stop 3)
+            [139.7002, 35.6606], // Ichiran     (Day 2, stop 4)
+            [139.8804, 35.6329], // Disneyland  (Day 3, stop 5)
+          ],
+        },
+      }),
+    }))
+
+    const markers = markerElements.slice(-TOKYO_TRIP.places.length)
+    const byLabel = (name: string) => markers.find((el) => el.getAttribute('aria-label') === name)!
+    expect(byLabel('Senso-ji Temple')).toHaveClass('constellation-pin', 'constellation-pin--reel_extracted')
+    expect(byLabel('Senso-ji Temple')).toHaveTextContent('1')
+    // a later-day stop is no longer dimmed — it carries its global number and stays lit
+    expect(byLabel('Shibuya Sky')).not.toHaveClass('constellation-pin--receding')
+    expect(byLabel('Shibuya Sky')).toHaveTextContent('3')
+    expect(byLabel('Tokyo Disneyland')).toHaveTextContent('5')
+    // the undayed base hotel is not a stop on the trail — it recedes, unnumbered
+    expect(byLabel('Shinjuku Granbell Hotel')).toHaveClass('constellation-pin--receding')
+  })
+
+  it('keeps one whole-trip trail — switching the active day does not redraw it', async () => {
     const view = renderMap()
     await flush()
     fireLoad()
 
-    expect(mapInstance.addLayer).toHaveBeenCalledWith(expect.objectContaining({
-      id: 'route-leg_1-casing',
-      paint: expect.objectContaining({ 'line-width': 9, 'line-opacity': 0.18 }),
-    }))
-    expect(mapInstance.addLayer).toHaveBeenCalledWith(expect.objectContaining({
-      id: 'route-leg_1-core',
-      paint: expect.objectContaining({ 'line-width': 2.6, 'line-dasharray': [0.1, 1.6] }),
-    }))
-
-    const markers = markerElements.slice(-TOKYO_TRIP.places.length)
-    expect(markers.find((el) => el.getAttribute('aria-label') === 'Senso-ji Temple')).toHaveClass('constellation-pin', 'constellation-pin--reel_extracted')
-    expect(markers.find((el) => el.getAttribute('aria-label') === 'Senso-ji Temple')).toHaveTextContent('1')
-    expect(markers.find((el) => el.getAttribute('aria-label') === 'Shibuya Sky')).toHaveClass('constellation-pin--receding')
-
     mapInstance.addSource.mockClear()
-    mapInstance.addLayer.mockClear()
+    mapInstance.flyTo.mockClear()
     view.rerender(
       <MapProvider>
         <TripMap bundle={TOKYO_TRIP} activeDayNumber={3} selectedPlaceId={null} onSelectPlace={() => {}} />
       </MapProvider>,
     )
-    expect(mapInstance.addLayer).toHaveBeenCalledWith(expect.objectContaining({
-      id: 'route-leg_3-stub',
-      paint: expect.objectContaining({
-        'line-color': '#D0705F', 'line-width': 1.5, 'line-dasharray': [1.2, 2],
-      }),
-    }))
-    expect(mapInstance.addSource).toHaveBeenCalledWith('route-leg_3-stub-source', expect.objectContaining({
-      data: expect.objectContaining({
-        geometry: { type: 'LineString', coordinates: [[139.7016, 35.658], [139.8804, 35.6329]] },
-      }),
-    }))
+    // day change only moves the camera; the trail is day-independent, so it is not re-added
+    expect(mapInstance.addSource).not.toHaveBeenCalledWith('trip-trail', expect.anything())
+    expect(mapInstance.flyTo).toHaveBeenCalled() // Day 3's single stop → camera flies there
   })
 })

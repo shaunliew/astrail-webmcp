@@ -3,20 +3,11 @@
 import { useEffect, useRef } from 'react'
 import mapboxgl from 'mapbox-gl'
 import type { TripBundle } from '@/lib/trip/backend-types'
-import { legsForDay, orderedDays, buildPlaceIndex, pinLabelForPlace, placesForDay } from '@/lib/trip/selectors'
+import {
+  orderedTripPlaces, buildTrailNumbers, buildPlaceIndex, placesForDay, hasRealCoords,
+} from '@/lib/trip/selectors'
 import { consumeTripFramed } from '@/lib/trip/map-handoff'
 import { useSharedMap } from '@/components/map/MapProvider'
-
-// A place with missing/zero/out-of-range coords is unresolved (a "saved with gaps" trip
-// has these). It must not get a pin, and must NOT extend the map bounds — one (0,0) drags
-// the frame out to span half the globe instead of zooming to the real places.
-function hasRealCoords(lng: number, lat: number): boolean {
-  return (
-    Number.isFinite(lng) && Number.isFinite(lat) &&
-    Math.abs(lng) <= 180 && Math.abs(lat) <= 90 &&
-    (lng !== 0 || lat !== 0)
-  )
-}
 
 export default function TripMap({
   bundle, activeDayNumber, selectedPlaceId, onSelectPlace,
@@ -64,90 +55,69 @@ export default function TripMap({
   function drawMarkers() {
     const map = getMap()
     if (!map) return
+    // Global trail numbers: every stop across the whole trip is numbered 1..N in journey
+    // order (Day 1's first stop = 1, the last day's final stop = N), so the numbered pins
+    // read as one sequence you can follow end to end — independent of the active day.
+    // Pins with no number (the undayed base hotel, unresolved coordinates) recede.
+    const trailNumbers = buildTrailNumbers(bundle)
     const markers = bundle.places.filter((tp) => hasRealCoords(tp.place.lng, tp.place.lat)).map((tp) => {
       const el = document.createElement('button')
       el.type = 'button'
       el.setAttribute('aria-label', tp.place.name)
-      const label = pinLabelForPlace(bundle, tp, activeDayNumber)
+      const number = trailNumbers.get(tp.id) ?? null
       el.className = [
         'constellation-pin',
         `constellation-pin--${tp.source_type}`,
-        label ? '' : 'constellation-pin--receding',
+        number === null ? 'constellation-pin--receding' : '',
         tp.place_id === selectedPlaceId ? 'constellation-pin--selected' : '',
       ].filter(Boolean).join(' ')
-      el.textContent = label ?? ''
+      el.textContent = number === null ? '' : String(number)
       el.addEventListener('click', (e) => { e.stopPropagation(); onSelectPlace(tp.place_id) })
       return new mapboxgl.Marker({ element: el }).setLngLat([tp.place.lng, tp.place.lat]).addTo(map)
     })
     setMarkers(markers)
   }
 
-  function drawRoutes() {
+  // Beta "constellation trail" (docs/roadmap/trip-map-day-connections.md): one continuous
+  // brass line threading every stop in journey order — Day 1's first stop through the last
+  // day's final stop. Deliberately built from the ordered stops, NOT from transport legs:
+  // most "saved with gaps" trips come back with zero legs, and a leg-driven line leaves those
+  // pins disconnected. This always connects. Real per-hop routing + the hotel-as-hub model
+  // land in a later phase, not here.
+  function drawTrail() {
     const map = getMap()
     if (!map) return
     clearRoutes()
-    const day = orderedDays(bundle).find((d) => d.day_number === activeDayNumber)
-    if (!day) return
-    const placeIndex = buildPlaceIndex(bundle)
-    for (const leg of legsForDay(bundle, day.id)) {
-      const id = `route-${leg.id}`
-      if (leg.status === 'ok' && leg.route_geometry) {
-        const casingId = `${id}-casing`
-        const coreId = `${id}-core`
-        map.addSource(id, {
-          type: 'geojson',
-          data: { type: 'Feature', properties: {}, geometry: leg.route_geometry },
-        })
-        map.addLayer({
-          id: casingId,
-          type: 'line',
-          source: id,
-          layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: { 'line-color': '#C9974E', 'line-width': 9, 'line-opacity': 0.18 },
-        })
-        map.addLayer({
-          id: coreId,
-          type: 'line',
-          source: id,
-          layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: {
-            'line-color': '#C9974E',
-            'line-width': 2.6,
-            'line-opacity': 0.95,
-            'line-dasharray': [0.1, 1.6],
-          },
-        })
-        routeIdsRef.current.push(id, casingId, coreId)
-        continue
-      }
-
-      const from = leg.from_place_id ? placeIndex.get(leg.from_place_id) : undefined
-      const to = leg.to_place_id ? placeIndex.get(leg.to_place_id) : undefined
-      if (!from || !to) continue
-      const stubSourceId = `${id}-stub-source`
-      const stubLayerId = `${id}-stub`
-      const stubGeometry = {
-        type: 'LineString' as const,
-        coordinates: [[from.lng, from.lat], [to.lng, to.lat]] as [number, number][],
-      }
-      map.addSource(stubSourceId, {
-        type: 'geojson',
-        data: { type: 'Feature', properties: {}, geometry: stubGeometry },
-      })
-      map.addLayer({
-        id: stubLayerId,
-        type: 'line',
-        source: stubSourceId,
-        layout: { 'line-join': 'round', 'line-cap': 'round' },
-        paint: {
-          'line-color': '#D0705F',
-          'line-width': 1.5,
-          'line-opacity': 0.5,
-          'line-dasharray': [1.2, 2],
-        },
-      })
-      routeIdsRef.current.push(stubSourceId, stubLayerId)
-    }
+    const stops = orderedTripPlaces(bundle)
+    if (stops.length < 2) return // one stop (or none) has nothing to connect
+    const coordinates = stops.map((tp) => [tp.place.lng, tp.place.lat] as [number, number])
+    const id = 'trip-trail'
+    const casingId = `${id}-casing`
+    const coreId = `${id}-core`
+    map.addSource(id, {
+      type: 'geojson',
+      data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates } },
+    })
+    map.addLayer({
+      id: casingId,
+      type: 'line',
+      source: id,
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: { 'line-color': '#C9974E', 'line-width': 9, 'line-opacity': 0.18 },
+    })
+    map.addLayer({
+      id: coreId,
+      type: 'line',
+      source: id,
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: {
+        'line-color': '#C9974E',
+        'line-width': 2.6,
+        'line-opacity': 0.95,
+        'line-dasharray': [0.1, 1.6],
+      },
+    })
+    routeIdsRef.current.push(id, casingId, coreId)
   }
 
   // The details panel overlays the map — the left 440px on desktop, a bottom sheet on
@@ -205,7 +175,7 @@ export default function TripMap({
       if (cancelled) return
       framedRef.current = true
       drawMarkers()
-      drawRoutes()
+      drawTrail()
       // Arriving from the trips dashboard already framed on this trip → settle into the
       // panel geometry (short) rather than re-fly the whole camera (full). Any other entry
       // (generation handoff, direct load) never marks the handoff, so it frames normally.
@@ -216,14 +186,13 @@ export default function TripMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready])
 
-  // Redraw markers/routes AND fly to the day's pins when the active day changes.
-  // Without the reframe, switching days only relabels pins in place — the whole point of
-  // picking a day is to see that day's stops enlarged on the map. Falls back to the whole
-  // trip when a day has no resolved-coordinate places, so the camera is never stranded.
+  // Fly to the active day's pins when the day changes. Markers and the trail are whole-trip
+  // and day-independent now (global numbering, one continuous journey line), so switching a
+  // day only moves the camera — it never relabels pins or redraws the trail. Falls back to
+  // the whole trip when a day has no resolved-coordinate places, so the camera is never
+  // stranded.
   useEffect(() => {
     if (!ready || !framedRef.current) return
-    drawMarkers()
-    drawRoutes()
     const pts = pointsForDay(activeDayNumber)
     frame(pts.length ? pts : bundle.places
       .filter((tp) => hasRealCoords(tp.place.lng, tp.place.lat))

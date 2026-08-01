@@ -665,6 +665,45 @@ button:focus-visible {
   .globe-grid-drift { animation: none; }
 }
 
+/* Organize interstitial (reels → trays): scattered stars thread themselves into a small
+   constellation-trail while the durable organize job runs — Astrail's brand beat
+   ("scattered stars → constellation") as a loader, not a card. Purely decorative: the real
+   job status rides an sr-only role="status" region. Frozen to a static trail under
+   reduced-motion, just below. */
+@keyframes organize-draw {
+  0%   { stroke-dashoffset: 100; }
+  45%  { stroke-dashoffset: 0; }
+  72%  { stroke-dashoffset: 0; }
+  100% { stroke-dashoffset: -100; }
+}
+.organize-line {
+  fill: none;
+  stroke: var(--brass-bright);
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 100;
+  animation: organize-draw 2.6s ease-in-out infinite;
+}
+
+@keyframes organize-twinkle {
+  0%, 100% { opacity: 0.28; transform: scale(0.7); }
+  50%      { opacity: 1;    transform: scale(1); }
+}
+.organize-star {
+  fill: var(--starlight);
+  transform-box: fill-box;
+  transform-origin: center;
+  filter: drop-shadow(0 0 4px var(--brass-glow));
+  animation: organize-twinkle 2.6s ease-in-out infinite;
+}
+
+@keyframes organize-word-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.organize-word { animation: organize-word-in 0.4s ease-out; }
+
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
@@ -680,7 +719,10 @@ button:focus-visible {
   .how-section-route .motion-route__draw,
   .pin-land,
   .pulse-dot--live,
-  .astronaut-trail--waiting {
+  .astronaut-trail--waiting,
+  .organize-line,
+  .organize-star,
+  .organize-word {
     animation: none;
   }
 

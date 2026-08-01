@@ -162,7 +162,8 @@ export default function TraysScreen({
   // only ever opened from the ungated grid, so no both-branches overlay trick is needed.
   const openTray = collections.find((c) => c.id === openTrayId)
   if (openTray) {
-    const trayCards = (membershipByCollection[openTray.id] ?? [])
+    const openMemberIds = membershipByCollection[openTray.id] ?? []
+    const trayCards = openMemberIds
       .map((id) => cardById.get(id))
       .filter((card): card is SavedReelCard => Boolean(card))
     return (
@@ -170,6 +171,7 @@ export default function TraysScreen({
         collection={openTray}
         cards={trayCards}
         cardsStatus={cardsStatus}
+        memberCount={openMemberIds.length}
         existingNames={collections.filter((c) => c.id !== openTray.id).map((c) => c.name)}
         onRemoveReel={async (rid) => {
           await removeReelFromCollection(openTray.id, rid)

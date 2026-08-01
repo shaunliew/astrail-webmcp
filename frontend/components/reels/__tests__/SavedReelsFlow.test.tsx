@@ -602,4 +602,38 @@ describe('SavedReelsFlow', () => {
     // The brief re-opens WITHOUT the prior attempt's stale error.
     expect(screen.queryByText(/generation service down/i)).not.toBeInTheDocument()
   })
+
+  it('clears a prior failed-generate error when a later organize run opens the picker (organize-finish clear, C-new-1)', async () => {
+    const places = [placeProof({ place_id: 'p1', name: 'Place 1' })]
+    listSavedReelCards.mockResolvedValue([cardWithPlaces('r1', 'One-place reel', places)])
+    generateTrip.mockRejectedValueOnce(new Error('generation service down'))
+
+    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    await screen.findByText('One-place reel')
+
+    // Fail a create-trail generate → the error surfaces on the brief.
+    createTrail()
+    await screen.findByRole('heading', { name: 'Japan' })
+    fireEvent.click(screen.getByRole('checkbox', { name: /select Place 1/i }))
+    fireEvent.click(screen.getByRole('button', { name: /plan this trip/i }))
+    fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
+    fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
+    fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
+    expect(await screen.findByText(/generation service down/i)).toBeInTheDocument()
+
+    // Back to the inbox, then run ORGANIZE (not create-trail): its finish opens the picker.
+    fireEvent.click(screen.getByRole('button', { name: /back to places/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /^back$/i }))
+    planTrip()
+    await screen.findByTestId('organize-globe')
+    await waitFor(() => expect(streamOrganize).toHaveBeenCalledTimes(1))
+    const onEvent = streamOrganize.mock.calls[0][2] as (event: unknown) => void
+    onEvent({ type: 'result', content: JSON.stringify({ status: 'succeeded' }) })
+    await screen.findByRole('heading', { name: 'Japan' })
+    fireEvent.click(screen.getByRole('checkbox', { name: /select Place 1/i }))
+    fireEvent.click(screen.getByRole('button', { name: /plan this trip/i }))
+
+    // The organize→trays finish cleared the error, so the brief re-opens clean.
+    expect(screen.queryByText(/generation service down/i)).not.toBeInTheDocument()
+  })
 })

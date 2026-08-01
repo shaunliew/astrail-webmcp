@@ -167,9 +167,12 @@ describe('TrayDetail', () => {
     expect(screen.getByRole('button', { name: /delete tray/i })).toBeDisabled()
     // Create trail is otherwise-enabled here (r1 has a grounded place), so a disabled state proves the lock.
     expect(screen.getByRole('button', { name: /create trail/i })).toBeDisabled()
+    // Back is under the same lock (M1): it can't be used to escape-and-reopen a fresh unlocked instance.
+    expect(screen.getByRole('button', { name: /^back$/i })).toBeDisabled()
 
     await act(async () => { resolveRemove(); await Promise.resolve() })
     expect(screen.getByRole('button', { name: 'Remove B' })).not.toBeDisabled()
+    expect(screen.getByRole('button', { name: /^back$/i })).not.toBeDisabled()
   })
 
   it('disables Create trail with an add-reels hint for an empty tray', () => {
@@ -230,7 +233,7 @@ describe('TrayDetail', () => {
     expect(screen.getByRole('button', { name: /confirm delete/i })).toBeInTheDocument()
   })
 
-  it("shows a loading placeholder (not an empty-tray message) while cards are still loading (M3)", () => {
+  it('shows a loading placeholder (not an empty-tray message) while cards are still loading (M3)', () => {
     setup({ cards: [], cardsStatus: 'loading' })
     expect(screen.getByText(/loading this tray's reels/i)).toBeInTheDocument()
     expect(screen.queryByText(/no reels in this tray yet/i)).not.toBeInTheDocument()
@@ -242,8 +245,17 @@ describe('TrayDetail', () => {
     expect(screen.queryByText(/no reels in this tray yet/i)).not.toBeInTheDocument()
   })
 
-  it("keeps the genuine empty-tray message when cards are ready (M3 regression)", () => {
+  it('keeps the genuine empty-tray message when cards are ready (M3 regression)', () => {
     setup({ cards: [], cardsStatus: 'ready' })
     expect(screen.getByText(/no reels in this tray yet/i)).toBeInTheDocument()
+  })
+
+  it('shows the member count in the header even while cards are still loading (M3, Codex nit)', () => {
+    setup({ cards: [], memberCount: 2, cardsStatus: 'loading' })
+    // Header count comes from membership, not resolved cards — so it reads "2 reels", not "0 reels".
+    expect(
+      screen.getByText((_c, el) => el?.tagName === 'P' && el.textContent?.replace(/\s+/g, ' ').trim() === '2 reels'),
+    ).toBeInTheDocument()
+    expect(screen.getByText(/loading this tray's reels/i)).toBeInTheDocument()
   })
 })

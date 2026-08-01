@@ -50,6 +50,7 @@ export default function TrayDetail({
   collection,
   cards,
   cardsStatus = 'ready',
+  memberCount,
   existingNames,
   onRemoveReel,
   onRename,
@@ -63,6 +64,9 @@ export default function TrayDetail({
   // empty `cards` here is NOT a genuinely-empty tray — distinguish the two so a tray with
   // members never shows "No reels yet" while its covers are mid-flight (Codex M3).
   cardsStatus?: 'loading' | 'error' | 'ready'
+  // Membership count from the parent (source of truth), so the header count matches the
+  // grid even while the cards are mid-load; falls back to resolved cards when omitted.
+  memberCount?: number
   existingNames: string[]
   onRemoveReel: (savedReelId: string) => Promise<void>
   onRename: (name: string) => Promise<void>
@@ -88,6 +92,9 @@ export default function TrayDetail({
     existingNames.some((n) => n.trim().toLowerCase() === trimmedName.toLowerCase())
   const nameValid = trimmedName.length >= 1 && trimmedName.length <= NAME_MAX && !isDuplicate
 
+  // Header count from membership (matches the grid) so it doesn't read "0 reels" while the
+  // cards are still loading; falls back to resolved cards when the parent omits memberCount.
+  const reelCount = memberCount ?? cards.length
   const hasGroundedPlaces = cards.some((card) => card.places.length > 0)
   const createTrailDisabled = mutating || !hasGroundedPlaces
   // Two distinct zero cases: no reels at all vs reels that are not organized/grounded yet.
@@ -189,7 +196,7 @@ export default function TrayDetail({
               <p className="mt-1.5 text-[12px] text-[color:var(--text-muted)]">{DUPLICATE_HINT}</p>
             ) : (
               <p className="mt-1.5 text-[13px] text-[color:var(--text-muted)]">
-                {cards.length} {cards.length === 1 ? 'reel' : 'reels'}
+                {reelCount} {reelCount === 1 ? 'reel' : 'reels'}
               </p>
             )}
           </div>

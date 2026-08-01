@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act, render, screen } from '@testing-library/react'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures'
+import { markTripFramed } from '@/lib/trip/map-handoff'
 import MapProvider from '@/components/map/MapProvider'
 import TripMap from '@/components/map/TripMap'
 
@@ -102,6 +103,32 @@ describe('TripMap', () => {
     expect(mapInstance.fitBounds).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ maxZoom: 14, pitch: 45 }),
+    )
+  })
+
+  // Seamless dashboard -> workspace handoff: the trips dashboard already framed this trip on
+  // the shared map, so the workspace settles quickly into its panel geometry rather than
+  // re-flying the whole camera.
+  it('settles quickly when the dashboard already framed this trip', async () => {
+    markTripFramed(TOKYO_TRIP.trip.id)
+    renderMap()
+    await flush()
+    fireLoad()
+
+    expect(mapInstance.fitBounds).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ duration: 900 }),
+    )
+  })
+
+  it('does a full framing fly on a direct load (no dashboard handoff)', async () => {
+    renderMap()
+    await flush()
+    fireLoad()
+
+    expect(mapInstance.fitBounds).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ duration: 2200 }),
     )
   })
 

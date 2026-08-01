@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures'
 
 vi.mock('next/link', () => ({
@@ -9,17 +10,47 @@ vi.mock('next/link', () => ({
 
 const { listTrips } = vi.hoisted(() => ({ listTrips: vi.fn() }))
 vi.mock('@/lib/trip/supabase-api', () => ({ listTrips }))
-vi.mock('@/components/auth/SignOutButton', () => ({ default: () => <button type="button">Sign out</button> }))
+// The map pane is desktop-only and jsdom has no matchMedia, so it never mounts here — but
+// mock it anyway so a change to that gating can't drag the shared-map context into this test.
+vi.mock('@/components/trips/TripMapDashboard', () => ({ default: () => null }))
 
 import TripsList from '@/components/trips/TripsList'
 
 describe('TripsList', () => {
   beforeEach(() => { listTrips.mockReset() })
 
-  it('renders a card linking to the trip once loaded', async () => {
+  it('selects nothing until a row is clicked (you land on the idle globe first)', async () => {
     listTrips.mockResolvedValueOnce([TOKYO_TRIP.trip])
     render(<TripsList />)
-    expect(await screen.findByRole('link', { name: /tokyo/i })).toHaveAttribute('href', `/app/trip/${TOKYO_TRIP.trip.id}`)
+
+    // Selecting is in-place (a button), navigating is a distinct link — no nested interactives.
+    const row = await screen.findByRole('button', { name: /tokyo/i })
+    expect(row).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.queryByRole('link', { name: /open .*tokyo.* trip/i })).toBeNull()
+
+    await userEvent.click(row)
+
+    expect(row).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('link', { name: /open .*tokyo.* trip/i }))
+      .toHaveAttribute('href', `/app/trip/${TOKYO_TRIP.trip.id}`)
+  })
+
+  it('moves selection (and the Open link) when another row is clicked', async () => {
+    const second = { ...TOKYO_TRIP.trip, id: 'trip-2', inferred_destination: 'Osaka' }
+    listTrips.mockResolvedValueOnce([TOKYO_TRIP.trip, second])
+    render(<TripsList />)
+
+    const firstRow = await screen.findByRole('button', { name: /tokyo/i })
+    await userEvent.click(firstRow)
+    expect(firstRow).toHaveAttribute('aria-pressed', 'true')
+
+    const secondRow = screen.getByRole('button', { name: /osaka/i })
+    await userEvent.click(secondRow)
+
+    expect(secondRow).toHaveAttribute('aria-pressed', 'true')
+    expect(firstRow).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('link', { name: /open .*osaka.* trip/i }))
+      .toHaveAttribute('href', '/app/trip/trip-2')
   })
 
   it('shows a composed, illustrated empty state when there are no trips', async () => {

@@ -4,6 +4,7 @@ import { useEffect, useRef } from 'react'
 import mapboxgl from 'mapbox-gl'
 import type { TripBundle } from '@/lib/trip/backend-types'
 import { legsForDay, orderedDays, buildPlaceIndex, pinLabelForPlace, placesForDay } from '@/lib/trip/selectors'
+import { consumeTripFramed } from '@/lib/trip/map-handoff'
 import { useSharedMap } from '@/components/map/MapProvider'
 
 // A place with missing/zero/out-of-range coords is unresolved (a "saved with gaps" trip
@@ -178,11 +179,11 @@ export default function TripMap({
       .map((tp) => [tp.place.lng, tp.place.lat] as [number, number])
   }
 
-  function flyToTrip() {
+  function flyToTrip(duration = 2200) {
     const pts = bundle.places
       .filter((tp) => hasRealCoords(tp.place.lng, tp.place.lat))
       .map((tp) => [tp.place.lng, tp.place.lat] as [number, number])
-    frame(pts, 2200)
+    frame(pts, duration)
   }
 
   // The shared map fires 'load' once ever, and this component usually mounts long after
@@ -205,7 +206,11 @@ export default function TripMap({
       framedRef.current = true
       drawMarkers()
       drawRoutes()
-      flyToTrip()
+      // Arriving from the trips dashboard already framed on this trip → settle into the
+      // panel geometry (short) rather than re-fly the whole camera (full). Any other entry
+      // (generation handoff, direct load) never marks the handoff, so it frames normally.
+      const inherited = consumeTripFramed(bundle.trip.id)
+      flyToTrip(inherited ? 900 : 2200)
     })
     return () => { cancelled = true; cancelAnimationFrame(raf) }
     // eslint-disable-next-line react-hooks/exhaustive-deps

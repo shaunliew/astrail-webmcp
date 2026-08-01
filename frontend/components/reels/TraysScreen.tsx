@@ -234,11 +234,11 @@ export default function TraysScreen({
   return (
     <>
     <div className="mx-auto flex w-full max-w-5xl flex-col">
-      <header className="mb-8">
-        <p className="text-[13px] text-[color:var(--text-muted)]">Welcome back,</p>
+      <header className="mb-10">
+        <p className="text-[14px] text-[color:var(--text-muted)]">Welcome back,</p>
         <span
-          className="mt-1 block font-display text-[28px] font-medium leading-tight tracking-[-0.01em] text-[color:var(--text)]"
-          style={{ fontVariationSettings: "'SOFT' 28, 'WONK' 0, 'opsz' 28" }}
+          className="mt-1.5 block font-display text-[36px] font-medium leading-[1.1] tracking-[-0.015em] text-[color:var(--text)]"
+          style={{ fontVariationSettings: "'SOFT' 36, 'WONK' 0, 'opsz' 36" }}
         >
           {name}
         </span>
@@ -282,13 +282,13 @@ export default function TraysScreen({
           <button
             type="button"
             onClick={() => setLibraryOpen(true)}
-            className="mb-8 flex w-full items-center justify-between gap-4 rounded-2xl border border-[color:var(--brass-deep)] bg-[color:var(--brass-wash)] px-6 py-7 text-left transition-colors hover:bg-[color:var(--surface-2)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]"
+            className="mb-8 flex w-full items-center justify-between gap-4 rounded-2xl border border-[color:var(--brass-deep)] bg-[color:var(--brass-wash)] px-8 py-9 text-left transition-colors hover:bg-[color:var(--surface-2)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]"
           >
             <span>
-              <span className="block font-display text-[20px] font-medium text-[color:var(--text)]">Your inspiration starts here</span>
-              <span className="mt-1 block text-[13px] text-[color:var(--text-muted)]">Every reel you saved, in one place.</span>
+              <span className="block font-display text-[24px] font-medium leading-tight text-[color:var(--text)]">Your inspiration starts here</span>
+              <span className="mt-1.5 block text-[14px] text-[color:var(--text-muted)]">Every reel you saved, in one place.</span>
             </span>
-            <span aria-hidden className="text-[13px] font-medium text-[color:var(--brass-deep)]">Open</span>
+            <span aria-hidden className="text-[14px] font-medium text-[color:var(--brass-deep)]">Open</span>
           </button>
 
           {/* Your trays */}

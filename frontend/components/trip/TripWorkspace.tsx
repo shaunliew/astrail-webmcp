@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import dynamic from 'next/dynamic'
+import Link from 'next/link'
 import type { TripBundle } from '@/lib/trip/backend-types'
 import { getTrip } from '@/lib/trip/supabase-api'
 import {
@@ -215,6 +216,21 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
           />
         </div>
         <div className="p-4 pt-1">
+          {/* Up-nav — this route lives OUTSIDE the (shell) layout, so it has no sidebar; without
+              this link the workspace is a dead end. Lands on /app/trips, which restores the full
+              sidebar (Home · Trails · Settings). */}
+          <Link
+            href="/app/trips"
+            className="type-label mb-3 inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wide text-[var(--muted)] transition-colors hover:text-[var(--starlight)]"
+          >
+            <svg
+              viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+              strokeLinecap="round" strokeLinejoin="round" aria-hidden className="h-3.5 w-3.5"
+            >
+              <polyline points="15 6 9 12 15 18" />
+            </svg>
+            All trails
+          </Link>
           <OrchestratorSummary bundle={bundle} />
           <TradeoffPanel tradeoffs={bundle.trip.tradeoffs} />
 

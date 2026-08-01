@@ -78,6 +78,15 @@ describe('TripWorkspace', () => {
     expect(document.getElementById('trip-details-scroll')).not.toHaveAttribute('inert')
   })
 
+  // This route sits outside the (shell) layout (no sidebar), so the panel must carry its own
+  // up-nav back to the trips list — otherwise an opened trip is a dead end with no way home.
+  it('offers an up-nav link back to the trips list', async () => {
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    renderWorkspace(TOKYO_TRIP.trip.id)
+    const back = await screen.findByRole('link', { name: /all trails/i })
+    expect(back).toHaveAttribute('href', '/app/trips')
+  })
+
   it('switching days swaps the visible places', async () => {
     getTrip.mockResolvedValueOnce(TOKYO_TRIP)
     renderWorkspace(TOKYO_TRIP.trip.id)

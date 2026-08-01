@@ -36,4 +36,19 @@ describe('CountryTrays', () => {
 
     expect(screen.queryByRole('button', { name: /back/i })).not.toBeInTheDocument()
   })
+
+  // Regression: on desktop the collapsed sheet slides fully off-screen (grip included), so a
+  // dedicated reopen tab must exist and round-trip the collapse — otherwise collapsing is a
+  // dead end with no way back.
+  it('offers a reopen control that re-expands the collapsed sheet', () => {
+    render(<CountryTrays trays={trays} selectedPlaceIds={[]} maxSelected={5} onToggle={vi.fn()} onPlan={vi.fn()} />)
+
+    // Open state: the grip collapses.
+    expect(screen.getByRole('button', { name: /hide places/i })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /hide places/i }))
+
+    // Collapsed: the edge reopen tab re-expands, and the grip reads "Show places" again.
+    fireEvent.click(screen.getByTestId('reopen-places'))
+    expect(screen.getByRole('button', { name: /hide places/i })).toBeInTheDocument()
+  })
 })

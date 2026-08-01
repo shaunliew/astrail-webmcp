@@ -1,4 +1,4 @@
-import Image from "next/image";
+import { AstrailLogo } from "@/components/brand/AstrailLogo";
 
 import { navItems } from "./landing-copy";
 
@@ -11,14 +11,7 @@ export default function LandingNav() {
           className="flex items-center"
           aria-label="Astrail home"
         >
-          <Image
-            src="/astrail_logo.png"
-            alt="Astrail"
-            width={100}
-            height={100}
-            priority
-            className="h-15 w-15 object-contain"
-          />
+          <AstrailLogo variant="mark" tone="chrome" height={38} priority />
         </a>
         <div className="type-label flex items-center gap-5 text-xs uppercase tracking-[0.16em] text-[color:var(--muted)]">
           {navItems.map((item) => (

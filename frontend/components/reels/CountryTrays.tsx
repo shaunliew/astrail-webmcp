@@ -147,6 +147,29 @@ export default function CountryTrays({
           </button>
         </div>
       </section>
+
+      {/* Reopen tab — desktop only. On desktop the collapsed sheet slides fully off the left
+          edge (grip and all), so this fixed edge tab is the only way back in. On mobile the
+          grip header peeks at the bottom instead, so no tab is needed there (hidden md:flex).
+          Cross-fades so it isn't a dead end while the panel slides away. */}
+      <button
+        type="button"
+        onClick={() => setCollapsed(false)}
+        aria-label="Show places"
+        aria-hidden={!collapsed}
+        tabIndex={collapsed ? 0 : -1}
+        data-testid="reopen-places"
+        className={`absolute left-0 top-1/2 z-30 hidden -translate-y-1/2 items-center justify-center rounded-r-xl border border-l-0 border-[color:var(--paper-line-2)] bg-[color:var(--surface-1)] px-1.5 py-5 text-[color:var(--text-muted)] shadow-[0_2px_12px_rgba(0,0,0,0.35)] transition-opacity duration-300 hover:text-[color:var(--text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)] md:flex ${
+          collapsed ? 'opacity-100' : 'pointer-events-none opacity-0'
+        }`}
+      >
+        <svg
+          viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+          strokeLinecap="round" strokeLinejoin="round" aria-hidden className="h-4 w-4"
+        >
+          <polyline points="9 6 15 12 9 18" />
+        </svg>
+      </button>
     </div>
   )
 }

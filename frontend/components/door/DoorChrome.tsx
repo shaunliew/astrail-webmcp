@@ -2,6 +2,8 @@
 
 import { memo, useEffect, useState, type ReactNode } from 'react'
 import { Globe } from '@/components/ui/cobe-globe'
+import { Starfield } from '@/components/door/Starfield'
+import { AstrailLogo } from '@/components/brand/AstrailLogo'
 
 /* Shared chrome for the two "door" screens (sign-in, onboarding): a dark map stage,
    the empty wireframe globe, a floating caption, and the paper door card (left rail on
@@ -12,31 +14,12 @@ import { Globe } from '@/components/ui/cobe-globe'
 export const FOCUS_RING =
   'focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]'
 
-// Brand lockup — the trail primitive itself: two verified points joined by a line, and
-// one unplaced ghost point ahead. The logo IS the product's sentence (DESIGN.md §1).
-export function BrandMark() {
-  return (
-    <svg viewBox="0 0 88 14" aria-hidden className="block h-3.5 w-auto shrink-0">
-      <path d="M6 9 L31 5 L56 10" fill="none" stroke="var(--brass-deep)" strokeWidth={1.5} strokeLinecap="round" />
-      <circle cx="6" cy="9" r="2.6" fill="var(--brass-deep)" />
-      <circle cx="31" cy="5" r="2.6" fill="var(--brass-deep)" />
-      <circle cx="56" cy="10" r="2.6" fill="var(--brass-deep)" />
-      <circle cx="80" cy="6" r="3" fill="none" stroke="var(--ink-400)" strokeWidth={1.2} strokeDasharray="2 2" />
-    </svg>
-  )
-}
-
-// The brand row: mark + wordmark, sized per type.css .door__word (Fraunces 16, no WONK).
+// The brand lockup for the door card header: the A-swoosh-star mark over the ASTRAIL
+// wordmark, recoloured brass so it reads on the cream paper card (the source art is white).
 export function DoorBrand() {
   return (
-    <div className="mb-8 flex items-center gap-3">
-      <BrandMark />
-      <span
-        className="font-display text-[16px] font-semibold tracking-[0.01em]"
-        style={{ fontVariationSettings: "'SOFT' 28, 'WONK' 0, 'opsz' 16" }}
-      >
-        Astrail
-      </span>
+    <div className="mb-8">
+      <AstrailLogo variant="lockup" tone="brass" height={52} />
     </div>
   )
 }
@@ -94,7 +77,7 @@ export const DoorGlobe = memo(function DoorGlobe() {
   return (
     <div
       aria-hidden
-      className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-center md:justify-end md:pr-[6vw]"
+      className="pointer-events-none absolute inset-0 z-[1] flex items-center justify-center md:justify-end md:pr-6"
     >
       <Globe
         className="pointer-events-auto w-[min(66vmin,520px)] max-w-[88vw]"
@@ -123,14 +106,23 @@ export const DoorGlobe = memo(function DoorGlobe() {
 // .app-shell scope, which remaps --line to a night value.
 export function DoorStage({ caption, children }: { caption: string; children: ReactNode }) {
   return (
-    <div className="stage relative flex min-h-[100dvh] w-full items-end justify-center overflow-hidden md:items-center md:justify-start">
-      <DoorGlobe />
-      <p className="pointer-events-none absolute inset-x-0 top-8 z-[1] text-center text-[13px] text-[color:var(--starlight-70)] md:bottom-[12%] md:top-auto">
-        {caption}
-      </p>
-      <main className="relative z-[4] flex max-h-[88dvh] w-full flex-col overflow-y-auto rounded-t-[24px] border border-b-0 border-[color:var(--paper-line-2)] bg-[color:var(--surface-1)] p-6 pb-8 text-[color:var(--text)] shadow-[0_1px_2px_rgba(28,23,16,0.08),0_16px_40px_rgba(28,23,16,0.14)] md:m-6 md:max-w-[420px] md:rounded-[16px] md:border-b md:p-8">
-        {children}
-      </main>
+    <div className="stage relative min-h-[100dvh] w-full overflow-hidden">
+      {/* Full-bleed night sky, behind the frame. Sits under the .stage::after vignette (z-auto),
+          so edge stars fade and the globe stays the brightest thing in frame. */}
+      <Starfield className="z-0" />
+
+      {/* Centered max-width frame. Caps how far the card (left) and globe (right) can drift apart
+          on a wide monitor, so they read as one balanced pair instead of hugging opposite edges.
+          Mobile is unchanged: below md the frame is full-width, card at the bottom, globe above. */}
+      <div className="relative z-[2] mx-auto flex min-h-[100dvh] w-full max-w-[1180px] items-end justify-center overflow-hidden md:items-center md:justify-start">
+        <DoorGlobe />
+        <p className="pointer-events-none absolute inset-x-0 top-8 z-[1] text-center text-[13px] text-[color:var(--starlight-70)] md:bottom-[12%] md:top-auto">
+          {caption}
+        </p>
+        <main className="relative z-[4] flex max-h-[88dvh] w-full flex-col overflow-y-auto rounded-t-[24px] border border-b-0 border-[color:var(--paper-line-2)] bg-[color:var(--surface-1)] p-6 pb-8 text-[color:var(--text)] shadow-[0_1px_2px_rgba(28,23,16,0.08),0_16px_40px_rgba(28,23,16,0.14)] md:m-6 md:max-w-[420px] md:rounded-[16px] md:border-b md:p-8">
+          {children}
+        </main>
+      </div>
     </div>
   )
 }

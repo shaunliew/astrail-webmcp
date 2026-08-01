@@ -1,10 +1,52 @@
 # Plan — Inspiration Trays + Library (frontend)
 
-> Status: DRAFT (pending gstack `/plan-design-review` + Codex)
+> Status: ✅ **SHIPPED** — P1+P2+P3 complete, reviewed (×2 cross-model), live-QA'd, merged to
+> `dev` (2026-08-01). See "Status — SHIPPED" below. (Was: DRAFT pending review, 2026-07-30.)
 > Date: 2026-07-30 · Owner: Zhi Hao (frontend) · Lane: frontend-only
 > Source of truth for design: the in-conversation discovery interview on 2026-07-30
 > (sketches + references `06/08/014/015_*.PNG` under `frontend/reference/yaay-corefeature/`).
 > Memory: [[inspiration-trays-feature]].
+
+## Status — ✅ SHIPPED (updated 2026-08-01)
+
+All three phases are **implemented, reviewed, live-QA'd, and merged to local `dev`**. This section
+is the canonical final record and supersedes the session HANDOFF notes (now deletable — their
+durable pointers are folded in here).
+
+- **Arc:** P1 (T1.1–T1.5) · P2/T2.1 (reel-info card + add-to-tray; **covers render live**) ·
+  P3/T3.1 (TrayDetail + create-trail + rename/delete/remove-reel). Detail sub-plans **kept**:
+  `2026-07-31-create-trail-T3.1.md` (T3.1 + review report) · `2026-07-31-reel-info-card-P2.md`
+  (T2.1) · `2026-07-31-reel-cover-thumbnails.md` (the backend covers arc).
+- **Reviews:** every task per-task `astrail-reviewer`-gated; T2.1 and T3.1 each got a full
+  **whole-branch cross-model** pass — `astrail-reviewer` (fable) **and** gstack/Codex — both
+  **SHIP-WITH-NITS**, no blockers (fable empirically fault-injected the T3.1 fixes in an isolated
+  worktree, 7 mutants → 7 failures). All surfaced minors folded: M1 Back under the mutation lock,
+  M2 rename `maxLength`, M3 tray count from membership + `cardsStatus` placeholders, C-new-1 stale
+  generate-error cleared, plus load-bearing tests for each.
+- **Live /qa (real auth, 2026-08-01):** open tray → **Create trail** → `CountryTrays` (≤5, **no
+  auto-submit**, **Back** returns to grid) → brief → generate → landed on `/app/trip/[id]` with the
+  3D map, evidence-backed places, Travala hotels, "Saved with gaps" partial-failure tolerance. Tray
+  management verified on a throwaway tray (POST 201 / PATCH 200 / DELETE 204).
+- **Gate:** `cd frontend && npx tsc --noEmit` clean · `npx vitest run` = **325 passed / 5 known**
+  (OnboardingWizard `matchMedia`; TripMap passes 6/6 in isolation — its full-run failure is a known
+  WebGL ordering flake). Reels suite **110/110**.
+- **Merged (LOCAL only):** `dev` fast-forwarded to `zh` HEAD **`244d0f9`**; **not pushed**
+  (`origin/dev` untouched). `zh` arc: T2.1 `a0633f4`/`4ebc8a0`/`8fd702f` → covers merge `2e7b06a`
+  → cover-render + review folds `527ad57`/`2828152`/`e390040` → T3.1 `f3e5124`/`b2a9043`/`7ee02fe`
+  → review minors `123f64b` → re-review nits `244d0f9`. (`dev` also carries the unrelated
+  `ff87ee2` interactive-trip-map commit that landed on `zh` mid-session.)
+- **Covers infra (durable):** bucket migration
+  `supabase/migrations/20260731120000_reel_cover_bucket.sql`; backfill
+  `backend/scripts/backfill_reel_covers.py --confirm`; dev Supabase project `ngfssihvukhxxqhcudix`,
+  bucket `reel-covers` (11/11 reels backfilled). **CSP `img-src` must include the Supabase Storage
+  host** — the gap that once blocked cover render (fixed in `527ad57`/`e390040`).
+- **Follow-ups (open):** GitHub **#53** (ReelInfoCard modal a11y — focus trap + concise dialog
+  name). GitHub **#52** (add-flash) is resolved-as-filed — the list-blanking flash is gone via the
+  ready-latch; a minor "Refreshing…" status line remains, optional to suppress. §4 deferrals
+  unchanged (tray description/visibility/AI-auto-add need a migration; city-level filter;
+  sharing/discovery).
+- **QA artifacts kept in the account:** live-smoke trips `832efa3e…` ("Phuket…") and `f64d2f04…`
+  ("Tokyo Food Stops and a Snowy Escape").
 
 ## 1. Why (problem)
 

@@ -22,6 +22,27 @@ import TradeoffPanel from './TradeoffPanel'
 
 const TripMap = dynamic(() => import('@/components/map/TripMap'), { ssr: false })
 
+// Base chevron points right (›). Callers rotate it to point up/down/left per state.
+function Chevron({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden
+      className={['h-4 w-4', className ?? ''].join(' ')}
+    >
+      <polyline points="9 6 15 12 9 18" />
+    </svg>
+  )
+}
+
+// Shared chrome for both panel toggles: a cream pill that reads on paper and over the map.
+// `paper-scope` on the reopen tab (which lives outside the panel) makes these vars resolve
+// to the same paper palette as the in-panel collapse control.
+const TOGGLE_CHROME =
+  'flex items-center justify-center rounded-full border border-[var(--line)] ' +
+  'bg-[rgba(253,251,245,0.94)] text-[var(--muted)] backdrop-blur-sm ' +
+  'shadow-[0_2px_12px_rgba(0,0,0,0.2)] transition-opacity duration-200 hover:text-[var(--starlight)]'
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="mt-5">
@@ -138,31 +159,52 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
         />
       </div>
 
-      {/* Reopen affordance: floats over the map while the panel is hidden, so
-          closing it is never a dead end. */}
-      {!panelOpen ? (
-        <button
-          type="button"
-          onClick={() => setPanelOpen(true)}
-          className="surface type-label pointer-events-auto absolute inset-x-0 bottom-5 z-10 mx-auto flex w-fit items-center gap-2 rounded-full px-4 py-2.5 text-[11px] uppercase tracking-wide text-[var(--starlight)] md:inset-x-auto md:inset-y-0 md:left-5 md:my-auto md:h-fit"
-        >
-          <span aria-hidden>&uarr;</span>
-          Trip details
-        </button>
-      ) : null}
-
       <aside
+        id="trip-details-panel"
         className={[
-          'trip-details-panel pointer-events-auto absolute z-10 overflow-y-auto paper-scope bg-[rgba(243,238,226,0.55)] backdrop-blur-sm',
+          'trip-details-panel pointer-events-auto absolute z-10 paper-scope bg-[rgba(243,238,226,0.55)] backdrop-blur-sm',
           'inset-x-0 bottom-0 rounded-t-[var(--radius-card)] transition-all duration-300 ease-out',
           expanded ? 'h-[82dvh]' : 'h-[42dvh]',
           panelOpen ? 'translate-y-[0%]' : 'translate-y-[100%]',
-          'md:inset-y-0 md:left-0 md:right-auto md:h-full md:w-[440px] md:rounded-none md:rounded-r-[var(--radius-card)]',
+          // Desktop pins translate-y to 0 so the mobile close (translate-y-[100%]) never
+          // composes with the horizontal slide into a diagonal — the edge tab rides this
+          // transform, so a stray Y offset would fling it off-screen when collapsed.
+          'md:inset-y-0 md:left-0 md:right-auto md:h-full md:w-[440px] md:rounded-none md:rounded-r-[var(--radius-card)] md:translate-y-[0%]',
           panelOpen ? 'md:translate-x-[0%]' : 'md:translate-x-[-100%]',
         ].join(' ')}
         aria-label="Trip details"
-        inert={!panelOpen}
       >
+        {/* Collapse control — docked INSIDE the panel edge (never overhanging the map).
+            Pinned as a direct child of the aside so it stays put while the content scrolls,
+            and rides the panel's slide out when collapsed. Its twin, the reopen tab below,
+            takes over at the screen edge once the panel is gone. */}
+        <button
+          type="button"
+          onClick={() => setPanelOpen(false)}
+          aria-label="Hide trip details and show the full map"
+          aria-expanded={panelOpen}
+          aria-controls="trip-details-scroll"
+          aria-hidden={!panelOpen}
+          tabIndex={panelOpen ? 0 : -1}
+          className={[
+            TOGGLE_CHROME,
+            'absolute z-20',
+            panelOpen ? 'opacity-100' : 'opacity-0 pointer-events-none',
+            // mobile: top-right corner inside the sheet, clear of the centered drag handle
+            'h-7 w-12 right-3 top-2',
+            // desktop: vertical pill inset from the right edge, vertically centered
+            'md:h-14 md:w-7 md:top-1/2 md:-translate-y-1/2',
+          ].join(' ')}
+        >
+          <Chevron className="rotate-90 md:rotate-180" />
+        </button>
+
+        {/* Scrollable content — inert (skipped by pointers, tab order, and AT) while hidden. */}
+        <div
+          id="trip-details-scroll"
+          className="h-full overflow-y-auto rounded-[inherit]"
+          inert={!panelOpen}
+        >
         <div className="relative shrink-0 px-2 pt-2">
           <button
             type="button"
@@ -171,14 +213,6 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
             className="mx-auto block h-1.5 w-10 rounded-full bg-[var(--line)] md:hidden"
             aria-label={expanded ? 'Collapse panel' : 'Expand panel'}
           />
-          <button
-            type="button"
-            onClick={() => setPanelOpen(false)}
-            aria-label="Hide trip details and show the full map"
-            className="type-label absolute right-2 top-2 rounded-[var(--radius-chip)] px-2 py-1 text-[10px] uppercase tracking-wide text-[var(--faint)] transition-colors hover:bg-[var(--chip-bg)] hover:text-[var(--muted)]"
-          >
-            Hide
-          </button>
         </div>
         <div className="p-4 pt-1">
           <OrchestratorSummary bundle={bundle} />
@@ -215,7 +249,32 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
             <AgentDecisionRail events={bundle.events} />
           </Section>
         </div>
+        </div>
       </aside>
+
+      {/* Reopen tab — the collapse control's twin. Sits at the screen edge (a sibling of the
+          panel, so it stays put while the panel is off-screen) and fades in once the panel
+          is tucked away, so collapsing is never a dead end. */}
+      <button
+        type="button"
+        onClick={() => setPanelOpen(true)}
+        aria-label="Show trip details"
+        aria-expanded={panelOpen}
+        aria-controls="trip-details-scroll"
+        aria-hidden={panelOpen}
+        tabIndex={panelOpen ? -1 : 0}
+        className={[
+          TOGGLE_CHROME,
+          'paper-scope pointer-events-auto absolute z-20',
+          panelOpen ? 'opacity-0 pointer-events-none' : 'opacity-100',
+          // mobile: horizontal pill peeking at the bottom-center
+          'h-7 w-12 bottom-4 left-1/2 -translate-x-1/2',
+          // desktop: vertical tab on the far-left screen edge, vertically centered
+          'md:h-14 md:w-7 md:bottom-auto md:left-0 md:top-1/2 md:translate-x-0 md:-translate-y-1/2',
+        ].join(' ')}
+      >
+        <Chevron className="-rotate-90 md:rotate-0" />
+      </button>
     </main>
   )
 }

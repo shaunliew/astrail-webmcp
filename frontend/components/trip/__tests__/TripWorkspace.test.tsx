@@ -58,6 +58,26 @@ describe('TripWorkspace', () => {
     expect(await screen.findByTestId('trip-map')).toBeInTheDocument()
   })
 
+  it('toggles the panel open/closed from the single edge control', async () => {
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    renderWorkspace(TOKYO_TRIP.trip.id)
+
+    const toggle = await screen.findByRole('button', { name: /hide trip details/i })
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(document.getElementById('trip-details-scroll')).not.toHaveAttribute('inert')
+
+    // Collapse: same control flips to a reopen affordance and the content goes inert.
+    fireEvent.click(toggle)
+    const reopen = screen.getByRole('button', { name: /show trip details/i })
+    expect(reopen).toHaveAttribute('aria-expanded', 'false')
+    expect(document.getElementById('trip-details-scroll')).toHaveAttribute('inert')
+
+    // Reopen from the very same control — closing is never a dead end.
+    fireEvent.click(reopen)
+    expect(screen.getByRole('button', { name: /hide trip details/i })).toHaveAttribute('aria-expanded', 'true')
+    expect(document.getElementById('trip-details-scroll')).not.toHaveAttribute('inert')
+  })
+
   it('switching days swaps the visible places', async () => {
     getTrip.mockResolvedValueOnce(TOKYO_TRIP)
     renderWorkspace(TOKYO_TRIP.trip.id)

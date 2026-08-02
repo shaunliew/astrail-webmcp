@@ -311,7 +311,7 @@ git commit -m "feat(feedback): trip feedback request/response schemas + TS mirro
 **Why this task exists (found by the Codex plan review, verified against installed source):**
 `_Table.execute()` returns `_Result(matched[0] if matched else None)` for `maybe_single()` — an
 object whose `.data` is `None`. The real client returns a **bare `None`**
-(`postgrest/_async/request_builder.py:162`: `if len(parsed.data) == 0: return None`). The fake is
+(`postgrest/_async/request_builder.py:167`: `if len(parsed.data) == 0: return None`). The fake is
 *more forgiving than production*, so a route that does `result.data` passes every test and
 `AttributeError`s into a 500 in production.
 
@@ -429,7 +429,7 @@ In `backend/test_main.py`, change the single-row branch of `_Table.execute()`:
         matched = [r for r in rows if self._matches(r)]
         if self._single:
             # Faithful to postgrest 2.31.0: AsyncMaybeSingleRequestBuilder.execute() returns a
-            # bare None when zero rows match (request_builder.py:162), NOT a result whose .data
+            # bare None when zero rows match (request_builder.py:167), NOT a result whose .data
             # is None. A forgiving fake here hid a real 500 in the stream owner check.
             return _Result(matched[0]) if matched else None
         return _Result(matched)
@@ -469,7 +469,7 @@ same latent bug, and that is a finding, not something to paper over.
 ```python
     owner = await client.table("trips").select("user_id").eq("id", trip_id).maybe_single().execute()
     # `owner is None` is load-bearing: maybe_single() returns a bare None on zero rows
-    # (postgrest request_builder.py:162). Without it this 500s instead of 404ing, which tells
+    # (postgrest request_builder.py:167). Without it this 500s instead of 404ing, which tells
     # a caller which trip ids exist. Matches jobs.py:80 / main.py:301 / organizer.py:184.
     if owner is None or owner.data is None or owner.data["user_id"] != user_id:  # guardrail #6
         raise HTTPException(status_code=404, detail="Trip not found")
@@ -824,7 +824,7 @@ async def submit_trip_feedback(
     owner = await client.table("trips").select("user_id").eq("id", trip_key).maybe_single().execute()
     # `owner is None` is load-bearing, NOT defensive noise. postgrest 2.31.0's
     # AsyncMaybeSingleRequestBuilder.execute() returns a bare None when zero rows match
-    # (request_builder.py:162: `if len(parsed.data) == 0: return None`) -- NOT an object whose
+    # (request_builder.py:167: `if len(parsed.data) == 0: return None`) -- NOT an object whose
     # .data is None. Dereferencing owner.data would AttributeError into a 500, which leaks an
     # existence oracle: 500 = no such trip, 404 = exists but not yours. This matches the repo's
     # majority convention (jobs.py:80, main.py:301, organizer.py:184) -- main.py:470 was the

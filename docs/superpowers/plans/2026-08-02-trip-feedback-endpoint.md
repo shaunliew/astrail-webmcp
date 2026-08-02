@@ -81,7 +81,10 @@ Deliberately **not** fixed here: it needs a migration, and this arc is migration
 - Produces, for **Task 3** (Task 2 is independent of this task and may run in either order,
   though the numbering assumes 1 → 2 → 3):
   - `TripFeedbackRequest(feedback_type: Literal["rating","thumbs_up","thumbs_down","correction","free_text"], rating: int | None, comment: str | None)`
-  - `TripFeedback(id: str, trip_id: str, artifact_type: Literal["trip"], feedback_type: str, rating: int | None, comment: str | None)`
+  - `TripFeedback(id: str, trip_id: str, artifact_type: Literal["trip"], feedback_type: Literal["rating","thumbs_up","thumbs_down","correction","free_text"], rating: int | None, comment: str | None)`
+    — `feedback_type` is a `Literal`, matching Step 3's code block. (This summary previously said
+    `str`; the code block always said `Literal`. Corrected after the Task 1 review flagged the
+    mismatch, so Task 3 is not misled about what it can pass.)
   - `TripFeedbackResponse(feedback: TripFeedback)`
 
 **Why `created_at` is deliberately NOT in the response:** the `_Table` fake's `insert` (`backend/test_main.py:83-86`) synthesises only `{"id": ..., **row}` — it does not apply Postgres column defaults. A response field populated by `default now()` would therefore be present in production and absent in every test, so no test could ever detect it breaking. Omitting it removes the fake/real divergence entirely, and the client already knows when it posted. *Trigger to add it: a consumer needs server time rather than client time.*

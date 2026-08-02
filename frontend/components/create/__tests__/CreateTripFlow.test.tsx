@@ -14,6 +14,7 @@ vi.mock('@/lib/trip/api', () => ({ generateTrip, streamGeneration }))
 
 import CreateTripFlow from '@/components/create/CreateTripFlow'
 import MapProvider from '@/components/map/MapProvider'
+import { pickTripDates } from '@/test/pickTripDates'
 
 describe('CreateTripFlow', () => {
   beforeEach(() => {
@@ -45,13 +46,18 @@ describe('CreateTripFlow', () => {
       target: { value: 'https://www.instagram.com/reel/AAA/' },
     })
     fireEvent.click(screen.getByRole('button', { name: /add links/i }))
-    fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
-    fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
+    const { start, end } = pickTripDates()
 
     fireEvent.click(screen.getByRole('button', { name: /review trip brief/i }))
     fireEvent.click(await screen.findByRole('button', { name: /generate my trip/i }))
 
     await waitFor(() => expect(generateTrip).toHaveBeenCalledTimes(1))
+    // The picked range reaches the backend request verbatim (not silently dropped/inverted).
+    expect(generateTrip).toHaveBeenCalledWith(
+      expect.objectContaining({ start_date: start, end_date: end }),
+      'token',
+    )
+    expect(start <= end).toBe(true)
     expect(getAccessToken).toHaveBeenCalledTimes(1)
     expect(streamGeneration).toHaveBeenCalledWith(
       'trip_tokyo_demo',
@@ -73,8 +79,7 @@ describe('CreateTripFlow', () => {
       target: { value: 'https://www.instagram.com/reel/AAA/' },
     })
     fireEvent.click(screen.getByRole('button', { name: /add links/i }))
-    fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
-    fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
+    pickTripDates()
     fireEvent.click(screen.getByRole('button', { name: /review trip brief/i }))
     fireEvent.click(await screen.findByRole('button', { name: /generate my trip/i }))
 

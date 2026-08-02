@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { pickTripDates } from '@/test/pickTripDates'
 
 const { push, getAccessToken, listSavedReelCards, startOrganize, streamOrganize, getOrganizeStatus, generateTrip, streamGeneration, mapInstance } = vi.hoisted(() => ({
   push: vi.fn(),
@@ -224,8 +225,7 @@ describe('SavedReelsFlow', () => {
     await waitFor(() => expect(screen.getByRole('checkbox', { name: /select Tokyo Tower/i })).toBeInTheDocument())
     fireEvent.click(screen.getByRole('checkbox', { name: /select Tokyo Tower/i }))
     fireEvent.click(screen.getByRole('button', { name: /plan this trip/i }))
-    fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
-    fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
+    pickTripDates()
     fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
 
     await waitFor(() => expect(generateTrip).toHaveBeenCalledWith(
@@ -254,8 +254,7 @@ describe('SavedReelsFlow', () => {
       await waitFor(() => expect(screen.getByRole('checkbox', { name: /select Tokyo Tower/i })).toBeInTheDocument())
       fireEvent.click(screen.getByRole('checkbox', { name: /select Tokyo Tower/i }))
       fireEvent.click(screen.getByRole('button', { name: /plan this trip/i }))
-      fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
-      fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
+      pickTripDates()
       fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
 
       await waitFor(() => expect(push).toHaveBeenCalledWith('/app/trip/trip-1'))
@@ -495,8 +494,7 @@ describe('SavedReelsFlow', () => {
     await screen.findByRole('heading', { name: 'Japan' })
     for (const cb of screen.getAllByRole('checkbox')) fireEvent.click(cb)
     fireEvent.click(screen.getByRole('button', { name: /plan this trip/i }))
-    fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
-    fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
+    pickTripDates()
     fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
 
     await waitFor(() => expect(generateTrip).toHaveBeenCalled())
@@ -524,8 +522,7 @@ describe('SavedReelsFlow', () => {
     expect(checkboxes.some((cb) => (cb as HTMLInputElement).disabled)).toBe(true)
 
     fireEvent.click(screen.getByRole('button', { name: /plan this trip/i }))
-    fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
-    fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
+    pickTripDates()
     fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
 
     await waitFor(() => expect(generateTrip).toHaveBeenCalled())
@@ -586,8 +583,7 @@ describe('SavedReelsFlow', () => {
     await screen.findByRole('heading', { name: 'Japan' })
     fireEvent.click(screen.getByRole('checkbox', { name: /select Place 1/i }))
     fireEvent.click(screen.getByRole('button', { name: /plan this trip/i }))
-    fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
-    fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
+    pickTripDates()
     fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
     expect(await screen.findByText(/generation service down/i)).toBeInTheDocument()
 
@@ -616,8 +612,7 @@ describe('SavedReelsFlow', () => {
     await screen.findByRole('heading', { name: 'Japan' })
     fireEvent.click(screen.getByRole('checkbox', { name: /select Place 1/i }))
     fireEvent.click(screen.getByRole('button', { name: /plan this trip/i }))
-    fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
-    fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
+    pickTripDates()
     fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
     expect(await screen.findByText(/generation service down/i)).toBeInTheDocument()
 

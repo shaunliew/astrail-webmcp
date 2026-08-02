@@ -2,6 +2,7 @@
 
 import type { BudgetLevel } from '@/lib/trip/backend-types'
 import type { BriefInput } from '@/lib/trip/parse-inspiration'
+import DateRangePicker from './DateRangePicker'
 
 const BUDGET_OPTIONS: { value: BudgetLevel; label: string }[] = [
   { value: 'budget', label: 'Budget' },
@@ -33,18 +34,11 @@ export default function TripBriefForm({
           value={brief.destination_hint} onChange={(e) => set('destination_hint', e.target.value)} />
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <div className="flex flex-col gap-1.5">
-          <label htmlFor="start-date" className={labelClass}>Start date</label>
-          <input id="start-date" type="date" className={fieldClass}
-            value={brief.start_date} onChange={(e) => set('start_date', e.target.value)} />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <label htmlFor="end-date" className={labelClass}>End date</label>
-          <input id="end-date" type="date" className={fieldClass}
-            value={brief.end_date} onChange={(e) => set('end_date', e.target.value)} />
-        </div>
-      </div>
+      <DateRangePicker
+        startDate={brief.start_date}
+        endDate={brief.end_date}
+        onChange={(start, end) => onChange({ ...brief, start_date: start, end_date: end })}
+      />
 
       <div className="grid grid-cols-2 gap-3">
         <div className="flex flex-col gap-1.5">

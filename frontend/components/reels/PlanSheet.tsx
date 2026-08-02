@@ -7,6 +7,7 @@ import type { BriefInput } from '@/lib/trip/parse-inspiration'
 import type { SavedReelPlaceProof } from '@/lib/reels/backend-types'
 import type { BudgetLevel } from '@/lib/trip/backend-types'
 import VerifiedPlacesMap from './VerifiedPlacesMap'
+import DateRangePicker from '@/components/create/DateRangePicker'
 
 /* The slim plan sheet (02-tray state B): Astrail already knows almost everything, so it
    shows the inferred values with their provenance and asks only for dates. Replaces the
@@ -190,10 +191,14 @@ export default function PlanSheet({
 
           <div className="mt-6">
             <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-[color:var(--text-muted)]">When are you going?</p>
-            <div className="flex gap-3">
-              <input type="date" aria-label="Start date" value={brief.start_date} onChange={(e) => onBrief((b) => ({ ...b, start_date: e.target.value }))} className={`flex-1 ${INPUT}`} />
-              <input type="date" aria-label="End date" value={brief.end_date} onChange={(e) => onBrief((b) => ({ ...b, end_date: e.target.value }))} className={`flex-1 ${INPUT}`} />
-            </div>
+            <DateRangePicker
+              variant="paper"
+              placement="top"
+              showLabel={false}
+              startDate={brief.start_date}
+              endDate={brief.end_date}
+              onChange={(start, end) => onBrief((b) => ({ ...b, start_date: start, end_date: end }))}
+            />
             <p className="mt-2 text-[13px] text-[color:var(--text-muted)]">Skip this and Astrail builds a 3-day draft you can date later.</p>
           </div>
 

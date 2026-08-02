@@ -49,6 +49,7 @@ vi.mock('mapbox-gl/dist/mapbox-gl.css', () => ({}))
 
 import MapProvider from '@/components/map/MapProvider'
 import CreateTripFlow from '@/components/create/CreateTripFlow'
+import { pickTripDates } from '@/test/pickTripDates'
 import TripWorkspace from '@/components/trip/TripWorkspace'
 import { RELIGHT_MS } from '@/components/map/relight'
 
@@ -76,8 +77,7 @@ async function generateUntilResult() {
     target: { value: 'https://www.instagram.com/reel/AAA/' },
   })
   fireEvent.click(screen.getByRole('button', { name: /add links/i }))
-  fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
-  fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
+  pickTripDates()
   fireEvent.click(screen.getByRole('button', { name: /review trip brief/i }))
   fireEvent.click(await screen.findByRole('button', { name: /generate my trip/i }))
   await waitFor(() => expect(generateTrip).toHaveBeenCalled())
@@ -127,8 +127,7 @@ describe('night -> dawn relight', () => {
       target: { value: 'https://www.instagram.com/reel/AAA/' },
     })
     fireEvent.click(screen.getByRole('button', { name: /add links/i }))
-    fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
-    fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
+    pickTripDates()
     fireEvent.click(screen.getByRole('button', { name: /review trip brief/i }))
     fireEvent.click(await screen.findByRole('button', { name: /generate my trip/i }))
     await waitFor(() => expect(generateTrip).toHaveBeenCalled())

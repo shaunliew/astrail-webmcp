@@ -39,3 +39,27 @@ def test_pace_over_max_length_is_rejected():
     # a fixed set, a breaking change for the frontend).
     with pytest.raises(ValidationError):
         GenerateTripRequest(**_base_kwargs(pace="x" * 33))
+
+
+def test_settings_preferences_response_shape():
+    from api.schemas import MemoryFact, SettingsPreferencesResponse
+    r = SettingsPreferencesResponse(
+        status="ok",
+        facts=[MemoryFact(id="m1", memory="likes ramen", created_at="2026-07-07T03:08:44")])
+    assert r.model_dump() == {
+        "status": "ok",
+        "facts": [{"id": "m1", "memory": "likes ramen",
+                   "created_at": "2026-07-07T03:08:44", "source": "mem0"}],
+    }
+
+
+def test_settings_preferences_defaults_to_empty_facts():
+    from api.schemas import SettingsPreferencesResponse
+    assert SettingsPreferencesResponse(status="disabled").facts == []
+
+
+def test_settings_preferences_rejects_unknown_status():
+    import pydantic
+    from api.schemas import SettingsPreferencesResponse
+    with pytest.raises(pydantic.ValidationError):
+        SettingsPreferencesResponse(status="probably_fine")

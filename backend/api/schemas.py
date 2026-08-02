@@ -108,3 +108,29 @@ class OrganizeJobStatus(BaseModel):
     location_not_found_items: int = 0
     failed_items: int = 0
     items: list[OrganizeJobItem] = Field(default_factory=list)
+
+
+class MemoryFact(BaseModel):
+    """One stored mem0 memory, verbatim.
+
+    Deliberately NOT UserPreferenceFact: that shape carries fact_key/fact_value/
+    confidence/status, none of which mem0 returns. Synthesising them to fit the type would
+    be fabricating data (guardrail #1) -- a made-up confidence number shown to a user -- so
+    the prose is passed through and the UI adapts. `source` is a constant, not an inference.
+    """
+    id: str
+    memory: str
+    created_at: str
+    source: Literal["mem0"] = "mem0"
+
+
+class SettingsPreferencesResponse(BaseModel):
+    """GET /settings/preferences -- the user's STORED mem0 memories (first page).
+
+    Not the same set as any generation's recall, which uses a semantic search with
+    top_k=10 and only when preferences are blank. `status` lets the UI tell 'you have no
+    saved preferences' (ok, []) apart from 'memory is broken' (unavailable, []) -- the
+    ambiguity that made the 2026-08-02 report undiagnosable.
+    """
+    status: Literal["ok", "disabled", "unavailable"]
+    facts: list[MemoryFact] = Field(default_factory=list)

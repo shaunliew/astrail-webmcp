@@ -924,3 +924,212 @@ async def test_stream_on_another_users_trip_is_404(ctx, stream_auth):
     response = await ac.get(f"/generate-trip/stream/{_OTHER_TRIP_ID}?token=t")
 
     assert response.status_code == 404
+
+
+# --- POST /trips/{trip_id}/feedback ------------------------------------------------
+# _TRIP_ID and _OTHER_TRIP_ID were added in Task 2 — do not redefine them here.
+
+
+def _seed_trip(db, trip_id=_TRIP_ID, user_id="user-1", status="completed"):
+    db.setdefault("trips", []).append({"id": trip_id, "user_id": user_id, "status": status})
+
+
+async def test_feedback_rating_is_stored_for_the_owner(ctx):
+    ac, db, _calls, _client = ctx
+    _seed_trip(db)
+
+    response = await ac.post(
+        f"/trips/{_TRIP_ID}/feedback",
+        json={"feedback_type": "rating", "rating": 4, "comment": "loved day 2"},
+    )
+
+    assert response.status_code == 201
+    body = response.json()["feedback"]
+    assert body["trip_id"] == _TRIP_ID
+    assert body["artifact_type"] == "trip"
+    assert body["rating"] == 4
+    assert body["comment"] == "loved day 2"
+
+    rows = db["feedback"]
+    assert len(rows) == 1
+    assert rows[0]["trip_id"] == _TRIP_ID          # STORED trip_id, from the path (gap found in review)
+    assert rows[0]["user_id"] == "user-1"          # from the token, never the body
+    assert rows[0]["artifact_type"] == "trip"
+    assert rows[0]["artifact_id"] is None
+    # PRD:1035 columns are deliberately deferred for trip-level feedback.
+    assert rows[0]["source_type"] is None
+    assert rows[0]["generation_stage"] is None
+    assert rows[0]["preference_source"] is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"feedback_type": "thumbs_up"},
+        {"feedback_type": "thumbs_down", "comment": "too much walking"},
+        {"feedback_type": "free_text", "comment": "great but rushed"},
+        {"feedback_type": "correction", "comment": "the museum is closed Mondays"},
+    ],
+)
+async def test_feedback_accepts_every_non_rating_type(ctx, payload):
+    ac, db, _calls, _client = ctx
+    _seed_trip(db)
+
+    response = await ac.post(f"/trips/{_TRIP_ID}/feedback", json=payload)
+
+    assert response.status_code == 201
+    assert db["feedback"][0]["feedback_type"] == payload["feedback_type"]
+
+
+async def test_feedback_on_another_users_trip_is_404_and_writes_nothing(ctx):
+    # THE owner-check test (guardrail #6). service_role bypasses RLS, so this app-code
+    # check is the ONLY thing standing between a caller and someone else's trip.
+    ac, db, _calls, _client = ctx
+    _seed_trip(db, trip_id=_OTHER_TRIP_ID, user_id="user-2")
+
+    response = await ac.post(
+        f"/trips/{_OTHER_TRIP_ID}/feedback", json={"feedback_type": "thumbs_up"}
+    )
+
+    assert response.status_code == 404          # 404 not 403 — do not confirm the trip exists
+    assert db.get("feedback", []) == []         # the write must not have happened
+
+
+async def test_feedback_on_a_nonexistent_trip_is_404(ctx):
+    ac, db, _calls, _client = ctx
+
+    response = await ac.post(
+        f"/trips/{_TRIP_ID}/feedback", json={"feedback_type": "thumbs_up"}
+    )
+
+    assert response.status_code == 404
+    assert db.get("feedback", []) == []
+
+
+async def test_feedback_is_accepted_on_a_failed_trip(ctx):
+    # Deliberate: "this didn't work" is the most valuable beta signal we can collect.
+    ac, db, _calls, _client = ctx
+    _seed_trip(db, status="failed")
+
+    response = await ac.post(
+        f"/trips/{_TRIP_ID}/feedback", json={"feedback_type": "thumbs_down", "comment": "failed"}
+    )
+
+    assert response.status_code == 201
+
+
+async def test_feedback_is_append_only(ctx):
+    ac, db, _calls, _client = ctx
+    _seed_trip(db)
+
+    first = await ac.post(f"/trips/{_TRIP_ID}/feedback", json={"feedback_type": "rating", "rating": 2})
+    second = await ac.post(f"/trips/{_TRIP_ID}/feedback", json={"feedback_type": "rating", "rating": 5})
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert [r["rating"] for r in db["feedback"]] == [2, 5]
+    assert first.json()["feedback"]["id"] != second.json()["feedback"]["id"]
+
+
+async def test_feedback_rejects_a_client_supplied_user_id(ctx):
+    # user_id must come from the token. extra="forbid" makes smuggling it a 422.
+    ac, db, _calls, _client = ctx
+    _seed_trip(db)
+
+    response = await ac.post(
+        f"/trips/{_TRIP_ID}/feedback",
+        json={"feedback_type": "thumbs_up", "user_id": "user-2"},
+    )
+
+    assert response.status_code == 422
+    assert db.get("feedback", []) == []
+
+
+async def test_feedback_rejects_a_client_supplied_artifact_target(ctx):
+    # Aiming feedback at an arbitrary artifact must not be possible on this endpoint.
+    ac, db, _calls, _client = ctx
+    _seed_trip(db)
+
+    response = await ac.post(
+        f"/trips/{_TRIP_ID}/feedback",
+        json={"feedback_type": "thumbs_up", "artifact_type": "place", "artifact_id": _OTHER_TRIP_ID},
+    )
+
+    assert response.status_code == 422
+    assert db.get("feedback", []) == []
+
+
+async def test_feedback_rejects_a_malformed_trip_id_before_touching_the_db(ctx):
+    ac, db, _calls, client = ctx
+
+    response = await ac.post("/trips/not-a-uuid/feedback", json={"feedback_type": "thumbs_up"})
+
+    assert response.status_code == 422
+    assert db.get("feedback", []) == []
+
+
+async def test_feedback_requires_authentication():
+    # No ctx fixture: the real auth dependency runs, so no Authorization header -> 401.
+    async with _async_client() as ac:
+        response = await ac.post(
+            f"/trips/{_TRIP_ID}/feedback", json={"feedback_type": "thumbs_up"}
+        )
+    assert response.status_code == 401
+
+
+async def test_feedback_burst_limit_returns_429(ctx):
+    ac, db, _calls, _client = ctx
+    _seed_trip(db)
+
+    codes = []
+    for _ in range(4):
+        r = await ac.post(f"/trips/{_TRIP_ID}/feedback", json={"feedback_type": "thumbs_up"})
+        codes.append(r.status_code)
+
+    assert codes[:3] == [201, 201, 201]   # BURST_LIMIT default is 3/minute
+    assert codes[3] == 429
+
+
+async def test_feedback_insert_raising_surfaces_as_500_not_a_silent_success(ctx):
+    # A LOCAL transport with raise_app_exceptions=False. The shared `ac` from ctx defaults to
+    # True, so Starlette's error middleware sends the 500 AND re-raises -- httpx then re-raises
+    # into the test, which crashes before the assert instead of failing it. Same reason and
+    # same pattern as test_main.py:405.
+    _ac, db, _calls, client = ctx
+    _seed_trip(db)
+    client.fail_ops.add(("feedback", "insert"))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main.app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as ac:
+        response = await ac.post(f"/trips/{_TRIP_ID}/feedback", json={"feedback_type": "thumbs_up"})
+
+    assert response.status_code == 500
+    assert db.get("feedback", []) == []
+
+
+async def test_feedback_insert_returning_no_rows_is_a_500(ctx):
+    # Distinct from the raising case: this is the ONLY test that makes the explicit
+    # `if not inserted.data` guard load-bearing.
+    #
+    # THE STATUS CODE CANNOT TELL THE TWO PATHS APART (Codex round 2, demonstrated by
+    # execution). Delete the guard and `inserted.data[0]` raises IndexError, which the global
+    # unhandled_exception_handler ALSO renders as a 500 with an empty db -- so asserting
+    # `status_code == 500` and `db == []` stays green either way. Only the MESSAGE differs:
+    #   guard present -> {"code": "internal_error", "message": "Failed to store feedback"}
+    #   guard deleted -> {"code": "internal_error", "message": "Internal server error"}
+    # The message assertion below is therefore the whole test. Do not drop it.
+    _ac, db, _calls, client = ctx
+    _seed_trip(db)
+    client.empty_result_ops.add(("feedback", "insert"))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main.app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as ac:
+        response = await ac.post(f"/trips/{_TRIP_ID}/feedback", json={"feedback_type": "thumbs_up"})
+
+    assert response.status_code == 500
+    assert response.json()["error"]["message"] == "Failed to store feedback"
+    assert db.get("feedback", []) == []

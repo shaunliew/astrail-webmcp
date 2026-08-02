@@ -209,6 +209,7 @@ async def poll_forever(
     http: httpx.AsyncClient,
     handle: Callable[[dict], Awaitable[None]],
     stop: asyncio.Event,
+    allowed_updates: tuple[str, ...] = ("message",),
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     monotonic: Callable[[], float] = time.monotonic,
     random_: Callable[[], float] = random.random,
@@ -218,6 +219,12 @@ async def poll_forever(
     `backoff` holds the NEXT delay to use on failure, and is reset on a successful poll
     *before* the batch is handled: a handler failure is not a transport failure, and
     without the reset one blip pins the poller at 60 s polling for the life of the process.
+
+    `allowed_updates` is FORWARDED rather than left to `get_updates`' identical default.
+    A default two layers down pins nothing: if it ever widened, `edited_message` and
+    `channel_post` would silently start reaching `handle` — a free duplicate-spend path
+    and a surface nobody reviewed. `worker._ALLOWED_UPDATES` is where the subscription is
+    stated, because the process that constructs the dependencies is what owns it.
     """
     offset: int | None = None
     backoff = _BACKOFF_START_S
@@ -231,6 +238,7 @@ async def poll_forever(
                 token=config.bot_token,
                 offset=offset,
                 timeout_s=config.poll_timeout_s,
+                allowed_updates=allowed_updates,
             )
         # Ordered narrowest-first: both are subclasses of TelegramAPIError, and a generic
         # clause above them would silently swallow the 409's diagnosis.

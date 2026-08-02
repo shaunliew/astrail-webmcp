@@ -117,6 +117,7 @@ class _FakeUpdates:
         self.timeouts: list[int] = []
         self.tokens: list[str] = []
         self.clients: list[Any] = []
+        self.subscriptions: list[tuple[str, ...]] = []
 
     async def __call__(
         self,
@@ -131,6 +132,7 @@ class _FakeUpdates:
         self.timeouts.append(timeout_s)
         self.tokens.append(token)
         self.clients.append(client)
+        self.subscriptions.append(allowed_updates)
         self._trace.append(("poll", offset))
         if self._clock is not None and self._advance:
             self._clock.advance(self._advance)   # the long poll held the socket this long
@@ -858,6 +860,25 @@ async def test_every_element_of_a_batch_is_handed_to_the_handler_untouched(
     await rig.run()
 
     assert rig.handle.seen == batch
+
+
+async def test_the_subscription_is_forwarded_rather_than_defaulted(config, monkeypatch):
+    """T6 handoff, closed. `get_updates` has an identical default, so this is invisible
+    until the day that default widens — at which point `edited_message` and `channel_post`
+    would silently start reaching `handle`. The caller states the subscription; a default
+    two layers down pins nothing. RED if the forwarding is dropped: `channel_post` here
+    would arrive as `("message",)`.
+    """
+    rig = _rig(config, monkeypatch, [[]])
+
+    await poller.poll_forever(
+        config=config, http=HTTP, handle=rig.handle, stop=rig.stop,
+        allowed_updates=("message", "channel_post"),
+        sleep=rig.sleep, monotonic=rig.clock,
+    )
+
+    assert rig.updates.subscriptions
+    assert set(rig.updates.subscriptions) == {("message", "channel_post")}
 
 
 # --------------------------------------------------------------------------------------

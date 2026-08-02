@@ -425,12 +425,14 @@ def test_an_unparseable_candidate_never_raises_out_of_this_module():
 
 
 def test_lone_surrogate_in_text_with_a_url_entity_never_raises():
-    """`src.encode("utf-16-le")` raises `UnicodeEncodeError` on an unpaired surrogate.
+    """A plain `src.encode("utf-16-le")` raises `UnicodeEncodeError` on an unpaired
+    surrogate, and `_candidate_url` is called from `extract_reel_urls` with no try/except
+    around it — so an unguarded encode propagates straight out of the module, and
+    `UnicodeEncodeError`'s message quotes the offending character, leaking content as well
+    as crashing the caller's loop.
 
-    The encode must sit INSIDE the guard: `_candidate_url` is called from
-    `extract_reel_urls` with no try/except around it, so an unguarded encode propagates
-    straight out of the module — and `UnicodeEncodeError`'s message quotes the offending
-    character, so the escape leaks content as well as crashing the caller's loop.
+    `surrogatepass` also makes the surrogate irrelevant to a candidate that does not
+    contain it, so the reel here is captured rather than collateral damage.
     """
     prefix = f"hello {LONE_SURROGATE} world "
     url = _reel("ABC123")
@@ -447,7 +449,7 @@ def test_lone_surrogate_in_text_with_a_url_entity_never_raises():
 
     result = _must_not_raise(message)
 
-    assert result == FilterResult((), (), False)
+    assert result.urls == ("https://www.instagram.com/reel/ABC123",)
     assert LONE_SURROGATE not in repr(result)
 
 
@@ -467,7 +469,8 @@ def test_lone_surrogate_in_caption_with_a_caption_url_entity_never_raises():
 
     result = _must_not_raise(message)
 
-    assert result == FilterResult((), (), False)
+    assert result.urls == ("https://www.instagram.com/reel/CAP001",)
+    assert LONE_SURROGATE not in repr(result)
 
 
 def test_the_surrogate_guard_is_scoped_to_the_slice_not_a_blanket_swallow():
@@ -486,46 +489,97 @@ def test_the_surrogate_guard_is_scoped_to_the_slice_not_a_blanket_swallow():
     assert result.urls == ("https://www.instagram.com/reel/TL0001",)
 
 
-def test_a_surrogate_poisoned_text_does_not_cost_the_caption_its_valid_reel():
-    """Containment: one unusable field must not take the whole message down with it."""
-    dead = _reel("DEAD01")
+def test_a_surrogate_in_text_costs_neither_its_own_field_nor_the_caption():
+    """Containment across both axes at once: the poisoned field keeps its own clean reel
+    AND the untouched caption keeps its reel. Pre-`surrogatepass` the text's reel was lost
+    (per-field void); pre-guard the whole call raised."""
+    in_text = _reel("TEXT01")
     prefix = f"bad {LONE_SURROGATE} "
-    good = _reel("GOOD01")
+    in_caption = _reel("CAP002")
     message = {
-        "text": prefix + dead,
+        "text": prefix + in_text,
         "entities": [
             {
                 "type": "url",
                 "offset": _utf16_len_unsafe(prefix),
-                "length": _utf16_len_unsafe(dead),
+                "length": _utf16_len_unsafe(in_text),
             }
         ],
-        "caption": good,
+        "caption": in_caption,
         "caption_entities": [
-            {"type": "url", "offset": 0, "length": _utf16_len(good)}
+            {"type": "url", "offset": 0, "length": _utf16_len(in_caption)}
+        ],
+    }
+
+    result = _must_not_raise(message)
+
+    assert result.urls == (
+        "https://www.instagram.com/reel/TEXT01",
+        "https://www.instagram.com/reel/CAP002",
+    )
+
+
+def test_a_poison_candidate_does_not_cost_ITS_OWN_FIELD_a_valid_reel():
+    """Containment is per-CANDIDATE, not per-field. The test that matters.
+
+    A `url` offset is defined over the whole field, so the whole field is encoded to
+    resolve any one entity — with a plain `.encode` one unpaired surrogate anywhere voids
+    every `url` entity in that field, including entities whose own bytes are spotless.
+    `errors="surrogatepass"` keeps the encode total and offsets exact, so a surrogate only
+    reaches the candidates whose own slice contains it.
+
+    Silent, too: T4 returns without logging when `urls` and `rejected_shapes` are both
+    empty, so the pre-fix behaviour discarded good reels with no record anywhere —
+    guardrail #12's silent drop, and a one-character denial of extraction.
+    """
+    poison = f"hello {LONE_SURROGATE} world "
+    good = _reel("GOOD01")
+    message = {
+        "text": poison + good,
+        "entities": [
+            {"type": "url", "offset": 0, "length": _utf16_len_unsafe(poison)},
+            {
+                "type": "url",
+                "offset": _utf16_len_unsafe(poison),
+                "length": _utf16_len_unsafe(good),
+            },
         ],
     }
 
     result = _must_not_raise(message)
 
     assert result.urls == ("https://www.instagram.com/reel/GOOD01",)
+    assert LONE_SURROGATE not in repr(result)
 
 
-def test_containment_is_per_field_a_surrogate_voids_that_fields_url_entities():
-    """The granularity the guard actually achieves, asserted rather than left to chance.
+def test_a_poison_candidate_does_not_cost_its_caption_a_valid_reel():
+    poison = f"trip {LONE_SURROGATE} notes "
+    good = _reel("CAP001")
+    message = {
+        "caption": poison + good,
+        "caption_entities": [
+            {"type": "url", "offset": 0, "length": _utf16_len_unsafe(poison)},
+            {
+                "type": "url",
+                "offset": _utf16_len_unsafe(poison),
+                "length": _utf16_len_unsafe(good),
+            },
+        ],
+    }
 
-    A `url` entity's offset is defined over the WHOLE field, so the whole field must be
-    encoded to resolve any one of them. One unpaired surrogate anywhere therefore voids
-    every `url` entity in that field — not just the candidate that spans it. Per-FIELD, not
-    per-candidate. `errors="surrogatepass"` would buy per-candidate containment and keep
-    offsets exact; that is a deliberate open question, not an oversight (see the report).
-    """
+    result = _must_not_raise(message)
+
+    assert result.urls == ("https://www.instagram.com/reel/CAP001",)
+
+
+def test_two_valid_reels_both_survive_a_poison_candidate_between_them():
+    """The motivating case: one hostile character must not discard a whole share."""
     lead = f"{LONE_SURROGATE} "
     first, second = _reel("AAA111"), _reel("BBB222")
-    text = f"{lead}{first} {second}"
     message = {
-        "text": text,
+        "text": f"{lead}{first} {second}",
         "entities": [
+            {"type": "url", "offset": 0, "length": _utf16_len_unsafe(lead)},
             {
                 "type": "url",
                 "offset": _utf16_len_unsafe(lead),
@@ -541,7 +595,59 @@ def test_containment_is_per_field_a_surrogate_voids_that_fields_url_entities():
 
     result = _must_not_raise(message)
 
-    assert result == FilterResult((), (), False)
+    assert result.urls == (
+        "https://www.instagram.com/reel/AAA111",
+        "https://www.instagram.com/reel/BBB222",
+    )
+
+
+def test_a_surrogate_bearing_instagram_url_is_still_reported_loudly_as_a_shape():
+    """The DECODE-side `surrogatepass` earns its place here, separately from the encode.
+
+    Without it the slice raises `UnicodeDecodeError`, the candidate becomes None, and an
+    Instagram URL vanishes with no shape and therefore no T4 log line — silent, which is
+    the failure mode §3.1 spent a review round eliminating. With it the candidate reaches
+    `normalize_reel_url`, is rejected, and is reported as a shape like any other.
+
+    Also answers: the shape is surrogate-FREE, because a non-keyword segment is always
+    replaced by `…` — the surrogate is in the code, never in the vocabulary.
+    """
+    poison_ig = f"https://www.instagram.com/p/{LONE_SURROGATE}CODE/"
+    message = {
+        "text": poison_ig,
+        "entities": [
+            {"type": "url", "offset": 0, "length": _utf16_len_unsafe(poison_ig)}
+        ],
+    }
+
+    result = _must_not_raise(message)
+
+    assert result.urls == ()
+    assert result.rejected_shapes == ("/p/…",)
+    assert LONE_SURROGATE not in repr(result)
+
+
+def test_a_text_link_url_holding_a_surrogate_takes_the_unsliced_path_unchanged():
+    """`text_link` never calls `_slice_utf16`, so neither codec flag applies to it. Its
+    surrogate-bearing URL still parses, still fails `normalize_reel_url`, and is still
+    reported as a surrogate-free shape."""
+    message = {
+        "text": "look here",
+        "entities": [
+            {
+                "type": "text_link",
+                "offset": 0,
+                "length": 4,
+                "url": f"https://www.instagram.com/p/{LONE_SURROGATE}X/",
+            }
+        ],
+    }
+
+    result = _must_not_raise(message)
+
+    assert result.urls == ()
+    assert result.rejected_shapes == ("/p/…",)
+    assert LONE_SURROGATE not in repr(result)
 
 
 @pytest.mark.parametrize(

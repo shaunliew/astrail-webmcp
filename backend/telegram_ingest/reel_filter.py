@@ -81,21 +81,35 @@ def _entity_int(entity: dict, key: str) -> int | None:
 def _slice_utf16(src: str, offset: int, length: int) -> str | None:
     """`src[offset:offset+length]` measured in UTF-16 code units, Telegram's own unit.
 
-    Returns None on either codec failure — a candidate we cannot slice contributes nothing,
-    exactly like a malformed entity:
-      - `UnicodeEncodeError`: `src` holds an UNPAIRED surrogate. Stdlib `json` does not
-        validate surrogate pairing on `\\uXXXX` escapes, so a group member controls this.
-        The encode must be INSIDE the guard — `_candidate_url` is called with no try/except
-        around it, so an escape here crosses the module boundary, and the exception message
-        quotes the offending character.
-      - `UnicodeDecodeError`: the slice landed mid surrogate pair — a hostile offset.
+    `surrogatepass` on BOTH codecs, for two different reasons. Stdlib `json` does not
+    validate surrogate pairing on `\\uXXXX` escapes, so a group member can put an UNPAIRED
+    surrogate anywhere in the field, and a plain `.encode` refuses the whole string:
 
-    `except ValueError` covers exactly those two (both subclass it, and nothing else in the
-    body can raise it), matching how `_is_instagram_host` and `_path_shape` narrow.
+      - ENCODE — containment. An offset is defined over the whole field, so the whole field
+        must be encoded to resolve any one entity. A strict encode therefore lets one
+        hostile character void every `url` entity in the field, including entities whose
+        own bytes are spotless. Worse, it is SILENT: the caller returns without logging
+        when `urls` and `rejected_shapes` are both empty, so a share of good reels would
+        vanish with no record (guardrail #12). `surrogatepass` keeps the encode total and
+        offsets exact, so a surrogate reaches only the candidates that actually contain it.
+      - DECODE — loudness. A surrogate-bearing *Instagram* URL must still reach
+        `normalize_reel_url`, be rejected, and be reported as a shape. A strict decode
+        would raise instead, dropping that URL with no shape and so no log line.
+
+    The surrogate cannot escape: a shape's segments come from the closed keyword vocabulary
+    or become `…`, and every emitted URL is rebuilt from a `[A-Za-z0-9_-]+` capture.
+
+    `except ValueError` is a BACKSTOP, not the active guard — it covers `UnicodeEncodeError`
+    and `UnicodeDecodeError` (both subclass it, and nothing else in the body raises it).
+    With `surrogatepass` on both codecs and slice bounds that are always even, no input is
+    known to reach it. Keep it anyway: it is the cheap insurance that this function returns
+    None instead of crossing the module boundary. Not dead code — do not delete.
     """
     try:
-        units = src.encode("utf-16-le")
-        return units[offset * 2 : (offset + length) * 2].decode("utf-16-le")
+        units = src.encode("utf-16-le", errors="surrogatepass")
+        return units[offset * 2 : (offset + length) * 2].decode(
+            "utf-16-le", errors="surrogatepass"
+        )
     except ValueError:
         return None
 

@@ -809,3 +809,37 @@ places created 2026-08-02:
   4 via organize(mention) -> country='Japan'   (the Telegram worker)
  10 via neither mention nor trip_places -> country=None  (all restaurants, via persist.py)
 ```
+
+> **Note added 2026-08-03:** that last line is the evidence for §6c A1 — a row in neither
+> `reel_place_mentions` nor `trip_places` was created by `_find_or_create_restaurant_place`
+> (persist.py:378), the **third** writer, which this plan deliberately does not fix.
+
+---
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | ISSUES_OPEN | 8 issues, 0 critical gaps |
+| Codex Review | `codex exec gpt-5.6-sol` | Independent 2nd opinion | 3 | ISSUES_FOUND | 5 blocking across 3 rounds, all folded; last unverified |
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+- **CODEX:** 3 rounds, 6.3 → 6.9 → 6.9 against a 7.0 bar. Round 1: three test-design blockers
+  (helper-level spec test, non-provenance success test, cache assertion incompatible with the
+  proposed gather). Round 2: the round-1 repair itself admitted a guardrail-#1 violation. Round
+  3: the round-2 repair tested only one claim order. All folded; round 3's fold is unverified.
+- **CROSS-MODEL:** No tension on §2 — the eng review and all three Codex rounds independently
+  endorsed grounding-before-persist over the two-line insert. Codex independently reproduced the
+  eng review's third-writer finding (A1) and agreed on deferring it. Codex **corrected** the eng
+  review twice: the "silent missing token" critical gap (it is a required boot secret) and the
+  semaphore's blast-radius claim (an 8-place cap makes it a no-op). Both corrections verified
+  against the source and folded.
+- **VERDICT:** **NOT CLEARED — eng review required.** The plan is materially stronger than at
+  round 0 and its design is settled, but the gate never reached 7.0 and the 3-round cap is
+  spent. Implementation must not begin until a targeted round 4 verifies §6b D2 (a1/a2/a3).
+
+**UNRESOLVED DECISIONS:**
+- Round 3's blocking finding is folded into §6b D2 but not re-reviewed; one targeted Codex round
+  4 is needed to clear the 7.0 bar before any code is written.

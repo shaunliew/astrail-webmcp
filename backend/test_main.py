@@ -2,9 +2,9 @@
 the idempotent-replay path, the idempotency-race path (a concurrent POST wins
 the same key -> we delete our orphan trip and redirect without dispatching),
 and the auth gate. GET /generate-trip/stream is exercised end-to-end via
-api/test_streaming.py (the generator) plus the owner-check here is a thin
-FastAPI wrapper around trips lookups already covered by the runner's owner
-filters in pipeline/test_runner.py.
+api/test_streaming.py (the generator); its owner check is covered directly at
+the bottom of this file — it was long assumed to be a thin wrapper over lookups
+already covered by pipeline/test_runner.py, and that assumption hid a 500.
 
 Drives the ASGI app with an async httpx client over ASGITransport (NOT the sync
 `starlette.testclient.TestClient`, which is deprecated with httpx and spins a
@@ -40,13 +40,14 @@ class _Result:
 class _Table:
     """Async fake of a supabase-py postgrest filter builder over a shared in-memory db."""
 
-    def __init__(self, name, db, fail_ops=None):
+    def __init__(self, name, db, fail_ops=None, empty_result_ops=None):
         self.name = name
         self.db = db
         self._op = None
         self._filters: dict = {}
         self._single = False
         self._fail_ops = fail_ops if fail_ops is not None else set()
+        self._empty_result_ops = empty_result_ops if empty_result_ops is not None else set()
 
     def insert(self, row):
         self._op = ("insert", row)
@@ -82,6 +83,8 @@ class _Table:
         op, arg = self._op
         if (self.name, op) in self._fail_ops:
             raise RuntimeError(f"forced {op} failure on {self.name}")
+        if (self.name, op) in self._empty_result_ops:
+            return _Result([])
         rows = self.db.setdefault(self.name, [])
         if op == "insert":
             row = {"id": f"{self.name}-{len(rows) + 1}", **arg}
@@ -98,7 +101,10 @@ class _Table:
             return _Result(matched)
         matched = [r for r in rows if self._matches(r)]
         if self._single:
-            return _Result(matched[0] if matched else None)
+            # Faithful to postgrest 2.31.0: AsyncMaybeSingleRequestBuilder.execute() returns a
+            # bare None when zero rows match (request_builder.py:167), NOT a result whose .data
+            # is None. A forgiving fake here hid a real 500 in the stream owner check.
+            return _Result(matched[0]) if matched else None
         return _Result(matched)
 
 
@@ -127,9 +133,10 @@ class _Client:
         self.rpc_calls: list = []      # [(name, params), ...] — assert (non-)consumption of quota
         self.rpc_results: dict = {}    # name -> canned .data value, or _RAISE to raise on execute
         self.fail_ops: set = set()     # {(table_name, op)} whose .execute() raises
+        self.empty_result_ops: set = set()   # {(table, op)} whose execute() returns _Result([])
 
     def table(self, name):
-        return _Table(name, self.db, self.fail_ops)
+        return _Table(name, self.db, self.fail_ops, self.empty_result_ops)
 
     def rpc(self, name, params):
         self.rpc_calls.append((name, params))
@@ -181,6 +188,18 @@ async def ctx(monkeypatch):
     async with _async_client() as ac:
         yield ac, db, calls, client
     main.app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def stream_auth():
+    """The stream route uses get_user_id_from_query_or_header (main.py:467), which ctx does
+    not override. Same function object as auth's, so keying on main.* resolves correctly."""
+    async def _user() -> str:
+        return "user-1"
+
+    main.app.dependency_overrides[main.get_user_id_from_query_or_header] = _user
+    yield
+    main.app.dependency_overrides.pop(main.get_user_id_from_query_or_header, None)
 
 
 @pytest.fixture(autouse=True)
@@ -877,3 +896,31 @@ async def test_readiness_503_when_db_unreachable(monkeypatch):
         r = await ac.get("/readiness")
     assert r.status_code == 503
     assert r.json()["ready"] is False
+
+
+# ---------------------------------------------------------------------------
+# GET /generate-trip/stream/{trip_id}: the guardrail #6 owner check.
+# ---------------------------------------------------------------------------
+
+_TRIP_ID = "11111111-1111-4111-8111-111111111111"
+_OTHER_TRIP_ID = "22222222-2222-4222-8222-222222222222"
+
+
+async def test_stream_on_a_nonexistent_trip_is_404_not_500(ctx, stream_auth):
+    # Regression (Codex plan review 2026-08-02): maybe_single() returns a bare None when no
+    # row matches, so `owner.data` AttributeErrors into a 500. 500-vs-404 is an existence
+    # oracle: it tells an unauthenticated-to-this-trip caller which trip ids are real.
+    ac, db, _calls, _client = ctx
+
+    response = await ac.get(f"/generate-trip/stream/{_TRIP_ID}?token=t")
+
+    assert response.status_code == 404
+
+
+async def test_stream_on_another_users_trip_is_404(ctx, stream_auth):
+    ac, db, _calls, _client = ctx
+    db.setdefault("trips", []).append({"id": _OTHER_TRIP_ID, "user_id": "user-2"})
+
+    response = await ac.get(f"/generate-trip/stream/{_OTHER_TRIP_ID}?token=t")
+
+    assert response.status_code == 404

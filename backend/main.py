@@ -468,7 +468,10 @@ async def stream(
 ) -> StreamingResponse:
     client = await get_supabase_client()
     owner = await client.table("trips").select("user_id").eq("id", trip_id).maybe_single().execute()
-    if owner.data is None or owner.data["user_id"] != user_id:  # guardrail #6 owner check
+    # `owner is None` is load-bearing: maybe_single() returns a bare None on zero rows
+    # (postgrest request_builder.py:167). Without it this 500s instead of 404ing, which tells
+    # a caller which trip ids exist. Matches jobs.py:80 / main.py:301 / organizer.py:184.
+    if owner is None or owner.data is None or owner.data["user_id"] != user_id:  # guardrail #6
         raise HTTPException(status_code=404, detail="Trip not found")
     return StreamingResponse(stream_trip_events(client, trip_id), media_type="text/event-stream")
 

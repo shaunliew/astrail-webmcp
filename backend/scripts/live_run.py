@@ -41,12 +41,15 @@ def _default_dates() -> tuple[str, str]:
 
 async def _inspect(client, trip_id: str) -> None:
     """Print the persisted trip exactly as the frontend would read it: day -> place -> weather."""
-    trip = (
+    trip_result = (
         await client.table("trips")
         .select("id,status,destination_hint,start_date,end_date,title,summary,"
                 "preference_summary,preference_sources")
         .eq("id", trip_id).maybe_single().execute()
-    ).data
+    )
+    # maybe_single() returns a bare None on zero rows, so `.data` cannot be read inline --
+    # doing so AttributeErrors past the `if trip is None` guard directly below.
+    trip = trip_result.data if trip_result is not None else None
     if trip is None:
         print(f"no trip {trip_id}")
         return

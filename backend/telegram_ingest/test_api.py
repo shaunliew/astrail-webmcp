@@ -396,6 +396,27 @@ def test_the_constructor_clamps_a_description_the_allowlist_does_not_contain():
     assert TelegramAPIError("boom").description == UNKNOWN_DESCRIPTION
 
 
+@pytest.mark.parametrize("description", [
+    ["REACTION_INVALID"], {"description": "REACTION_INVALID"}, None, 42,
+])
+def test_the_constructor_clamps_an_unhashable_description_instead_of_raising(description):
+    """The clamp is a frozenset membership test, so an unhashable value raised `TypeError`
+    rather than clamping — and the docstring above claims the invariant holds for the
+    `payload["description"]` path, which is EXACTLY the one that would crash.
+
+    `_matched_description` already refuses a non-`str` at the parse site; not doing the
+    same here meant the module distrusted the payload's type in one place and trusted it in
+    the other. Fails safe either way (a crash is not a leak), but a false stated invariant
+    is what a later reader builds on.
+    """
+    assert TelegramAPIError("boom", description=description).description == (
+        UNKNOWN_DESCRIPTION
+    )
+    assert TelegramRetryAfter("boom", 5.0, description=description).description == (
+        UNKNOWN_DESCRIPTION
+    )
+
+
 def test_every_allowlisted_description_is_a_bare_constant_not_server_prose():
     """Entries must be the uppercase MTProto constant Telegram embeds, nothing more.
 

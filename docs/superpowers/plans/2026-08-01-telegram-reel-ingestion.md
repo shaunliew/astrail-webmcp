@@ -682,19 +682,23 @@ this file is the one that survives. Run them in order; none costs more than a mi
 > **[IMPL 2026-08-02] THIS CHECKLIST WAS NOT RUN, AND THAT IS HOW THE ✅ BUG REACHED PRODUCTION.**
 > Item 2 — "one reel round-trips end to end and earns a 👍… nothing else proves it fires" — would
 > have caught `REACTION_INVALID` in one glance at the group, on day one. The check existed, was
-> written down, and was skipped. **Treat items 1 and 3–7 as OUTSTANDING until someone reports
-> running them**, because nothing distinguishes them from item 2.
+> written down, and was skipped. **Item 1 is confirmed done** (the 14:36 boot log carried no
+> `telegram_bot_not_admin`); **treat items 3–7 as OUTSTANDING until someone reports running them** —
+> the credential greps and the remaining deploy-day proofs. Narrowed from "1 and 3–7" after the
+> operator confirmed item 1: overstating what is unverified is its own accuracy problem, and this
+> list is only useful while an operator can trust it literally.
 >
-> **The absence pass that found the class, not just the instance.** Every value in this feature that
-> Telegram's servers define but our code hardcodes was verified against our own mocks only. There
-> are four, and they are not equally exposed:
+> **The absence pass that found the class, not just the instance.** The emoji is one member of a
+> class: values Telegram's servers define that our code hardcodes a copy of, and that the unit suite
+> can only check against our own mocks. There are four. Auditing each against live evidence — rather
+> than against the suite — is what separates them:
 >
 > | Hardcoded copy of a Telegram enum | Status |
 > |---|---|
 > | Reaction emoji (`api.set_message_reaction`) | **Was wrong.** Fixed 2026-08-02, measured live, pinned in `test_api.py` |
 > | `chat.type` ∈ {`group`, `supergroup`} (`ingest._GROUP_CHAT_TYPES`) | **Proven by production** — a reel could not have been accepted from the live supergroup unless this matched |
 > | `allowed_updates=["message"]` (`api.get_updates`) | **Proven by production** — messages arrive |
-> | `getChatMember` status `"administrator"` (`worker._ADMIN_STATUS`) | **STILL UNVERIFIED.** The bot IS an admin (privacy mode would otherwise hide every plain-URL message and nothing would ingest), but that does not prove Telegram spells the status this way. If it does not, item 1 emits `telegram_bot_not_admin` on every boot — a false alarm on the one boot check that matters, which trains an operator to ignore it. Settled by reading the boot log once |
+> | `getChatMember` status `"administrator"` (`worker._ADMIN_STATUS`) | **VERIFIED, twice.** A pre-deploy `getChatMember(-1004454958909, 8566591365)` returned the literal `"administrator"`, and the 14:36 boot log emitted no `telegram_bot_not_admin` — so `worker.py:224`'s `if status != _ADMIN_STATUS` compared the constant against the live response and matched. A mismatch would have produced the warning. (This row briefly read "STILL UNVERIFIED"; that claim was introduced by `495060f` and was wrong.) |
 >
 > Why the emoji was the one that broke: it is the only member of that list on a **write** path
 > whose failure is invisible to the thing being written. A wrong `chat.type` or `allowed_updates`

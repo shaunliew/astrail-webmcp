@@ -87,6 +87,16 @@ class TelegramAPIError(RuntimeError):
     — never the server's raw text, and never whatever a caller happened to pass in. It is
     a separate attribute rather than part of the message so the message stays exactly
     "method + status", which every existing token-safety assertion depends on.
+
+    DELIBERATELY A PLAIN ATTRIBUTE, not a read-only property, though the clamp then only
+    runs at construction and `exc.description = <raw text>` would defeat the `isinstance`
+    gate in `ingest._react`. A property would close that, and it was declined: the read
+    it would protect is already pinned from the AST
+    (`test_ingest.py::test_the_module_formats_no_exception_and_reads_exactly_one_vetted_attribute`
+    rejects any WRITE to an `exc` attribute), and unlike the `getattr` mistake — which
+    reads as correct code and is why that check exists — assigning server text onto
+    somebody else's exception has no plausible accidental form. Anyone doing it has
+    already decided to log raw text and does not need this attribute to do so.
     """
 
     def __init__(self, message: str, *, description: str = UNKNOWN_DESCRIPTION) -> None:
@@ -95,8 +105,17 @@ class TelegramAPIError(RuntimeError):
         # invariant a caller logs against — "this attribute is one of ours" — has to hold
         # for every construction path, including one written later by someone who never
         # read `_matched_description` and reaches for `payload["description"]` directly.
+        #
+        # `isinstance` FIRST, and not redundant: the membership test is against a frozenset,
+        # so an unhashable value (a `list`, a `dict` — both perfectly possible in a JSON
+        # payload) raised `TypeError` here instead of clamping. That crashed the very path
+        # the paragraph above promises to cover. `_matched_description` guards the same way
+        # at the parse site; this module must not trust the payload's type in one place and
+        # distrust it in the other.
         self.description = (
-            description if description in _SAFE_DESCRIPTIONS else UNKNOWN_DESCRIPTION
+            description
+            if isinstance(description, str) and description in _SAFE_DESCRIPTIONS
+            else UNKNOWN_DESCRIPTION
         )
 
 

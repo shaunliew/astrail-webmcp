@@ -945,6 +945,13 @@ def test_the_module_formats_no_exception_and_reads_exactly_one_vetted_attribute(
     RED the moment a second attribute is read, which is the shape "let's make this error
     line more useful" always takes, and RED on `getattr(exc, …)`, which reaches the same
     attributes while stepping around the `isinstance` that makes the one read safe.
+
+    ALSO RED ON ANY WRITE. `api` clamps `description` in its constructor, but the attribute
+    is plain and mutable, so `exc.description = <raw server text>` between the raise and
+    this log would satisfy the `isinstance` gate — which checks the exception's TYPE, not
+    that the value is still allowlisted. A read-only property on the exception was the
+    other way to close that; this is the cheaper one and it fails at CI rather than at
+    runtime. See the note in `api.TelegramAPIError` for why the property was declined.
     """
     vetted = {"description"}
     for node in ast.walk(_module_tree()):
@@ -961,6 +968,9 @@ def test_the_module_formats_no_exception_and_reads_exactly_one_vetted_attribute(
         if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
                 and node.value.id == "exc"):
             assert node.attr in vetted, f"unvetted exception attribute: exc.{node.attr}"
+            assert isinstance(node.ctx, ast.Load), (
+                f"exc.{node.attr} is written to; the clamp only runs in the constructor"
+            )
 
 
 def test_import_ingest_is_keyless_and_sdk_free_in_fresh_interpreter():

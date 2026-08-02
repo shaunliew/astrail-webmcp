@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Astrail — Hero (cold open) mock</title>
+<style>
+  :root{
+    --ivory:#efe7d9;
+    --navy:#1e2a3a;
+    --teal:#14a596;
+    --teal-deep:#0f8377;
+    --gold:#d8a53e;
+    --muted:#586675;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+    color:var(--navy);
+    background:var(--ivory);
+    -webkit-font-smoothing:antialiased;
+  }
+
+  .hero{position:relative;height:100vh;min-height:660px;overflow:hidden;background:var(--ivory)}
+
+  /* LAYER 1 — the generated visual (Aster) */
+  .hero__img{
+    position:absolute;inset:0;width:100%;height:100%;
+    object-fit:cover;object-position:80% center;
+    z-index:1;
+  }
+  /* ivory wash so text stays crisp over the left */
+  .hero::before{
+    content:"";position:absolute;inset:0;z-index:2;pointer-events:none;
+    background:linear-gradient(90deg,
+      rgba(239,231,217,0.97) 0%,
+      rgba(239,231,217,0.85) 30%,
+      rgba(239,231,217,0.35) 52%,
+      rgba(239,231,217,0) 66%);
+  }
+
+  /* top bar */
+  .nav{
+    position:absolute;top:0;left:0;right:0;z-index:4;
+    display:flex;align-items:center;justify-content:space-between;
+    padding:26px 48px;
+  }
+  .wordmark{font-weight:800;font-size:25px;letter-spacing:-0.02em;color:var(--navy)}
+  .wordmark .star{color:var(--teal);margin-left:2px}
+  .nav__links{display:flex;align-items:center;gap:30px}
+  .nav__links a{color:#42505f;text-decoration:none;font-size:15px;font-weight:500}
+  .nav__links a:hover{color:var(--navy)}
+  .nav__seat{
+    background:var(--navy);color:#fff;border:none;border-radius:999px;
+    padding:11px 20px;font-size:14px;font-weight:700;cursor:pointer;
+  }
+
+  /* LAYER 2 — the words, in code */
+  .hero__content{
+    position:absolute;z-index:3;left:7%;top:50%;transform:translateY(-50%);
+    max-width:600px;
+  }
+  .eyebrow{
+    text-transform:uppercase;letter-spacing:.2em;font-size:12.5px;font-weight:700;
+    color:var(--teal-deep);margin:0 0 20px;
+  }
+  h1{
+    font-size:clamp(2.3rem,4.4vw,3.7rem);line-height:1.06;font-weight:800;
+    letter-spacing:-0.025em;margin:0 0 22px;
+  }
+  h1 .accent{color:var(--teal-deep)}
+  .sub{font-size:1.15rem;line-height:1.55;color:var(--muted);max-width:29em;margin:0 0 34px}
+
+  .cta-row{display:flex;align-items:center;gap:15px;margin:0 0 30px}
+  .btn-primary{
+    background:var(--teal);color:#fff;border:none;border-radius:999px;
+    padding:16px 30px;font-size:16px;font-weight:700;cursor:pointer;
+    box-shadow:0 10px 26px rgba(20,165,150,.32);
+  }
+  .btn-ghost{
+    background:transparent;color:var(--navy);border:1.5px solid rgba(30,42,58,.22);
+    border-radius:999px;padding:15px 26px;font-size:16px;font-weight:600;cursor:pointer;
+  }
+
+  .seats{display:flex;align-items:center;gap:13px;font-size:14px;color:var(--muted)}
+  .seats__bar{width:130px;height:7px;border-radius:999px;background:rgba(30,42,58,.13);overflow:hidden}
+  .seats__fill{width:68%;height:100%;background:var(--gold);border-radius:999px}
+  .seats b{color:var(--navy);font-weight:700}
+
+  .scroll-hint{
+    position:absolute;left:50%;bottom:26px;transform:translateX(-50%);z-index:3;
+    font-size:12.5px;letter-spacing:.16em;text-transform:uppercase;color:#7a8695;
+    display:flex;flex-direction:column;align-items:center;gap:7px;
+  }
+  .scroll-hint .arrow{font-size:16px}
+
+  @media (max-width:820px){
+    .hero__img{object-position:72% 20%}
+    .hero::before{background:linear-gradient(180deg,
+      rgba(239,231,217,0) 0%,rgba(239,231,217,.55) 40%,rgba(239,231,217,.97) 62%)}
+    .hero__content{left:0;right:0;top:auto;bottom:9%;transform:none;padding:0 28px;max-width:none}
+    .nav__links{display:none}
+  }
+</style>
+</head>
+<body>
+  <section class="hero">
+    <!-- LAYER 1: the Higgsfield visual -->
+    <img class="hero__img" src="./assets/coldopen-hero.png" alt="Aster the Shiba astronaut walking in, scrolling his phone" />
+
+    <!-- top bar -->
+    <nav class="nav">
+      <div class="wordmark">Astrail<span class="star">&#10022;</span></div>
+      <div class="nav__links">
+        <a href="#">How it works</a>
+        <a href="#">Product vision</a>
+        <a href="#">About</a>
+        <button class="nav__seat">Claim a seat</button>
+      </div>
+    </nav>
+
+    <!-- LAYER 2: the words, in HTML -->
+    <div class="hero__content">
+      <p class="eyebrow">AI-native trip planning</p>
+      <h1>Turn the reels you saved into a route you'll <span class="accent">actually take.</span></h1>
+      <p class="sub">Astrail turns scattered travel inspiration into a real itinerary on a map &mdash; then guides you from planning toward the whole trip.</p>
+      <div class="cta-row">
+        <button class="btn-primary">Start your first trail</button>
+        <button class="btn-ghost">Watch the mission</button>
+      </div>
+      <div class="seats">
+        <span class="seats__bar"><span class="seats__fill"></span></span>
+        <span><b>17 / 25</b> beta seats claimed &middot; self-funded first flight</span>
+      </div>
+    </div>
+
+    <div class="scroll-hint"><span>Scroll to begin</span><span class="arrow">&#8595;</span></div>
+  </section>
+</body>
+</html>

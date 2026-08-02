@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Astrail — Rescue/Collection section mock</title>
+<style>
+  :root{
+    --navy:#0b1226;
+    --cream:#f4eee2;
+    --teal:#46d6c6;
+    --gold:#e6b64e;
+    --muted:#aeb9cf;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif;
+    color:var(--cream);background:var(--navy);-webkit-font-smoothing:antialiased;
+  }
+
+  .section{position:relative;height:100vh;min-height:660px;overflow:hidden;background:var(--navy)}
+
+  /* LAYER 1 — the Higgsfield visual (the burst) */
+  .section__img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center;z-index:1}
+
+  /* scrim so the copy stays readable over a busy frame */
+  .section::before{
+    content:"";position:absolute;inset:0;z-index:2;pointer-events:none;
+    background:
+      linear-gradient(to top, rgba(8,12,26,0.94) 0%, rgba(8,12,26,0.55) 24%, rgba(8,12,26,0) 48%),
+      linear-gradient(to right, rgba(8,12,26,0.65) 0%, rgba(8,12,26,0) 42%);
+  }
+
+  /* persistent top bar */
+  .nav{position:absolute;top:0;left:0;right:0;z-index:4;display:flex;align-items:center;justify-content:space-between;padding:26px 48px}
+  .wordmark{font-weight:800;font-size:24px;letter-spacing:-0.02em;color:var(--cream)}
+  .wordmark .star{color:var(--teal);margin-left:2px}
+  .nav__right{display:flex;align-items:center;gap:22px}
+  .nav__seats{font-size:13.5px;color:var(--muted)}
+  .nav__seats b{color:var(--cream)}
+  .nav__cta{background:var(--teal);color:#06231f;border:none;border-radius:999px;padding:11px 20px;font-size:14px;font-weight:800;cursor:pointer}
+
+  /* LAYER 2 — the words */
+  .section__content{position:absolute;z-index:3;left:7%;bottom:12%;max-width:720px}
+  .eyebrow{text-transform:uppercase;letter-spacing:.2em;font-size:12.5px;font-weight:700;color:var(--teal);margin:0 0 16px}
+  h2{font-size:clamp(2.2rem,4.6vw,3.9rem);line-height:1.05;font-weight:800;letter-spacing:-0.02em;margin:0 0 16px}
+  .cont{font-size:clamp(1.15rem,2vw,1.5rem);line-height:1.4;color:var(--cream);opacity:.92;margin:0}
+  .cont .dash{color:var(--teal)}
+  .continues{margin-top:22px;font-size:13px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);display:flex;align-items:center;gap:8px}
+
+  @media (max-width:820px){
+    .section__content{left:0;right:0;bottom:8%;padding:0 26px;max-width:none}
+    .nav__seats{display:none}
+  }
+</style>
+</head>
+<body>
+  <section class="section">
+    <img class="section__img" src="./assets/rescue-burst.png" alt="Aster's mech bursting through the star pile, collecting the saved places" />
+
+    <nav class="nav">
+      <div class="wordmark">Astrail<span class="star">&#10022;</span></div>
+      <div class="nav__right">
+        <span class="nav__seats"><b>17 / 25</b> seats</span>
+        <button class="nav__cta">Claim a seat</button>
+      </div>
+    </nav>
+
+    <div class="section__content">
+      <p class="eyebrow">Astrail steps in</p>
+      <h2>Meet your navigator.</h2>
+      <p class="cont">It rounds up every place you saved <span class="dash">&mdash;</span></p>
+      <p class="continues"><span>Sentence finishes on the next beat</span><span>&#8595;</span></p>
+    </div>
+  </section>
+</body>
+</html>

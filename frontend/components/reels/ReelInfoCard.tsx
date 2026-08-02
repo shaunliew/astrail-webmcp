@@ -1,9 +1,10 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import type { ReelCollection, SavedReelAnalysisStatus, SavedReelCard } from '@/lib/reels/backend-types'
+import type { ReelCollection, SavedReelCard } from '@/lib/reels/backend-types'
+import { STATUS_LABELS, reelLabel, statusLabel } from '@/lib/reels/labels'
 
-/* ReelInfoCard — a centered modal opened from the Library browse-fan showing a saved reel's
+/* ReelInfoCard — a centered modal opened from the Library browse grid showing a saved reel's
    cover, its grounded places (name · country · evidence quote, read-only), a single header
    "View Reel" link, and an add-to-tray list.
 
@@ -18,25 +19,8 @@ import type { ReelCollection, SavedReelAnalysisStatus, SavedReelCard } from '@/l
    are disabled, blocking double-clicks and concurrent cross-row adds. onAddToTray rejects only if
    the write failed → inline error, not marked Added.
 
-   The status-label map and the reel-label / place-row idioms are REPLICATED here (decision 5 /
-   finding N1) rather than extracted — feasible-first, no shared abstraction until a third caller. */
-
-const STATUS_LABELS: Record<SavedReelAnalysisStatus, string> = {
-  not_analyzed: 'Not analyzed',
-  queued: 'Queued',
-  processing: 'Analyzing…',
-  organized: 'Places found · 0',
-  location_not_found: 'No places found',
-  failed: 'Analysis failed',
-}
-
-function statusLine(card: SavedReelCard): string {
-  return card.places.length > 0 ? `Places found · ${card.places.length}` : STATUS_LABELS[card.analysis_status]
-}
-
-function reelLabel(card: SavedReelCard): string {
-  return card.personal_label ?? card.caption ?? 'Untitled reel'
-}
+   The status/reel-label idioms are shared via lib/reels/labels (extracted once ReelBrowseGrid
+   became the third caller). */
 
 const ImageIcon = ({ size = 15, opacity = 1 }: { size?: number; opacity?: number }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeOpacity={opacity} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -160,7 +144,7 @@ export default function ReelInfoCard({
               {reelLabel(card)}
             </h2>
             <div className="mt-1 flex items-center justify-between gap-3">
-              <span className="text-[13px] text-[color:var(--text-muted)]">{statusLine(card)}</span>
+              <span className="text-[13px] text-[color:var(--text-muted)]">{statusLabel(card)}</span>
               <a
                 href={card.normalized_url}
                 target="_blank"

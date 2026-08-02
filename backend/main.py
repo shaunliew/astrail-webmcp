@@ -32,9 +32,11 @@ from api.schemas import (
     CaptureSavedReelResponse,
     GenerateTripRequest,
     GenerateTripResponse,
+    MemoryFact,
     OrganizeJobStatus,
     OrganizeSavedReelsRequest,
     OrganizeSavedReelsResponse,
+    SettingsPreferencesResponse,
 )
 from api.streaming import stream_organize_events, stream_trip_events
 from auth import get_current_user_id, get_user_id_from_query_or_header
@@ -233,6 +235,24 @@ async def readiness():
         return {"ready": True, "mem0": mem0_state}
     except Exception:
         return JSONResponse(status_code=503, content={"ready": False, "mem0": mem0_state})
+
+
+@app.get("/settings/preferences", response_model=SettingsPreferencesResponse)
+@limiter.limit(BURST_LIMIT)
+async def get_settings_preferences(
+    request: Request,                                     # required by slowapi; must be named `request`
+    response: Response,                                   # REQUIRED with headers_enabled=True
+    user_id: str = Depends(get_current_user_id_stashed),  # token-derived: guardrails #5 + #6
+) -> SettingsPreferencesResponse:
+    """PRD §18. The user's STORED mem0 memories, read live. Degrades rather than erroring
+    (guardrail #3): `status` carries the bad news so an unrelated settings screen still
+    renders. Not identical to a generation's recall — see list_memory_facts."""
+    from mem0_client import get_mem0_client
+    from pipeline.preferences import list_memory_facts
+
+    status, facts = await list_memory_facts(await get_mem0_client(), user_id)
+    return SettingsPreferencesResponse(
+        status=status, facts=[MemoryFact(**f) for f in facts])
 
 
 @app.post("/saved-reels", response_model=CaptureSavedReelResponse)

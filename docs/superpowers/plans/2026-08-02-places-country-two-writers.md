@@ -371,8 +371,13 @@ before the day-loop, passing the verified country into `_find_or_create_place` e
    strong reference for the whole call — no object can be freed and its id reused. Say so in a
    comment; it is the kind of invariant that silently rots.
 7. **Write all three columns** — `country`, `country_code`, `country_name` — exactly as
-   `find_or_create_place` does (`p_country` is the country *name*). `places_country_fields_pair_check`
-   (`20260718130000`) requires code and name to be set together, so it is all three or none.
+   `find_or_create_place` does (`p_country` is the country *name*).
+
+   Precision, per the per-task review: `places_country_fields_pair_check` (`20260718130000`)
+   pairs only `country_code` and `country_name`. **`country` itself has no CHECK tying it to the
+   other two** — "all three or none" is an APPLICATION-layer invariant matching
+   `find_or_create_place`'s existing behaviour, not something the database enforces. Write it
+   deliberately; nothing will catch you if you don't.
 
 ### C. Best-effort shape (guardrail #3) — and why the suite stays green
 

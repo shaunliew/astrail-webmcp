@@ -110,7 +110,22 @@ def _parse_chat_ids(raw: str) -> tuple[frozenset[int], list[str]]:
         try:
             value = int(entry)
         except ValueError:
-            # Past CPython's 4300-digit int(str) limit. Grammar-valid, still not an id.
+            # BACKSTOP, not the active guard. The grammar above already rejected every
+            # entry containing anything but ASCII digits, so the ONLY input that reaches
+            # here is a pure-digit string past CPython's 4300-digit int(str) limit.
+            #
+            # NO TEST CAN FALSIFY THIS LINE, and that is a property of the language, not a
+            # gap in the suite: CPython's over-limit message is itself value-free
+            # ("Exceeds the limit (4300 digits) ... value has 5000 digits"), so even a
+            # deliberately leaky `raise` here puts nothing in the traceback for a canary to
+            # catch, while every value-bearing entry is stopped one line up. Verified by
+            # injection: reverting this branch to a direct raise leaves the suite green.
+            #
+            # So do NOT collapse this into a bare `int(entry)` with the raise inline. That
+            # refactor looks like a simplification, ships green through CI, and — on the
+            # bot's only authorization surface — reinstates the implicit-chaining leak the
+            # module docstring exists to prevent, because it also deletes the grammar
+            # filter that is doing the real work. Not dead code — do not delete.
             saw_non_integer = True
             continue
         if value == 0:

@@ -136,6 +136,22 @@ def test_empty_allowlist_is_a_boot_failure(value: str | None, label: str) -> Non
     assert "TELEGRAM_ALLOWED_CHAT_IDS" in message, label
 
 
+def test_a_present_but_empty_allowlist_reads_as_invalid_not_missing() -> None:
+    """A deliberate asymmetry, pinned here so it is a decision and not an accident.
+
+    Unset / `""` / `"   "` report as MISSING; `","` reports as INVALID. The split answers
+    exactly one question for the operator — ADD the variable, or FIX its value? — and for
+    `","` the variable is already set, so "missing" would send them to add what they can
+    already see in the dashboard. Fail-closed either way; only the instruction differs.
+    """
+    assert "missing" in _raise_message(_env(TELEGRAM_ALLOWED_CHAT_IDS=None)).lower()
+
+    present_but_empty = _raise_message(_env(TELEGRAM_ALLOWED_CHAT_IDS=","))
+
+    assert "invalid" in present_but_empty.lower()
+    assert "missing" not in present_but_empty.lower()
+
+
 def test_no_config_value_means_allow_all() -> None:
     """RED if a sentinel like `*` or `all` is ever wired in as an allow-all escape hatch."""
     for sentinel in ("*", "all", "ALL", "any", "0"):
@@ -189,24 +205,47 @@ def test_every_offending_variable_is_named() -> None:
 
 
 def test_rejected_uuid_never_reaches_the_traceback() -> None:
-    """RED if the RuntimeError is raised INSIDE `except ValueError`.
+    """RED if the RuntimeError is raised INSIDE `_parse_uuid`'s `except ValueError`.
 
-    `uuid.UUID(bad)` raises `ValueError` — and Python's implicit chaining prints that
-    frame above ours as "During handling of the above exception". The message can be
-    perfectly clean while the traceback carries the value. Verified empirically before
-    this test was written; only a `raise` outside every `except` (or `from None`) is green.
+    `uuid.UUID(bad)` raises `ValueError`, and Python's implicit chaining prints that frame
+    above ours as "During handling of the above exception". The message can be perfectly
+    clean while the traceback carries the value.
+
+    THE CANARY'S SHAPE IS THE TEST. `uuid.UUID` only echoes its input once the input is
+    UUID-shaped enough to reach the int-parse of the hex groups; anything else gets the
+    generic, value-free "badly formed hexadecimal UUID string". So a plausible-looking
+    canary like `"CANARY-PASTED-SECRET"` makes this test pass against a LEAKY
+    implementation — it proves nothing. `CANARYZZ-...` has correct 8-4-4-4-12 grouping with
+    non-hex characters, which is what actually reaches `int(..., 16)`:
+
+        ValueError: invalid literal for int() with base 16: 'CANARYZZZZZZZZZZZZZZZZZZZZZZZZZZ'
+
+    A real operator paste — a token or URL fragment of the right length — takes that path.
     """
-    tb = _raise_traceback(_env(ASTRAIL_INGEST_USER_ID="CANARY-PASTED-SECRET"))
+    tb = _raise_traceback(_env(ASTRAIL_INGEST_USER_ID="CANARYZZ-ZZZZ-ZZZZ-ZZZZ-ZZZZZZZZZZZZ"))
 
     assert "CANARY" not in tb
 
 
 def test_rejected_chat_id_never_reaches_the_traceback() -> None:
-    """RED if the RuntimeError is raised INSIDE the chat-id parse's `except ValueError`.
+    """End-to-end property, NOT a single-line guard. Read this before trusting it.
 
-    A separate code path from the UUID one, and a worse leak: `int()`'s own ValueError
-    text is `invalid literal for int() with base 10: '<the value>'`. A misconfigured
-    allowlist entry is very often a pasted URL or token fragment.
+    `int()`'s own ValueError is the worse leak of the two — `invalid literal for int() with
+    base 10: '<the value>'` — and a misconfigured allowlist entry is very often a pasted
+    URL or token fragment. So the property is worth pinning. But be precise about what
+    reddens it, because the obvious reading is wrong:
+
+      - raise-inside-`except` ALONE  -> still GREEN. The grammar filter stops this canary
+        one line earlier, so `int()` never sees it. That branch is unfalsifiable by
+        construction; see the BACKSTOP comment in `_parse_chat_ids`.
+      - grammar filter removed ALONE -> still GREEN. `int()` raises, but the `except`
+        returns normally, so nothing chains.
+      - BOTH (a naive `int(entry)` with the raise inline) -> RED.
+
+    Compound faults usually prove nothing, and a compound fault is exactly what this test
+    is for: the realistic regression here is not two independent slips but one refactor
+    that rewrites this parser "simply" and deletes both halves at once. That is the
+    mutation this catches, and the only one it claims.
     """
     tb = _raise_traceback(
         _env(TELEGRAM_ALLOWED_CHAT_IDS=f"{SUPERGROUP},CANARY-PASTED-SECRET")

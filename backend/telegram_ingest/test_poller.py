@@ -38,7 +38,12 @@ from typing import Any
 import pytest
 
 from telegram_ingest import poller
-from telegram_ingest.api import TelegramAPIError, TelegramConflict, TelegramRetryAfter
+from telegram_ingest.api import (
+    TelegramAPIError,
+    TelegramConflict,
+    TelegramRetryAfter,
+    TelegramUnauthorized,
+)
 from telegram_ingest.config import TelegramConfig
 
 GROUP_CHAT_ID = -1001234567890
@@ -467,6 +472,60 @@ async def test_conflict_logs_its_own_error_event_and_keeps_looping(
     assert not _records(caplog, "telegram_poll_error")
     assert rig.handle.ids == [1]                          # the loop survived it
     assert 0.8 <= rig.sleep.durations[0] <= 1.2           # and backed off
+
+
+async def test_unauthorized_logs_its_own_error_event_and_keeps_looping(
+    config, monkeypatch, caplog
+):
+    """★ 401 is a wrong or revoked bot token — an operator action, not a blip, exactly
+    like 409.
+
+    RED if it folds into the generic `TelegramAPIError` branch. That fold is the whole
+    defect: a typo'd token would WARN as `telegram_poll_error`, climb to a 60 s ladder,
+    and keep the heartbeat firing — so the worker reads as alive on every dashboard while
+    ingesting nothing, permanently. The event NAME and the ERROR level are what make it
+    visible, so both are asserted here, and `telegram_poll_error` must NOT appear.
+    """
+    rig = _rig(config, monkeypatch, [
+        TelegramUnauthorized("Telegram getUpdates failed: HTTP 401 (error_code=401)"),
+        [_update(1)],
+    ])
+
+    with caplog.at_level(logging.DEBUG):
+        await rig.run()
+
+    unauthorized = _records(caplog, "telegram_poll_unauthorized")
+    assert len(unauthorized) == 1
+    assert unauthorized[0].levelno == logging.ERROR
+    named = unauthorized[0].getMessage().lower()
+    assert "revoked" in named and "telegram_bot_token" in named   # both causes, by name
+    assert not _records(caplog, "telegram_poll_error")
+    assert not _records(caplog, "telegram_poll_conflict")
+    assert rig.handle.ids == [1]                          # the loop survived it
+    assert 0.8 <= rig.sleep.durations[0] <= 1.2           # and backed off
+    assert "CANARY" not in _formatted(caplog), _formatted(caplog)
+
+
+async def test_a_generic_api_error_is_still_a_transient_poll_error(
+    config, monkeypatch, caplog
+):
+    """The other half of the 401 split, without which the test above would pass for a
+    poller that logged `telegram_poll_unauthorized` for EVERY `TelegramAPIError`.
+
+    A 500 from Telegram's edge really is a blip and must stay a WARNING: promoting every
+    transport hiccup to ERROR is how the 401 line stops being read.
+    """
+    rig = _rig(config, monkeypatch, [
+        TelegramAPIError("Telegram getUpdates failed: HTTP 500 (error_code=500)"),
+        [_update(1)],
+    ])
+
+    with caplog.at_level(logging.DEBUG):
+        await rig.run()
+
+    errors = _records(caplog, "telegram_poll_error")
+    assert len(errors) == 1 and errors[0].levelno == logging.WARNING
+    assert not _records(caplog, "telegram_poll_unauthorized")
 
 
 async def test_an_unclassified_transport_exception_does_not_kill_the_loop(

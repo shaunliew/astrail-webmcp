@@ -18,6 +18,7 @@ from telegram_ingest.api import (
     TelegramAPIError,
     TelegramConflict,
     TelegramRetryAfter,
+    TelegramUnauthorized,
     get_chat_member,
     get_me,
     get_updates,
@@ -140,6 +141,45 @@ async def test_409_raises_conflict_which_is_still_a_telegram_api_error():
 
     assert isinstance(excinfo.value, TelegramAPIError)
     assert TOKEN not in str(excinfo.value)
+
+
+async def test_401_raises_unauthorized_which_is_still_a_telegram_api_error():
+    """A 401 is as non-transient as a 409: a wrong or revoked token never fixes itself.
+
+    Classifying it as a generic transport blip is what lets the worker back off politely
+    forever, looking alive on every dashboard while ingesting nothing.
+    """
+    client = _client(_responder(httpx.Response(
+        401, json={"ok": False, "error_code": 401, "description": "Unauthorized"})))
+
+    with pytest.raises(TelegramUnauthorized) as excinfo:
+        await get_updates(client=client, token=TOKEN)
+
+    assert isinstance(excinfo.value, TelegramAPIError)
+    assert TOKEN not in str(excinfo.value)
+
+
+async def test_401_on_http_200_is_also_unauthorized():
+    """Telegram can answer `ok: false` with HTTP 200, so the envelope's `error_code` must
+    discriminate too — the same both-paths rule the 409 and 429 branches already follow."""
+    client = _client(_responder(httpx.Response(
+        200, json={"ok": False, "error_code": 401, "description": "Unauthorized"})))
+
+    with pytest.raises(TelegramUnauthorized):
+        await get_me(client=client, token=TOKEN)
+
+
+async def test_a_403_is_not_unauthorized():
+    """Narrow on purpose. A 403 is "the bot was kicked from this chat" — per-chat and
+    recoverable — while a 401 is the credential itself. Widening this would make one
+    removed group look like a dead deployment."""
+    client = _client(_responder(httpx.Response(
+        403, json={"ok": False, "error_code": 403, "description": "Forbidden"})))
+
+    with pytest.raises(TelegramAPIError) as excinfo:
+        await get_updates(client=client, token=TOKEN)
+
+    assert not isinstance(excinfo.value, TelegramUnauthorized)
 
 
 async def test_ok_true_without_a_result_list_raises_instead_of_returning_none():

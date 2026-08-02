@@ -1,5 +1,9 @@
 """Telegram Bot API — direct HTTP over four methods, with token-safe errors.
 
+Three status codes are given their own exception class — 429, 409 and 401 — because this
+is the only module that sees a status code at all, and each means something a caller must
+act on differently. The rest collapse into `TelegramAPIError`.
+
 Endpoints: core.telegram.org/bots/api — getUpdates, setMessageReaction, getMe,
 getChatMember. Four endpoints do not justify a framework dependency, and adding one would
 land it in the *shared* pyproject.toml that the web service also builds from.
@@ -60,6 +64,19 @@ class TelegramConflict(TelegramAPIError):
     """409 — a second getUpdates consumer, or a webhook is still set. Not transient."""
 
 
+class TelegramUnauthorized(TelegramAPIError):
+    """401 — the bot token is wrong or has been revoked. Not transient.
+
+    Discriminated for the same reason 409 is: a caller that treats it as a blip backs off
+    politely forever on an error that will never clear, and the poller's heartbeat keeps
+    reporting a healthy worker that can never ingest anything.
+
+    Deliberately NOT 403. A 403 is "the bot was kicked from this chat" — per chat and
+    recoverable — and widening this class would make one removed group look like a dead
+    deployment.
+    """
+
+
 def _safe(method: str, exc: Exception) -> TelegramAPIError:
     """Rebuild a transport failure from the method name and the exception TYPE only."""
     return TelegramAPIError(f"Telegram {method} failed: {type(exc).__name__}")
@@ -92,6 +109,8 @@ def _raise_api_failure(method: str, status: int, payload: dict[str, Any]) -> NoR
         raise TelegramRetryAfter(message, _retry_after_seconds(payload)) from None
     if code == 409 or status == 409:
         raise TelegramConflict(message) from None
+    if code == 401 or status == 401:
+        raise TelegramUnauthorized(message) from None
     raise TelegramAPIError(message) from None
 
 

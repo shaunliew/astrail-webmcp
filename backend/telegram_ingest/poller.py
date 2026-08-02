@@ -31,11 +31,19 @@ OUTSIDE the per-update backstop and kill the worker — and a batch in which not
 a usable id takes the transport backoff rather than re-requesting the same offset in a hot
 loop.
 
-409 CONFLICT is special-cased at ERROR. It means a second `getUpdates` consumer (a Render
-`numInstances > 1` misconfiguration, or a local worker someone left running) or a webhook
-that is still set. It is not transient and will not clear on its own. The loop keeps going
-with backoff rather than exiting: exiting crash-loops the Render service, which reads as a
-code fault and buries the one message that names the actual cause.
+TWO STATUS CODES ARE SPECIAL-CASED AT ERROR, both for the same reason: they are operator
+errors that will never clear on their own, and a WARNING among the network blips is how
+they stay undiagnosed for a week.
+
+  - **409 CONFLICT** — a second `getUpdates` consumer (a Render `numInstances > 1`
+    misconfiguration, or a local worker someone left running) or a webhook that is still set.
+  - **401 UNAUTHORIZED** — the bot token is wrong or has been revoked. This is the second
+    door into the silence `worker._check_admin` exists to prevent: that check WARNs once at
+    boot and is deliberately non-fatal, so without an ERROR here a typo'd token produces
+    nothing but polite warnings while the heartbeat keeps reporting a healthy worker.
+
+Both keep looping with backoff rather than exiting: exiting crash-loops the Render service,
+which reads as a code fault and buries the one message that names the actual cause.
 
 TOKEN + CONTENT SAFETY. This module logs `type(exc).__name__`, never `str(exc)`, and never
 calls `logger.exception` or passes `exc_info` — pinned structurally in `test_poller.py`.
@@ -65,6 +73,7 @@ from telegram_ingest.api import (
     TelegramAPIError,
     TelegramConflict,
     TelegramRetryAfter,
+    TelegramUnauthorized,
     get_updates,
 )
 from telegram_ingest.config import TelegramConfig
@@ -92,6 +101,13 @@ _CONFLICT_MESSAGE = (
     "(call deleteWebhook). NOT transient - this will not clear on its own."
 )
 
+_UNAUTHORIZED_MESSAGE = (
+    "telegram_poll_unauthorized backoff=%.1f: HTTP 401, the bot token is wrong or has been "
+    "revoked (check TELEGRAM_BOT_TOKEN on the Render worker, or re-issue it with BotFather). "
+    "NOT transient - this will not clear on its own, and NOTHING will be ingested until it "
+    "is fixed."
+)
+
 
 def _jitter(delay: float, random_: Callable[[], float]) -> float:
     """`delay` ±20 %. `random_()` in [0, 1) maps across the whole band."""
@@ -107,6 +123,20 @@ def _log_poll_error(error: str, delay: float) -> None:
 def _log_conflict(delay: float) -> None:
     """409 at ERROR, naming BOTH causes: an operator who has to guess spends an hour."""
     logger.error(_CONFLICT_MESSAGE, delay)
+
+
+def _log_unauthorized(delay: float) -> None:
+    """401 at ERROR, for the same reason 409 is: a wrong or revoked token never fixes
+    itself, and a WARNING here is indistinguishable from the network blips around it.
+
+    This is the second door into the silence `worker._check_admin` exists to prevent. That
+    check WARNs once at boot and is deliberately non-fatal (a Telegram blip must not block
+    startup), so without this line a typo'd token produces nothing but polite warnings on a
+    60 s ladder while the heartbeat keeps reporting a healthy worker — alive on every
+    dashboard, ingesting nothing, forever. The message names the env var so the fix is the
+    same three-second diagnosis the admin check gives.
+    """
+    logger.error(_UNAUTHORIZED_MESSAGE, delay)
 
 
 def _log_poll_unexpected(error: str, delay: float) -> None:
@@ -240,11 +270,17 @@ async def poll_forever(
                 timeout_s=config.poll_timeout_s,
                 allowed_updates=allowed_updates,
             )
-        # Ordered narrowest-first: both are subclasses of TelegramAPIError, and a generic
-        # clause above them would silently swallow the 409's diagnosis.
+        # Ordered narrowest-first: all three are subclasses of TelegramAPIError, and a
+        # generic clause above them would silently swallow the 409's and 401's diagnoses.
         except TelegramConflict:
             backoff = await _back_off(
                 backoff, sleep=sleep, random_=random_, log=_log_conflict
+            )
+        except TelegramUnauthorized:
+            # Keeps looping, exactly like the 409: exiting crash-loops the Render service,
+            # which reads as a code fault and buries the one message naming the cause.
+            backoff = await _back_off(
+                backoff, sleep=sleep, random_=random_, log=_log_unauthorized
             )
         except TelegramRetryAfter as exc:
             # Bypasses the ladder entirely and does not advance it.

@@ -150,13 +150,19 @@ async def lifespan(app: FastAPI):
             _spawn(_redispatch(client, job))
         for job in await recover_organize_jobs(client):
             _spawn(_redispatch_organize(client, job))
-        try:
-            from mem0_client import get_mem0_client
-            await get_mem0_client()   # warm once so the first trip skips the blocking ping
-        except Exception:
-            pass   # memory is best-effort; a warm failure must never down the app
     except Exception:
         pass   # boot-time DB blip must not down the app; the reaper re-picks pending jobs
+    # OUTSIDE the Supabase try, deliberately. This warm used to live INSIDE it, so any
+    # boot-time DB blip (get_supabase_client or either sweep raising) jumped straight to the
+    # except and skipped the warm entirely — leaving /readiness reporting `not_initialized`
+    # with a perfectly good key until the first trip lazily built the client, which is
+    # misleading in precisely the way the mem0 readiness field exists to prevent. Kept AFTER
+    # the sweeps so the 8s construction timeout never delays guardrail #12 job recovery.
+    try:
+        from mem0_client import get_mem0_client
+        await get_mem0_client()   # warm once so the first trip skips the blocking ping
+    except Exception:
+        pass   # memory is best-effort; a warm failure must never down the app
     try:
         yield
     finally:

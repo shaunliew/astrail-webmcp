@@ -750,6 +750,44 @@ async def test_boot_time_recovery_failure_does_not_down_the_app(monkeypatch):
     assert r.status_code == 200
 
 
+async def test_boot_time_db_blip_still_warms_mem0(monkeypatch):
+    """The mem0 warm must survive a boot-time DB blip.
+
+    It used to sit INSIDE the Supabase try, so a failing sweep skipped it entirely and
+    /readiness then reported `not_initialized` with a perfectly good key until the first
+    trip lazily built the client — misleading in exactly the way the mem0 readiness field
+    exists to prevent. The warm now lives in its own try AFTER that block (kept after, so
+    its 8s construction timeout never delays guardrail #12 job recovery).
+    """
+    import mem0_client
+
+    for name in REQUIRED_SECRETS:
+        monkeypatch.setenv(name, "set")
+
+    async def _get_client():
+        return object()
+
+    async def _failing_recover(**_kwargs):
+        raise RuntimeError("boot-time db blip")
+
+    monkeypatch.setattr(main, "get_supabase_client", _get_client)
+    monkeypatch.setattr(main, "reclaim_expired_jobs", _failing_recover)
+
+    warmed = {"n": 0}
+
+    async def _fake_warm():
+        warmed["n"] += 1
+        return None
+
+    monkeypatch.setattr(mem0_client, "get_mem0_client", _fake_warm)
+
+    async with main.lifespan(main.app):
+        pass
+
+    # The DB blip must NOT have cost us the warm.
+    assert warmed["n"] == 1
+
+
 async def test_redispatch_threads_preferences_and_destination_hint(monkeypatch):
     """Finding 1 / guardrail #12: a crash-reclaimed run MUST replay preferences and
     destination_hint from the create_trip payload, or a Render restart mid-run

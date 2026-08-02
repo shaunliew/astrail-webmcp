@@ -122,14 +122,43 @@ No new dependency: `httpx>=0.27.0` is already at `backend/pyproject.toml:11`, an
 
 ## 5. Tasks
 
-### T0 — SPIKE: what URL forms does the Instagram share sheet produce?
+### T0 — SPIKE: what URL forms does the Instagram share sheet produce? ✅ DONE 2026-08-02
 
-**Do this first; everything else is moot if it fails.** `normalize_reel_url`
-(`backend/scrape/reel_url.py:8`) accepts only `instagram.com/reel/<code>` or `/reels/<code>`. Query
-strings are dropped safely (it matches `parsed.path`), so `?igsh=…` is fine — but `/share/reel/…`
-and `/p/<code>` are **rejected outright**. Share 5–10 real Reels from a phone; record the strings.
-If `/share/…` appears, add a bounded redirect resolver (timeout, redirect cap, hostname allowlist =
-`instagram.com` only, so it can never become an SSRF primitive). **Record the decision here.**
+**RESULT: PASS, 3/3. No redirect resolver. T2 stays pure — no network, no SSRF surface.**
+
+Shaun shared three reels from the iOS Instagram share sheet into Telegram Saved Messages and
+recorded the raw strings. Run through `normalize_reel_url` (`backend/scrape/reel_url.py:32`):
+
+| Raw string from the share sheet | Result |
+|---|---|
+| `https://www.instagram.com/reel/Da2Qec8x6nx/?igsh=aWtwdnkxYzB2YTJu` | ✅ → `…/reel/Da2Qec8x6nx` |
+| `https://www.instagram.com/reel/DaxnJsIyAW3/` | ✅ → `…/reel/DaxnJsIyAW3` |
+| `https://www.instagram.com/reel/DaZ8wwLyWMM/` | ✅ → `…/reel/DaZ8wwLyWMM` |
+
+The share sheet emits the **canonical** `https://www.instagram.com/reel/<code>/` form, sometimes with
+an `?igsh=` tracking parameter. That parameter is harmless: `_reel_match` matches on `parsed.path`
+(`reel_url.py:18`), so the query string never reaches the regex. **The backend validator needs no
+change and `reel_filter.py` needs no redirect resolver.**
+
+**The residual blind spot, and why it is already handled.** Three samples establish the dominant
+form, not every form. `/share/reel/…` demonstrably exists in the wild — `frontend/lib/trip/`
+`parse-inspiration.ts:32` carries a `(?:share\/)?` branch plus `m.` and `p|tv`, and nobody writes
+that speculatively. A human can still paste a link they obtained some other way. That case needs no
+speculative machinery here because **T4 already logs `telegram_reel_unsupported_url` at ERROR with
+the sanitized path shape and withholds the ✅** — the blind spot is instrumented rather than guessed
+at. If `/share/` shapes actually show up in the logs, add the resolver then, against evidence.
+
+**Prior art for T2, previously unrecorded in this plan:** `parse-inspiration.ts:32-39` is the closest
+existing implementation of the function T2 must write. Read it before writing `reel_filter.py` —
+**but do not port it wholesale.** It is deliberately more permissive than the backend, and two of its
+behaviours are wrong for the bot: it rewrites `share/reel/CODE` → `/reel/CODE/` on the *unverified*
+assumption that a share code is the reel shortcode, and it emits `/p/` and `/tv/` URLs that
+`capture_saved_reel` (`saved_reels.py:9`) rejects with `ValueError`. T2 delegates to
+`normalize_reel_url` precisely so the bot cannot inherit either.
+
+**Filed separately, not this plan's scope:** the frontend accepts `p|tv` and preserves the type
+(`parse-inspiration.ts:37-38`), so an Instagram *post* link passes client validation and then fails
+server-side in `capture_saved_reel`. A live frontend/backend divergence — raise with Zhi Hao.
 
 ### T1 — `api.py`
 
@@ -539,7 +568,7 @@ land PLAN B's T1–T2 first. PLAN A's own diff requires nothing from PLAN B.
 
 | # | Risk | Mitigation |
 |---|---|---|
-| 1 | Share-sheet URLs don't match `normalize_reel_url` → the bot silently accepts nothing | **T0 first.** Highest probability, cheapest check |
+| 1 | ~~Share-sheet URLs don't match `normalize_reel_url` → the bot silently accepts nothing~~ | **RETIRED 2026-08-02 — T0 measured it: 3/3 canonical `/reel/<code>/`, `?igsh=` dropped on `parsed.path`.** No resolver. A stray `/share/` shape logs ERROR and withholds ✅ (T4) rather than vanishing |
 | 2 | **Bot is not a group admin (or gets demoted)** — privacy mode hides every plain URL, no error, no log | T11 Phase 0 asserts `administrator`; boot logs it as WARNING; the 60 s heartbeat distinguishes "polling fine, ingesting nothing" from "dead"; promotion is a numbered runbook step |
 | 3 | **Migration A's `create or replace` on a shared user-facing function** — the one live thing this plan changes | Signature unchanged so no `PGRST202`; `coalesce(…, 5)` preserves every existing user byte-for-byte; pgTAP proves the 5-then-null boundary; applied in Phase 2 **against already-running code**, fully isolated from the worker; privilege contract re-asserted. **[R4/m3]** The `alter table … add column` is **no rewrite but NOT lock-free** — a constant default avoids the rewrite, but `ALTER TABLE` still takes a brief `ACCESS EXCLUSIVE` lock on `users`. Set `lock_timeout = '3s'` and `statement_timeout` so it fails fast rather than queueing behind a long read |
 | 4 | Runaway paid spend | `daily_reel_analysis_limit` is charged **only on a `reel_cache` MISS**, so it bounds exactly the Apify + OpenAI calls. Warm reels are free and uncapped by design |
@@ -673,6 +702,7 @@ deployment blockers and the worker-version defect are genuinely fixed. The remai
 documentation hygiene and exact-version proof, not reasons to reopen the architecture or delay
 implementation."* Rev 9 folded those three hygiene minors and changed no design, sequencing, or scope.
 
-**Implementation starts at T0** — the share-sheet spike gates everything else.
+**T0 CLOSED 2026-08-02 — PASS 3/3.** The share sheet emits canonical `/reel/<code>/`; no redirect
+resolver, `reel_filter.py` stays pure, risk #1 retired. **Implementation starts at T1 (`api.py`).**
 
 NO UNRESOLVED DECISIONS

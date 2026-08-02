@@ -18,7 +18,12 @@
 --
 -- `alter table … add column` with a CONSTANT default performs no table rewrite, but it is NOT
 -- lock-free: it still takes a brief ACCESS EXCLUSIVE lock on public.users. The timeouts below make
--- it fail fast rather than queue behind a long read while blocking every reader behind it.
+-- it fail fast rather than queue behind a long read while blocking every reader behind it. They are
+-- RESET at the end of the file: these are session-level, not `set local`, so if the CLI applies
+-- several migrations over one session they would otherwise leak into whatever runs next and fail a
+-- legitimately slower operation for a reason living in a different file. `reset` rather than
+-- `set local` deliberately — `set local` would rest on an assumption about how the runner wraps
+-- each migration, and this guard should not.
 
 set lock_timeout = '3s';
 set statement_timeout = '30s';
@@ -108,6 +113,14 @@ $$;
 revoke all on function public.reserve_organize_item_analysis(uuid, uuid) from public, anon, authenticated;
 grant execute on function public.reserve_organize_item_analysis(uuid, uuid) to service_role;
 
--- PRECAUTIONARY, NOT REQUIRED: the signature does not change, so PostgREST's schema cache stays
--- valid across this migration. Do not read this line as evidence that a signature changed.
+-- PRECAUTIONARY, NOT REQUIRED. The signature does not change, so PostgREST's schema cache stays
+-- valid across this migration and this line is a no-op in effect. It is also the FIRST migration in
+-- this repo to use it — `grep -rln "notify pgrst" supabase/migrations/` returns nothing else — so do
+-- not read it as either an existing house convention or as evidence that a signature changed.
 notify pgrst, 'reload schema';
+
+-- Hand the session back as we found it. See the header: session-level `set` leaks to whatever the
+-- CLI applies next, and this file sorting last today is a property of the directory listing, not of
+-- the code.
+reset lock_timeout;
+reset statement_timeout;

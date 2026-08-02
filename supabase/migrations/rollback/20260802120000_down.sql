@@ -96,5 +96,11 @@ grant execute on function public.reserve_organize_item_analysis(uuid, uuid) to s
 alter table public.users drop constraint if exists users_daily_reel_analysis_limit_range;
 alter table public.users drop column if exists daily_reel_analysis_limit;
 
--- Precautionary, not required: the signature does not change here either.
+-- Precautionary, not required: the signature does not change here either, and as in the forward
+-- migration this is the only `notify pgrst` in the repo rather than a house convention.
 notify pgrst, 'reload schema';
+
+-- Same reasoning as the forward migration: these are session-level, and this file is applied BY HAND
+-- into an operator's psql session that keeps going afterwards. Hand it back as we found it.
+reset lock_timeout;
+reset statement_timeout;

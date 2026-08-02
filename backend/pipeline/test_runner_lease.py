@@ -441,12 +441,12 @@ def parked_at_first_place_lookup(entered: asyncio.Event, release: asyncio.Event)
     real = persist._find_or_create_place
     armed = [True]
 
-    async def hook(client, place):
+    async def hook(client, place, *, grounded=None):
         if armed[0]:
             armed[0] = False
             entered.set()
             await release.wait()
-        return await real(client, place)
+        return await real(client, place, grounded=grounded)
 
     return hook
 

@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from models.enrichment import WeatherReport
@@ -54,8 +56,11 @@ class _Table:
     def __init__(self, name, db):
         self.name, self.db = name, db
         self._op = None; self._f = {}; self._range = {}; self._in = {}
+        self._on_conflict = None; self._single = False
 
     def insert(self, row): self._op = ("insert", row); return self
+    def upsert(self, row, on_conflict=None):
+        self._op = ("upsert", row); self._on_conflict = on_conflict; return self
     def update(self, row): self._op = ("update", row); return self
     def delete(self): self._op = ("delete", None); return self
     def select(self, *_): self._op = ("select", None); return self
@@ -63,6 +68,7 @@ class _Table:
     def gte(self, c, v): self._range[(c, "gte")] = v; return self
     def lte(self, c, v): self._range[(c, "lte")] = v; return self
     def in_(self, c, values): self._in[c] = list(values); return self
+    def maybe_single(self): self._single = True; return self
 
     def _match(self, r):
         if not all(r.get(k) == v for k, v in self._f.items()):
@@ -75,9 +81,28 @@ class _Table:
         return True
 
     async def execute(self):
+        # SUSPEND, exactly once, like every real client call. Without this the fake is `async`
+        # in name only: a coroutine runs start-to-finish before any sibling starts, so an
+        # `asyncio.gather` over this fake never interleaves and every concurrency assertion in
+        # this file is vacuous — a flat `gather` over same-coordinate places passes the
+        # "verifier called once" test here while calling Mapbox twice in production, because
+        # there the cache read awaits real I/O and both tasks miss.
+        await asyncio.sleep(0)
         op, arg = self._op
         rows = self.db.setdefault(self.name, [])
         if op == "insert":
+            row = {"id": f"{self.name}-{len(rows) + 1}", **arg}
+            rows.append(row); return _Result([row])
+        if op == "upsert":
+            # `on_conflict` is REQUIRED, exactly as Postgres requires a matching unique index:
+            # a fake falling back to plain-insert would let a caller who forgot it duplicate
+            # rows here and fail only against the real database.
+            keys = [k.strip() for k in (self._on_conflict or "").split(",") if k.strip()]
+            if not keys:
+                raise ValueError("fake upsert requires on_conflict")
+            existing = next((r for r in rows if all(r.get(k) == arg.get(k) for k in keys)), None)
+            if existing is not None:
+                existing.update(arg); return _Result([existing])
             row = {"id": f"{self.name}-{len(rows) + 1}", **arg}
             rows.append(row); return _Result([row])
         if op == "update":
@@ -88,12 +113,54 @@ class _Table:
         if op == "delete":
             keep = [r for r in rows if not self._match(r)]
             self.db[self.name] = keep; return _Result([])
-        return _Result([r for r in rows if self._match(r)])
+        matched = [r for r in rows if self._match(r)]
+        # `.maybe_single()` yields the ROW (not a list), and `None` on zero rows — the shape
+        # `grounding._lookup_cached_country` reads. Without it that call raised AttributeError,
+        # which its blanket `except` logged as a cache MISS, so the whole write-through cache
+        # was invisible to this file's fakes.
+        if self._single:
+            return _Result(matched[0] if matched else None)
+        return _Result(matched)
+
+
+class _ReplaceTripItineraryRpc:
+    """Mirror of `public.replace_trip_itinerary` (20260720150000).
+
+    The fence and the delete-reinsert are ONE unit here for the same reason they are one
+    transaction there: a superseded worker must destroy neither the replacement's trip_places
+    nor its trip_days. A fake that ignored the lease would leave `_replace_trip_rows`'s
+    `LeaseLost` branch dead under test. The predicate mirrors the SQL exactly, `trip_id`
+    included: a lease on job X may only rewrite job X's own trip.
+    """
+
+    def __init__(self, client, params): self.client, self.params = client, params
+
+    async def execute(self):
+        p, db = self.params, self.client.db
+        job = next((r for r in db.get("jobs", [])
+                    if r.get("id") == p["p_job_id"] and r.get("trip_id") == p["p_trip_id"]
+                    and r.get("lease_token") == p["p_lease_token"]
+                    and r.get("status") == "running"), None)
+        if job is None:
+            return _Result(False)
+        trip_id = p["p_trip_id"]
+        for table in ("trip_places", "trip_days"):
+            db[table] = [r for r in db.setdefault(table, []) if r.get("trip_id") != trip_id]
+        for table, key in (("trip_places", "p_places"), ("trip_days", "p_days")):
+            rows = db.setdefault(table, [])
+            for row in p.get(key) or []:
+                rows.append({"id": f"{table}-{len(rows) + 1}", "trip_id": trip_id, **row})
+        return _Result(True)
 
 
 class _Client:
     def __init__(self, db=None): self.db = db if db is not None else {}
     def table(self, name): return _Table(name, self.db)
+
+    def rpc(self, name, params):
+        if name == "replace_trip_itinerary":
+            return _ReplaceTripItineraryRpc(self, params)
+        raise AssertionError(f"fake does not implement rpc {name!r}")
 
 
 @pytest.mark.asyncio
@@ -209,6 +276,336 @@ async def test_persist_assigns_distinct_days_by_identity_not_name():
     tps = c.db["trip_places"]
     assert len(tps) == 2
     assert len({tp["day_number"] for tp in tps}) == 2   # DIFFERENT days, not both on day 1
+
+
+# --- country grounding on the web pipeline ----------------------------------
+# `places.country` is a VERIFICATION RECEIPT, not a label: non-NULL means a coordinate was
+# reverse-geocoded AND the answer agreed with an independent LLM claim. The organize path has
+# always upheld that (`grounding._ground_place`); `persist_itinerary` dropped the value at the
+# insert, so 87% of `places` rows were NULL. These tests pin the guarantee on this second path
+# — including that an UNVERIFIABLE place still gets NULL, which is what stops the column from
+# quietly becoming "whatever the LLM said".
+from models.geocode import CountryResult
+
+_JP = (35.6586, 139.7454)
+_SG = (1.2834, 103.8607)
+# `_cp`'s default `https://example.org/a` is in `_FAKE_DOMAINS`, so `is_placeholder_url` is
+# True and `_ground_place` returns None BEFORE any network call. A grounding test built on it
+# passes without executing one line of the change; these tests need a real-looking URL.
+_REAL_URL = "https://www.instagram.com/reel/ABC/"
+_PLACEHOLDER_URL = "https://example.org/a"
+
+
+def _gp(name, lat, lng, *, country_code="JP", country_name="Japan", source_url=_REAL_URL):
+    """A groundable CanonicalPlace — real-looking source_url + an LLM country claim.
+
+    Built directly rather than from `_cp` so the `country_code`/`country_name` pair validator
+    runs on every case in the tables below.
+    """
+    return CanonicalPlace(
+        name=name, name_local=None, category="attraction", source_type="reel_extracted",
+        lat=lat, lng=lng, confidence=0.9, evidence_quote=f"📍{name}",
+        source_url=source_url, formatted_address=None, city_or_region_guess="Tokyo",
+        aliases=[name], evidence_quotes=[f"📍{name}"], times_referenced=1,
+        country_code=country_code, country_name=country_name,
+    )
+
+
+class _Verifier:
+    """A `verify_country` stub that COUNTS provider calls.
+
+    Every same-coordinate assertion below is an assertion about `.calls`: it is what separates
+    "each member asked the cache" from "each member asked Mapbox", and what reddens a flat
+    `gather` that defeats the write-through cache.
+    """
+
+    def __init__(self, country=CountryResult(country_code="JP", country_name="Japan"),
+                 *, by_coord=None):
+        self.country, self.by_coord = country, by_coord
+        self.calls, self.coords = 0, []
+
+    async def __call__(self, lat, lng, *, token):
+        self.calls += 1
+        self.coords.append((lat, lng))
+        return self.by_coord[(lat, lng)] if self.by_coord is not None else self.country
+
+
+class _FailingVerifier(_Verifier):
+    """Mapbox is down for every call (guardrail #3: the trip must still save)."""
+
+    async def __call__(self, lat, lng, *, token):
+        self.calls += 1
+        raise RuntimeError("Mapbox reverse-country error: ConnectError")
+
+
+class _FailsOnceVerifier(_Verifier):
+    """Raises on the FIRST call only — one transient blip must null one place, not a group."""
+
+    async def __call__(self, lat, lng, *, token):
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("Mapbox reverse-country error: ReadTimeout")
+        return self.country
+
+
+class _FaultTable(_Table):
+    """Raise on one operation against one table; behave normally otherwise."""
+
+    def __init__(self, name, db, failing_ops):
+        super().__init__(name, db)
+        self._failing_ops = failing_ops
+
+    async def execute(self):
+        if self._op[0] in self._failing_ops:
+            raise RuntimeError(f"supabase {self._op[0]} failed")
+        return await super().execute()
+
+
+class _CacheWriteFailsClient(_Client):
+    """`geocode_country_cache` reads fine and writes fail — separating a verification failure
+    from a cache-write failure, which `_store_cached_country` raises on BY DESIGN."""
+
+    def table(self, name):
+        if name == "geocode_country_cache":
+            return _FaultTable(name, self.db, {"upsert"})
+        return super().table(name)
+
+
+def _country_of(c, name):
+    """(country, country_code, country_name) of the persisted `places` row — all three, since
+    `places_country_fields_pair_check` makes them all-or-nothing."""
+    row = next(p for p in c.db["places"] if p["name"] == name)
+    return (row.get("country"), row.get("country_code"), row.get("country_name"))
+
+
+_VERIFIED = ("Japan", "JP", "Japan")
+_NULL = (None, None, None)
+
+
+@pytest.mark.parametrize("claim_code,claim_name,source_url,verifier_cls,expected,calls", [
+    # `country` carries the country NAME, matching find_or_create_place's `p_country` — one
+    # column must never hold "JP" for some rows and "Japan" for others (PlaceIntelPanel joins it).
+    pytest.param("JP", "Japan", _REAL_URL, _Verifier, _VERIFIED, 1, id="verified"),
+    # The guard this whole change exists to keep: a claim the geocoder contradicts stays NULL
+    # rather than becoming a filled-in guess (guardrail #1).
+    pytest.param("US", "United States", _REAL_URL, _Verifier, _NULL, 1, id="mismatch"),
+    pytest.param(None, None, _REAL_URL, _Verifier, _NULL, 0, id="no_claim"),
+    pytest.param("JP", "Japan", _PLACEHOLDER_URL, _Verifier, _NULL, 0, id="placeholder_url"),
+    pytest.param("JP", "Japan", _REAL_URL, _FailingVerifier, _NULL, 1, id="provider_raises"),
+])
+@pytest.mark.asyncio
+async def test_persist_grounds_one_place(monkeypatch, claim_code, claim_name, source_url,
+                                         verifier_cls, expected, calls):
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c = _Client()
+    verifier = verifier_cls()
+    place = _gp("Tokyo Tower", *_JP, country_code=claim_code, country_name=claim_name,
+                source_url=source_url)
+
+    dropped = await persist.persist_itinerary(c, "trip-1", [place], ["2026-08-01"],
+                                              job_id=None, lease_token=None,
+                                              verify_country=verifier)
+
+    assert _country_of(c, "Tokyo Tower") == expected
+    assert verifier.calls == calls
+    # Guardrail #3 in every row of this table: grounding never drops a place or fails the trip.
+    assert dropped == 0 and len(c.db["trip_places"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_persist_writes_the_verified_country_name_not_the_llm_claim(monkeypatch):
+    """Provenance, not presence. `_ground_place` overwrites the claimed name with Mapbox's
+    (`model_copy(update={"country_name": ...})`), so a JP/Japan -> JP/Japan test cannot tell a
+    correct implementation from one that uses grounding as a boolean gate and then inserts the
+    LLM's own name. Poison the claim's NAME and the two diverge: without this, `Tokyo, United
+    States` ships and every other assertion here is still green."""
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c = _Client()
+    poisoned = _gp("Tokyo Tower", *_JP, country_code="JP", country_name="United States")
+
+    await persist.persist_itinerary(c, "trip-1", [poisoned], ["2026-08-01"],
+                                    job_id=None, lease_token=None, verify_country=_Verifier())
+
+    assert _country_of(c, "Tokyo Tower") == _VERIFIED
+
+
+@pytest.mark.asyncio
+async def test_persist_cache_write_failure_yields_null_country(monkeypatch):
+    """A verified answer we could not PERSIST is discarded (guardrail #7, strict write-through
+    — `_store_cached_country` raises by design). NULL is the honest degradation; the tempting
+    alternative (use the country, skip the cache) is deliberately not what happens."""
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c = _CacheWriteFailsClient()
+    verifier = _Verifier()
+
+    await persist.persist_itinerary(c, "trip-1", [_gp("Tokyo Tower", *_JP)], ["2026-08-01"],
+                                    job_id=None, lease_token=None, verify_country=verifier)
+
+    assert verifier.calls == 1          # the provider DID answer — this is the write side failing
+    assert _country_of(c, "Tokyo Tower") == _NULL
+    assert len(c.db["trip_places"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_persist_same_coordinate_calls_the_verifier_once(monkeypatch):
+    """Guardrail #7's read side, and the reason grounding is parallel ACROSS coordinates but
+    sequential WITHIN one: fire two same-coordinate places concurrently and both observe a
+    cache miss before either upsert lands, so both pay Mapbox. The first member seeds the
+    cache; the second hits it."""
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c = _Client()
+    verifier = _Verifier()
+    places = [_gp("Tower A", *_JP), _gp("Tower B", *_JP)]
+
+    await persist.persist_itinerary(c, "trip-1", places, ["2026-08-01"],
+                                    job_id=None, lease_token=None, verify_country=verifier)
+
+    assert verifier.calls == 1
+    assert _country_of(c, "Tower A") == _VERIFIED
+    assert _country_of(c, "Tower B") == _VERIFIED
+
+
+@pytest.mark.parametrize("claims,expected", [
+    pytest.param([("US", "United States"), ("JP", "Japan")], [_NULL, _VERIFIED], id="a1_us_then_jp"),
+    pytest.param([("JP", "Japan"), ("US", "United States")], [_VERIFIED, _NULL], id="a2_jp_then_us"),
+    pytest.param([("JP", "Japan"), ("US", "United States"), ("JP", "Japan")],
+                 [_VERIFIED, _NULL, _VERIFIED], id="a3_alternating"),
+])
+@pytest.mark.asyncio
+async def test_persist_same_coordinate_compares_each_claim_independently(monkeypatch, claims,
+                                                                         expected):
+    """One cached provider answer, one comparison PER MEMBER — the pairing no wrong
+    implementation reaches. A flat `gather` calls the verifier twice; copying the first
+    member's verdict onto the group writes `Japan` onto a place claiming `US` (a2); copying it
+    only when it succeeded survives a1 and dies on a2; a cacheless implementation fails the
+    call count. Both claim orders are required, and a3's alternating third member forces a
+    per-member loop rather than any first-vs-rest special case."""
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c = _Client()
+    verifier = _Verifier()
+    names = [f"Tower {i}" for i in range(len(claims))]
+    places = [_gp(name, *_JP, country_code=code, country_name=cname)
+              for name, (code, cname) in zip(names, claims)]
+
+    await persist.persist_itinerary(c, "trip-1", places, ["2026-08-01"],
+                                    job_id=None, lease_token=None, verify_country=verifier)
+
+    assert [_country_of(c, name) for name in names] == expected
+    assert verifier.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_persist_same_coordinate_isolates_a_failing_first_member(monkeypatch):
+    """The `except` sits INSIDE the per-member loop, not around the coordinate group —
+    otherwise one transient blip silently nulls every place sharing that coordinate. Nothing
+    was cached by the failed call, so the second member pays its own (successful) call."""
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c = _Client()
+    verifier = _FailsOnceVerifier()
+    places = [_gp("Tower A", *_JP), _gp("Tower B", *_JP)]
+
+    await persist.persist_itinerary(c, "trip-1", places, ["2026-08-01"],
+                                    job_id=None, lease_token=None, verify_country=verifier)
+
+    assert _country_of(c, "Tower A") == _NULL
+    assert _country_of(c, "Tower B") == _VERIFIED
+    assert verifier.calls == 2
+    assert len(c.db["trip_places"]) == 2
+
+
+@pytest.mark.parametrize("urls,expected", [
+    pytest.param([_REAL_URL, _PLACEHOLDER_URL, _REAL_URL], [_VERIFIED, _NULL, _VERIFIED],
+                 id="d1_ineligible_middle"),
+    pytest.param([_PLACEHOLDER_URL, _REAL_URL, _PLACEHOLDER_URL], [_NULL, _VERIFIED, _NULL],
+                 id="d2_ineligible_first"),
+])
+@pytest.mark.asyncio
+async def test_persist_same_coordinate_applies_each_members_gates(monkeypatch, urls, expected):
+    """Same coordinate, SAME claim, mixed eligibility — the only case that makes each member's
+    ELIGIBILITY GATES load-bearing rather than only its country comparison. An implementation
+    that memoizes by claim passes every other test here and fails these: it labels the
+    placeholder-URL member `Japan` from its sibling's verdict, because it never calls
+    `_ground_place` for that member at all. d2 puts an ineligible member first, so no
+    "first member is special" shortcut survives either."""
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c = _Client()
+    verifier = _Verifier()
+    names = [f"Tower {i}" for i in range(len(urls))]
+    places = [_gp(name, *_JP, source_url=url) for name, url in zip(names, urls)]
+
+    await persist.persist_itinerary(c, "trip-1", places, ["2026-08-01"],
+                                    job_id=None, lease_token=None, verify_country=verifier)
+
+    assert [_country_of(c, name) for name in names] == expected
+    assert verifier.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_persist_grounds_distinct_coordinates_independently(monkeypatch):
+    """Two coordinate groups, two countries. The only test that makes the cross-group flatten
+    and the id-keyed result mapping load-bearing — every other case has a single group, so a
+    bug that merged groups or mis-paired ids with results would go unseen."""
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c = _Client()
+    verifier = _Verifier(by_coord={
+        _JP: CountryResult(country_code="JP", country_name="Japan"),
+        _SG: CountryResult(country_code="SG", country_name="Singapore"),
+    })
+    places = [_gp("Tokyo Tower", *_JP),
+              _gp("Marina Bay", *_SG, country_code="SG", country_name="Singapore")]
+
+    await persist.persist_itinerary(c, "trip-1", places, ["2026-08-01"],
+                                    job_id=None, lease_token=None, verify_country=verifier)
+
+    assert _country_of(c, "Tokyo Tower") == _VERIFIED
+    assert _country_of(c, "Marina Bay") == ("Singapore", "SG", "Singapore")
+    assert verifier.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_persist_grounds_by_default_with_no_injected_verifier(monkeypatch):
+    """THE LIVE SEAM. Every other test here injects a verifier; the only production caller
+    (`runner.py`) injects none. An implementation that grounds only when the parameter is
+    supplied passes all sixteen other outcomes and is a total no-op in production — the change
+    ships, the suite is green, and every row still writes NULL.
+
+    `verify_country` is dependency substitution for tests, NEVER a feature switch: this drives
+    the default path, with a durable job_id/lease_token so it mirrors the live fenced call.
+    Monkeypatching the module attribute works because `_ground_place` imports `reverse_country`
+    INSIDE the function, so the name resolves at call time."""
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    calls = []
+
+    async def fake_reverse(lat, lng, *, token):
+        calls.append((lat, lng))
+        return CountryResult(country_code="JP", country_name="Japan")
+
+    monkeypatch.setattr("geocode.mapbox_reverse.reverse_country", fake_reverse)
+    c = _Client({"jobs": [{"id": "job-1", "trip_id": "trip-1", "lease_token": "tok-1",
+                           "status": "running"}]})
+
+    await persist.persist_itinerary(c, "trip-1", [_gp("Tokyo Tower", *_JP)], ["2026-08-01"],
+                                    job_id="job-1", lease_token="tok-1")
+
+    assert calls == [_JP]
+    assert _country_of(c, "Tokyo Tower") == _VERIFIED
+    assert len(c.db["trip_places"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_persist_writes_null_country_without_a_mapbox_token(monkeypatch):
+    """The credential-free offline suite IS the production degradation path: no token ->
+    `_ground_place` raises on line 1 -> absorbed -> NULL, which is exactly today's behaviour
+    and why the pre-existing tests in this file stay green. Deleted explicitly rather than
+    assumed unset — a developer shell carrying the real token would otherwise call Mapbox."""
+    monkeypatch.delenv("MAPBOX_SECRET_TOKEN", raising=False)
+    c = _Client()
+
+    await persist.persist_itinerary(c, "trip-1", [_gp("Tokyo Tower", *_JP)], ["2026-08-01"],
+                                    job_id=None, lease_token=None)
+
+    assert _country_of(c, "Tokyo Tower") == _NULL
+    assert len(c.db["trip_places"]) == 1
 
 
 @pytest.mark.asyncio
@@ -720,8 +1117,6 @@ def test_evidence_json_conforms_to_TripPlaceEvidence(src, kind):
 
 
 # --- persist_tradeoffs -------------------------------------------------------
-import asyncio
-
 from models.tradeoff import TradeoffOption, TripTradeoffComparison, TripTradeoffNote
 
 

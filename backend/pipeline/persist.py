@@ -14,11 +14,15 @@ but not a POI id, so the name+geo gate would wrongly merge them.
 """
 from __future__ import annotations
 
+import asyncio
 import datetime as _dt
+import logging
 import math
 from collections import defaultdict
 
+from genagents.place_extractor import is_placeholder_url   # keyless import (no network at module scope)
 from genagents.transport import VALID_PROFILES, profile_to_mode   # keyless import (no network at module scope)
+from grounding import _ground_place
 from models.enrichment import WeatherReport
 from models.evidence import TripPlaceEvidence
 from models.place import CanonicalPlace
@@ -29,6 +33,7 @@ from pipeline.geo import haversine_m
 _VALID_PLACE_TYPES = {"attraction", "restaurant", "hotel", "area", "city",
                       "country", "station", "shop", "other"}
 _CATEGORY_MAP = {"transport": "station"}   # extractor emits 'transport'; enum has 'station'
+logger = logging.getLogger(__name__)
 
 
 def _place_type(category: str) -> str:
@@ -84,12 +89,131 @@ def _bbox_deltas(lat: float) -> tuple[float, float]:
     return lat_delta, lng_delta
 
 
-async def _find_or_create_place(client, place: CanonicalPlace) -> str:
+async def _safe_ground(client, place: CanonicalPlace, verify_country,
+                       failures: dict[int, str]) -> dict | None:
+    """One place's country verification, best-effort (guardrail #3): ANY failure -> None -> the
+    place persists with `country` NULL, which is exactly the behaviour that shipped before this
+    function existed. A Mapbox outage degrades `"Tokyo, Japan"` to `"Tokyo"`; it never fails a trip.
+
+    `Exception`, never `BaseException`: a `CancelledError` from a lost job lease must keep
+    propagating out of the gather rather than being absorbed into a silent NULL.
+
+    A verified answer whose CACHE WRITE failed is discarded too, and that is deliberate rather
+    than an accident of a broad `except` — `_store_cached_country` raises by design (guardrail
+    #7, strict write-through: we do not hand back a verified result we could not persist).
+    """
+    try:
+        return await _ground_place(client, place, verify_country=verify_country)
+    except Exception as exc:
+        # Type only, never the message — a Mapbox error can carry the access token.
+        failures[id(place)] = type(exc).__name__
+        return None
+
+
+async def _ground_group(client, group: list[CanonicalPlace], verify_country,
+                        failures: dict[int, str]) -> list[tuple[int, dict | None]]:
+    """Ground one coordinate's places SEQUENTIALLY — every member, no exceptions.
+
+    The first member seeds `geocode_country_cache`; the later ones hit it. Firing them
+    concurrently instead would have every member observe a cache miss before any upsert lands,
+    so every member pays Mapbox — not incorrect (the cache PK makes the upsert idempotent) but
+    it defeats the cache entirely.
+
+    NO MEMOIZATION OF ANY KIND inside the group: not the first member's verdict, not keyed by
+    claim, not keyed by anything. Caching is `_ground_place`'s own job and it is already correct
+    there. A caller-side shortcut is always wrong, because `_ground_place` applies PER-PLACE
+    gates — coordinates present, source URL not a placeholder, claim present — plus a per-place
+    comparison against that member's own LLM claim, none of which can be inferred from a sibling
+    sharing the coordinate.
+
+    Results are returned as `(id(input_place), grounded)` pairs rather than positionally:
+    `_ground_place` returns a `model_copy`, so keying off the grounded place's id would key a
+    DIFFERENT object and every lookup would silently miss.
+    """
+    out: list[tuple[int, dict | None]] = []
+    for place in group:
+        out.append((id(place), await _safe_ground(client, place, verify_country, failures)))
+    return out
+
+
+def _is_eligible_for_grounding(place: CanonicalPlace) -> bool:
+    """Mirror of `_ground_place`'s gate — FOR THE LOG LINE ONLY.
+
+    This never influences a persisted value: the only thing that decides a country is
+    `_ground_place` itself, per member. It exists so the aggregate log can say "eight
+    mismatches" (working as designed — coordinates that legitimately disagree with their claim)
+    apart from "eight HTTPStatusErrors" (a revoked credential), which a single
+    "zero verified" counter cannot.
+    """
+    return not (place.lat is None or place.lng is None
+                or is_placeholder_url(place.source_url)
+                or not place.country_code or not place.country_name)
+
+
+def _log_grounding(canonical: list[CanonicalPlace], grounded_by_id: dict[int, dict | None],
+                   failures: dict[int, str]) -> None:
+    """ONE aggregate line per trip. A missing token cannot reach production (it is a required
+    boot secret), so what stays silent here is a revoked credential, a 401/429, an outage, or
+    plain programming error — all of which look identical in the persisted rows (NULL)."""
+    counts = {"grounded": 0, "failed": 0, "ineligible": 0, "mismatched": 0}
+    for place in canonical:
+        if grounded_by_id.get(id(place)) is not None:
+            counts["grounded"] += 1
+        elif id(place) in failures:
+            counts["failed"] += 1          # an exception is what ACTUALLY happened to this place
+        elif not _is_eligible_for_grounding(place):
+            counts["ineligible"] += 1
+        else:
+            counts["mismatched"] += 1
+    logger.info(
+        "trip_place_grounding grounded=%d ineligible=%d mismatched=%d failed=%d failure_types=%s",
+        counts["grounded"], counts["ineligible"], counts["mismatched"], counts["failed"],
+        ",".join(sorted(set(failures.values()))) or "-",
+    )
+
+
+async def _ground_all(client, canonical: list[CanonicalPlace], *,
+                      verify_country) -> dict[int, dict | None]:
+    """Verify every canonical place's country: parallel ACROSS coordinates, sequential WITHIN one.
+
+    `dedupe_places` caps `canonical` at DEFAULT_MAX_PLACES = 8, so the fan-out is at most 8
+    distinct coordinates — no semaphore (a per-trip limiter would not bound aggregate
+    concurrency across simultaneous jobs anyway; the trigger for a process-wide one is observed
+    429s). The one way `canonical` exceeds 8 is the `user_requested`-only edge case in
+    `pipeline/dedup.py`, and those places have no source_url, so `is_placeholder_url`
+    short-circuits them before any network call.
+
+    Keyed by `id(place)`, matching `group_places_by_day`'s existing identity contract so two
+    distinct places sharing a name stay distinct. Safe ONLY because `canonical` holds a strong
+    reference for the whole call — no object can be freed and its id reused. Returns a map, and
+    never filters or mutates `canonical`: which places survive is not grounding's business.
+    """
+    by_coord: dict[tuple[float, float], list[CanonicalPlace]] = {}
+    for place in canonical:
+        if place.lat is not None and place.lng is not None:
+            by_coord.setdefault((place.lat, place.lng), []).append(place)
+    failures: dict[int, str] = {}
+    results = await asyncio.gather(
+        *[_ground_group(client, group, verify_country, failures) for group in by_coord.values()],
+        return_exceptions=True,
+    )
+    grounded_by_id = {pid: grounded
+                      for r in results if not isinstance(r, BaseException)
+                      for pid, grounded in r}
+    _log_grounding(canonical, grounded_by_id, failures)
+    return grounded_by_id
+
+
+async def _find_or_create_place(client, place: CanonicalPlace, *, grounded: dict | None) -> str:
     """Dedup-on-write: reuse a global places row matching by name/alias AND <500m, else insert.
     The bbox is a coarse indexable pre-filter (uses the (lat,lng) index); the exact haversine
     gate decides. NOTE: select-then-insert is not atomic — two DIFFERENT trips saving the same
     brand-new place concurrently can both insert (a rare cross-trip flywheel dup); full safety
-    needs a UNIQUE key/upsert on places (a migration), deferred until measured."""
+    needs a UNIQUE key/upsert on places (a migration), deferred until measured.
+
+    `grounded` is `_ground_place`'s verified result or None, and it is a REQUIRED keyword with
+    no default: a defaulted None is exactly the bypass a forgetful call site would take, and it
+    would be silent — the row would just come back country-less again."""
     lat_d, lng_d = _bbox_deltas(place.lat)
     candidates = (await client.table("places").select("id,name,aliases,lat,lng")
                   .gte("lat", place.lat - lat_d).lte("lat", place.lat + lat_d)
@@ -99,7 +223,7 @@ async def _find_or_create_place(client, place: CanonicalPlace) -> str:
         if _place_matches(place, row) and \
                 haversine_m(place.lat, place.lng, row["lat"], row["lng"]) < DEFAULT_DISTANCE_M:
             return row["id"]
-    inserted = (await client.table("places").insert({
+    new_row = {
         "name": place.name,
         # The local-script name, verbatim from the caption (20260720190000). `_place_matches`
         # above already reads this field for alias dedup, so a row inserted without it stays
@@ -110,7 +234,17 @@ async def _find_or_create_place(client, place: CanonicalPlace) -> str:
         "city": getattr(place, "city_or_region_guess", None),
         "aliases": list(getattr(place, "aliases", []) or []),
         "source_summary": _source_summary(place),
-    }).execute()).data
+    }
+    if grounded is not None:
+        # ALL THREE OR NONE — `places_country_fields_pair_check` (20260718130000) requires code
+        # and name to be set together. `country` carries the country NAME, the same value
+        # `find_or_create_place` binds to `p_country` on the organize path (grounding.py), so
+        # one column never holds "JP" for some rows and "Japan" for others; PlaceIntelPanel
+        # renders it joined with area/city and would show both spellings side by side.
+        new_row["country"] = grounded["country_name"]
+        new_row["country_code"] = grounded["country_code"]
+        new_row["country_name"] = grounded["country_name"]
+    inserted = (await client.table("places").insert(new_row).execute()).data
     return inserted[0]["id"]
 
 
@@ -164,7 +298,7 @@ async def _replace_trip_rows(client, trip_id: str, place_rows: list[dict], day_r
 
 async def persist_itinerary(client, trip_id: str, canonical: list[CanonicalPlace],
                             dates: list[str], *, job_id: str | None,
-                            lease_token: str | None) -> int:
+                            lease_token: str | None, verify_country=None) -> int:
     """Persist the trip's normalized rows. Retry-safe (replaces this trip's links/days).
 
     Day assignment is IDENTITY-based: `group_places_by_day` produces the same geo-order +
@@ -183,9 +317,23 @@ async def persist_itinerary(client, trip_id: str, canonical: list[CanonicalPlace
     place ids one round-trip at a time, which left the trip with no itinerary at all for the
     length of that loop — and left it that way permanently if a lookup raised mid-loop.
 
+    A non-NULL `places.country` is a VERIFICATION RECEIPT, not a label: it means the coordinate
+    reverse-geocoded AND the answer agreed with the extractor's independent claim. So every
+    place is grounded here, at the persistence boundary, before the insert that writes it —
+    filling the column from the LLM's unverified claim instead would make an unchecked row look
+    verified, with no way to tell the two apart afterwards (guardrail #1). Unverifiable stays
+    NULL, which is the honest answer and today's behaviour.
+
+    `verify_country` is DEPENDENCY SUBSTITUTION FOR TESTS, never a feature switch. There is
+    exactly one grounding path and the default is it: `None` means `_ground_place` resolves the
+    real `reverse_country` itself, so the live caller (which passes nothing) grounds like every
+    other caller. Do not add a branch that skips grounding when it is absent — that ships as a
+    complete no-op in production while the suite stays green.
+
     Raises on a DB error — the caller (runner) degrades to saved_with_gaps — or `LeaseLost`
     if a replacement claimed the job, which the runner must NOT degrade but abort on.
     """
+    grounded_by_id = await _ground_all(client, canonical, verify_country=verify_country)
     groups = group_places_by_day(canonical, dates)   # identity-preserving, same grouping as the itinerary
 
     linked: set[str] = set()   # dedup place_ids within this trip
@@ -197,7 +345,10 @@ async def persist_itinerary(client, trip_id: str, canonical: list[CanonicalPlace
             if place.lat is None or place.lng is None:   # coord filter (places.lat/lng NOT NULL)
                 dropped += 1
                 continue
-            place_id = await _find_or_create_place(client, place)
+            # `groups` order, never gather-completion order — the day/sort_order assignment is
+            # the itinerary's, and grounding is only a lookup on the way past.
+            place_id = await _find_or_create_place(client, place,
+                                                   grounded=grounded_by_id.get(id(place)))
             # Two distinct canonical places can resolve to the SAME global place_id (the DB's
             # accumulated aliases merge more than in-trip dedup). Guard the trip_places
             # UNIQUE(trip_id, place_id): keep the first link, skip the duplicate.

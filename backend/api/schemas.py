@@ -14,7 +14,7 @@ class GenerateTripRequest(BaseModel):
     start_date: str
     end_date: str
     destination_hint: str | None = None
-    # Flows into LLM prompts (preference_block) and the mem0 synopsis; bounded like
+    # Flows into LLM prompts (preference_block); bounded like
     # `preferences` (A5) -- max_length, not Literal, so an unrecognized pace value is
     # still accepted (no breaking 422 for the frontend), just capped in cost/injection surface.
     pace: str = Field(default="balanced", max_length=32)

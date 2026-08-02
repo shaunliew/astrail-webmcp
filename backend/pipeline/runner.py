@@ -543,15 +543,11 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
         # write-back is best-effort past the point of no return — a raise here must
         # never emit a second result or flip an already-succeeded trip (guardrail #3).
         # persist_trip_memory already swallows its own mem0/DB errors; this outer guard
-        # covers trip_synopsis / destination derivation raising too.
+        # covers an unexpected raise from the write-back itself.
         try:
-            from pipeline.preferences import persist_trip_memory, trip_synopsis
-            destination = (next((getattr(p, "city_or_region_guess", None) for p in canonical
-                                if getattr(p, "city_or_region_guess", None)), None)
-                or destination_hint or "your destination")[:80]
+            from pipeline.preferences import persist_trip_memory
             await persist_trip_memory(client, mem0, user_id=user_id, trip_id=trip_id,
-                                      ctx=pref_ctx,
-                                      synopsis=trip_synopsis(itinerary, pace, destination))
+                                      ctx=pref_ctx)
         except Exception:
             try:
                 await record_event(client, trip_id, event_type="warning", stage="save",

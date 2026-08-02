@@ -37,20 +37,33 @@ def test_blank_input_no_memory_infers_default():
 
 def test_distill_only_writes_on_explicit():
     explicit = merge_preferences(explicit_text="loves ramen", pace="relaxed", memory_facts=[])
-    assert distill_memory_text(explicit, synopsis="Planned a 3-day Tokyo trip.") \
-        == "Travel preferences: loves ramen. Planned a 3-day Tokyo trip."
+    assert distill_memory_text(explicit) == "Travel preferences: loves ramen"
     mem = merge_preferences(explicit_text="", pace="balanced", memory_facts=["likes ramen"])
-    assert distill_memory_text(mem, synopsis="x") is None   # nothing NEW to learn
+    assert distill_memory_text(mem) is None   # nothing NEW to learn
     default = merge_preferences(explicit_text="", pace="balanced", memory_facts=[])
-    assert distill_memory_text(default, synopsis="x") is None
+    assert distill_memory_text(default) is None
 
 
-def test_distill_never_leaks_synopsis_secrets():
-    # synopsis is a templated string built by the caller; distill only concatenates —
-    # this pins that raw reel text is never introduced here.
-    ctx = merge_preferences(explicit_text="quiet trip", pace="relaxed", memory_facts=[])
-    out = distill_memory_text(ctx, synopsis="Planned a 2-day Kyoto trip (relaxed pace).")
-    assert "reel" not in out.lower() and "caption" not in out.lower()
+def test_distill_emits_only_the_users_own_words():
+    # Was test_distill_never_leaks_synopsis_secrets. The synopsis it guarded is gone
+    # (PRD §357), but the guarantee it protected still matters: the mem0 payload carries
+    # the user's stated preference and NOTHING else a caller could smuggle in.
+    from pipeline.preferences import distill_memory_text, merge_preferences
+    ctx = merge_preferences(explicit_text="ramen, quiet days", pace="relaxed", memory_facts=[])
+    assert distill_memory_text(ctx) == "Travel preferences: ramen, quiet days"
+
+
+def test_distill_memory_text_excludes_trip_history():
+    # PRD §357: distilled preference facts only — never trip history.
+    from pipeline.preferences import distill_memory_text, merge_preferences
+    ctx = merge_preferences(explicit_text="nice food", pace="balanced", memory_facts=[])
+    assert distill_memory_text(ctx) == "Travel preferences: nice food"
+
+
+def test_trip_synopsis_is_gone():
+    # Deleted, not merely bypassed — an accepted-but-ignored parameter is a trap.
+    import pipeline.preferences as p
+    assert not hasattr(p, "trip_synopsis")
 
 
 class _FakeMem0:
@@ -269,8 +282,7 @@ def test_write_back_writes_event_and_adds_on_explicit():
     ctx = merge_preferences(explicit_text="loves ramen", pace="relaxed", memory_facts=[])
     mem, client = _FakeMem0Add(), _FakeClient()
     learned = asyncio.run(persist_trip_memory(
-        client, mem, user_id="u1", trip_id="t1", ctx=ctx,
-        synopsis="Planned a 3-day Tokyo trip (relaxed pace)."))
+        client, mem, user_id="u1", trip_id="t1", ctx=ctx))
     assert learned == ["loves ramen"]
     assert client.events and client.events[0]["event_type"] == "learned"
     assert client.events[0]["trip_id"] == "t1"
@@ -282,8 +294,7 @@ def test_write_back_swallows_add_error():
     ctx = merge_preferences(explicit_text="quiet trip", pace="relaxed", memory_facts=[])
     mem, client = _FakeMem0Add(add_raises=True), _FakeClient()
     # must NOT raise — write-back is best-effort
-    asyncio.run(persist_trip_memory(client, mem, user_id="u1", trip_id="t1",
-                                    ctx=ctx, synopsis="x"))
+    asyncio.run(persist_trip_memory(client, mem, user_id="u1", trip_id="t1", ctx=ctx))
     assert client.events and client.events[-1]["event_type"] == "failed"
 
 
@@ -292,7 +303,7 @@ def test_write_back_noop_when_nothing_learned():
     ctx = merge_preferences(explicit_text="", pace="balanced", memory_facts=["likes ramen"])
     mem, client = _FakeMem0Add(), _FakeClient()
     learned = asyncio.run(persist_trip_memory(client, mem, user_id="u1", trip_id="t1",
-                                              ctx=ctx, synopsis="x"))
+                                              ctx=ctx))
     assert learned == [] and mem.added == []   # memory-only trip: nothing new to store
 
 
@@ -304,25 +315,9 @@ def test_write_back_disabled_memory_writes_no_event():
     ctx = merge_preferences(explicit_text="loves ramen", pace="relaxed", memory_facts=[])
     client = _FakeClient()
     learned = asyncio.run(persist_trip_memory(client, None, user_id="u1", trip_id="t1",
-                                              ctx=ctx, synopsis="x"))
+                                              ctx=ctx))
     assert learned == ["loves ramen"]
     assert client.events == []   # no audit row when memory is disabled
-
-
-def test_trip_synopsis_uses_real_itinerary_shape_and_destination():
-    # Finding 2: ItineraryDay has no `.places`/`.city` — trip_synopsis must derive the
-    # day count from the real ItineraryOutput shape and take destination from the caller.
-    from models.trip import ItineraryDay, ItineraryOutput
-    from pipeline.preferences import trip_synopsis
-    itinerary = ItineraryOutput(
-        title="Tokyo trip", source="reels", source_places=["Tokyo Tower"],
-        days=[
-            ItineraryDay(day_number=1, date="2026-08-01", place_names=["Tokyo Tower"]),
-            ItineraryDay(day_number=2, date="2026-08-02", place_names=["Senso-ji"]),
-        ])
-    result = trip_synopsis(itinerary, "relaxed", "Tokyo")
-    assert result == "Planned a 2-day Tokyo trip (relaxed pace)."
-    assert "the destination" not in result
 
 
 @pytest.mark.live

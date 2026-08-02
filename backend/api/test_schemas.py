@@ -33,8 +33,8 @@ def test_mixed_reel_urls_and_place_ids_is_rejected():
 
 def test_pace_over_max_length_is_rejected():
     # gstack /review cross-model finding (High): `pace` flows unbounded into LLM prompts
-    # (preference_block -> restaurant/narrator) and the mem0 synopsis -- the same
-    # cost/injection surface `preferences` was already capped at 2000 for (A5). Bound
+    # (preference_block -> restaurant/narrator) -- the same cost/injection surface
+    # `preferences` was already capped at 2000 for (A5). Bound
     # with max_length (NOT Literal -- a Literal would 422-reject any pace value outside
     # a fixed set, a breaking change for the frontend).
     with pytest.raises(ValidationError):

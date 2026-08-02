@@ -11,8 +11,9 @@ Determinism / eval-safety: nothing here touches dedupe/assemble_itinerary (the
 frozen 6229.0 anchor). Personalization reaches the trip ONLY through the enrich
 agents' prompts (restaurant, narrator) via preference_block().
 
-Untrusted content (guardrail #11): the mem0.add payload is ONLY distilled prefs +
-a templated synopsis — never raw reel caption/transcript, never secrets.
+Untrusted content (guardrail #11): the mem0.add payload is ONLY the user's own
+distilled preference text — never raw reel caption/transcript, never secrets, and
+(PRD §357) never trip history.
 
 NOTE (design): this is retrieve-once-per-generation / write-once-per-trip — the
 OPPOSITE of the mem0 travel-assistant cookbook's per-turn add(raw_message). The
@@ -69,14 +70,19 @@ def preference_block(ctx: PreferenceContext) -> str | None:
     return " | ".join(parts) or None
 
 
-def distill_memory_text(ctx: PreferenceContext, *, synopsis: str) -> str | None:
+def distill_memory_text(ctx: PreferenceContext) -> str | None:
     """The mem0.add payload — ONLY when the user stated something NEW this trip
-    (source=explicit). A memory-only or inferred trip has nothing new to learn, so
-    we skip the write (saves the API call + the free-tier quota, avoids duplicates).
-    synopsis is a caller-built templated string (never raw reel text)."""
+    (source=explicit). A memory-only or inferred trip has nothing new to learn, so we skip
+    the write (saves the API call + free-tier quota, avoids duplicates).
+
+    PRD §357: preference facts ONLY. The trip synopsis that used to be appended here made
+    mem0 store a second, trip-history memory per trip ("User has planned a four-day trip
+    to Tokyo…"), which surfaced to the user as a "saved travel preference" and would
+    become visible content on the Settings screen. Do not reintroduce it.
+    """
     if ctx.source != "explicit" or not ctx.explicit_text:
         return None
-    return f"Travel preferences: {ctx.explicit_text}. {synopsis}"
+    return f"Travel preferences: {ctx.explicit_text}"
 
 
 async def build_preference_context(mem0, user_id: str, *, explicit_text: str | None,
@@ -157,24 +163,14 @@ async def list_memory_facts(mem0, user_id: str) -> tuple[str, list[dict]]:
     return "ok", facts
 
 
-def trip_synopsis(itinerary, pace: str, destination: str) -> str:
-    """A templated one-line trip summary for the mem0.add payload — NO LLM, NO raw
-    reel text. Derived only from the assembled itinerary's shape + a caller-supplied
-    destination (ItineraryDay has no per-place city; the caller derives it from the
-    canonical places / destination_hint)."""
-    days = getattr(itinerary, "days", []) or []
-    n = len(days)
-    return f"Planned a {n}-day {destination} trip ({pace} pace)."
-
-
 async def persist_trip_memory(client, mem0, *, user_id: str, trip_id: str,
-                              ctx: PreferenceContext, synopsis: str) -> list[str]:
+                              ctx: PreferenceContext) -> list[str]:
     """Write-once, awaited AFTER the terminal `result` event so it's invisible to the
     stream yet can't be GC'd. Records a memory_events audit row and pushes mem0.add —
     BOTH best-effort (guardrail #3): a mem0 error OR TIMEOUT can't fail the (already
     saved) trip. Only writes when the user stated something NEW this trip
     (distill_memory_text is None otherwise)."""
-    text = distill_memory_text(ctx, synopsis=synopsis)
+    text = distill_memory_text(ctx)
     learned = [ctx.explicit_text] if text else []
     if not text:
         return learned   # memory-only / inferred trip: nothing new to store or audit

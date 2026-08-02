@@ -48,7 +48,7 @@ class FilterResult:
     """What one Telegram message yielded. The caller's ENTIRE view of that message.
 
     A bare tuple of URLs is not enough: the caller must log that an Instagram URL was
-    rejected, and must know a ✅ would be a lie — and it may not re-read message text to
+    rejected, and must know a 👍 would be a lie — and it may not re-read message text to
     find either out, because this module is the single reader.
     """
 
@@ -61,7 +61,7 @@ class FilterResult:
 
     truncated: bool
     """True when the 10-URL cap discarded valid reels. Without it an 11-reel message
-    ingests 10 and still earns a ✅ claiming every reel was accepted."""
+    ingests 10 and still earns a 👍 claiming every reel was accepted."""
 
     overflowed: bool
     """True when the entity budget refused to parse the message at all.
@@ -203,7 +203,7 @@ def extract_reel_urls(message: dict) -> FilterResult:
     if len(entities) + len(caption_entities) > _MAX_ENTITIES:
         # `overflowed=True` is the whole point of the flag: this return is otherwise
         # indistinguishable from the one ordinary chatter produces, and a reel in here is
-        # dropped. The caller logs it at ERROR and withholds the ✅.
+        # dropped. The caller logs it at ERROR and withholds the 👍.
         return FilterResult((), (), truncated=False, overflowed=True)
 
     urls: list[str] = []

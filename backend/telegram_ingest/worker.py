@@ -249,7 +249,7 @@ async def _consume(queue: asyncio.Queue, *, db: Any, user_id: str) -> None:
             # `run_organize_job` catches its own post-claim exceptions, marks the row
             # failed and RETURNS `{"status": "failed"}` (`organizer.py:744-749`). Nothing
             # raises, so without this line: the job is terminal, `recover_organize_jobs`
-            # selects only `pending` so nothing retries it, the human already has their ✅
+            # selects only `pending` so nothing retries it, the human already has their 👍
             # — and no record exists anywhere that a reel died. That is the silent drop
             # guardrail #12 forbids.
             #

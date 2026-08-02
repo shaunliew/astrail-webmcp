@@ -292,7 +292,7 @@ before the day-loop, passing the verified country into `_find_or_create_place` e
    at one coordinate can carry different LLM country claims, and the second one's claim must be
    checked against the cached answer, not assumed to match the first one's.
 
-   **THE PERMITTED IMPLEMENTATION IS EXACTLY THIS. Nothing else is acceptable:**
+   **THE PERMITTED IMPLEMENTATION IS EXACTLY THIS — both levels. Nothing else is acceptable:**
 
    ```python
    async def _ground_group(client, group, verify_country):
@@ -300,6 +300,19 @@ before the day-loop, passing the verified country into `_find_or_create_place` e
        for place in group:                       # sequential, ALL members, no exceptions
            out.append((id(place), await _safe_ground(client, place, verify_country)))
        return out
+
+   # parallel ACROSS coordinates, sequential WITHIN one:
+   by_coord: dict[tuple[float, float], list] = {}
+   for place in canonical:
+       if place.lat is not None and place.lng is not None:
+           by_coord.setdefault((place.lat, place.lng), []).append(place)
+   results = await asyncio.gather(
+       *[_ground_group(client, g, verify_country) for g in by_coord.values()],
+       return_exceptions=True,
+   )
+   grounded_by_id = {pid: g
+                     for r in results if not isinstance(r, BaseException)
+                     for pid, g in r}
    ```
 
    **No memoization of any kind inside the group.** Not of the first member's result, not
@@ -483,6 +496,13 @@ with `country` NULL, which is exactly today's behaviour. Two consequences worth 
    verdict, because it never calls `_ground_place` for that member at all. d2 additionally puts
    an ineligible member *first*, so no "first member is special" implementation survives either.
 
+   **(e) TWO DISTINCT coordinates, different countries.** *(Round 6 polish.)* One place at a
+   `JP` coordinate and one at a `SG` coordinate, both claims agreeing with their own provider
+   answer. Assert **each row gets its OWN country** (`Japan` and `Singapore`, not both the
+   same). This is the only test that makes the **cross-group flatten and the id-keyed mapping**
+   load-bearing — every other test has a single coordinate group, so a bug that merges groups or
+   mis-pairs ids with results would go unseen.
+
 ### E. Known limitations this change deliberately does NOT fix
 
 Both are conservative — they yield NULL, never a wrong country — so neither violates §2.
@@ -616,6 +636,7 @@ CODE PATHS (pipeline/persist.py)                        USER-VISIBLE OUTCOME
   │   │                                         -> "Japan", NULL, "Japan" + 1 call <- D2(d1)
   │   └── [GAP] same coord+claim, ineligible FIRST (placeholder, elig, placeholder)
   │                                             -> NULL, "Japan", NULL + 1 call    <- D2(d2)
+  │   └── [GAP] TWO distinct coords (JP + SG)   -> "Japan" and "Singapore", not both same <- D2(e)
   └── _find_or_create_place()
       ├── [GAP] insert carries country + country_code + country_name (all three, C1)
       ├── [★★ TESTED] dedup hit reuses row — test_persist.py:154 (existing, unaffected)
@@ -624,14 +645,14 @@ CODE PATHS (pipeline/persist.py)                        USER-VISIBLE OUTCOME
 NOT COVERED BY DESIGN: _find_or_create_restaurant_place (A1, deferred)
 NOT A FAILURE MODE:     absent MAPBOX_SECRET_TOKEN — boot secret, see Failure modes below
 
-COVERAGE: 0/16 new paths tested — all 16 are the work of T1/T2.
+COVERAGE: 0/17 new paths tested — all 17 are the work of T1/T2.
 ```
 
-**Every one of those 16 outcomes is required.** Two are regression-class under the IRON RULE
+**Every one of those 17 outcomes is required.** Two are regression-class under the IRON RULE
 (mismatch→NULL, and Mapbox-raises→trip-still-saves): they pin behaviour that exists today and
 that this change could silently take away.
 
-**Sixteen outcomes need not be sixteen test functions** (round 2). Parametrize the compatible
+**Seventeen outcomes need not be seventeen test functions** (round 2). Parametrize the compatible
 single-place cases — verified / mismatch / no-claim / placeholder-URL / provider-raises all
 share one arrange-act shape and differ only in input and expected row. D2 (a1)/(a2)/(a3) are
 also naturally one parametrized test. **Do NOT merge across the same-coordinate group** (the
@@ -971,25 +992,22 @@ places created 2026-08-02:
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | ISSUES_OPEN | 8 issues, 0 critical gaps |
-| Codex Review | `codex exec gpt-5.6-sol` | Independent 2nd opinion | 5 | ISSUES_FOUND | 7 blocking, all folded; last unverified |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR | 8 issues, 0 critical gaps, all folded |
+| Codex Review | `codex exec gpt-5.6-sol` | Independent 2nd opinion | 6 | **PASS 8.7/10** | 7 blocking across r1-r5, all folded; r6 PASS |
 | Mapbox research | `mapbox-docs-mcp` | Provider facts, not memory | 1 | CLEAR | 3 assertions replaced with measured facts |
-| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
-| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | not applicable (backend correctness fix) |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | not applicable (no UI change) |
 
-- **CODEX:** 5 rounds, 6.3 → 6.9 → 6.9 → 6.9 → 6.9. **Every single blocking finding across all
-  five rounds was a test that could not fail**, never a design flaw: helper-not-live-path,
-  name-provenance, cache-vs-gather contradiction (r1); group-result-copying (r2);
-  one-claim-order-only (r3); injected-verifier-only-seam (r4); claim-memoized-gate-skip (r5).
-- **CROSS-MODEL:** No tension on §2 — the eng review and all five Codex rounds independently
-  endorsed grounding-before-persist over the two-line insert. Codex independently reproduced the
-  eng review's third-writer finding and agreed on deferring it, and **corrected the eng review
-  twice** (the "silent missing token" gap — it is a required boot secret; and the semaphore's
-  blast-radius claim — an 8-place cap makes it a no-op). Both corrections verified against source.
-- **VERDICT:** Design settled and endorsed in every round. Round 5's fold added a structural
-  rule (§6b B4 pins the one permitted loop shape) plus the D2(d) eligibility tests, so the
-  variant family is now excluded by construction rather than enumerated.
+- **CODEX:** 6 rounds, 6.3 → 6.9 → 6.9 → 6.9 → 6.9 → **8.7 PASS** (Correctness 8.9 · Safety 8.6
+  · Testability 8.8 · Completeness 8.5 · Clarity 9.2). **Every blocking finding in rounds 1-5
+  was a test that could not fail**, never a design flaw. What finally cleared the gate was not
+  another test: it was §6b B4 pinning the one permitted loop shape, which excludes the whole
+  variant family by construction. Rounds 2, 3 and 5 had each found a different member of that
+  family, so enumeration was never going to converge.
+- **CROSS-MODEL:** No tension on §2 — endorsed by the eng review and all six Codex rounds.
+  Codex independently reproduced the third-writer finding and agreed on deferring it, and
+  **corrected the eng review twice** (the "silent missing token" gap — a required boot secret;
+  the semaphore blast-radius claim — an 8-place cap makes it a no-op). Both verified at source.
+- **VERDICT:** **CLEARED — ENG + CODEX PASS. Ready to implement.**
 
-**UNRESOLVED DECISIONS:**
-- Round 5's blocking finding is folded but not yet re-verified; the next Codex round decides
-  whether the gate clears 7.0.
+NO UNRESOLVED DECISIONS

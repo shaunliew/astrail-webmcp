@@ -207,14 +207,26 @@ async def health():
 
 @app.get("/readiness")
 async def readiness():
-    """Deep readiness probe: confirms Supabase is reachable. NOT the deploy gate
-    (that is /health) — a DB blip should not fail a rolling deploy."""
+    """Deep readiness probe: confirms Supabase is reachable, and reports mem0's
+    CONFIGURATION state. NOT the deploy gate (that is /health) — neither a DB blip nor a
+    mem0 outage should fail a rolling deploy.
+
+    Uses mem0_status(), which observes the singleton without constructing it: calling
+    get_mem0_client() here would retry an 8s blocking constructor on every poll during a
+    mem0 outage. mem0 is reported, never required — MEM0_API_KEY deliberately stays OUT of
+    REQUIRED_SECRETS (guardrail #3). Before this field existed, an unset or mistyped key
+    left the service fully green while memory silently did nothing, which is how the
+    2026-08-02 'mem0 is not working' report became undiagnosable from the outside.
+    """
+    from mem0_client import mem0_status
+
+    mem0_state = mem0_status()
     try:
         client = await get_supabase_client()
         await client.table("users").select("id").limit(1).execute()
-        return {"ready": True}
+        return {"ready": True, "mem0": mem0_state}
     except Exception:
-        return JSONResponse(status_code=503, content={"ready": False})
+        return JSONResponse(status_code=503, content={"ready": False, "mem0": mem0_state})
 
 
 @app.post("/saved-reels", response_model=CaptureSavedReelResponse)

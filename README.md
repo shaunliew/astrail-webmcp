@@ -130,9 +130,11 @@ Render's deploy gate. Always cheap, never touches the DB.
 ```
 
 ### `GET /readiness` — deep readiness (no auth)
-Confirms Supabase is reachable (monitoring only — **not** the deploy gate).
-- `200` → `{ "ready": true }`
-- `503` → `{ "ready": false }` (DB unreachable)
+Confirms Supabase is reachable and reports mem0's **configuration** state (monitoring only — **not** the deploy gate).
+- `200` → `{ "ready": true, "mem0": "configured" | "disabled" | "init_failed" | "not_initialized" }`
+- `503` → `{ "ready": false, "mem0": … }` (DB unreachable — `mem0` is still reported)
+
+`mem0` is observed, never probed: `configured` means a key is set and the client was built, **not** that mem0 is reachable right now. `disabled` = no key · `init_failed` = key set but construction failed · `not_initialized` = key set, not yet constructed. A mem0 outage never fails readiness (guardrail #3).
 
 ---
 

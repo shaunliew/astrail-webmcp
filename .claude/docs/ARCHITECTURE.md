@@ -119,7 +119,7 @@ Stage events (additive — frontend tolerates unknown types):
 
 Infra (unauthenticated by design):
 - `GET /health` — dumb liveness; the Render `healthCheckPath` deploy gate (never touches the DB, so a DB blip can't fail a deploy).
-- `GET /readiness` — deep probe (confirms Supabase reachable); monitoring only, NOT the deploy gate. `200 {"ready":true}` / `503 {"ready":false}`.
+- `GET /readiness` — deep probe (confirms Supabase reachable) + mem0's configuration state; monitoring only, NOT the deploy gate. `200 {"ready":true,"mem0":"configured|disabled|init_failed|not_initialized"}` / `503 {"ready":false,"mem0":…}` (mem0 is reported on the failure path too). `mem0` is **observed, not probed** — `mem0_status()` reads the singleton without constructing it, because `get_mem0_client()` retries an 8s blocking constructor after a failure and a polled probe must not amplify a mem0 outage. `configured` is a **configuration** claim (key set + client built), never a connectivity claim; mem0 is reported, never required (guardrail #3 — `MEM0_API_KEY` stays out of `REQUIRED_SECRETS`).
 
 Authenticated (Supabase JWT, ES256/JWKS):
 - `POST /generate-trip` — accepts `reel_urls` (1–5) + `start_date`/`end_date` + optional `destination_hint`/`pace`/`preferences`; creates a Supabase trip row + enqueues a durable job; returns `{trip_id}` (snake_case, per the shipped `GenerateTripResponse`). **Two-layer per-user rate limit:** slowapi in-memory burst (`3/minute`, keyed on `request.state.user_id`) + a durable daily quota (`5/day` via an atomic `security definer` RPC on `user_daily_usage`) → `429` on either (burst 429 carries `Retry-After`; daily-cap 429 does not).

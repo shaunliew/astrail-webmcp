@@ -8,6 +8,7 @@ import mem0_client
 def _reset():
     mem0_client._client = None
     mem0_client._initialized = False
+    mem0_client._init_failed = False
 
 
 def test_no_key_returns_none(monkeypatch):
@@ -87,6 +88,7 @@ def test_transient_failure_then_success(monkeypatch):
     monkeypatch.setattr(mem0_client, "_construct", boom)
     assert asyncio.run(mem0_client.get_mem0_client()) is None
     assert mem0_client._initialized is False
+    assert mem0_client._init_failed is True
 
     def fake_construct():
         return object()
@@ -95,3 +97,43 @@ def test_transient_failure_then_success(monkeypatch):
     result = asyncio.run(mem0_client.get_mem0_client())
     assert result is not None
     assert mem0_client._initialized is True
+    # A recovery must CLEAR the failure flag, not just stop looking at it. mem0_status()
+    # short-circuits on `_client is not None`, so a stale _init_failed=True is invisible
+    # today — and would silently become a lie the moment that check order changes.
+    assert mem0_client._init_failed is False
+
+
+def test_mem0_status_disabled_without_key(monkeypatch):
+    import mem0_client
+    monkeypatch.delenv("MEM0_API_KEY", raising=False)
+    assert mem0_client.mem0_status() == "disabled"
+
+
+def test_mem0_status_configured_when_client_built(monkeypatch):
+    import mem0_client
+    monkeypatch.setenv("MEM0_API_KEY", "m0-test")
+    monkeypatch.setattr(mem0_client, "_client", object())
+    assert mem0_client.mem0_status() == "configured"
+
+
+def test_mem0_status_init_failed_after_a_failed_attempt(monkeypatch):
+    import mem0_client
+    monkeypatch.setenv("MEM0_API_KEY", "m0-test")
+    monkeypatch.setattr(mem0_client, "_client", None)
+    monkeypatch.setattr(mem0_client, "_init_failed", True)
+    assert mem0_client.mem0_status() == "init_failed"
+
+
+def test_mem0_status_never_constructs_a_client(monkeypatch):
+    # THE point of this accessor: /readiness is polled, and get_mem0_client() retries an
+    # 8s blocking constructor after a failure. The probe must never trigger that.
+    import mem0_client
+    monkeypatch.setenv("MEM0_API_KEY", "m0-test")
+    monkeypatch.setattr(mem0_client, "_client", None)
+    monkeypatch.setattr(mem0_client, "_init_failed", False)
+
+    def _boom():
+        raise AssertionError("mem0_status must not construct a client")
+
+    monkeypatch.setattr(mem0_client, "_construct", _boom)
+    assert mem0_client.mem0_status() == "not_initialized"      # observed, not triggered

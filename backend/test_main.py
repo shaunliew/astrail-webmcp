@@ -823,7 +823,10 @@ async def test_readiness_ok_when_db_reachable(monkeypatch):
     async with _async_client() as ac:
         r = await ac.get("/readiness")
     assert r.status_code == 200
-    assert r.json() == {"ready": True}
+    assert r.json()["ready"] is True
+    # mem0's configuration state rides along on every probe (see test_settings_routes.py);
+    # its VALUE depends on ambient env, so pin only that the field is reported at all.
+    assert "mem0" in r.json()
 
 
 async def test_readiness_503_when_db_unreachable(monkeypatch):

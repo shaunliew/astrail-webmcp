@@ -21,6 +21,7 @@ import sys
 
 _client = None          # AsyncMemoryClient | None
 _initialized = False
+_init_failed = False    # True once a construction attempt has failed (see mem0_status)
 _lock = asyncio.Lock()
 
 # mem0's AsyncMemoryClient.__init__ validates the key via a SYNC `requests.get`
@@ -53,7 +54,7 @@ async def get_mem0_client():
     None means memory is DISABLED (no key, or mem0 unreachable at construction) —
     callers MUST treat None as 'no memory', never as an error.
     """
-    global _client, _initialized
+    global _client, _initialized, _init_failed
     if _initialized:
         return _client
     async with _lock:
@@ -69,10 +70,35 @@ async def get_mem0_client():
                 asyncio.get_running_loop().run_in_executor(_CONSTRUCT_EXECUTOR, _construct),
                 timeout=8,
             )
+            _init_failed = False
             _initialized = True
         except Exception as e:  # noqa: BLE001 — timeout / API error → disabled THIS attempt only
             print(f"[mem0] client unavailable this attempt, memory disabled: {type(e).__name__}",
                   file=sys.stderr)
             _client = None            # leave _initialized False → a later call RETRIES (Codex C7:
                                       # a transient boot blip must not disable memory process-wide)
+            _init_failed = True       # observable by mem0_status() without re-triggering construction
     return _client
+
+
+def mem0_status() -> str:
+    """Non-networking view of the memory singleton, for /readiness.
+
+    OBSERVES state; never constructs. get_mem0_client() intentionally retries after a
+    failure (it leaves _initialized False so a transient boot blip does not disable memory
+    process-wide), which means calling it from a polled health probe would re-run an
+    8-second blocking constructor on every poll during a mem0 outage.
+
+    'configured' means a key is set and a client object exists — NOT that mem0 is
+    reachable right now. Construction is memoized and does no network I/O on later calls,
+    so any stronger word would assert something never tested.
+    """
+    # Bare truthiness DELIBERATELY, matching get_mem0_client's own check (line 62) rather
+    # than being stricter. A whitespace-only key is truthy, so the getter WILL attempt
+    # construction and fail — this must report `init_failed`, not `disabled`. A status
+    # that contradicts what the getter actually does is worse than no status.
+    if not os.environ.get("MEM0_API_KEY"):
+        return "disabled"
+    if _client is not None:
+        return "configured"
+    return "init_failed" if _init_failed else "not_initialized"

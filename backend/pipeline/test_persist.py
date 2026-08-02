@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 import pytest
 
@@ -560,6 +561,115 @@ async def test_persist_grounds_distinct_coordinates_independently(monkeypatch):
     assert _country_of(c, "Tokyo Tower") == _VERIFIED
     assert _country_of(c, "Marina Bay") == ("Singapore", "SG", "Singapore")
     assert verifier.calls == 2
+
+
+_OSAKA = (34.6937, 135.5023)
+_KYOTO = (35.0116, 135.7681)
+
+
+class _VerifierRaisingAt(_Verifier):
+    """Answers per coordinate, EXCEPT one that raises — the only way to put a `failed` place
+    and a `mismatched` place in the same trip, which is the pairing the log line exists for."""
+
+    def __init__(self, *args, raise_at, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.raise_at = raise_at
+
+    async def __call__(self, lat, lng, *, token):
+        if (lat, lng) == self.raise_at:
+            self.calls += 1
+            raise RuntimeError("Mapbox reverse-country error: ConnectError")
+        return await super().__call__(lat, lng, token=token)
+
+
+def _four_outcome_trip():
+    """One place per grounding outcome, on four distinct coordinates (so no member's cached
+    answer decides another's), plus the verifier that produces them."""
+    places = [
+        _gp("Grounded", *_JP),
+        # Ineligible: `_ground_place` returns None at its gate, before any provider call.
+        _gp("Ineligible", *_SG, country_code="SG", country_name="Singapore",
+            source_url=_PLACEHOLDER_URL),
+        # Mismatched: eligible, verified, and the geocoder CONTRADICTS the claim.
+        _gp("Mismatched", *_OSAKA, country_code="US", country_name="United States"),
+        _gp("Failed", *_KYOTO),
+    ]
+    verifier = _VerifierRaisingAt(raise_at=_KYOTO, by_coord={
+        _JP: CountryResult(country_code="JP", country_name="Japan"),
+        _OSAKA: CountryResult(country_code="JP", country_name="Japan"),
+    })
+    return places, verifier
+
+
+def _grounding_lines(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records
+            if r.getMessage().startswith("trip_place_grounding")]
+
+
+@pytest.mark.asyncio
+async def test_persist_logs_one_grounding_line_counting_all_four_outcomes(monkeypatch, caplog):
+    """The counters, on a trip that produces every outcome at once.
+
+    `failed` and `mismatched` are the pair this line exists to separate, and they are
+    INDISTINGUISHABLE in the database: both persist `country` NULL, so the rows cannot say
+    whether eight places disagreed with their coordinates (working as designed) or eight
+    HTTPStatusErrors came back from a revoked credential (an outage). Asserted here as one
+    exact line, which also pins "ONE aggregate line per trip" — a per-place log would bury the
+    aggregate under fifty lines at INFO.
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    caplog.set_level(logging.INFO, logger="pipeline.persist")
+    c = _Client()
+    places, verifier = _four_outcome_trip()
+
+    dropped = await persist.persist_itinerary(c, "trip-1", places, ["2026-08-01"],
+                                              job_id=None, lease_token=None,
+                                              verify_country=verifier)
+
+    assert _grounding_lines(caplog) == [
+        "trip_place_grounding grounded=1 ineligible=1 mismatched=1 failed=1 "
+        "failure_types=RuntimeError"]
+    # The rows the counters describe: three NULLs that no query could tell apart.
+    assert _country_of(c, "Grounded") == _VERIFIED
+    assert [_country_of(c, n) for n in ("Ineligible", "Mismatched", "Failed")] == [_NULL] * 3
+    # Guardrail #3: counting is observation, not control flow — every place still persists.
+    assert dropped == 0 and len(c.db["trip_places"]) == 4
+
+
+@pytest.mark.parametrize("mirror,counts", [
+    pytest.param(True, "grounded=1 ineligible=0 mismatched=2 failed=1", id="always_eligible"),
+    pytest.param(False, "grounded=1 ineligible=2 mismatched=0 failed=1", id="never_eligible"),
+])
+@pytest.mark.asyncio
+async def test_the_grounding_log_classification_never_changes_a_persisted_value(monkeypatch,
+                                                                                caplog,
+                                                                                mirror, counts):
+    """`_is_eligible_for_grounding` is a MIRROR of `_ground_place`'s gate, for the log only.
+
+    Two mirrors of one rule drift, and the drift has an obvious wrong repair: wire the cheap
+    local mirror into the persist path so the two can never disagree. That hands a logging
+    predicate the decision of which places get a country — guardrail #1 inverted, since the
+    mirror knows only that a claim EXISTS, never that a geocoder agreed with it.
+
+    So the mirror is falsified outright, in BOTH directions, and the persisted rows must not
+    move by one value while the counters — all it may touch — do. Both directions are required:
+    always-True catches a mirror that gates a write ON (an ineligible place handed a country),
+    always-False catches one that gates a write OFF (the verified place losing its own).
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    caplog.set_level(logging.INFO, logger="pipeline.persist")
+    monkeypatch.setattr(persist, "_is_eligible_for_grounding", lambda _place: mirror)
+    c = _Client()
+    places, verifier = _four_outcome_trip()
+
+    await persist.persist_itinerary(c, "trip-1", places, ["2026-08-01"],
+                                    job_id=None, lease_token=None, verify_country=verifier)
+
+    assert _country_of(c, "Grounded") == _VERIFIED
+    assert [_country_of(c, n) for n in ("Ineligible", "Mismatched", "Failed")] == [_NULL] * 3
+    assert len(c.db["trip_places"]) == 4
+    assert _grounding_lines(caplog) == [
+        f"trip_place_grounding {counts} failure_types=RuntimeError"]
 
 
 @pytest.mark.asyncio

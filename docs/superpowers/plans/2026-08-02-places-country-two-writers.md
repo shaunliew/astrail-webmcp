@@ -362,9 +362,14 @@ before the day-loop, passing the verified country into `_find_or_create_place` e
    earlier draft feared. Eight concurrent reverse calls need no limiter, and a per-trip
    semaphore would not have bounded aggregate concurrency across simultaneous jobs anyway — it
    would have been a comforting no-op. The one way `canonical` exceeds 8 is the
-   `user_requested`-only edge case at `dedup.py:119-122`, and those places have no `source_url`,
-   so `is_placeholder_url` short-circuits them before any network call. The unbounded case is
-   exactly the case that makes zero Mapbox calls. **Trigger for a process-wide limiter:**
+   `user_requested`-only edge case at `dedup.py:119-122`.
+
+   **Precision, from the final whole-branch review:** an earlier draft of this bullet claimed
+   that case makes *zero* Mapbox calls because user-typed places have no `source_url`. That is
+   true of most of them but not all — `_merge_cluster` marks a cluster `user_requested` if ANY
+   member is, while the canonical inherits its highest-confidence representative's `source_url`,
+   which can be a real reel URL. So the over-cap case is not a guaranteed no-call path. It
+   changes nothing at this scale (1000 req/min), but the cap is not a hard bound on calls. **Trigger for a process-wide limiter:**
    observed 429s from concurrent jobs.
 6. **Keyed by `id(place)`.** Matches `group_places_by_day`'s existing identity contract, so two
    distinct places sharing a name stay distinct. Safe **only** because `canonical` holds a

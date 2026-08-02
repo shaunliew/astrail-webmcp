@@ -180,8 +180,12 @@ async def _ground_all(client, canonical: list[CanonicalPlace], *,
     distinct coordinates — no semaphore (a per-trip limiter would not bound aggregate
     concurrency across simultaneous jobs anyway; the trigger for a process-wide one is observed
     429s). The one way `canonical` exceeds 8 is the `user_requested`-only edge case in
-    `pipeline/dedup.py`, and those places have no source_url, so `is_placeholder_url`
-    short-circuits them before any network call.
+    `pipeline/dedup.py`. Most of those short-circuit before any network call — a user-typed
+    place has no source_url, so `is_placeholder_url` rejects it — but NOT all: `_merge_cluster`
+    marks a cluster `user_requested` if ANY member is, while the canonical inherits its
+    highest-confidence representative's `source_url`, which can be a real reel URL. So an
+    over-cap trip can still make calls. Harmless at this scale (the Geocoding rate limit is
+    1000/min), but do not read the cap as a hard bound on provider calls.
 
     Keyed by `id(place)`, matching `group_places_by_day`'s existing identity contract so two
     distinct places sharing a name stay distinct. Safe ONLY because `canonical` holds a strong

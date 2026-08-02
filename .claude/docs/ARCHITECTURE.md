@@ -206,6 +206,10 @@ On match: append new evidence quote, increment `timesReferenced`. On miss: creat
 20. Landing page, settings
 21. Wire memory (mem0), guardrails, rate limiting (slowapi + per-user quota), and result caching
 22. Observability: Langfuse + UptimeRobot; product analytics: PostHog. (Sentry removed 2026-07-19 — never wired, and its default request-URL capture would re-open ISSUES-B1. Re-add only with a `before_send` URL scrubber; see STACK.md.)
-23. CI/CD: GitHub Actions → Vercel + Render; Supabase migrations applied on merge to `main`
+23. CI/CD: GitHub Actions → Vercel + Render. **Supabase migrations are NOT applied on merge** —
+    there is no pre-deploy migration hook anywhere, so schema is applied **by hand** while code
+    ships on merge. They are separate events, in either order, and `/health` performs no schema
+    check, so a code-first deploy against an old schema stays GREEN while jobs silently fail.
+    That is why both Render services carry `autoDeploy: false`. Full detail in `STACK.md`.
 24. Deploy: Vercel + Render + Supabase
 25. Open beta

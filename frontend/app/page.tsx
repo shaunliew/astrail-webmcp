@@ -1,31 +1,16 @@
-import FAQSection from "@/components/landing/FAQSection";
-import Footer from "@/components/landing/Footer";
-import FounderSection from "@/components/landing/FounderSection";
-import HeroSection from "@/components/landing/HeroSection";
-import HowItWorksSection from "@/components/landing/HowItWorksSection";
-import LandingMotionScene from "@/components/landing/LandingMotionScene";
-import LandingNav from "@/components/landing/LandingNav";
-import PainSection from "@/components/landing/PainSection";
-import ProofSection from "@/components/landing/ProofSection";
-import WaitlistSection from "@/components/landing/WaitlistSection";
+import type { Metadata } from "next";
 
+import StoryStage from "@/components/story/stage/StoryStage";
+
+export const metadata: Metadata = {
+  title: "Astrail — turn the reels you saved into a route you'll actually take",
+  description:
+    "Paste the travel reels you saved. Astrail's agents turn them into an evidence-backed itinerary on a real map. Self-funded beta — 25 seats.",
+};
+
+// One-Stage proof slice (beats 0→2) under review — the full 8-beat stage
+// follows once the transition grammar is approved. Previous sticky-section
+// build preserved in components/story/StoryLanding.tsx; old landing at /classic.
 export default function LandingPage() {
-  return (
-    <main className="landing min-h-[100dvh] overflow-hidden bg-[color:var(--void)] text-[color:var(--starlight)]">
-      <LandingNav />
-      <div className="relative overflow-hidden">
-        <LandingMotionScene />
-        <div className="relative z-10">
-          <HeroSection />
-          <PainSection />
-          <HowItWorksSection />
-        </div>
-      </div>
-      <ProofSection />
-      <FounderSection />
-      <WaitlistSection />
-      <FAQSection />
-      <Footer />
-    </main>
-  );
+  return <StoryStage />;
 }

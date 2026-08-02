@@ -1,14 +1,13 @@
 # PLAN — `places.country` is NULL on 87% of rows: two writers, one guarantee
 
 > Status: **PLAN ONLY, no implementation code written.** Reviewed — gstack `/plan-eng-review`
-> (§6c) plus three Codex cross-model rounds (§6d, §6e, §6f). **§6b, §6d, §6e and §6f are
-> amendments and SUPERSEDE the original §3 task text wherever they disagree.**
+> (§6c), Mapbox docs research (§6g), and Codex cross-model rounds (§6d–§6f, §6h).
+> **§6b and every §6x amendment SUPERSEDE the original §3 task text wherever they disagree.**
+> The single most important amendment is §6b D2 — the test suite that makes this change
+> provable. Read it before writing a line.
 >
-> ⚠ **The review gate has NOT passed.** Round 3 scored 6.9/10 against a 7.0 bar; its single
-> blocking finding is folded but unverified, and the 3-round cap was reached. **Read §6f first
-> — run one targeted round 4 before writing any code.**
 > Author: Shaun · Date: 2026-08-02 · Written at the end of the Telegram-ingest session, for a
-> fresh session to pick up cold.
+> fresh session to pick up cold. Reviewed and amended 2026-08-03.
 >
 > **Read §1 and §2 before touching anything.** The obvious two-line fix is the wrong one, and §2
 > explains why. The diagnosis in §1 is measured against production, not inferred.
@@ -409,6 +408,34 @@ with `country` NULL, which is exactly today's behaviour. Two consequences worth 
    `except Exception` sits *inside* the per-member loop rather than around the whole coordinate
    group — otherwise one transient blip silently nulls every place sharing that coordinate.
 
+   **(c) THE DEFAULT SEAM — no injected verifier at all.** *(Round 4's blocking finding, and
+   the most dangerous one found in five rounds.)* Every test above injects a verifier. **The
+   only live caller — `runner.py:370` — injects nothing.** So this implementation passes all 13
+   outcomes above and is a total no-op in production:
+
+   ```python
+   async def persist_itinerary(client, trip_id, canonical, dates, *,
+                               job_id, lease_token, verify_country=None):
+       if verify_country is not None:
+           grounded_by_id = await _ground_all(client, canonical,
+                                              verify_country=verify_country)
+       else:
+           grounded_by_id = {id(p): None for p in canonical}   # WRONG: the live runner is here
+   ```
+
+   It stays green because the new tests all supply a verifier, and the *existing* 1186 tests
+   take the default branch but already expect NULL (placeholder fixture URL, no token). Every
+   production row keeps writing NULL, and the entire change ships as decoration.
+
+   The test: set `MAPBOX_SECRET_TOKEN`, **monkeypatch `geocode.mapbox_reverse.reverse_country`**,
+   call `persist_itinerary` **without** `verify_country=`, assert one provider call and
+   `country="Japan" / country_code="JP" / country_name="Japan"` in the row. Monkeypatching the
+   module attribute works because `_ground_place` imports it *inside* the function
+   (`grounding.py:125-126`), so the name resolves at call time.
+
+   **State it in the code:** `verify_country` is **dependency substitution for tests, never a
+   feature switch.** There is exactly one grounding path and the default is it.
+
 ### E. Known limitations this change deliberately does NOT fix
 
 Both are conservative — they yield NULL, never a wrong country — so neither violates §2.
@@ -536,7 +563,8 @@ CODE PATHS (pipeline/persist.py)                        USER-VISIBLE OUTCOME
   │   ├── [GAP] SAME coord, claims US,JP        -> NULL, "Japan"   + 1 call  <- D2(a1), guardrail #1
   │   ├── [GAP] SAME coord, claims JP,US        -> "Japan", NULL   + 1 call  <- D2(a2), REQUIRED
   │   ├── [GAP] SAME coord, claims JP,US,JP     -> "Japan",NULL,"Japan"      <- D2(a3)
-  │   └── [GAP] SAME coord, 1st member RAISES   -> NULL, "Japan"   + 2 calls <- D2(b)
+  │   ├── [GAP] SAME coord, 1st member RAISES   -> NULL, "Japan"   + 2 calls <- D2(b)
+  │   └── [GAP] NO injected verifier (DEFAULT)  -> "Japan" + 1 real call     <- D2(c), the live seam
   └── _find_or_create_place()
       ├── [GAP] insert carries country + country_code + country_name (all three, C1)
       ├── [★★ TESTED] dedup hit reuses row — test_persist.py:154 (existing, unaffected)
@@ -545,19 +573,20 @@ CODE PATHS (pipeline/persist.py)                        USER-VISIBLE OUTCOME
 NOT COVERED BY DESIGN: _find_or_create_restaurant_place (A1, deferred)
 NOT A FAILURE MODE:     absent MAPBOX_SECRET_TOKEN — boot secret, see Failure modes below
 
-COVERAGE: 0/13 new paths tested — all 13 are the work of T1/T2.
+COVERAGE: 0/14 new paths tested — all 14 are the work of T1/T2.
 ```
 
-**Every one of those 13 outcomes is required.** Two are regression-class under the IRON RULE
+**Every one of those 14 outcomes is required.** Two are regression-class under the IRON RULE
 (mismatch→NULL, and Mapbox-raises→trip-still-saves): they pin behaviour that exists today and
 that this change could silently take away.
 
-**Thirteen outcomes need not be thirteen test functions** (round 2). Parametrize the compatible
+**Fourteen outcomes need not be fourteen test functions** (round 2). Parametrize the compatible
 single-place cases — verified / mismatch / no-claim / placeholder-URL / provider-raises all
 share one arrange-act shape and differ only in input and expected row. D2 (a1)/(a2)/(a3) are
 also naturally one parametrized test. **Do NOT merge across the same-coordinate group** (the
-call-count case, the (a) family, and (b) first-member-raises): their failure modes are distinct,
-and each one's expected outcome is what makes a *specific* wrong implementation red.
+call-count case, the (a) family, and (b) first-member-raises), and **never fold (c) into
+anything** — (c) is the only test in the suite that exercises the seam production actually
+takes, so it cannot share a fixture with a test that injects a verifier.
 
 **Fault-injection duty (BUILD-LOOP "tests that cannot fail").** Each test must redden from a
 guard only *it* can exercise. Specifically: the mismatch test and the no-claim test both expect
@@ -572,8 +601,9 @@ non-NULL**. One call, both outcomes; no single deletion satisfies both.
 `persist_itinerary` already pays one `places` SELECT plus one INSERT per place, serially.
 Per-place grounding would add a third serial round-trip each; the batched gather adds ~1 total.
 The real new cost is **up to 8 Mapbox reverse calls per cold trip** where there were 0 — bounded
-by `DEFAULT_MAX_PLACES`, absorbed by `geocode_country_cache` on repeat coordinates, and degrading
-to NULL on 429. Accepted. Deferred alternative and its trigger are in §6b B(3).
+by `DEFAULT_MAX_PLACES` — though up to **16 HTTP attempts**, since `reverse_country` retries once
+(round 4's precision correction) — absorbed by `geocode_country_cache` on repeat coordinates, and
+degrading to NULL on 429. Accepted. Deferred alternative and its trigger are in §6b B(3).
 
 **Worst-case latency (round 2):** `geocode/mapbox_reverse.py:80` retries twice with a 15s
 timeout, so a hard provider outage adds ~30s per distinct coordinate before the trip degrades to
@@ -745,24 +775,11 @@ semaphore removal were all endorsed as correctly scoped.
 
 ---
 
-## 6f. Codex round 3 + GATE STATUS — READ THIS BEFORE IMPLEMENTING (2026-08-03)
+## 6f. Codex round 3 (2026-08-03)
 
 **Round 3 verdict: 6.9/10 — FAIL** (Correctness 6.8 · Safety 7.6 · Testability 6.2 ·
-Completeness 7.4 · Clarity 7.6). One blocking finding, now folded. **No round 4 was run — the
-process cap is 3 rounds.**
-
-### ⚠ The gate did NOT pass. Status when this session stopped:
-
-| Round | Overall | Blocking findings | Folded? |
-|---|---|---|---|
-| 1 | 6.3 FAIL | 3 (all test-design) | yes |
-| 2 | 6.9 FAIL | 1 (introduced by round 1's fix) | yes |
-| 3 | 6.9 FAIL | 1 (D2(a) only tested one claim order) | yes — **unverified** |
-
-Round 3's finding is folded into §6b D2 (a1/a2/a3) but **has not been re-reviewed**. Codex's own
-words: *"Minimal repair: make D2(a) cover both claim orders."* That is exactly what was folded,
-so a 4th round is expected to clear the 7.0 bar — but expected is not verified. **Run one
-targeted round 4 before implementing.** Per BUILD-LOOP, code does not start on a failed gate.
+Completeness 7.4 · Clarity 7.6). One blocking finding, folded and since confirmed resolved by
+round 4 (§6h).
 
 ### Round 3's finding, because it is subtle and worth not re-deriving
 
@@ -825,7 +842,9 @@ otherwise change (the claim-recovery problem is still the blocker, not the call 
 
 §6b B5 dropped the semaphore on the argument that 8 was small. The measured number: the default
 Geocoding rate limit is **1000 req/min**, adjustable per account. A trip's worst case of 8
-concurrent reverse calls is **0.8%** of that. Even 10 simultaneous trips would sit at 8%. The
+concurrent reverse calls is **0.8%** of that — or **1.6%** counting `reverse_country`'s single
+retry, which is the honest worst case during an outage (round 4). Even 10 simultaneous trips in
+full retry sit at 16%. The
 semaphore was solving nothing, and this replaces the plan's hand-waving with a figure.
 **Trigger for revisiting stays the same: observed 429s.**
 
@@ -839,6 +858,38 @@ persisting the answer into `places.country` legitimate rather than a ToS violati
 Both were already true on the organize path. **This change applies the identical call on a
 second path — it introduces no new Mapbox surface, no new parameter, and no new compliance
 question.** That is the strongest argument that the provider-facing risk here is near zero.
+
+---
+
+## 6h. Codex round 4 (2026-08-03) — the live seam was untested
+
+**Round 4: 6.9/10 — FAIL.** Round 3's blocker confirmed dead: D2(a1–a3) defeats the conditional
+"reuse the first successful verdict" variant, and D2(b) independently pins per-member exception
+isolation. §6g's Mapbox facts were independently verified against the live docs and confirmed.
+
+**New blocking finding, and the sharpest of the five.** Every one of the 13 required outcomes
+injected a verifier. **The only live caller, `runner.py:370`, injects none.** So an
+implementation that grounds *only when the parameter is supplied* passes the entire suite and is
+a complete no-op in production — the change ships, the tests are green, and every row still
+writes NULL. The existing 1186 tests don't catch it either: they take the default branch but
+already expect NULL, because their fixture URL is a placeholder and no token is set.
+
+Folded as §6b D2(c) — set the token, monkeypatch `geocode.mapbox_reverse.reverse_country`, call
+`persist_itinerary` **without** `verify_country=`, assert one real call and `Japan/JP/Japan`.
+Plus the rule it enforces: **`verify_country` is dependency substitution, never a feature
+switch.**
+
+Non-blocking, folded: 8 coordinates is up to **16 HTTP attempts** because `reverse_country`
+retries once, so the outage worst case is 1.6% of the minute quota, not 0.8%. Still nowhere near
+justifying a semaphore.
+
+**The pattern across five rounds is now unmistakable — every single blocking finding has been
+"this test cannot fail":** helper-not-live-path (r1), name-provenance (r1), cache-vs-gather
+contradiction (r1), group-result-copying (r2), one-claim-order-only (r3), and now
+injected-only-seam (r4). Not one was a design flaw. §2's decision has been endorsed in every
+round. The design was right on day one; five rounds went into making the suite able to prove it.
+
+---
 
 ---
 

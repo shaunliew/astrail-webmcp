@@ -38,7 +38,8 @@ _MAX_SHAPE_SEGMENTS = 4
 
 _ELLIPSIS = "…"
 # Path segments safe to echo into a log: Instagram's own vocabulary, a closed set. Anything
-# else is a code, a slug, or a username and becomes `…`.
+# else is a code, a slug, or a username and becomes `…`. Matched AND emitted lowercased —
+# see `_path_shape`, the author's casing is content and does not leave this module.
 _PATH_KEYWORDS = frozenset({"reel", "reels", "p", "tv", "share", "stories", "s"})
 
 
@@ -132,6 +133,12 @@ def _path_shape(url: str) -> str:
     Every segment outside `_PATH_KEYWORDS` becomes `…`; consecutive `…` collapse so the
     shape describes the route, not the arity. The segment cap is applied AFTER collapsing,
     so a run of unknown segments does not consume the whole budget.
+
+    A kept keyword is emitted LOWERCASED, not as the author wrote it. Casing is
+    attacker-controlled, so echoing it would make `/rEeL/` and `/reel/` distinct shapes —
+    a channel into the caller's ERROR log and a way to fill `_MAX_SHAPES` with variants of
+    one keyword, pushing genuine shapes out. The vocabulary is a closed set, so lowercasing
+    loses nothing.
     """
     try:
         path = urlparse(url).path
@@ -141,7 +148,8 @@ def _path_shape(url: str) -> str:
     for raw in path.split("/"):
         if not raw:
             continue
-        segment = raw if raw.lower() in _PATH_KEYWORDS else _ELLIPSIS
+        lowered = raw.lower()
+        segment = lowered if lowered in _PATH_KEYWORDS else _ELLIPSIS
         if segment == _ELLIPSIS and segments and segments[-1] == _ELLIPSIS:
             continue
         segments.append(segment)

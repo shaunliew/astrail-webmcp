@@ -142,10 +142,31 @@ def test_subdomain_is_instagram_looking_and_query_and_fragment_never_reach_the_s
         # The 4-segment cap, and it applies AFTER the `…` collapse.
         ("https://www.instagram.com/p/a/reel/b/tv/c/s/d/", "/p/…/reel/…"),
         ("https://www.instagram.com/a/b/c/d/e/reel/f/", "/…/reel/…"),
+        # A kept keyword is emitted lowercased, never with the author's casing.
+        ("https://www.instagram.com/ShArE/ReEl/CODE/", "/share/reel/…"),
     ],
 )
 def test_shape_sanitization_worked_examples(url: str, shape: str):
     assert extract_reel_urls(_url_message(url)).rejected_shapes == (shape,)
+
+
+def test_case_variants_of_one_keyword_collapse_to_a_single_shape():
+    """Casing is attacker-controlled, so echoing it is a guardrail #11 leak.
+
+    `/rEeL/` and `/reel/` as distinct shapes would give a message author a channel into
+    T4's ERROR log AND a way to fill the 10-shape cap with variants of a single keyword,
+    pushing genuine shapes out. `_PATH_KEYWORDS` is a closed 7-word set, so lowercasing
+    the kept segment loses exactly zero information.
+    """
+    result = extract_reel_urls(
+        _url_message(
+            "https://www.instagram.com/ShArE/x/",
+            "https://www.instagram.com/SHARE/y/",
+            "https://www.instagram.com/sHaRe/z/",
+        )
+    )
+
+    assert result.rejected_shapes == ("/share/…",)
 
 
 # --------------------------------------------------------------------------------------

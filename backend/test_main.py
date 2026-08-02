@@ -1,10 +1,11 @@
 """POST /generate-trip route tests: async fakes for the create+persist path,
 the idempotent-replay path, the idempotency-race path (a concurrent POST wins
 the same key -> we delete our orphan trip and redirect without dispatching),
-and the auth gate. GET /generate-trip/stream is exercised end-to-end via
-api/test_streaming.py (the generator); its owner check is covered directly at
-the bottom of this file — it was long assumed to be a thin wrapper over lookups
-already covered by pipeline/test_runner.py, and that assumption hid a 500.
+and the auth gate. GET /generate-trip/stream is covered HERE at the route level
+(owner check + happy path); api/test_streaming.py covers stream_trip_events, the
+generator the route mounts, which is not the same thing. Believing otherwise —
+that the route is a thin wrapper over lookups already covered elsewhere — hid a
+500 AND left the whole route deletable with every test still green.
 
 Drives the ASGI app with an async httpx client over ASGITransport (NOT the sync
 `starlette.testclient.TestClient`, which is deprecated with httpx and spins a
@@ -45,6 +46,7 @@ class _Table:
         self.db = db
         self._op = None
         self._filters: dict = {}
+        self._order_keys: list = []
         self._single = False
         self._fail_ops = fail_ops if fail_ops is not None else set()
         self._empty_result_ops = empty_result_ops if empty_result_ops is not None else set()
@@ -76,6 +78,33 @@ class _Table:
     def limit(self, *_args, **_kwargs):
         return self
 
+    def order(self, column, *, desc=False, **unsupported):
+        # This MUST sort. A bare `return self` is the worst kind of fake: every caller's
+        # `.order()` looks honoured while rows come back in insertion order, so a test
+        # asserting on ordering passes whether or not production ordered anything
+        # (test_saved_reels_organize.py's fake carries the same warning, learned the hard way).
+        # Ascending-only, matching every call site in the codebase; anything else fails loudly
+        # rather than silently sorting on nothing. Caveat if you trip that raise from a stream
+        # test: api/streaming.py wraps its query in `except Exception` (transient-blip retry),
+        # so the ValueError surfaces as a 300s poll-out, not a traceback. Read it as this raise.
+        if desc or unsupported:
+            raise ValueError(
+                f"fake implements only ascending .order(column), got "
+                f".order({column!r}, desc={desc!r}, **{unsupported!r})"
+            )
+        self._order_keys.append(column)
+        return self
+
+    def _ordered(self, rows):
+        # PostgREST reads chained `.order()` calls left-to-right, first call primary. Stable
+        # sorts applied last-key-first compose into exactly that. `None` sorts last, matching
+        # Postgres NULLS LAST on an ascending order, and the two-element key means two nulls
+        # compare equal instead of raising on `None < None`.
+        ordered = list(rows)
+        for key in reversed(self._order_keys):
+            ordered.sort(key=lambda row: (row.get(key) is None, row.get(key)))
+        return ordered
+
     def _matches(self, row):
         return all(row.get(k) == v for k, v in self._filters.items())
 
@@ -99,7 +128,7 @@ class _Table:
             matched = [r for r in rows if self._matches(r)]
             self.db[self.name] = [r for r in rows if r not in matched]
             return _Result(matched)
-        matched = [r for r in rows if self._matches(r)]
+        matched = self._ordered(r for r in rows if self._matches(r))
         if self._single:
             # Faithful to postgrest 2.31.0: AsyncMaybeSingleRequestBuilder.execute() returns a
             # bare None when zero rows match (request_builder.py:167), NOT a result whose .data
@@ -899,7 +928,8 @@ async def test_readiness_503_when_db_unreachable(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# GET /generate-trip/stream/{trip_id}: the guardrail #6 owner check.
+# GET /generate-trip/stream/{trip_id}: the guardrail #6 owner check + the
+# happy path (200, text/event-stream, ordered frames, `data: [DONE]` last).
 # ---------------------------------------------------------------------------
 
 _TRIP_ID = "11111111-1111-4111-8111-111111111111"
@@ -924,6 +954,64 @@ async def test_stream_on_another_users_trip_is_404(ctx, stream_auth):
     response = await ac.get(f"/generate-trip/stream/{_OTHER_TRIP_ID}?token=t")
 
     assert response.status_code == 404
+
+
+def _seed_stream_events(db, trip_id=_TRIP_ID):
+    """Seed generation_events for `trip_id`, INSERTED IN REVERSE of (created_at, id) ascending.
+
+    Two things ride on the scramble. (1) Frame order below then proves the route really
+    orders — under an unsorted fake the `result` row comes back first, the generator
+    terminates on it, and the earlier stages never reach the wire at all. (2) `ev-1`/`ev-2`
+    share a created_at, so the `.order("id")` tiebreak is what separates them.
+
+    The `result` row is seeded UP FRONT on purpose: stream_trip_events returns the moment it
+    sees one, so the first poll terminates and nothing sleeps. Omit it and httpx waits out
+    600 polls at 0.5s.
+    """
+    db.setdefault("generation_events", []).extend([
+        {"id": "ev-4", "trip_id": trip_id, "event_type": "result", "stage": "save",
+         "message": "done", "payload": {"itinerary": {"days": []}},
+         "created_at": "2026-08-02T00:00:02Z"},
+        {"id": "ev-3", "trip_id": trip_id, "event_type": "stage", "stage": "narrate",
+         "message": "narrating", "payload": {}, "created_at": "2026-08-02T00:00:01Z"},
+        {"id": "ev-2", "trip_id": trip_id, "event_type": "stage", "stage": "extract",
+         "message": "extracting", "payload": {}, "created_at": "2026-08-02T00:00:00Z"},
+        {"id": "ev-1", "trip_id": trip_id, "event_type": "stage", "stage": "scrape",
+         "message": "scraping", "payload": {}, "created_at": "2026-08-02T00:00:00Z"},
+    ])
+
+
+async def test_stream_for_the_owner_is_an_event_stream_terminated_by_done(ctx, stream_auth):
+    """The route's ONLY happy-path coverage. Without it, deleting the whole route leaves the
+    two 404 tests above green: their expected 404 is indistinguishable from FastAPI's
+    framework 404 for a route that isn't registered (Codex cross-model review 2026-08-02).
+    api/test_streaming.py covers stream_trip_events, never the route that mounts it."""
+    ac, db, _calls, _client = ctx
+    db.setdefault("trips", []).append({"id": _TRIP_ID, "user_id": "user-1"})
+    _seed_stream_events(db)
+
+    response = await ac.get(f"/generate-trip/stream/{_TRIP_ID}?token=t")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+
+    body = response.text
+    # The repo's most breaking contract: a `result` frame, then `data: [DONE]` LAST (CLAUDE.md
+    # "SSE termination"). The frontend breaks on the sentinel, so nothing may follow it.
+    assert '"type": "result"' in body
+    assert body.endswith("data: [DONE]\n\n")
+    # result.content is a JSON *string*, not a nested object — same frozen contract.
+    assert '"content": "{\\"itinerary\\": {\\"days\\": []}}"' in body
+    # Every stage frame reaches the client, in (created_at, id) order — NOT insertion order.
+    assert (
+        body.index("scraping")
+        < body.index("extracting")
+        < body.index("narrating")
+        < body.index('"type": "result"')
+    )
+    # The terminal event was in the first batch, so the generator returned without sleeping —
+    # this is what keeps the test off the 600-poll / 5-minute path.
+    assert ": heartbeat\n\n" not in body
 
 
 # --- POST /trips/{trip_id}/feedback ------------------------------------------------

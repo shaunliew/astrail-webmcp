@@ -76,7 +76,20 @@ services:
     plan: starter
     numInstances: 1             # two getUpdates consumers is a hard 409
     dockerfilePath: ./Dockerfile
-    dockerCommand: sh -c "cd backend && exec python -m telegram_ingest.worker"
+    # NO `sh -c "…"` WRAPPER — Render already runs dockerCommand through a shell, so
+    # wrapping it double-wraps: the inner quoted string collapses to a single word and you
+    # get `sh: 1: cd backend && exec python -m telegram_ingest.worker: not found`.
+    # (Verified the hard way on the first deploy, 2026-08-02.)
+    #
+    # This is NOT the same as the Dockerfile's `CMD ["sh","-c","cd backend && exec uvicorn …"]`.
+    # That is exec-form: a JSON array Docker passes as argv verbatim, so the `sh -c` is
+    # required there. Same text, different parser. The web service uses the Dockerfile CMD
+    # and leaves dockerCommand empty, so this field had no working precedent in this repo.
+    #
+    # `cd backend` is required — worker.py's bare imports (`from organizer import …`) only
+    # resolve with backend/ as cwd. `exec` makes python PID 1 so it receives SIGTERM directly
+    # and the drain-then-exit-0 path actually runs instead of being SIGKILLed.
+    dockerCommand: cd backend && exec python -m telegram_ingest.worker
     autoDeploy: false           # same reason as astrail-backend
     maxShutdownDelaySeconds: 120
     # All eight are `sync: false` — entered in the dashboard, never a literal `value:` here.

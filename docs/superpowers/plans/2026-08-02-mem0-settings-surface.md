@@ -733,7 +733,9 @@ git commit -m "feat(settings): GET /settings/preferences — live mem0 read (PRD
 
 - [ ] **Step 1: Update tests**
 
-Work the full call-site list above: drop `synopsis=` from all eight calls in `test_preferences.py` (lines ~40, 43, 45, 52 for `distill_memory_text`; ~165, 178, 187, 199 for `persist_trip_memory`), **delete** `test_trip_synopsis_uses_real_itinerary_shape_and_destination` (204-217 — it imports and calls `trip_synopsis` directly, so it has no `synopsis=` kwarg to drop and will simply break on the deleted symbol), and **rewrite** `test_distill_never_leaks_synopsis_secrets` (48-53) to assert the surviving guarantee.
+> **Line numbers in this task have SHIFTED.** Task 1 added ~108 lines to `test_preferences.py`. Re-locate every site with `grep -n "synopsis=" backend/pipeline/test_preferences.py` rather than trusting any number written here. Verified positions as of commit `116e72c`: **40, 43, 45, 52** (`distill_memory_text`) and **273, 286, 295, 307** (`persist_trip_memory`).
+
+Work the full call-site list above: drop `synopsis=` from all eight calls in `test_preferences.py`, **delete** `test_trip_synopsis_uses_real_itinerary_shape_and_destination` (204-217 — it imports and calls `trip_synopsis` directly, so it has no `synopsis=` kwarg to drop and will simply break on the deleted symbol), and **rewrite** `test_distill_never_leaks_synopsis_secrets` (48-53) to assert the surviving guarantee.
 
 **Dropping the kwarg is not sufficient at line 40.** Its expected value still contains the synopsis:
 
@@ -747,7 +749,11 @@ assert distill_memory_text(explicit) == "Travel preferences: loves ramen"
 
 Check every one of the eight for an expectation that embeds the synopsis, not just the argument.
 
-The rewrite of the leak test:
+**Why the leak test is rewritten rather than merely de-kwarg'd.** Its body asserts
+`"reel" not in out.lower() and "caption" not in out.lower()` — which passes whether or not
+the synopsis is present, since neither word ever appears in either version of the payload.
+It was already close to vacuous; dropping the synopsis makes that obvious. Replace it with
+an exact-equality assertion, which the old form could never give:
 
 ```python
 def test_distill_emits_only_the_users_own_words():
@@ -819,7 +825,9 @@ cd /Users/shaunliew/Documents/astrail-worktrees/mem0-settings
 grep -rn "trip_synopsis" backend --include="*.py"
 grep -rn "synopsis" backend --include="*.py" | grep -v "scripts/smoke_generate.py"
 ```
-Expected: **no output** from the first. The second should be empty too — `smoke_generate.py:83-84` is excluded because its `itin.get("synopsis")` is an unrelated itinerary field, not the mem0 payload. Any other hit is an unfinished edit.
+Expected: the first returns **only** `test_trip_synopsis_is_gone` (it must name the symbol to assert its absence — an executable hit there is correct, not a leftover). The second returns **~4 prose-only hits**, never zero: this plan itself mandates a docstring saying "The trip synopsis that used to be appended here…" and a comment in the rewritten leak test. `smoke_generate.py:83-84` is excluded — its `itin.get("synopsis")` is an unrelated itinerary field.
+
+**The bar is zero EXECUTABLE references, not zero grep hits.** An earlier revision of this step demanded empty output, which its own prescribed code made impossible — verify by reading each hit, not by counting them.
 
 - [ ] **Step 4: Run the FULL suite** — `cd backend && uv run pytest -q` → all pass, **including `test_runner.py`**
 

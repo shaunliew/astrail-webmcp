@@ -369,7 +369,9 @@ is caught, logged at **ERROR**, and the offset **still advances** — the delibe
 
 Backoff `1,2,4,…,60 s` ±20 % jitter, reset on first success. `TelegramRetryAfter` → sleep
 `retry_after + 1`. **409 Conflict** special-cased at ERROR — two worker instances, a Render scaling
-misconfiguration, not a transient. `telegram_poller_alive` heartbeat every 60 s, substituting for
+misconfiguration, not a transient. `telegram_poller_alive` heartbeat on a 60 s **minimum**
+interval — checked once per loop iteration, so the real cadence is ~100 s at the deployed 50 s long
+poll ([IMPL 2026-08-02]; T10 step 5) — substituting for
 the `healthCheckPath` a worker cannot have.
 
 **RED when:** the offset advances before the batch is handled; it uses `len(updates)` instead of
@@ -488,6 +490,19 @@ HTTP). Update `.env.example`, `.claude/docs/ENV.md` (a "Worker-only" subsection)
 
 ### T10 — Two-phase release (this is the deployment-safety story)
 
+> **[IMPL 2026-08-02] PRE-DEPLOY GATE — verify a prerequisite this branch INHERITS.**
+> **Before Phase 1, confirm the deployed Supabase database has every migration applied through
+> `20260731120000_reel_cover_bucket`.** This is not something this branch creates; it is something
+> this branch is the first thing to *depend on*. The worker's first job calls
+> `claim_organize_job`, introduced in `20260720170000_db_clock_job_leases.sql` (part of the Saved
+> Reels arc, merged to `origin/dev` — the files exist). If the deployed database is behind, the
+> worker boots, `_probe_ingest_user` passes, `telegram_poller_alive` fires, `/health` stays green,
+> and **every single job fails** — the exact "looks alive, ingests nothing" state this feature's
+> two loudest guards exist to prevent, arriving through a door neither of them watches.
+> Nothing on a developer machine can check this: local `supabase db reset` proves only that the
+> files apply to an empty database. Someone must look at the deployed database. `.claude/docs/STACK.md`
+> now states why — **schema is applied by hand and code ships on merge, in either order.**
+
 **Because no code reads `daily_reel_analysis_limit`, the schema and the code are fully decoupled.**
 That deletes the entire ordering-trap class rev 3 spent a section on.
 
@@ -515,6 +530,22 @@ PHASE 1 — ZERO MIGRATIONS
      NEVER insert into auth.users directly.  Record the uuid.
   2. BotFather: create bot; ADD to the group; PROMOTE TO ADMINISTRATOR;
      capture the chat id; deleteWebhook.
+     [IMPL] PIN THE HUMAN CONTRACT IN THE GROUP. Not optional, and not a nicety:
+     §3.1 accepts LOSS on the argument that "a human re-shares", and the ONLY
+     thing that turns that from a hope into a recovery path is group members
+     knowing that a missing tick means re-share. Nobody knows that by default —
+     an unreacted message looks exactly like a bot that is a little slow. Until
+     this is pinned, the loud-drop design has no host surface and the feature is
+     lossy in practice however loud the logs are. Post this in the group and pin
+     it (verbatim; the second line is the load-bearing one):
+
+       Astrail reel bot 🤖
+       Paste Instagram reel links here and I'll add them to our trip research.
+       ✅ on your message = every reel in it was accepted.
+       No ✅ = something was rejected. Re-share the link, or ping the operator.
+       One message can hold several links. If only some were bad, you get no ✅
+       — re-share the whole message.
+
   3. Merge the code PR.
   4. [R6/B2] CREATE THE WORKER WITH ITS SECRETS ALREADY PRESENT.
      Rev 6 correctly warned that a worker created before its `sync: false` secrets
@@ -542,7 +573,13 @@ PHASE 1 — ZERO MIGRATIONS
      SUPABASE_SERVICE_ROLE_KEY, OPENAI_API_KEY, APIFY_TOKEN, MAPBOX_SECRET_TOKEN.
      A crash-loop here is loud and harmless, but it wastes the deploy window and
      looks like a code fault.
-  5. Start the worker. Expect `telegram_poller_alive` within 60s.
+  5. Start the worker. Expect `telegram_poller_alive` within 2 MINUTES.
+     [IMPL 2026-08-02] NOT 60 s — the earlier number would have raised a false
+     alarm against a perfectly healthy worker. The interval constant is 60 s but
+     the beat is checked once per loop ITERATION, and one iteration is one full
+     50 s long poll, so the first beat lands at t≈100 s and the cadence is ~100 s.
+     Constructed, not reasoned: see `_HEARTBEAT_INTERVAL_S` in `poller.py` and
+     `test_the_real_idle_cadence_is_the_interval_rounded_up_to_a_poll`.
      [R8/m3] ASSERT THE WORKER'S LIVE SHA equals the merge SHA from step 3. Dashboard
      creation builds from the tip of `dev`, and if `dev` advanced between the merge
      and the creation the worker runs a LATER commit while its heartbeat passes
@@ -559,7 +596,18 @@ PHASE 1 — ZERO MIGRATIONS
      block" claim was false and is withdrawn.
 
 PHASE 2 — ONE MIGRATION + ONE DATA UPDATE, no code change, days later
-  7. Apply Migration A against already-running code.
+  7. Apply Migration A against already-running code, BY HAND and in ONE
+     TRANSACTION:
+       psql "$PROD_DB_URL" -X -1 -v ON_ERROR_STOP=1 \
+         -f supabase/migrations/20260802120000_per_account_reel_analysis_limit.sql
+     [IMPL 2026-08-02] `-1` is not stylistic. Without it psql autocommits each
+     statement, so a failed `alter table` — the file's own 3 s lock_timeout
+     firing is the realistic way — does not stop the file, and the
+     `create or replace function` below then installs a body referencing a
+     column that does not exist, on the path every website organize run takes.
+     Demonstrated against a real database in both directions; the file's header
+     carries the measurement and explains why an in-file `begin;/commit;` is
+     WORSE rather than tidier.
   8. RAISE THE LIMIT. [R4/B1] The migration defaults every user to 5, and the ingest
      account already exists, so it gets 5 like everyone else. Without this step
      Phase 2 changes NOTHING and reel 6 still fails "analysis quota reached".
@@ -598,13 +646,64 @@ step that was carrying real weight; this is the one that did.
 
 `reel_filter` fixture replay is a **unit test**, not a smoke phase.
 
+#### [IMPL 2026-08-02] Deploy-day checklist — the proofs no test can give
+
+Every item below was accumulated during implementation as "QA debt": a claim the unit suite
+asserts against fakes and **only the real image, the real library and the real Telegram can
+settle**. They lived in the SDD ledger, which `.gitignore:51` excludes, so they would have died
+with the workspace — the single strongest finding of the final review. They are here now because
+this file is the one that survives. Run them in order; none costs more than a minute.
+
+1. **No `telegram_bot_not_admin` in the boot log.** If it appears, the bot is not a group
+   administrator and Telegram's privacy mode will hide every plain-URL message: the deployment is
+   indistinguishable from one that never happened (risk #2). Promote the bot, restart.
+2. **One reel round-trips end to end and earns a ✅.** The T11 Phase 1 smoke above, in the real
+   group, by a real human. The tick is the whole human contract; nothing else proves it fires.
+3. **★ `grep 'api.telegram.org/bot' <deploy logs>` → ZERO hits.** THE credential proof. A Render
+   worker has no uvicorn, so `_configure_logging` must raise the root logger to INFO or the
+   heartbeat disappears — but httpx logs `HTTP Request: POST <url>` at INFO and the **bot token is
+   in that URL path**, ~1700 lines a day each carrying a live credential into Render's log
+   retention. `worker._NOISY_TRANSPORT_LOGGERS` pins httpx to WARNING. Unit tests assert this
+   against a fake; only this grep proves it holds against the real httpx in the real image.
+4. **★ `grep 'apikey=' <deploy logs>` → ZERO hits.** The same proof for the service-role key.
+   `acreate_client` constructs an `AsyncRealtimeClient` on every boot whose URL is
+   `wss://…?apikey=<SERVICE_ROLE_KEY>`. The `realtime` pin closes the DEBUG door; what actually
+   keeps the key out today is that nothing calls `.channel()`/`.subscribe()`. Both halves are
+   invisible to a unit test.
+5. **`telegram_poller_alive` observed at its real interval** — first beat ≈100 s from start, then
+   ~every 100 s (T10 step 5; do NOT expect 60 s). This is the ONLY check that the INFO root level
+   and `force=True` actually took effect in the real image. If it is missing, every INFO event this
+   feature emits is invisible and the service has no liveness signal at all.
+6. **A deliberately wrong `TELEGRAM_BOT_TOKEN` produces `telegram_poll_unauthorized` at ERROR** —
+   not `telegram_poll_error` at WARNING — and the message names the env var. A 401 never clears on
+   its own; at WARNING it is indistinguishable from the network blips around it, and the worker
+   would look healthy on every dashboard forever while ingesting nothing. Restore the real token
+   afterwards.
+7. **A redeploy shows `telegram_worker_draining` → `telegram_worker_stopped` with a NON-CRASH exit
+   status.** SIGTERM → stop polling → drain → exit 0. A non-zero exit makes Render report a crash
+   on every routine deploy, which is how real crashes stop being noticed.
+
+Items 3, 4 and 6 need the operator to look at raw logs, not a dashboard summary. Item 6 mutates
+configuration — do it last among the log checks, and confirm the real token is back before item 7.
+
 ### Observability
 
 Structured stdout, snake_case, `key=value` (the repo's existing style; Render captures stdout).
-Events: `telegram_poller_alive` (the no-healthcheck substitute) · `telegram_poll_error` ·
-`telegram_poll_conflict` (ERROR — two instances) · `telegram_reel_accepted` ·
-`telegram_reel_dropped` (ERROR — §3.1) · `telegram_job_created`. Every string field is a scalar or a
-normalized IG URL, pinned by T2's caplog canary.
+Every string field is a scalar or a normalized IG URL, pinned by T2's caplog canary.
+
+**[IMPL 2026-08-02] The shipped event list**, reconciled against the code — an operator grepping
+for a documented event that does not exist wastes the time this section exists to save. Notably
+`telegram_job_created` was **never implemented**: it was folded into `telegram_reel_accepted`,
+which is emitted at the T4 acceptance gate and already carries the job id, so a second line per
+reel said the same thing twice. Do not grep for it.
+
+| Where | Events |
+|---|---|
+| Liveness | `telegram_poller_alive` (the no-healthcheck substitute — **~100 s cadence, see T5**) · `telegram_worker_starting` · `telegram_ingest_user_ok` · `telegram_worker_draining` · `telegram_worker_stopped` · `telegram_poller_stopped` |
+| Poll transport | `telegram_poll_error` (WARNING, transient) · `telegram_poll_conflict` (ERROR — two `getUpdates` consumers) · `telegram_poll_unauthorized` (ERROR — a wrong/revoked token, added after T6 review) · `telegram_poll_unexpected` (ERROR — unclassified) · `telegram_poll_offset_unresolved` (ERROR) |
+| Per reel | `telegram_reel_accepted` · `telegram_reel_dropped` (ERROR — §3.1) · `telegram_reel_unsupported_url` (ERROR) · `telegram_reel_truncated` (ERROR) · `telegram_reel_entities_overflowed` (ERROR) · `telegram_reel_filter_failed` (ERROR — a T2 regression) · `telegram_queue_full` · `telegram_reaction_failed` (WARNING) |
+| Per job | `telegram_job_failed` (ERROR — `run_organize_job` RAISED) · `telegram_job_reported_failed` (ERROR — it returned `status="failed"`; two distinct diagnoses, do not fold them) |
+| Boot / shutdown | `telegram_bot_not_admin` (WARNING — risk #2) · `telegram_admin_check_failed` (WARNING) · `telegram_chat_rejected` · `telegram_update_failed` (ERROR) · `telegram_drain_deadline_exceeded` (WARNING) · `telegram_worker_poller_failed` · `telegram_worker_consumer_failed` |
 
 **No PostHog** (declared in `pyproject.toml`, imported nowhere) and **no Langfuse** (no-op tracer).
 **No `ingest_report.py`** — three runbook SQL queries: `saved_reels` per day for the ingest user;
@@ -642,7 +741,7 @@ land PLAN B's T1–T2 first. PLAN A's own diff requires nothing from PLAN B.
 | # | Risk | Mitigation |
 |---|---|---|
 | 1 | ~~Share-sheet URLs don't match `normalize_reel_url` → the bot silently accepts nothing~~ | **RETIRED 2026-08-02 — T0 measured it: 3/3 canonical `/reel/<code>/`, `?igsh=` dropped on `parsed.path`.** No resolver. A stray `/share/` shape logs ERROR and withholds ✅ (T4) rather than vanishing |
-| 2 | **Bot is not a group admin (or gets demoted)** — privacy mode hides every plain URL, no error, no log | T11 Phase 0 asserts `administrator`; boot logs it as WARNING; the 60 s heartbeat distinguishes "polling fine, ingesting nothing" from "dead"; promotion is a numbered runbook step |
+| 2 | **Bot is not a group admin (or gets demoted)** — privacy mode hides every plain URL, no error, no log | T11 Phase 0 asserts `administrator`; boot logs it as WARNING; the ~100 s heartbeat (T10 step 5) distinguishes "polling fine, ingesting nothing" from "dead"; promotion is a numbered runbook step |
 | 3 | **Migration A's `create or replace` on a shared user-facing function** — the one live thing this plan changes | Signature unchanged so no `PGRST202`; `coalesce(…, 5)` preserves every existing user byte-for-byte; pgTAP proves the 5-then-null boundary; applied in Phase 2 **against already-running code**, fully isolated from the worker; privilege contract re-asserted. **[R4/m3]** The `alter table … add column` is **no rewrite but NOT lock-free** — a constant default avoids the rewrite, but `ALTER TABLE` still takes a brief `ACCESS EXCLUSIVE` lock on `users`. Set `lock_timeout = '3s'` and `statement_timeout` so it fails fast rather than queueing behind a long read |
 | 4 | Runaway paid spend | `daily_reel_analysis_limit` is charged **only on a `reel_cache` MISS**, so it bounds exactly the Apify + OpenAI calls. Warm reels are free and uncapped by design |
 | 5 | Untrusted group text leaking into logs or downstream (#11) | `extract_reel_urls` is the single reader; everything downstream is typed to normalized URLs; the caplog canary fails if any module formats message text. **No message text ever reaches an LLM** — the extractor's only input is `scrape_reel`'s output for a validated URL, identical to the web path |
@@ -664,6 +763,40 @@ land PLAN B's T1–T2 first. PLAN A's own diff requires nothing from PLAN B.
 | External heartbeat / worker liveness alerting | The worker dies and nobody notices for >12 h |
 | Private-chat (DM) ingestion | Demand; one branch on `chat.type` |
 | TikTok (`source_platform` already allows it) | A TikTok scraper exists |
+| **Reaper task amplification under a queue overflow** (below) | A single reaper tick sees **>50 `pending` organize jobs**, or the web process's memory climbs across consecutive ticks |
+
+#### [IMPL 2026-08-02] Reaper amplification — an accepted scope limit whose second-order cost we had not priced
+
+Recorded, deliberately **not fixed**. Found by the arc's final Codex cross-model review, and it is
+the one finding there that is neither wrong nor already covered: it is a real consequence of a limit
+this plan accepts on purpose, and §8's flood row prices only the *provider spend*, not this.
+
+The mechanism, verified against the code rather than reasoned:
+
+- `worker._run` bounds the in-process queue at `queue_maxsize` (100). Beyond that, `QueueFull` is
+  caught and the reel is **still durable** — its `organize_jobs` row exists — which is exactly the
+  design: the queue is a latency optimization, and the existing web reaper owns recovery.
+- `main._reap_loop` sweeps every `REAP_INTERVAL_S = 120`, and `organizer.recover_organize_jobs`
+  returns **every** row with `status = 'pending'` — no `LIMIT` (`organizer.py:374-375`).
+- The loop then does `_spawn(_redispatch_organize(...))` **per row**. The bound,
+  `_RECOVERY_SEM = asyncio.Semaphore(3)`, is acquired *inside* `_redispatch_organize`, so it limits
+  **execution, not task creation**: N pending rows create N tasks immediately, of which 3 run.
+- A waiting task's job stays `pending` until it is actually claimed, so the **next** sweep selects
+  the same rows and spawns a second task set, the one after that a third, and so on.
+
+Consequence: an allowlisted member dropping thousands of warm URLs consumes **zero** Apify/OpenAI
+credit (they are cache hits — §8's row is right about spend) but can accumulate tasks and memory in
+the **web** process and starve the recovery path the whole website depends on. The per-account
+analysis limit (T7) does not bound this: it caps *cold analyses*, not job rows.
+
+Not fixed here for two reasons. It is **pre-existing** — the reaper behaves identically for any
+source of pending jobs and this feature only makes a burst easier to produce — and the fix belongs
+to the reaper, not to the bot: a `.limit()` on the pending select, sized to a few sweeps' worth of
+throughput. Doing that inside a Telegram plan would change the recovery path every website organize
+run depends on, on a branch reviewed for something else. **The 6-line in-process daily accept
+counter already deferred above is the bot-side half**, and it is the cheaper of the two.
+
+Watch it with the runbook query already listed under Observability (`organize_jobs` by status).
 
 ## 10. Revision history
 

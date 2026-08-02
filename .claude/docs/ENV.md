@@ -58,6 +58,27 @@ The bot must also be a group **administrator** — Telegram's privacy mode hides
 messages from a non-admin bot, so the chat delivers nothing and raises no error. The worker
 logs `telegram_bot_not_admin` at boot when it sees this.
 
+**Is it alive?** `telegram_poller_alive offset=<n>` in the Render logs is the ONLY liveness
+signal this service has — a `type: worker` has no inbound HTTP, so it has no
+`healthCheckPath` and UptimeRobot cannot see it. It is emitted on an idle loop too, because
+"alive and idle" and "dead" are otherwise the same silence, and it carries the offset so a
+frozen offset across beats reads as *polling fine, ingesting nothing*.
+
+**It fires roughly every 100 seconds, not every 60.** The interval constant is 60 s but the
+check runs once per loop iteration, and one iteration is one full 50 s long poll, so the beat
+lands on the first poll boundary at or after 60 s — first beat at t≈100 s from start. While
+the transport is failing the gap is wider. Do not set an alert threshold under ~3 minutes; a
+tighter one fires against a perfectly healthy worker. (Pinned by
+`backend/telegram_ingest/test_poller.py::test_the_real_idle_cadence_is_the_interval_rounded_up_to_a_poll`.)
+
+**How to stop it — the entire Phase 1 rollback lever.** Suspend the service in the Render
+dashboard (Settings → Suspend), or scale `numInstances` to 0. Nothing else is needed and
+nothing has to be reverted: the worker owns no schema and the web service never reads its
+variables, so a suspended worker simply stops creating `organize_jobs` rows. Jobs already
+created still run — the existing web reaper picks up anything `pending`. The separate,
+independent lever for the per-account limit column is
+`supabase/migrations/rollback/20260802120000_down.sql`, which needs no code coordination.
+
 **`TELEGRAM_ALLOWED_CHAT_IDS` fails CLOSED — this is the bot's entire authorization surface.**
 Unset, blank, whitespace-only, or `","` is a **boot failure**, never "allow every chat"; there
 is no allow-all value, and the only way to accept a chat is to name it. Entries must match

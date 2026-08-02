@@ -192,8 +192,8 @@ async def ctx(monkeypatch):
 
 @pytest.fixture
 def stream_auth():
-    """The stream route uses get_user_id_from_query_or_header (main.py:467), which ctx does
-    not override. Same function object as auth's, so keying on main.* resolves correctly."""
+    """The `stream` route's Depends(get_user_id_from_query_or_header) is not overridden by
+    ctx. Same function object as auth's, so keying on main.* resolves correctly."""
     async def _user() -> str:
         return "user-1"
 

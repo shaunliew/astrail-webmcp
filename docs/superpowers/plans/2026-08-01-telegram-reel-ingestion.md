@@ -235,6 +235,23 @@ truncated)`.
 **Entities, not a regex** — the entity list is Telegram's own parse; a hand-rolled scanner means
 parsing untrusted content (guardrail #11) plus a ReDoS/obfuscation surface.
 
+**[IMPL 2026-08-02] The exception that must never escape carries the chat content.**
+`normalize_reel_url` raises `ValueError(f"not an Instagram reel URL: {url!r}")` — **the message IS
+the candidate URL**, which is untrusted group content. This module swallows that `ValueError`, but
+anything raising *inside* that handler attaches the leaky exception as implicit `__context__`, and a
+caller's `logger.exception(...)` prints the whole chain — chat content straight into the log.
+`urlparse("https://[::1/reel/A")` raises `ValueError: Invalid IPv6 URL` **from inside the very
+handler holding the leaky exception**, so this is a live trigger, not a theoretical one. Guarded by
+having the host test and the shape builder each catch `ValueError` internally, and asserted by a
+test on the *formatted traceback* rather than on `str(exc)`. Same `__context__` mechanism as §T1's
+`from None` finding, different asset class: a credential there, untrusted content here.
+
+**[IMPL 2026-08-02] Sanitized shapes are lowercased, not echoed verbatim.** An earlier wording kept
+a matched keyword segment with its original casing, which makes `/rEeL/` and `/reel/` distinct
+shapes — an attacker-controlled channel into T4's ERROR log, and a way to fill the 10-shape cap with
+case variants of one keyword. The keyword vocabulary is a closed 7-word set, so lowercasing loses
+nothing.
+
 **The contract:** everything downstream sees only strings matching
 `^https://www\.instagram\.com/reel/[A-Za-z0-9_-]+$`. Never stored, never logged, never passed on:
 `text`, `caption`, failed slices, `from.username`, `from.first_name`, `chat.title`.

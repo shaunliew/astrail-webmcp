@@ -16,6 +16,25 @@
 -- body below is byte-identical to 20260719101000_saved_reels_exactly_once_quota.sql:38-101 except
 -- for the one `where usage.reel_analysis_count < …` predicate.
 --
+-- APPLY THIS WITH `psql -X -1 -v ON_ERROR_STOP=1 -f <this file>`. Same instruction, and the same
+-- reason, as rollback/20260802120000_down.sql — read that header too; the two files are a pair and
+-- this repo's schema is applied BY HAND (.claude/docs/STACK.md), so psql is the tool that matters.
+-- Without `-1`, psql runs each statement in its own autocommit transaction: a failed `alter table`
+-- (the 3-second lock_timeout below firing is the realistic way) does NOT stop the file, and the
+-- `create or replace function` further down then installs a body referencing a column that does not
+-- exist — on the live path every website organize run goes through. `-1` makes the whole file
+-- all-or-nothing, so that intermediate state cannot be reached or observed, and a lock it cannot
+-- get aborts cleanly and is simply retried.
+--
+-- DELIBERATELY NOT an in-file `begin;`/`commit;`, which looks like the tidier fix and is worse.
+-- MEASURED against this repo's CLI (v2.109.1), not assumed: `supabase db reset` already wraps each
+-- migration file in one transaction — a probe migration that created a table and then divided by
+-- zero left NO table behind. Add `begin; … commit;` inside the file and the `commit` ENDS the CLI's
+-- transaction early: the same probe, wrapped, DID leave its table behind after the later failure.
+-- So the explicit spelling would REMOVE the atomicity the CLI already provides while adding none for
+-- psql, where `-1` is the switch that does the job. Statement order stays as it is either way — the
+-- column before the function that reads it — as the backstop for whoever runs this without `-1`.
+--
 -- `alter table … add column` with a CONSTANT default performs no table rewrite, but it is NOT
 -- lock-free: it still takes a brief ACCESS EXCLUSIVE lock on public.users. The timeouts below make
 -- it fail fast rather than queue behind a long read while blocking every reader behind it. They are

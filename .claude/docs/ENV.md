@@ -40,6 +40,52 @@ ALLOWED_ORIGINS=https://astrail.xyz,https://www.astrail.xyz   # CORS allowlist (
 # MAX_TRIPS_PER_USER_PER_DAY — SUPERSEDED / never wired; the live cap is DAILY_TRIP_QUOTA above
 ```
 
+## Worker-only (`astrail-telegram-ingest`)
+
+The Telegram reel-ingestion worker is a second Render service (`type: worker`, same image,
+`render.yaml`). It has **no inbound HTTP**. These three are read by that worker only — the web
+service never reads them, and they are not in its `envVars`.
+
+```
+TELEGRAM_BOT_TOKEN               # from @BotFather (/newbot, or /token for an existing bot). Blank counts as missing
+TELEGRAM_ALLOWED_CHAT_IDS        # comma-separated Telegram chat ids the bot will ingest from, e.g. -1001234567890
+ASTRAIL_INGEST_USER_ID           # UUID of the row in public.users that owns every ingested reel (Supabase dashboard → Auth → Users)
+```
+
+Getting a chat id: add the bot to the group, send a message, then read `message.chat.id` from
+`https://api.telegram.org/bot<TOKEN>/getUpdates`. Supergroup ids are negative and start `-100`.
+The bot must also be a group **administrator** — Telegram's privacy mode hides plain-URL
+messages from a non-admin bot, so the chat delivers nothing and raises no error. The worker
+logs `telegram_bot_not_admin` at boot when it sees this.
+
+**`TELEGRAM_ALLOWED_CHAT_IDS` fails CLOSED — this is the bot's entire authorization surface.**
+Unset, blank, whitespace-only, or `","` is a **boot failure**, never "allow every chat"; there
+is no allow-all value, and the only way to accept a chat is to name it. Entries must match
+`-?[0-9]+` exactly (no `+42`, no unicode digits, no `4_2`), `0` is rejected, and one bad entry
+fails the whole boot rather than silently shrinking the list. The failure names the variable,
+never its value.
+
+Shared with the web service (the worker reads these from the same secrets, set separately on
+the worker in the Render dashboard): `OPENAI_API_KEY`, `APIFY_TOKEN`, `SUPABASE_URL`,
+`SUPABASE_SERVICE_ROLE_KEY`, `MAPBOX_SECRET_TOKEN` — the five in
+`backend/config_validation.py`. **Eight declared variables on the worker, and no ninth** —
+`backend/telegram_ingest/config.py` states the count as an invariant. (`ASTRAIL_EXTRACT_MODEL`
+is the only other var anything in the worker's import graph reads, and it has a default.)
+
+Deliberately **absent** from the worker (verified by grep — do not "complete" the list):
+
+```
+MEM0_API_KEY          the organize path never reaches mem0 — mem0_client is imported only by
+                      main.py and pipeline/runner.py, both web-only
+LANGFUSE_PUBLIC_KEY   pipeline/tracing.py's default tracer is a no-op; nothing imports langfuse
+LANGFUSE_SECRET_KEY   (same)
+SUPABASE_JWT_SECRET   already removed project-wide — ES256 via JWKS, no shared HS256 secret
+ALLOWED_ORIGINS       CORS, and a worker serves no requests
+DAILY_TRIP_QUOTA      trip-generation quota; the worker runs organize jobs, not /generate-trip
+BURST_LIMIT           slowapi throttles an HTTP endpoint the worker does not have
+PORT                  nothing binds a port
+```
+
 ## Frontend
 
 ```

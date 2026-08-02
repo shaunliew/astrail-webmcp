@@ -39,6 +39,7 @@
 | Agent memory | mem0 (hosted) + Agents SDK Sessions + Supabase columns for structured prefs |
 | Guardrails | Agents SDK-native input/tool guardrails — the prompt-injection defense for untrusted Reel content |
 | Reel scraping | Apify `instagram-reel-scraper` — **direct HTTP, no MCP, no Agents SDK**; kept logged-out (legal posture). Transcript via opt-in `includeTranscript` as a fallback when caption + `locationName` are thin |
+| Reel ingestion (Telegram) | Telegram Bot API — **direct HTTP via `httpx`, no SDK and NO NEW DEPENDENCY**. Long-polls `getUpdates` from a second Render service (`astrail-telegram-ingest`, `type: worker`, Singapore, same image as the backend); a reel URL posted in an allowlisted chat becomes an `organize_jobs` row. **`python-telegram-bot` deliberately NOT added** — the bot calls four methods (`getUpdates`, `setMessageReaction`, and `getMe`/`getChatMember` for the boot admin check), which is less code than the library's wiring; see the v2 trigger below. Authorization is one fail-closed chat allowlist (`TELEGRAM_ALLOWED_CHAT_IDS`, `.claude/docs/ENV.md`) |
 | Weather | Open-Meteo HTTP (free, no auth) — forecast ≤16 days; climate/historical normals for trips further out. Free tier is non-commercial → paid/self-host is a v2 trigger at monetization. No web search for weather (must stay structured) |
 | Transport routing | Mapbox Directions API |
 | Hotel search | Travala Travel MCP (`travala/travel-mcp`) for `travala_search_hotel` and optional `travala_search_package` only — **no booking/payment tools in v1** |
@@ -73,6 +74,7 @@
 - ClickStack — preferred over Grafana once multi-service infra observability outgrows per-platform dashboards
 - Cloudflare Turnstile — at public launch / observed abuse / spend spike
 - Temporal — when durable agent execution outgrows the `jobs` table
+- `python-telegram-bot` — when a **third** Bot API capability is needed beyond long-polling updates and reacting to a message. Until then the Telegram integration is `httpx` calls against `https://api.telegram.org/bot<token>/<method>` and adds no dependency
 - Portkey-style gateway — when per-feature cost/routing control can't live in app code
 - Cloud Run / Fly.io migration — when Render's single-region model is outgrown
 - Open-Meteo paid tier or self-host — at commercialization, or when >10k calls/day

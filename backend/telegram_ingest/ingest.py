@@ -24,6 +24,16 @@ and the logging formatter prints that chain exactly like an explicit `__cause__`
 swallowed `APIError` carrying a URL, a row, or a service-role detail leaks through the
 traceback even though the message looks clean. Swallowing does not erase.
 
+ONE CAVEAT ON `type(exc).__name__`, stated because the rule reads as absolute and is not:
+it is safe only while the CLASS NAME itself is content-free. A `CANARYSECRETLeakError`
+would log as `error=CANARYSECRETLeakError`. That is unreachable today and is a property of
+the callees, not of this line — `reel_filter` is stdlib-only and can raise nothing but
+builtins with fixed names (pinned by its own `_must_not_raise` suite), and the persistence
+callees raise `APIError`/`httpx` types whose names are equally fixed. It becomes live the
+day a callee gains a third-party dependency that mints exception classes from data. The
+same caveat applies wherever this repo uses the pattern (`poller.py`, `worker.py`); it is
+written out once, here, rather than three times.
+
 Guardrail #11 — group chat content is untrusted, and `reel_filter` is its ONLY reader.
 This module touches `chat`, `id`, `type` and `message_id`: envelope fields, never `text`,
 `caption`, `from.username`, `from.first_name` or `chat.title`. Asserted from the AST. The

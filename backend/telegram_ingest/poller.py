@@ -53,7 +53,7 @@ traceback even when the message looks clean. `update_id` is a scalar and is safe
 update dict itself never reaches a log line.
 
 `sleep`, `monotonic` and `random_` are injected so the suite exercises a 123-second backoff
-ladder and a 60-second heartbeat without spending either. `handle` arrives already bound to
+ladder and the heartbeat without spending either. `handle` arrives already bound to
 its `db`/`queue`/`http` dependencies, which is what keeps this module — and its tests —
 ignorant of Supabase entirely.
 """
@@ -93,6 +93,21 @@ _RETRY_AFTER_MARGIN_S = 1.0
 # A Render *worker* has no `healthCheckPath`. This line is the only liveness signal the
 # service has, so it must fire on an idle loop too: "alive and idle" and "dead" are
 # otherwise the same silence.
+#
+# A MINIMUM, NOT A PERIOD — do not quote it as one. The check runs once per loop
+# ITERATION, and on a healthy idle worker one iteration is one full long poll, so the beat
+# lands on the first poll boundary at or after this interval. At the deployed
+# `poll_timeout_s = 50` that is **every 100 s, first beat at t=100**, not every 60 s. It is
+# pinned by a test rather than left to the reader's arithmetic — grep test_poller.py for
+# test_the_real_idle_cadence_is_the_interval_rounded_up_to_a_poll — because a monitoring
+# threshold set under the true cadence fires against a perfectly healthy worker, which is
+# worse than having no threshold at all. While the transport
+# is failing on the top rung the gap is wider still (a poll can consume the httpx timeout
+# before a ~72 s backoff sleep), so anything alerting on this should sit at minutes.
+#
+# Left at 60 deliberately rather than tuned to produce a rounder cadence: firing on a true
+# 60 s period needs a second concurrent task, and the signal's whole job — telling "idle"
+# apart from "dead" — is already done at 100 s.
 _HEARTBEAT_INTERVAL_S = 60.0
 
 _CONFLICT_MESSAGE = (
@@ -180,6 +195,9 @@ def _maybe_heartbeat(
 
     Carries the offset so the log shows forward *progress*, not just a pulse: an offset
     frozen across heartbeats is a bot that is polling fine and ingesting nothing.
+
+    Called once per loop iteration, so the OBSERVED cadence is `_HEARTBEAT_INTERVAL_S`
+    rounded up to a poll boundary — ~100 s in production, not 60. See that constant.
     """
     now = monotonic()
     if now - last_beat < _HEARTBEAT_INTERVAL_S:

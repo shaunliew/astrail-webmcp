@@ -49,6 +49,7 @@ from telegram_ingest.config import TelegramConfig
 GROUP_CHAT_ID = -1001234567890
 INGEST_USER_ID = "11111111-2222-3333-4444-555555555555"
 POLL_TIMEOUT_S = 7          # not api.get_updates' default 50: proves config is consulted
+PRODUCTION_POLL_TIMEOUT_S = 50   # TelegramConfig's default — what the worker really runs
 CANARY_TEXT = "CANARY-SECRET"
 
 HTTP = object()             # opaque: the poller forwards it and never introspects it
@@ -85,6 +86,24 @@ class _FakeSleep:
     async def __call__(self, seconds: float) -> None:
         self.durations.append(seconds)
         self._clock.advance(seconds)
+
+
+class _BeatTimes(logging.Handler):
+    """Stamps every `telegram_poller_alive` with the FAKE clock.
+
+    `caplog` records carry wall-clock times, which are meaningless in a suite that never
+    advances one. Counting beats is not enough for the cadence claim — "two beats" is
+    equally true at 60 s and at 100 s — so the assertion needs the instants themselves.
+    """
+
+    def __init__(self, clock: _Clock) -> None:
+        super().__init__()
+        self._clock = clock
+        self.times: list[float] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.getMessage().startswith("telegram_poller_alive"):
+            self.times.append(self._clock.now)
 
 
 class _FakeUpdates:
@@ -638,6 +657,45 @@ async def test_heartbeat_fires_at_most_once_per_sixty_seconds(config, monkeypatc
         await rig.run()
 
     assert len(_records(caplog, "telegram_poller_alive")) == 1
+
+
+async def test_the_real_idle_cadence_is_the_interval_rounded_up_to_a_poll(
+    config, monkeypatch, caplog
+):
+    """★ What the operator actually sees, in production's numbers — and it is NOT 60 s.
+
+    The beat is checked once per loop ITERATION, and on a healthy idle worker one iteration
+    is one full long poll. With the deployed 50 s timeout the elapsed time at each check
+    goes 0, 50, 100 — so the first beat lands at **t=100 s** and the cadence is 100 s, i.e.
+    `_HEARTBEAT_INTERVAL_S` rounded UP to the next poll boundary.
+
+    Every other heartbeat test here uses a poll longer than the interval (61 s) or an exact
+    divisor (30 s), which is why four of them could be green while the deploy-day check
+    "expect `telegram_poller_alive` within 60 s" would have raised a false alarm against a
+    perfectly healthy worker. A monitoring threshold under the true cadence is worse than no
+    threshold, so the number is pinned here rather than left to the reader's arithmetic.
+    """
+    # The dial models the LONG POLL's duration, so it must be production's value and not
+    # the fixture's deliberately-different 7 s. Pinned against the real default so this
+    # test cannot quietly go on modelling a timeout the deployment no longer uses.
+    assert TelegramConfig(
+        bot_token="123456:CANARY-BOT-TOKEN",
+        allowed_chat_ids=frozenset({GROUP_CHAT_ID}),
+        ingest_user_id=INGEST_USER_ID,
+    ).poll_timeout_s == PRODUCTION_POLL_TIMEOUT_S
+
+    rig = _rig(config, monkeypatch, [[]] * 5, advance=float(PRODUCTION_POLL_TIMEOUT_S))
+    beats = _BeatTimes(rig.clock)
+    poller.logger.addHandler(beats)
+    try:
+        with caplog.at_level(logging.DEBUG):
+            await rig.run()
+    finally:
+        poller.logger.removeHandler(beats)
+
+    assert rig.clock.now == 300.0                       # six idle polls, 50 s each
+    # Two beats in five minutes. At the interval's face value there would be five.
+    assert beats.times == [100.0, 200.0]
 
 
 async def test_heartbeat_keeps_firing_while_the_transport_is_failing(

@@ -292,19 +292,49 @@ before the day-loop, passing the verified country into `_find_or_create_place` e
    at one coordinate can carry different LLM country claims, and the second one's claim must be
    checked against the cached answer, not assumed to match the first one's.
 
-   **This is the most safety-sensitive invariant in the change, and round 2 found it was
-   specified but not enforceable.** The shortcut below passes every test the plan required
-   before round 3, and writes `Japan` onto a place that claimed `US` — a guardrail-#1
-   violation introduced by the very fix for round 1's blocker #3:
+   **THE PERMITTED IMPLEMENTATION IS EXACTLY THIS. Nothing else is acceptable:**
 
    ```python
-   grounded = await safe_ground(group[0])       # WRONG
-   for place in group:
-       grounded_by_id[id(place)] = grounded     # one member's verdict, applied to all of them
+   async def _ground_group(client, group, verify_country):
+       out = []
+       for place in group:                       # sequential, ALL members, no exceptions
+           out.append((id(place), await _safe_ground(client, place, verify_country)))
+       return out
    ```
 
-   The two tests that make it red are in §6b D2. Both are required; they are not combinable
-   with each other or with anything else.
+   **No memoization of any kind inside the group.** Not of the first member's result, not
+   keyed by claim, not keyed by anything. Caching is `_ground_place`'s own job via
+   `geocode_country_cache`, and it is already correct there. A caller-side shortcut is always
+   wrong, because `_ground_place` applies **per-place gates** — coordinates present, source URL
+   not a placeholder, claim present — that have nothing to do with the coordinate and cannot be
+   inferred from a sibling.
+
+   **This rule exists because rounds 2, 3 and 5 each found a different way to violate it**, and
+   each violation passed every test that existed at the time:
+
+   ```python
+   grounded = await safe_ground(group[0])                    # r2: copy the first verdict
+   for place in group: out[id(place)] = grounded
+
+   first = await safe_ground(group[0])                       # r3: copy it only if it succeeded
+   for place in group[1:]:
+       g = first if first is not None else await safe_ground(place)
+
+   if claim in successful:                                   # r5: memoize by claim
+       g = {...successful[claim]...}                         #     skips this member's gates
+   else:
+       g = await safe_ground(place)
+   ```
+
+   Round 5's is the instructive one: it reruns grounding for *different* claims, so it survives
+   D2(a1–a3), and it does not memoize failures, so it survives D2(b). It breaks on two
+   same-coordinate places with the **same** claim where the second has a placeholder
+   `source_url` — the second never reaches `_ground_place:114`'s provenance gate and is labelled
+   from its sibling. **The gates, not just the comparison, are per-member.**
+
+   The tests in §6b D2 make each of these red. They are confirmation of the rule above, not a
+   substitute for it — if an implementation is not the loop shown at the top of this block, it
+   is wrong even if the suite is green.
 
    **Keying detail (round 2):** key the map from the **original input object**, never from
    `id(grounded["place"])` — `_ground_place` returns a `model_copy`, so that id belongs to a
@@ -436,6 +466,23 @@ with `country` NULL, which is exactly today's behaviour. Two consequences worth 
    **State it in the code:** `verify_country` is **dependency substitution for tests, never a
    feature switch.** There is exactly one grounding path and the default is it.
 
+   Round 5 refinement: give (c) a **non-NULL `job_id`/`lease_token`** so it mirrors the durable
+   live call at `runner.py:370-371` rather than the jobless test path.
+
+   **(d) SAME coordinate, SAME claim, MIXED eligibility.** *(Round 5's blocking finding.)* Two
+   parametrized cases, each asserting **exactly one provider call**:
+
+   | case | members (all same coord, all claiming `JP`/`Japan`) | expected rows |
+   |---|---|---|
+   | d1 | eligible, **placeholder URL**, eligible | `Japan`, `NULL`, `Japan` |
+   | d2 | **placeholder URL**, eligible, placeholder | `NULL`, `Japan`, `NULL` |
+
+   This is the only test that makes each member's **eligibility gates** load-bearing rather than
+   only its country comparison. The claim-memoizing variant above passes every other test in the
+   suite and fails these: it labels the placeholder-URL member `Japan` from its sibling's
+   verdict, because it never calls `_ground_place` for that member at all. d2 additionally puts
+   an ineligible member *first*, so no "first member is special" implementation survives either.
+
 ### E. Known limitations this change deliberately does NOT fix
 
 Both are conservative — they yield NULL, never a wrong country — so neither violates §2.
@@ -564,7 +611,11 @@ CODE PATHS (pipeline/persist.py)                        USER-VISIBLE OUTCOME
   │   ├── [GAP] SAME coord, claims JP,US        -> "Japan", NULL   + 1 call  <- D2(a2), REQUIRED
   │   ├── [GAP] SAME coord, claims JP,US,JP     -> "Japan",NULL,"Japan"      <- D2(a3)
   │   ├── [GAP] SAME coord, 1st member RAISES   -> NULL, "Japan"   + 2 calls <- D2(b)
-  │   └── [GAP] NO injected verifier (DEFAULT)  -> "Japan" + 1 real call     <- D2(c), the live seam
+  │   ├── [GAP] NO injected verifier (DEFAULT)  -> "Japan" + 1 real call     <- D2(c), the live seam
+  │   ├── [GAP] same coord+claim, mixed eligibility (elig, placeholder, elig)
+  │   │                                         -> "Japan", NULL, "Japan" + 1 call <- D2(d1)
+  │   └── [GAP] same coord+claim, ineligible FIRST (placeholder, elig, placeholder)
+  │                                             -> NULL, "Japan", NULL + 1 call    <- D2(d2)
   └── _find_or_create_place()
       ├── [GAP] insert carries country + country_code + country_name (all three, C1)
       ├── [★★ TESTED] dedup hit reuses row — test_persist.py:154 (existing, unaffected)
@@ -573,19 +624,19 @@ CODE PATHS (pipeline/persist.py)                        USER-VISIBLE OUTCOME
 NOT COVERED BY DESIGN: _find_or_create_restaurant_place (A1, deferred)
 NOT A FAILURE MODE:     absent MAPBOX_SECRET_TOKEN — boot secret, see Failure modes below
 
-COVERAGE: 0/14 new paths tested — all 14 are the work of T1/T2.
+COVERAGE: 0/16 new paths tested — all 16 are the work of T1/T2.
 ```
 
-**Every one of those 14 outcomes is required.** Two are regression-class under the IRON RULE
+**Every one of those 16 outcomes is required.** Two are regression-class under the IRON RULE
 (mismatch→NULL, and Mapbox-raises→trip-still-saves): they pin behaviour that exists today and
 that this change could silently take away.
 
-**Fourteen outcomes need not be fourteen test functions** (round 2). Parametrize the compatible
+**Sixteen outcomes need not be sixteen test functions** (round 2). Parametrize the compatible
 single-place cases — verified / mismatch / no-claim / placeholder-URL / provider-raises all
 share one arrange-act shape and differ only in input and expected row. D2 (a1)/(a2)/(a3) are
 also naturally one parametrized test. **Do NOT merge across the same-coordinate group** (the
-call-count case, the (a) family, and (b) first-member-raises), and **never fold (c) into
-anything** — (c) is the only test in the suite that exercises the seam production actually
+call-count case, the (a) family, (b) first-member-raises, and the (d) family), and **never fold
+(c) into anything** — (c) is the only test in the suite that exercises the seam production actually
 takes, so it cannot share a fixture with a test that injects a verifier.
 
 **Fault-injection duty (BUILD-LOOP "tests that cannot fail").** Each test must redden from a
@@ -921,25 +972,24 @@ places created 2026-08-02:
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | ISSUES_OPEN | 8 issues, 0 critical gaps |
-| Codex Review | `codex exec gpt-5.6-sol` | Independent 2nd opinion | 3 | ISSUES_FOUND | 5 blocking across 3 rounds, all folded; last unverified |
+| Codex Review | `codex exec gpt-5.6-sol` | Independent 2nd opinion | 5 | ISSUES_FOUND | 7 blocking, all folded; last unverified |
+| Mapbox research | `mapbox-docs-mcp` | Provider facts, not memory | 1 | CLEAR | 3 assertions replaced with measured facts |
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
-| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
 
-- **CODEX:** 3 rounds, 6.3 → 6.9 → 6.9 against a 7.0 bar. Round 1: three test-design blockers
-  (helper-level spec test, non-provenance success test, cache assertion incompatible with the
-  proposed gather). Round 2: the round-1 repair itself admitted a guardrail-#1 violation. Round
-  3: the round-2 repair tested only one claim order. All folded; round 3's fold is unverified.
-- **CROSS-MODEL:** No tension on §2 — the eng review and all three Codex rounds independently
+- **CODEX:** 5 rounds, 6.3 → 6.9 → 6.9 → 6.9 → 6.9. **Every single blocking finding across all
+  five rounds was a test that could not fail**, never a design flaw: helper-not-live-path,
+  name-provenance, cache-vs-gather contradiction (r1); group-result-copying (r2);
+  one-claim-order-only (r3); injected-verifier-only-seam (r4); claim-memoized-gate-skip (r5).
+- **CROSS-MODEL:** No tension on §2 — the eng review and all five Codex rounds independently
   endorsed grounding-before-persist over the two-line insert. Codex independently reproduced the
-  eng review's third-writer finding (A1) and agreed on deferring it. Codex **corrected** the eng
-  review twice: the "silent missing token" critical gap (it is a required boot secret) and the
-  semaphore's blast-radius claim (an 8-place cap makes it a no-op). Both corrections verified
-  against the source and folded.
-- **VERDICT:** **NOT CLEARED — eng review required.** The plan is materially stronger than at
-  round 0 and its design is settled, but the gate never reached 7.0 and the 3-round cap is
-  spent. Implementation must not begin until a targeted round 4 verifies §6b D2 (a1/a2/a3).
+  eng review's third-writer finding and agreed on deferring it, and **corrected the eng review
+  twice** (the "silent missing token" gap — it is a required boot secret; and the semaphore's
+  blast-radius claim — an 8-place cap makes it a no-op). Both corrections verified against source.
+- **VERDICT:** Design settled and endorsed in every round. Round 5's fold added a structural
+  rule (§6b B4 pins the one permitted loop shape) plus the D2(d) eligibility tests, so the
+  variant family is now excluded by construction rather than enumerated.
 
 **UNRESOLVED DECISIONS:**
-- Round 3's blocking finding is folded into §6b D2 but not re-reviewed; one targeted Codex round
-  4 is needed to clear the 7.0 bar before any code is written.
+- Round 5's blocking finding is folded but not yet re-verified; the next Codex round decides
+  whether the gate clears 7.0.

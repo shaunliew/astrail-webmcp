@@ -373,8 +373,15 @@ class _CacheWriteFailsClient(_Client):
 
 
 def _country_of(c, name):
-    """(country, country_code, country_name) of the persisted `places` row — all three, since
-    `places_country_fields_pair_check` makes them all-or-nothing."""
+    """(country, country_code, country_name) of the persisted `places` row — all three, because
+    all three must move together.
+
+    Only the code/name PAIR is a database constraint (`places_country_fields_pair_check`,
+    20260718130000, is `(country_code is null) = (country_name is null)`); `country` is
+    unconstrained and the database would happily accept it filled while the other two are NULL.
+    Keeping it in step is an APPLICATION-layer invariant, so reading all three here is what
+    holds it — nothing below the code does.
+    """
     row = next(p for p in c.db["places"] if p["name"] == name)
     return (row.get("country"), row.get("country_code"), row.get("country_name"))
 
@@ -543,12 +550,119 @@ async def test_persist_same_coordinate_applies_each_members_gates(monkeypatch, u
 
 @pytest.mark.asyncio
 async def test_persist_grounds_distinct_coordinates_independently(monkeypatch):
-    """Two coordinate groups, two countries. The only test that makes the cross-group flatten
-    and the id-keyed result mapping load-bearing — every other case has a single group, so a
-    bug that merged groups or mis-paired ids with results would go unseen."""
+    """Two coordinate groups, two countries — the simple case. Every other test here has a
+    single group, so a bug that merged the groups or lost one would go unseen.
+
+    It does NOT pin the id-keyed result mapping, though it reads like it should: one place per
+    group makes canonical order and flatten order identical, so positional pairing passes this
+    unharmed. `test_persist_pairs_grounding_results_by_identity_not_position` below is what
+    actually pins that.
+    """
     monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
     c = _Client()
     verifier = _Verifier(by_coord={
+        _JP: CountryResult(country_code="JP", country_name="Japan"),
+        _SG: CountryResult(country_code="SG", country_name="Singapore"),
+    })
+    places = [_gp("Tokyo Tower", *_JP),
+              _gp("Marina Bay", *_SG, country_code="SG", country_name="Singapore")]
+
+    await persist.persist_itinerary(c, "trip-1", places, ["2026-08-01"],
+                                    job_id=None, lease_token=None, verify_country=verifier)
+
+    assert _country_of(c, "Tokyo Tower") == _VERIFIED
+    assert _country_of(c, "Marina Bay") == ("Singapore", "SG", "Singapore")
+    assert verifier.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_persist_pairs_grounding_results_by_identity_not_position(monkeypatch):
+    """Canonical order and group-flatten order DELIBERATELY differ — the only shape in this file
+    that makes `_ground_all`'s `id(place)` keying load-bearing.
+
+    `_ground_all` groups by coordinate, so results come back in GROUP order — JP=[Tokyo Tower,
+    Senso-ji], SG=[Marina Bay], flattened to (Tokyo Tower, Senso-ji, Marina Bay) — while
+    `canonical` is (Tokyo Tower, Marina Bay, Senso-ji). Every other grounding test here has one
+    group, or one place per group, which makes the two orders identical and lets positional
+    pairing (`zip(canonical, flattened)`) pass unnoticed.
+
+    It does not pass here. Positionally, Marina Bay inherits Senso-ji's rejection and — worse —
+    Senso-ji inherits `Singapore`, though its coordinate is in Tokyo and its own claim is the
+    United States: an unverified country written into the receipt column, which is the single
+    thing this change exists to prevent (guardrail #1).
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c = _Client()
+    verifier = _Verifier(by_coord={
+        _JP: CountryResult(country_code="JP", country_name="Japan"),
+        _SG: CountryResult(country_code="SG", country_name="Singapore"),
+    })
+    places = [
+        _gp("Tokyo Tower", *_JP),                                                # JP coord, agrees
+        _gp("Marina Bay", *_SG, country_code="SG", country_name="Singapore"),    # SG coord, agrees
+        # JP coordinate, US claim: the geocoder contradicts it, so its only correct value is NULL.
+        _gp("Senso-ji", *_JP, country_code="US", country_name="United States"),
+    ]
+
+    await persist.persist_itinerary(c, "trip-1", places, ["2026-08-01"],
+                                    job_id=None, lease_token=None, verify_country=verifier)
+
+    assert _country_of(c, "Tokyo Tower") == _VERIFIED
+    assert _country_of(c, "Marina Bay") == ("Singapore", "SG", "Singapore")
+    assert _country_of(c, "Senso-ji") == _NULL
+    # Two coordinates, two provider calls — Senso-ji shares Tokyo Tower's coordinate and hits
+    # the cache that member seeded, so a third call would mean the group loop stopped sharing.
+    assert verifier.calls == 2
+
+
+# Long enough that two coroutines entering the same function cannot miss each other on a loaded
+# machine; short enough that the sequential FAILURE mode is a red assertion seconds later. Only
+# a failing run ever waits this out — a correct one trips the barrier immediately.
+_RENDEZVOUS_TIMEOUT_S = 2.0
+
+
+class _RendezvousVerifier(_Verifier):
+    """Answers only once BOTH coordinates are in flight — an executable proof of parallelism.
+
+    A verifier that merely counts calls cannot tell `asyncio.gather` from a sequential loop:
+    the calls, the rows and the log line are identical either way. Meeting at a barrier can.
+
+    The `asyncio.timeout` is what keeps the sequential case a TEST FAILURE rather than a hung
+    suite: each lone waiter is cancelled into a `TimeoutError`, which `_safe_ground` absorbs as
+    a grounding failure, so the countries land NULL and the assertions redden. A cancelled
+    waiter breaks the barrier, but `Barrier` resets itself to FILLING once the last waiter
+    leaves, so the cost is one timeout PER COORDINATE — measured at ~4s for the two below, and
+    paid only by a run that is already failing.
+    """
+
+    def __init__(self, *args, parties=2, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._barrier = asyncio.Barrier(parties)
+
+    async def __call__(self, lat, lng, *, token):
+        async with asyncio.timeout(_RENDEZVOUS_TIMEOUT_S):
+            await self._barrier.wait()
+        return await super().__call__(lat, lng, token=token)
+
+
+@pytest.mark.asyncio
+async def test_persist_grounds_distinct_coordinates_in_parallel(monkeypatch):
+    """`_ground_all`'s OUTER `asyncio.gather`, pinned by a rendezvous instead of a stopwatch.
+
+    Nothing else in this file distinguishes it from `for group in by_coord.values(): await
+    _ground_group(...)` — same rows, same call counts, same aggregate log — so a later
+    "simplification" back to a loop would land green while turning a trip's eight
+    distinct-coordinate Mapbox timeouts from ~30s of wall clock into ~240s, on the critical
+    path of every save.
+
+    Neither verifier call may return until both have entered. Under the gather both coordinates
+    are in flight at once, the barrier trips, and both countries land. Sequentially the first
+    call waits for a partner that cannot start until it returns, and the resulting NULLs redden
+    the assertions below.
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c = _Client()
+    verifier = _RendezvousVerifier(by_coord={
         _JP: CountryResult(country_code="JP", country_name="Japan"),
         _SG: CountryResult(country_code="SG", country_name="Singapore"),
     })

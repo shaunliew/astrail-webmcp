@@ -191,8 +191,14 @@ already succeeded.
 ### 4.6 `/readiness` mem0 signal
 
 ```
-GET /readiness -> {"ready": true, "mem0": "configured" | "disabled" | "init_failed"}
+GET /readiness -> {"ready": true,
+                   "mem0": "configured" | "disabled" | "init_failed" | "not_initialized"}
 ```
+
+**Four states, not three.** `not_initialized` = key set, no construction attempt has happened yet.
+Post-implementation it is effectively unreachable in production (requests are not served until the
+lifespan yields, and the warm always attempts construction), but it is the honest value for the
+window before that, and `mem0_status()` can return it — so the contract lists it.
 
 **Not `"ok"` (corrected after review round 1).** `get_mem0_client()` memoizes; after the
 first init it returns the cached object **without touching the network**
@@ -207,8 +213,20 @@ error* — and would let a rotated or mistyped key take the whole backend down w
 mem0 at all. Instead the state becomes **visible**: `/readiness` is documented at `main.py:210-211`
 as *not* the deploy gate (`/health` is), so reporting degraded mem0 cannot fail a rolling deploy.
 
-The check reuses the memoized `get_mem0_client()` singleton and must not construct a client per
-request. `disabled` = no key; `unreachable` = key present, client is `None`.
+The check must **never construct** a client. `get_mem0_client()` deliberately retries after a failure
+(it leaves `_initialized` False so a transient boot blip does not disable memory process-wide), so
+calling it from a polled probe would re-run an 8-second blocking constructor on every poll during an
+outage. A dedicated non-networking accessor `mem0_client.mem0_status()` reads module state instead.
+
+Vocabulary (the implementation uses `init_failed`, **not** `unreachable` — an earlier draft of this
+line said `unreachable` and drifted from the code):
+`disabled` = no key · `configured` = key set and client built · `init_failed` = key set, a
+construction attempt failed · `not_initialized` = key set, no attempt yet.
+
+**The same fork applies to `GET /settings/preferences`.** `list_memory_facts` only sees a `None`
+client and cannot tell "no key" from "construction failed", so the route consults `mem0_status()` and
+reports `unavailable` rather than `disabled` when the state is `init_failed`. Telling a user their
+memory is switched off during an outage is the exact misdiagnosis this arc removes.
 
 ### 4.7 PRD §357 — stop storing trip history as preference memory
 

@@ -247,10 +247,17 @@ async def get_settings_preferences(
     """PRD §18. The user's STORED mem0 memories, read live. Degrades rather than erroring
     (guardrail #3): `status` carries the bad news so an unrelated settings screen still
     renders. Not identical to a generation's recall — see list_memory_facts."""
-    from mem0_client import get_mem0_client
+    from mem0_client import get_mem0_client, mem0_status
     from pipeline.preferences import list_memory_facts
 
     status, facts = await list_memory_facts(await get_mem0_client(), user_id)
+    # A None client means EITHER "no key" OR "key set but construction failed", and
+    # list_memory_facts cannot tell them apart — it only sees None. Only the first is
+    # genuinely `disabled`. Reporting "memory is off by configuration" during a mem0
+    # OUTAGE is the precise misdiagnosis this arc exists to remove, and it would also
+    # contradict /readiness, which says `init_failed` for the same state.
+    if status == "disabled" and mem0_status() == "init_failed":
+        status = "unavailable"
     return SettingsPreferencesResponse(
         status=status, facts=[MemoryFact(**f) for f in facts])
 

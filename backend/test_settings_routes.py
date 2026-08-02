@@ -129,3 +129,25 @@ async def test_burst_limit_is_per_user_not_shared(monkeypatch):
     assert a[:3] == [200, 200, 200]
     assert a[3] == 429                  # A exhausted 3/minute
     assert b == 200                     # B unaffected -> keyed on user, not IP
+
+
+async def test_get_preferences_reports_unavailable_not_disabled_during_an_outage(monkeypatch):
+    """A None client means EITHER no key OR construction failed. Only the first is
+    `disabled`. During a mem0 OUTAGE (key set, construct failed) the Settings surface must
+    NOT tell the user memory is switched off — that is the exact misdiagnosis this arc
+    exists to remove, and it would contradict /readiness, which reports `init_failed`."""
+    import mem0_client
+    monkeypatch.setattr(mem0_client, "mem0_status", lambda: "init_failed")
+    async with _client(monkeypatch, mem0=None, uid_box={"uid": "u1"}) as c:
+        r = await c.get("/settings/preferences")
+    assert r.status_code == 200
+    assert r.json() == {"status": "unavailable", "facts": []}
+
+
+async def test_get_preferences_still_reports_disabled_when_there_is_no_key(monkeypatch):
+    """The other side of the same fork: no key really is `disabled`, and must stay so."""
+    import mem0_client
+    monkeypatch.setattr(mem0_client, "mem0_status", lambda: "disabled")
+    async with _client(monkeypatch, mem0=None, uid_box={"uid": "u1"}) as c:
+        r = await c.get("/settings/preferences")
+    assert r.json() == {"status": "disabled", "facts": []}

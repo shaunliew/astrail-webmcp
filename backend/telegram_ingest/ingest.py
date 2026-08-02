@@ -176,12 +176,12 @@ async def handle_update(
 ) -> None:
     """Ingest one Telegram update. Never raises: every failure is logged and contained.
 
-    "Never raises" for any envelope Telegram can send, malformed included. The only call
-    here outside a containment boundary is `extract_reel_urls`, which is total by
-    construction — pure, stdlib-only, and pinned by `reel_filter`'s `_must_not_raise`
-    suite. That is a deliberate dependency on T2's contract rather than a second `try`
-    that would only ever catch a regression in it; the poller's per-update backstop is
-    what covers the residual.
+    Unconditionally, with no carve-out for a callee's contract: every call this function
+    makes sits inside a containment boundary. `extract_reel_urls` is total by construction
+    — pure, stdlib-only, pinned by `reel_filter`'s `_must_not_raise` suite — so its `try`
+    catches a regression rather than an input; that context is worth knowing but is not
+    what makes the claim true. Relying on it would have made the guarantee conditional on
+    another module today and on the poller's unwritten loop tomorrow.
 
     `db` and `http` are separate because they are genuinely different clients — Supabase's
     and Telegram's — and keyword-only because the worker's wiring should read as a list of
@@ -196,7 +196,20 @@ async def handle_update(
     if chat_id is None:
         return
 
-    result = extract_reel_urls(message)
+    try:
+        result = extract_reel_urls(message)
+    except Exception as exc:  # noqa: BLE001 — "never raises" has no carve-out
+        # `reel_filter` is pure, stdlib-only and total by construction, so nothing an
+        # envelope can contain reaches this line: what it catches is a REGRESSION in T2,
+        # not an input. That is precisely why it belongs here. An unhandled crash makes
+        # the blast radius depend on how the caller happens to wrap its loop, while this
+        # is a loud, located ERROR (guardrail #12) from the layer that knows the chat id.
+        # Type name only: a T2 failure can carry the candidate URL (its own §4.1 finding).
+        logger.error(
+            "telegram_reel_filter_failed chat_id=%d error=%s", chat_id, type(exc).__name__
+        )
+        return
+
     # ~99% of group traffic, and it must not log: chatter in the log is how the ERROR
     # lines below stop being read. `overflowed` is a SIGNAL, not an absence, so it must not
     # be swallowed here — an over-budget message looks exactly like chatter (`urls` and

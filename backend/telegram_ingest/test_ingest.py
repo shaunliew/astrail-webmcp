@@ -481,6 +481,57 @@ async def test_ordinary_chatter_produces_no_log_records_at_all(config, seams, ca
     assert seams.call_count == 0
 
 
+async def test_a_reel_filter_regression_is_contained_and_logged_not_propagated(
+    config, seams, monkeypatch, caplog
+):
+    """The last uncontained call in `handle_update`, closed on review.
+
+    `extract_reel_urls` cannot raise on any envelope — it is pure and has a
+    `_must_not_raise` suite — so this simulates a REGRESSION in T2, which is the only
+    thing the guard can catch. RED by *erroring*, not by failing an assert: without the
+    `try` the exception leaves `handle_update` entirely, which is what "never raises"
+    forbids unconditionally. The canary also pins the leak channel — a T2 failure can
+    carry the candidate URL, so only the type name may be logged.
+    """
+    boom = RuntimeError(f"{CANARY_TEXT} https://www.instagram.com/reel/LEAKED")
+
+    def exploding_filter(_message: dict) -> object:
+        raise boom
+
+    monkeypatch.setattr(ingest, "extract_reel_urls", exploding_filter)
+    message = _message(_reel("ABC123"))
+
+    with caplog.at_level(logging.DEBUG):
+        await _run(_update(message), config, seams)
+
+    failed = _records(caplog, "telegram_reel_filter_failed")
+    assert len(failed) == 1
+    assert failed[0].levelno == logging.ERROR
+    assert "RuntimeError" in failed[0].getMessage()
+    assert str(GROUP_CHAT_ID) in failed[0].getMessage()
+    assert "CANARY" not in _formatted(caplog)
+    assert seams.call_count == 0
+    assert seams.react.calls == []
+
+
+async def test_the_same_reel_shared_twice_hits_idempotency_not_a_conflict(config, seams):
+    """F1, end to end: a re-share must be free, not a conflict.
+
+    Two messages carrying the same reel produce the same saved_reel id, so
+    `create_organize_job` computes the same `_request_key` and the RPC's
+    idempotency-key lookup (`20260720130000:66-79`) returns the LIVE job before the
+    active-item check that would raise AS409 can run. Both messages therefore earn a ✅.
+    This is the branch that makes single-item jobs safe to re-share; it was the one part
+    of `_FakeCreateJob` no test reached.
+    """
+    await _run(_update(_message(_reel("TWICE"), message_id=1)), config, seams)
+    await _run(_update(_message(_reel("TWICE"), message_id=2)), config, seams)
+
+    assert [call[2] for call in seams.create_job.calls] == [["saved-TWICE"], ["saved-TWICE"]]
+    assert [seams.queue.get_nowait() for _ in range(2)] == ["job-saved-TWICE"] * 2
+    assert [call["message_id"] for call in seams.react.calls] == [1, 2]
+
+
 async def test_an_over_budget_message_is_dropped_LOUDLY_not_silently(
     config, seams, caplog
 ):

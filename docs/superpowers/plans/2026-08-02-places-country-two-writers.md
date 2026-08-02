@@ -1000,24 +1000,38 @@ places created 2026-08-02:
 
 ## GSTACK REVIEW REPORT
 
-| Review | Trigger | Why | Runs | Status | Findings |
-|--------|---------|-----|------|--------|----------|
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR | 8 issues, 0 critical gaps, all folded |
-| Codex Review | `codex exec gpt-5.6-sol` | Independent 2nd opinion | 6 | **PASS 8.7/10** | 7 blocking across r1-r5, all folded; r6 PASS |
-| Mapbox research | `mapbox-docs-mcp` | Provider facts, not memory | 1 | CLEAR | 3 assertions replaced with measured facts |
-| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | not applicable (backend correctness fix) |
-| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | not applicable (no UI change) |
+| Review | Trigger | Runs | Status | Findings |
+|--------|---------|------|--------|----------|
+| Plan — Eng Review | gstack `/plan-eng-review` | 1 | CLEAR | 8 issues, 0 critical gaps, all folded |
+| Plan — Cross-model | `codex exec gpt-5.6-sol` | 6 | **PASS 8.7/10** | 7 blocking (r1–r5), all folded; r6 PASS |
+| Research | `mapbox-docs-mcp` | 1 | CLEAR | 3 assertions replaced with measured facts |
+| Code — per-task | `astrail-reviewer` (sonnet) | 2 | APPROVE W/ MINORS → closed | 1 Important + 2 Minor, all closed |
+| Code — whole-branch | `astrail-reviewer` (**fable**) | 1 | **MERGE W/ FOLLOW-UPS** | 9 fault injections all caught; 0 Critical/Important |
+| Code — cross-model | `codex exec gpt-5.6-sol` | 2 | DO-NOT-MERGE → **MERGE** | 2 blocking, both closed + independently re-verified |
 
-- **CODEX:** 6 rounds, 6.3 → 6.9 → 6.9 → 6.9 → 6.9 → **8.7 PASS** (Correctness 8.9 · Safety 8.6
-  · Testability 8.8 · Completeness 8.5 · Clarity 9.2). **Every blocking finding in rounds 1-5
-  was a test that could not fail**, never a design flaw. What finally cleared the gate was not
-  another test: it was §6b B4 pinning the one permitted loop shape, which excludes the whole
-  variant family by construction. Rounds 2, 3 and 5 had each found a different member of that
-  family, so enumeration was never going to converge.
-- **CROSS-MODEL:** No tension on §2 — endorsed by the eng review and all six Codex rounds.
-  Codex independently reproduced the third-writer finding and agreed on deferring it, and
-  **corrected the eng review twice** (the "silent missing token" gap — a required boot secret;
-  the semaphore blast-radius claim — an 8-place cap makes it a no-op). Both verified at source.
-- **VERDICT:** **CLEARED — ENG + CODEX PASS. Ready to implement.**
+- **The pattern, across 11 review passes:** every one of the 10 blocking findings was **a test
+  that could not fail**. Not one was a design flaw — §2's decision was endorsed in all six plan
+  rounds and both code gates. What finally cleared the plan gate was not another test but §6b
+  B4 pinning the one permitted loop shape, which excluded the whole variant family by
+  construction (6.9 → 8.7 in a single round).
+- **CROSS-MODEL:** Codex corrected the in-house review three times against source — the "silent
+  missing token" gap (a required boot secret), the semaphore blast-radius (an 8-place cap makes
+  it a no-op), and the DB constraint (`country` itself has no CHECK). It also fault-injected two
+  Claude-written tests that stayed green.
+- **VERDICT: MERGE-READY.** Not merged, not pushed — awaiting the owner.
+
+**REQUIRED BEFORE THE RENDER DEPLOY** (not a merge blocker — `autoDeploy:false`, no migration):
+1. Live smoke against real Mapbox + Supabase + SSE on the merged SHA.
+2. Record full-trip wall-clock against the **180s target**; confirm terminal `result` + `[DONE]`.
+3. Confirm matching countries persist and contradictory/unverifiable ones stay NULL.
+4. Inspect the `trip_place_grounding` log line for failures / 429s.
+
+**FOLLOW-UPS (queued, not in this branch):**
+- Fill-if-null country repair on `_find_or_create_place`'s dedup hit, mirroring the RPC. Closes
+  the NULL-absorption channel the whole-branch review found: a restaurant-created country-less
+  row can absorb a just-grounded reel place via name+distance dedup, so a verified food venue
+  can still render NULL indefinitely.
+- The third writer (`_find_or_create_restaurant_place`) and the 90-row backfill — both still
+  deferred per §6c A1 and §6d. **Do not run the naive backfill script.**
 
 NO UNRESOLVED DECISIONS

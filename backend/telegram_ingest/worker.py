@@ -77,13 +77,28 @@ _ALLOWED_UPDATES: tuple[str, ...] = ("message",)
 # status that lifts privacy mode.
 _ADMIN_STATUS = "administrator"
 
-# `httpx` logs `HTTP Request: POST <url> "HTTP/1.1 200 OK"` at INFO — and the bot token is
-# IN that URL (`/bot<token>/getUpdates`, api.py's whole docstring). Raising the root logger
-# to INFO, which this worker MUST do to see its own events, would therefore print a live
-# credential on every poll: ~1700 lines a day into Render's log retention. Verified
-# empirically against the pinned httpx, not assumed. `httpcore` only logs at DEBUG today
-# and carries no path, but it rides along so a root DEBUG session stays safe too.
-_NOISY_TRANSPORT_LOGGERS = ("httpx", "httpcore")
+# Third-party loggers that can print a credential once the root logger is at INFO. Each is
+# pinned to WARNING, but what that buys DIFFERS per entry — read the entry before deleting
+# one, and do not read the list as a blanket "no secret can escape" guarantee.
+#
+#   httpx     THE live leak. Logs `HTTP Request: POST <url> "HTTP/1.1 200 OK"` at INFO, and
+#             the bot token is IN that URL (`/bot<token>/getUpdates` — api.py's whole
+#             docstring). At one poll per ~50 s that is ~1700 lines a day, each carrying a
+#             live credential, into Render's log retention. Verified empirically.
+#   realtime  The service-role key, by a second door. `get_supabase_client()` calls
+#             `acreate_client`, which constructs an `AsyncRealtimeClient` UNCONDITIONALLY on
+#             every boot (`supabase/_async/client.py:92`); that client builds
+#             `wss://…/realtime/v1/websocket?apikey=<SERVICE_ROLE_KEY>` and logs it at DEBUG
+#             (`realtime/_async/client.py:79,166`). The logger is `realtime`; the subtree
+#             inherits. NOT A TOTAL GUARD: the same URL can reach `logger.error` through
+#             `str(e)` on a failed connect (lines 176, 180), which WARNING does not suppress.
+#             What actually keeps the key out of the logs today is REACHABILITY — `.connect()`
+#             runs only via `.channel()` / `.subscribe()`, and nothing in this backend calls
+#             either (verified by grep). This pin closes the DEBUG door; the day something
+#             opens a Realtime channel, re-audit those ERROR paths.
+#   httpcore  DEBUG-only today and carries no URL path. Pinned pre-emptively — the one entry
+#             here with nothing known to leak.
+_NOISY_TRANSPORT_LOGGERS = ("httpx", "httpcore", "realtime")
 
 _NOT_ADMIN_MESSAGE = (
     "telegram_bot_not_admin chat_id=%d status=%s: Telegram privacy mode hides plain-URL "
@@ -105,6 +120,15 @@ def _configure_logging() -> None:
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        # `basicConfig` is documented to do NOTHING if the root logger already has a
+        # handler. Nothing in the worker's import chain installs one TODAY — verified, not
+        # assumed: `organizer` imports `openai` lazily, so `openai.__init__`'s
+        # `_setup_logging()` (which adds a root handler when `OPENAI_LOG` is set) runs on
+        # the consumer's first job, long after this call. So `force` is defence against a
+        # FUTURE module-level import, not a live bug. Without it, the day anyone adds one,
+        # root silently stays at WARNING, the heartbeat vanishes, and every dashboard still
+        # reports a healthy worker — precisely the failure this function exists to prevent.
+        force=True,
     )
     # NOT optional tidying — see `_NOISY_TRANSPORT_LOGGERS`. Deleting this line puts the
     # bot token in Render's logs on every poll.

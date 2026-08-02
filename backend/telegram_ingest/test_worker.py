@@ -1102,9 +1102,73 @@ def test_configure_logging_keeps_the_bot_token_out_of_httpx_request_lines(
     assert "CANARY" not in _formatted(caplog), _formatted(caplog)
 
 
+def test_configure_logging_keeps_the_service_role_key_out_of_realtime_lines(
+    configured_logging, caplog
+):
+    """The SECOND door to a credential, and the one that opens on a DEBUG session.
+
+    `acreate_client` builds an `AsyncRealtimeClient` on every boot whether or not anything
+    subscribes, and that client's connect line is
+    `wss://…/realtime/v1/websocket?apikey=<SERVICE_ROLE_KEY>` at DEBUG. An operator raising
+    root to DEBUG to troubleshoot would print the service-role key.
+    """
+    leaky = (
+        "Attempting to connect to WebSocket at "
+        f"wss://proj.supabase.co/realtime/v1/websocket?apikey={CANARY}"
+    )
+    with caplog.at_level(logging.DEBUG):
+        logging.getLogger("realtime._async.client").debug(leaky)
+        # A SIBLING submodule under the same package. This pins the guard's SCOPE, not a
+        # leak reachable today: `realtime._async.client` is currently the package's only
+        # logging module (`realtime._sync.client` is a 71-line stub with no logger), so
+        # pinning `realtime._async` would suppress today's leak just as well — fault
+        # injection proved exactly that. What this line buys is the property the comment
+        # claims: the whole `realtime.*` subtree is pinned, so a future submodule that logs
+        # the same apikey URL is covered without anyone remembering to add it.
+        logging.getLogger("realtime.future_submodule").debug(leaky)
+
+    assert "CANARY" not in _formatted(caplog), _formatted(caplog)
+
+    # Reachability, inline and deliberately not in a separate test: the SAME line, at the
+    # SAME level, on an UNPINNED logger does land. So the assertion above is about the pin
+    # — not about a caplog that captures nothing at DEBUG, which would make it vacuous.
+    with caplog.at_level(logging.DEBUG):
+        logging.getLogger("telegram_ingest.test_worker_unpinned").debug(leaky)
+
+    assert CANARY in _formatted(caplog)
+
+
+def test_configure_logging_overrides_a_handler_installed_before_it():
+    """`basicConfig` does NOTHING if root already has a handler — so without `force=True`
+    one pre-existing handler silently costs this worker its entire INFO surface.
+
+    Not reachable today (`organizer` imports `openai` lazily, so its `_setup_logging()`
+    runs on the consumer's first job, long after this call), which is exactly why it needs
+    a test that SIMULATES the handler rather than one waiting for a real import.
+    """
+    root = logging.getLogger()
+    saved_level, saved_handlers = root.level, root.handlers[:]
+    saved_transports = {
+        name: logging.getLogger(name).level for name in worker._NOISY_TRANSPORT_LOGGERS
+    }
+    try:
+        root.handlers.clear()
+        root.addHandler(logging.NullHandler())   # what openai's _setup_logging does
+        root.setLevel(logging.WARNING)
+
+        worker._configure_logging()
+
+        assert root.isEnabledFor(logging.INFO)
+    finally:
+        root.handlers[:] = saved_handlers
+        root.setLevel(saved_level)
+        for name, level in saved_transports.items():
+            logging.getLogger(name).setLevel(level)
+
+
 def test_an_ordinary_info_line_still_reaches_the_log(configured_logging, caplog):
-    """Proves the assertion above is about `httpx` specifically and not about a caplog
-    that captures nothing — the fixture-already-satisfies-the-assertion defect."""
+    """Proves the httpx assertion above is about `httpx` specifically and not about a
+    caplog that captures nothing — the fixture-already-satisfies-the-assertion defect."""
     with caplog.at_level(logging.INFO):
         logging.getLogger("telegram_ingest.test_worker_visible").info(f"{CANARY} visible")
 

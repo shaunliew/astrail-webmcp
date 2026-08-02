@@ -1,6 +1,8 @@
 # PLAN — `places.country` is NULL on 87% of rows: two writers, one guarantee
 
-> Status: **PLAN ONLY, NOT REVIEWED. No code written.**
+> Status: **PLAN ONLY, no implementation code written.** Reviewed — gstack `/plan-eng-review`
+> (§6c) plus three Codex cross-model rounds (§6d, §6e, §6f). **§6b, §6d, §6e and §6f are
+> amendments and SUPERSEDE the original §3 task text wherever they disagree.**
 > Author: Shaun · Date: 2026-08-02 · Written at the end of the Telegram-ingest session, for a
 > fresh session to pick up cold.
 >
@@ -287,6 +289,27 @@ before the day-loop, passing the verified country into `_find_or_create_place` e
    at one coordinate can carry different LLM country claims, and the second one's claim must be
    checked against the cached answer, not assumed to match the first one's.
 
+   **This is the most safety-sensitive invariant in the change, and round 2 found it was
+   specified but not enforceable.** The shortcut below passes every test the plan required
+   before round 3, and writes `Japan` onto a place that claimed `US` — a guardrail-#1
+   violation introduced by the very fix for round 1's blocker #3:
+
+   ```python
+   grounded = await safe_ground(group[0])       # WRONG
+   for place in group:
+       grounded_by_id[id(place)] = grounded     # one member's verdict, applied to all of them
+   ```
+
+   The two tests that make it red are in §6b D2. Both are required; they are not combinable
+   with each other or with anything else.
+
+   **Keying detail (round 2):** key the map from the **original input object**, never from
+   `id(grounded["place"])` — `_ground_place` returns a `model_copy`, so that id belongs to a
+   different object and the lookup silently misses. Have each group worker return
+   `(id(input_place), grounded)` so the pairing is explicit rather than positional. And keep
+   persisting in `group_places_by_day` order — never rebuild ordering from gather-completion
+   order.
+
 5. **No semaphore.** *(Also revised in round 1 — the original bound was solving a problem that
    does not exist.)* `dedupe_places` caps `canonical` at `DEFAULT_MAX_PLACES = 8`
    (`pipeline/dedup.py:17`), so the fan-out is at most 8 distinct coordinates, not the ~50 the
@@ -339,6 +362,25 @@ with `country` NULL, which is exactly today's behaviour. Two consequences worth 
    `test_geocode_country_cache.py:121` already covers that). Assert the call **count**, not just
    the values.
 
+   **Round 2 added two more, and they are the load-bearing pair.** A call-count assertion
+   alone cannot distinguish "each member compared its own claim against the cached answer" from
+   "one member's verdict was copied onto the whole group". Both required, both through ONE
+   `persist_itinerary` call, neither combinable with anything else:
+
+   **(a) Same coordinate, DIFFERENT claims.** Place A claims `US`, place B claims `JP`, both at
+   identical coordinates; the injected provider returns `JP`/`Japan`. Assert **A's row is NULL,
+   B's row is Japan, and the verifier was called exactly once.** This single outcome is
+   unreachable from every wrong implementation: the flat gather calls twice, the copy-the-first
+   shortcut writes Japan onto A, and a no-cache implementation calls twice. It works because
+   `_ground_place` caches *before* it compares (`grounding.py:131-132`), so the cache hit and
+   the independent comparison are provable in one assertion.
+
+   **(b) The first member of a group RAISES.** A stateful verifier that raises on its first
+   call and returns `JP`/`Japan` on its second, with two same-coordinate places. Assert **the
+   first row is NULL, the second is Japan, and the call count is two.** This proves the
+   `except Exception` sits *inside* the per-member loop rather than around the whole coordinate
+   group — otherwise one transient blip silently nulls every place sharing that coordinate.
+
 ### E. Known limitations this change deliberately does NOT fix
 
 Both are conservative — they yield NULL, never a wrong country — so neither violates §2.
@@ -376,8 +418,10 @@ review surface is instead: code shipping onto a live Render service on merge, `a
 
 Complexity check does **not** trigger: 2 production files (`pipeline/persist.py`,
 `pipeline/test_persist.py`), 0 new classes, 0 new services, 0 new dependencies, no migration.
-The `asyncio.gather` + `Semaphore` approach is stdlib **[Layer 1]** — no custom concurrency
-primitive is being invented. Scope accepted as-is.
+The `asyncio.gather` approach is stdlib **[Layer 1]** — no custom concurrency primitive is being
+invented. Scope accepted as-is. *(This section originally also credited an `asyncio.Semaphore`;
+§6b B5 removed it as a per-trip no-op against an 8-place cap. **Do not reinstate it** — that
+reference is superseded, not a second opinion.)*
 
 ### A1 — [P1] (confidence 8/10) There is a THIRD writer to `places`, and §1 misses it
 
@@ -460,7 +504,9 @@ CODE PATHS (pipeline/persist.py)                        USER-VISIBLE OUTCOME
   │   ├── [GAP] placeholder/None source_url     -> NULL, no network call  (user_requested)
   │   ├── [GAP] Mapbox raises                   -> NULL, trip still saves  <- guardrail #3
   │   ├── [GAP] cache-write raises              -> NULL  (A2, deliberate)
-  │   └── [GAP] 2 places, SAME coord, ONE call  -> verifier invoked EXACTLY ONCE  <- guardrail #7
+  │   ├── [GAP] 2 places, SAME coord, ONE call  -> verifier invoked EXACTLY ONCE  <- guardrail #7
+  │   ├── [GAP] SAME coord, DIFFERENT claims    -> A NULL + B "Japan" + 1 call  <- D2(a), guardrail #1
+  │   └── [GAP] SAME coord, 1st member RAISES   -> A NULL + B "Japan" + 2 calls <- D2(b)
   └── _find_or_create_place()
       ├── [GAP] insert carries country + country_code + country_name (all three, C1)
       ├── [★★ TESTED] dedup hit reuses row — test_persist.py:154 (existing, unaffected)
@@ -469,12 +515,19 @@ CODE PATHS (pipeline/persist.py)                        USER-VISIBLE OUTCOME
 NOT COVERED BY DESIGN: _find_or_create_restaurant_place (A1, deferred)
 NOT A FAILURE MODE:     absent MAPBOX_SECRET_TOKEN — boot secret, see Failure modes below
 
-COVERAGE: 0/9 new paths tested — all 9 are the work of T1/T2.
+COVERAGE: 0/11 new paths tested — all 11 are the work of T1/T2.
 ```
 
-**Every one of those 9 is a required test.** Two are regression-class under the IRON RULE
+**Every one of those 11 outcomes is required.** Two are regression-class under the IRON RULE
 (mismatch→NULL, and Mapbox-raises→trip-still-saves): they pin behaviour that exists today and
 that this change could silently take away.
+
+**Eleven outcomes need not be eleven test functions** (round 2). Parametrize the compatible
+single-place cases — verified / mismatch / no-claim / placeholder-URL / provider-raises all
+share one arrange-act shape and differ only in input and expected row. **Do NOT merge the three
+same-coordinate cases** (D2's call-count, (a) different-claims, (b) first-member-raises): their
+failure modes are distinct and each one's expected outcome is what makes a specific wrong
+implementation red.
 
 **Fault-injection duty (BUILD-LOOP "tests that cannot fail").** Each test must redden from a
 guard only *it* can exercise. Specifically: the mismatch test and the no-claim test both expect
@@ -488,9 +541,15 @@ non-NULL**. One call, both outcomes; no single deletion satisfies both.
 
 `persist_itinerary` already pays one `places` SELECT plus one INSERT per place, serially.
 Per-place grounding would add a third serial round-trip each; the batched gather adds ~1 total.
-The real new cost is **up to N Mapbox reverse calls per cold trip** where there were 0 — bounded
-by the semaphore, absorbed by `geocode_country_cache` on repeat coordinates, and degrading to
-NULL on 429. Accepted. Deferred alternative and its trigger are in §6b B(3).
+The real new cost is **up to 8 Mapbox reverse calls per cold trip** where there were 0 — bounded
+by `DEFAULT_MAX_PLACES`, absorbed by `geocode_country_cache` on repeat coordinates, and degrading
+to NULL on 429. Accepted. Deferred alternative and its trigger are in §6b B(3).
+
+**Worst-case latency (round 2):** `geocode/mapbox_reverse.py:80` retries twice with a 15s
+timeout, so a hard provider outage adds ~30s per distinct coordinate before the trip degrades to
+NULL. Coordinate groups run concurrently, so the wall-clock floor is ~30s, not 8×30s — but a
+group whose first member fails then pays that cost again for each later member, since each runs
+its own call. Bounded at 8 places. **Record this in the live smoke against the 180s target.**
 
 ### Required outputs
 
@@ -593,6 +652,66 @@ determines whether a correct backfill is even possible; (2) if the claims are re
 backfill that re-runs the *same* `_ground_place` comparison per row and leaves the rest NULL;
 (3) if they are not, accept the 90 as permanently NULL and let the corpus improve forward-only.
 **No production query has been run and no script has been written.**
+
+---
+
+## 6e. Codex cross-model plan review — round 2 disposition (2026-08-03)
+
+**Round 2 verdict: 6.9/10 — FAIL** (Correctness 6.8 · Safety 7.8 · Testability 6.0 ·
+Completeness 6.8 · Clarity 7.8). All three round-1 blockers confirmed resolved. One **new**
+blocking finding — and it is the most instructive result of the whole gate, because *the fix for
+round 1's blocker #3 is what created it.*
+
+### The new blocker: same-coordinate result isolation was specified but not load-bearing
+
+§6b B4 says every group member must run its own `_ground_place` and its own claim comparison.
+Saying it is not enforcing it. This implementation satisfied **every test the plan required
+after round 1**:
+
+```python
+grounded = await safe_ground(group[0])
+for place in group:
+    grounded_by_id[id(place)] = grounded
+```
+
+It calls the verifier exactly once (passing the D2 cache assertion), writes a verified country
+(passing the success assertion), and **writes `Japan` onto a place that claimed `US`** — the
+guardrail-#1 violation this entire plan exists to prevent, reintroduced by its own remedy.
+
+Folded: §6b D2 (a) and (b), plus §6b B4's explicit "do not do this" block quoting the wrong
+implementation. Test (a) is the elegant one — same coordinate, different claims, provider
+returns `JP`/`Japan`, assert `A=NULL ∧ B=Japan ∧ calls==1`. No wrong implementation can produce
+that triple: the flat gather calls twice, the copy-the-first shortcut writes Japan onto A, a
+cacheless implementation calls twice. It works only because `_ground_place` caches *before* it
+compares.
+
+**The generalisable lesson, worth carrying past this task:** a fix that resolves a review
+finding is new, unreviewed design. Round 1's blocker was "your test and your implementation
+contradict each other"; the repair introduced a data-correctness hazard that neither round-1
+finding described. Re-review the repair, not just the original defect.
+
+### Also folded from round 2
+
+- **Key from the original input object**, never `id(grounded["place"])` — `_ground_place`
+  returns a `model_copy`, so that id belongs to a different object and every lookup misses.
+  Group workers return `(id(input_place), grounded)`.
+- **Persist in `group_places_by_day` order**, never gather-completion order.
+- **Worst-case latency** ~30s per distinct coordinate on a provider outage (2 attempts × 15s,
+  `mapbox_reverse.py:80`), and a failed first member makes each later member in that group pay
+  it again. Recorded for the live smoke.
+- **Stale text removed**: the header's "NOT REVIEWED", and §6c's two surviving references to the
+  deleted semaphore — flagged because an implementer reading §6c alone could have reinstated it.
+- **Test count**: parametrize the five compatible single-place cases; keep the three
+  same-coordinate cases separate, because each one's expected outcome is what reddens a
+  specific wrong implementation.
+
+### Confirmed clean in round 2
+
+Float-keyed `(lat, lng)` grouping (Pydantic rejects NaN/inf; `-0.0`/`0.0` coalesce the same way
+`_coord_cache_key` does); determinism (dict insertion order + `gather`'s input-order results);
+`except Exception` preserving `CancelledError`; no P0/critical findings; no new
+deployment/schema hazard. The backfill restraint, aggregate logging, third-writer deferral and
+semaphore removal were all endorsed as correctly scoped.
 
 ---
 

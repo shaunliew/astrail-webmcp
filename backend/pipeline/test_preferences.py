@@ -129,6 +129,114 @@ def test_build_context_timeout_degrades_to_default(monkeypatch):
     assert ctx.source == "inferred_default"
 
 
+_MEM0_PAGE = 1               # keep in sync with preferences._MEM0_PAGE
+_MEM0_PAGE_SIZE = 100        # keep in sync with preferences._MEM0_PAGE_SIZE
+
+
+class _FakeMem0GetAll:
+    def __init__(self, rows=None, raises=False):
+        self.rows, self.raises, self.calls = rows, raises, []
+
+    async def get_all(self, **kwargs):
+        self.calls.append(kwargs)          # recorded so tests can assert the real contract
+        if self.raises:
+            raise RuntimeError("mem0 down")
+        return {"results": self.rows}
+
+
+def test_list_memory_facts_returns_ok_and_maps_rows():
+    from pipeline.preferences import list_memory_facts
+    mem = _FakeMem0GetAll(rows=[
+        {"id": "m1", "memory": "User prefers ramen", "created_at": "2026-07-07T03:08:44"},
+        {"id": "m2", "memory": "  ", "created_at": "x"},        # blank -> dropped
+        {"id": "m3", "memory": None, "created_at": "y"},        # non-str -> dropped
+    ])
+    status, facts = asyncio.run(list_memory_facts(mem, "u1"))
+    assert status == "ok"
+    assert facts == [{"id": "m1", "memory": "User prefers ramen",
+                      "created_at": "2026-07-07T03:08:44"}]
+
+
+def test_list_memory_facts_sends_v2_filter_and_both_pagination_keys():
+    from pipeline.preferences import list_memory_facts
+    mem = _FakeMem0GetAll(rows=[])
+    asyncio.run(list_memory_facts(mem, "u1"))
+    assert mem.calls[0]["version"] == "v2"
+    assert mem.calls[0]["filters"] == {"AND": [{"user_id": "u1"}]}
+    # BOTH keys required: mem0ai 2.0.10 client/main.py get_all only emits pagination query
+    # params under `if "page" in params and "page_size" in params`. page_size alone is
+    # SILENTLY IGNORED and the read comes back unbounded — and this fake would accept it,
+    # so only asserting BOTH keys catches the real SDK's rule.
+    assert mem.calls[0]["page"] == _MEM0_PAGE
+    assert mem.calls[0]["page_size"] == _MEM0_PAGE_SIZE
+
+
+def test_list_memory_facts_disabled_when_client_is_none():
+    from pipeline.preferences import list_memory_facts
+    assert asyncio.run(list_memory_facts(None, "u1")) == ("disabled", [])
+
+
+def test_list_memory_facts_unavailable_on_error():
+    from pipeline.preferences import list_memory_facts
+    assert asyncio.run(list_memory_facts(_FakeMem0GetAll(raises=True), "u1")) == ("unavailable", [])
+
+
+def test_list_memory_facts_unavailable_on_timeout(monkeypatch):
+    from pipeline import preferences as prefs_mod
+    seen = {}
+
+    async def _timing_out_wait_for(coro, timeout):
+        coro.close()
+        seen["timeout"] = timeout      # RECORD, do not assert in here
+        raise TimeoutError
+
+    monkeypatch.setattr(prefs_mod.asyncio, "wait_for", _timing_out_wait_for)
+    assert asyncio.run(prefs_mod.list_memory_facts(_FakeMem0GetAll(rows=[]), "u1")) \
+        == ("unavailable", [])
+    # Asserted OUT here, not inside the fake: an AssertionError raised inside the fake
+    # lands in list_memory_facts's blanket `except Exception` and is swallowed, so the
+    # function returns ("unavailable", []) anyway and the timeout pin can never fail.
+    # (The same latent flaw exists at test_preferences.py:120-123 — do not copy it.)
+    assert seen["timeout"] == 4
+
+
+def test_list_memory_facts_empty_is_ok_not_an_error():
+    # A legitimately empty memory is NOT a failure — the UI must distinguish "you have no
+    # saved preferences" from "memory is broken".
+    from pipeline.preferences import list_memory_facts
+    assert asyncio.run(list_memory_facts(_FakeMem0GetAll(rows=[]), "u1")) == ("ok", [])
+
+
+@pytest.mark.parametrize("payload", [None, {"results": None}, {"results": "nope"},
+                                     {"results": ["a string", None, 42]}, {}, "not a dict"])
+def test_list_memory_facts_survives_malformed_payloads(payload):
+    # A degrading read must never 500 on a shape it did not expect.
+    from pipeline.preferences import list_memory_facts
+
+    class _Odd:
+        async def get_all(self, **kw): return payload
+
+    status, facts = asyncio.run(list_memory_facts(_Odd(), "u1"))
+    assert status in ("ok", "unavailable")
+    assert facts == []
+
+
+def test_list_memory_facts_keeps_valid_rows_beside_garbage_entries():
+    # The `isinstance(m, dict)` row guard must be LOAD-BEARING, and the test above cannot
+    # prove that: it accepts ("ok", []) OR ("unavailable", []), and the blanket `except`
+    # produces the latter on its own — so deleting the row guard leaves it green.
+    # Surviving a good row beside a bad one is an outcome the `except` path CANNOT fake,
+    # because it returns []. Drop the junk, keep the real memory.
+    from pipeline.preferences import list_memory_facts
+    mem = _FakeMem0GetAll(rows=["a string", None, 42,
+                                {"id": "m1", "memory": "User prefers ramen",
+                                 "created_at": "2026-07-07T03:08:44"}])
+    status, facts = asyncio.run(list_memory_facts(mem, "u1"))
+    assert status == "ok"
+    assert facts == [{"id": "m1", "memory": "User prefers ramen",
+                      "created_at": "2026-07-07T03:08:44"}]
+
+
 class _FakeMem0Add(_FakeMem0):
     def __init__(self, add_raises=False):
         super().__init__()

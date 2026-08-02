@@ -22,6 +22,7 @@ toward it.
 from __future__ import annotations
 
 import asyncio
+import sys
 
 from models.prefs import PreferenceContext
 
@@ -99,6 +100,61 @@ async def build_preference_context(mem0, user_id: str, *, explicit_text: str | N
         except Exception:
             facts = []   # best-effort: a mem0 blip or timeout → inferred defaults, never fail the trip
     return merge_preferences(explicit_text=explicit_text, pace=pace, memory_facts=facts)
+
+
+# Bounded so one pathological account cannot pull an unbounded page into memory. We
+# deliberately return only the first page rather than looping, which would multiply calls
+# against the free-tier budget (see the pagination deferral).
+#
+# BOTH page AND page_size must be sent: mem0ai 2.0.10 (client/main.py, get_all) only
+# promotes them to query params under `if "page" in params and "page_size" in params`;
+# page_size alone falls through to the unpaginated POST and is silently ignored.
+_MEM0_PAGE = 1
+_MEM0_PAGE_SIZE = 100
+
+
+async def list_memory_facts(mem0, user_id: str) -> tuple[str, list[dict]]:
+    """This user's STORED mem0 memories, for GET /settings/preferences.
+
+    NOTE the precise claim: these are the memories mem0 holds, read with `get_all` and
+    capped at the first page. They are NOT identical to what any given generation recalls
+    — recall uses a semantic `search(..., top_k=10)` and only runs when the user left
+    preferences blank (build_preference_context). Do not describe this endpoint as showing
+    "exactly what recall will use"; it is a superset, differently ordered.
+
+    Read LIVE rather than from a cached table: a cache that drifts from mem0 is precisely
+    what hid the 2026-08-02 diagnosis. Degrades per guardrail #3 — a None client, an
+    error, a hang, or an unparseable payload yields a status the UI can render, never an
+    exception. `status` separates 'no saved preferences' (ok, []) from 'memory is broken'
+    (unavailable, []).
+
+    mem0's prose is passed through verbatim. Callers must NOT synthesise
+    fact_key/confidence to fit the older UserPreferenceFact shape — inventing data to
+    satisfy a type is what guardrail #1 forbids.
+    """
+    if mem0 is None:
+        return "disabled", []
+    try:
+        res = await asyncio.wait_for(
+            mem0.get_all(version="v2", filters={"AND": [{"user_id": user_id}]},
+                         page=_MEM0_PAGE, page_size=_MEM0_PAGE_SIZE),
+            timeout=4)
+        # Parsing lives INSIDE the guard: an unexpected shape must degrade, not 500.
+        rows = res.get("results") if isinstance(res, dict) else res
+        facts = [{"id": str(m.get("id") or ""),
+                  "memory": m["memory"],
+                  "created_at": str(m.get("created_at") or "")}
+                 for m in (rows if isinstance(rows, list) else [])
+                 if isinstance(m, dict)
+                 and isinstance(m.get("memory"), str) and m["memory"].strip()]
+    except Exception as e:   # noqa: BLE001 — error, TimeoutError, or an unparseable shape
+        # Log the TYPE only — never the payload (it may carry user preference text).
+        # An observability arc that degrades silently would repeat the very failure it
+        # exists to fix: the user sees "unavailable" and the server records nothing about
+        # why. Mirrors mem0_client.py:74's convention.
+        print(f"[mem0] list_memory_facts unavailable: {type(e).__name__}", file=sys.stderr)
+        return "unavailable", []
+    return "ok", facts
 
 
 def trip_synopsis(itinerary, pace: str, destination: str) -> str:

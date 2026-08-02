@@ -205,6 +205,7 @@ class _FakeJobs:
         *,
         raises: dict[str, BaseException] | None = None,
         hang: tuple[str, ...] = (),
+        returns: dict[str, Any] | None = None,
     ) -> None:
         self.calls: list[tuple[str, str, Any]] = []
         self.trace: list[tuple[str, str]] = []
@@ -212,6 +213,10 @@ class _FakeJobs:
         self.max_active = 0
         self._raises = raises or {}
         self._hang = set(hang)
+        # The REAL function contains its own post-claim failures and RETURNS the status
+        # rather than raising, so a fake that can only raise cannot express the failure
+        # mode that actually reaches production. Default `{}` is the pre-existing shape.
+        self._returns = returns or {}
 
     async def __call__(self, job_id: str, user_id: str, *, client: Any = None) -> dict:
         self.calls.append((job_id, user_id, client))
@@ -226,7 +231,7 @@ class _FakeJobs:
             exc = self._raises.get(job_id)
             if exc is not None:
                 raise exc
-            return {}
+            return self._returns.get(job_id, {})
         finally:
             self.trace.append(("exit", job_id))
             self.active -= 1
@@ -707,6 +712,78 @@ async def test_a_failed_job_neither_stops_the_consumer_nor_is_re_enqueued(
     assert "job_id=job-2" in failed[0].getMessage()
     assert "RuntimeError" in failed[0].getMessage()
     assert queue.qsize() == 0
+
+
+async def test_a_job_that_returns_failed_without_raising_is_logged_at_error(
+    config, monkeypatch, caplog
+):
+    """The OTHER failure mode, and the one that actually reaches production.
+
+    `run_organize_job` catches its own post-claim exceptions, marks the row failed and
+    RETURNS `{"status": "failed"}` (`organizer.py:744-749`) — it does not raise, so the
+    `except` above never sees it. The job is terminal, `recover_organize_jobs` selects only
+    `pending` so nothing retries it, and the human already has their ✅. Without this line
+    the reel dies with no record anywhere: the silent drop guardrail #12 forbids.
+
+    A DISTINCT event from `telegram_job_failed`, because the two mean different things to
+    whoever is reading: that one is "the call blew up", this one is "the call completed and
+    reported failure". Folding them together sends an operator hunting for a crash that
+    never happened.
+
+    The canary is on `status_message` and on the per-item `error_message` — the two fields
+    of the returned dict that can carry reel content — so this also pins that the record
+    holds nothing but the two scalars.
+    """
+    jobs = _FakeJobs(returns={"job-2": {
+        "job_id": "job-2",
+        "status": "failed",
+        "status_message": f"Could not organize {CANARY}",
+        "items": [{"error_message": CANARY}],
+    }})
+    monkeypatch.setattr(worker, "run_organize_job", jobs)
+    queue: asyncio.Queue[str] = asyncio.Queue()
+    for job_id in ("job-1", "job-2", "job-3"):
+        queue.put_nowait(job_id)
+
+    with caplog.at_level(logging.DEBUG):
+        await _drive_consumer(queue, db="DB")
+
+    reported = _records(caplog, "telegram_job_reported_failed")
+    assert len(reported) == 1 and reported[0].levelno == logging.ERROR
+    assert reported[0].getMessage() == "telegram_job_reported_failed job_id=job-2 status=failed"
+    assert CANARY not in reported[0].getMessage()
+    # NOT the raised-exception event: nothing raised.
+    assert _records(caplog, "telegram_job_failed") == []
+    # Contained exactly like a raised failure: the next job still runs, and the failed one
+    # is NOT re-enqueued — the reaper owns recovery, this line only makes it visible.
+    assert [call[0] for call in jobs.calls] == ["job-1", "job-2", "job-3"]
+    assert queue.qsize() == 0
+
+
+async def test_a_succeeded_job_and_an_unclaimed_job_log_nothing(
+    config, monkeypatch, caplog
+):
+    """The discriminating half. A log that fires on every job is not a signal.
+
+    `{"skipped": …}` is `run_organize_job`'s ORDINARY return when another worker (or the
+    reaper) already holds the lease — it carries no `status` key at all, and reading it as
+    a failure would put an ERROR in the log every time the two racers meet.
+    """
+    jobs = _FakeJobs(returns={
+        "job-1": {"job_id": "job-1", "status": "succeeded"},
+        "job-2": {"skipped": "job already claimed"},
+        "job-3": {"skipped": "job not found"},
+    })
+    monkeypatch.setattr(worker, "run_organize_job", jobs)
+    queue: asyncio.Queue[str] = asyncio.Queue()
+    for job_id in ("job-1", "job-2", "job-3"):
+        queue.put_nowait(job_id)
+
+    with caplog.at_level(logging.DEBUG):
+        await _drive_consumer(queue, db="DB")
+
+    assert _records(caplog, "telegram_job_reported_failed") == []
+    assert _records(caplog, "telegram_job_failed") == []
 
 
 async def test_task_done_is_called_on_the_failure_path(config, monkeypatch):

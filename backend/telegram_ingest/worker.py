@@ -235,11 +235,36 @@ async def _consume(queue: asyncio.Queue, *, db: Any, user_id: str) -> None:
     A failed job is NOT re-enqueued. Its row is already in `organize_jobs` and the existing
     web reaper picks it up; re-enqueueing would start a private retry loop competing with
     the reaper. One failure never touches the next (guardrail #3).
+
+    TWO FAILURE MODES, TWO EVENTS. A job can fail by RAISING — which the `except` below
+    catches — or by RETURNING, which it cannot. They are logged separately because they
+    point at different diagnoses, and folding them together sends an operator hunting for a
+    crash that never happened.
     """
     while True:
         job_id = await queue.get()
         try:
-            await run_organize_job(job_id, user_id, client=db)
+            result = await run_organize_job(job_id, user_id, client=db)
+            # THE RETURNING FAILURE, and the one that actually reaches production.
+            # `run_organize_job` catches its own post-claim exceptions, marks the row
+            # failed and RETURNS `{"status": "failed"}` (`organizer.py:744-749`). Nothing
+            # raises, so without this line: the job is terminal, `recover_organize_jobs`
+            # selects only `pending` so nothing retries it, the human already has their ✅
+            # — and no record exists anywhere that a reel died. That is the silent drop
+            # guardrail #12 forbids.
+            #
+            # Deliberately NOT re-enqueued: this plan has no retry policy and the reaper
+            # owns recovery (see above). This line makes the loss visible, nothing more.
+            #
+            # `job_id` and the status only. The returned dict also carries
+            # `status_message` and per-item `error_message`, both of which can hold reel
+            # content — pinned by the canary in `test_worker.py`. `.get` on a non-dict
+            # return raises into the `except` below, which is the loud direction: a
+            # violated return contract must not be indistinguishable from a healthy job.
+            if result.get("status") == "failed":
+                logger.error(
+                    "telegram_job_reported_failed job_id=%s status=failed", job_id
+                )
         except Exception as exc:  # noqa: BLE001 — containment is the contract, not a smell
             # Type name only: this exception was raised while processing untrusted reel
             # content against the service-role client. `job_id` is a scalar and is safe.

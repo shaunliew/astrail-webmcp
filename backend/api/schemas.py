@@ -134,3 +134,55 @@ class SettingsPreferencesResponse(BaseModel):
     """
     status: Literal["ok", "disabled", "unavailable"]
     facts: list[MemoryFact] = Field(default_factory=list)
+
+
+class TripFeedbackRequest(BaseModel):
+    """POST /trips/{trip_id}/feedback body -- trip-level feedback only.
+
+    `artifact_type`/`artifact_id` are deliberately NOT accepted from the client: the
+    route hardcodes ('trip', None). Accepting them would let a caller aim feedback at
+    another trip's artifact, and service_role bypasses the RLS policy that would
+    otherwise validate the artifact against its parent table (persist.py:515).
+
+    Literal[...] on feedback_type mirrors the DB CHECK feedback_feedback_type_check;
+    ge/le on rating mirrors feedback_rating_range. Keeping them in lockstep means a
+    bad payload is a clean 422 instead of a Postgres constraint violation surfacing
+    as a 500.
+    """
+    feedback_type: Literal["rating", "thumbs_up", "thumbs_down", "correction", "free_text"]
+    # strict=True (Codex MINOR): non-strict Pydantic coerces JSON `true` -> 1, `"4"` -> 4 and
+    # `5.0` -> 5. A boolean silently becoming a 1-star rating is analytics poison in the exact
+    # dataset this endpoint exists to produce.
+    rating: int | None = Field(default=None, ge=1, le=5, strict=True)
+    comment: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def check_rating_matches_feedback_type(self):
+        if self.feedback_type == "rating" and self.rating is None:
+            raise ValueError("rating is required when feedback_type is 'rating'")
+        if self.feedback_type != "rating" and self.rating is not None:
+            raise ValueError("rating is only valid when feedback_type is 'rating'")
+        # .strip() (Codex MINOR): a whitespace-only comment passes a bare truthiness check and
+        # stores a row with no information -- the same defect as an empty comment.
+        if self.feedback_type in ("free_text", "correction") and not (self.comment or "").strip():
+            raise ValueError(f"comment is required when feedback_type is '{self.feedback_type}'")
+        return self
+
+
+class TripFeedback(BaseModel):
+    """One stored feedback row, as echoed back to the client.
+
+    No created_at: the in-memory test fake does not apply Postgres column defaults, so
+    a default-populated field would be untestable (present in prod, absent in tests).
+    """
+    id: str
+    trip_id: str
+    artifact_type: Literal["trip"] = "trip"
+    feedback_type: Literal["rating", "thumbs_up", "thumbs_down", "correction", "free_text"]
+    rating: int | None = None
+    comment: str | None = None
+
+
+class TripFeedbackResponse(BaseModel):
+    """201 body. Wraps the row to match CaptureSavedReelResponse's shape."""
+    feedback: TripFeedback

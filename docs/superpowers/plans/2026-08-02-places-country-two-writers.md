@@ -3,6 +3,10 @@
 > Status: **PLAN ONLY, no implementation code written.** Reviewed — gstack `/plan-eng-review`
 > (§6c) plus three Codex cross-model rounds (§6d, §6e, §6f). **§6b, §6d, §6e and §6f are
 > amendments and SUPERSEDE the original §3 task text wherever they disagree.**
+>
+> ⚠ **The review gate has NOT passed.** Round 3 scored 6.9/10 against a 7.0 bar; its single
+> blocking finding is folded but unverified, and the 3-round cap was reached. **Read §6f first
+> — run one targeted round 4 before writing any code.**
 > Author: Shaun · Date: 2026-08-02 · Written at the end of the Telegram-ingest session, for a
 > fresh session to pick up cold.
 >
@@ -367,13 +371,37 @@ with `country` NULL, which is exactly today's behaviour. Two consequences worth 
    "one member's verdict was copied onto the whole group". Both required, both through ONE
    `persist_itinerary` call, neither combinable with anything else:
 
-   **(a) Same coordinate, DIFFERENT claims.** Place A claims `US`, place B claims `JP`, both at
-   identical coordinates; the injected provider returns `JP`/`Japan`. Assert **A's row is NULL,
-   B's row is Japan, and the verifier was called exactly once.** This single outcome is
-   unreachable from every wrong implementation: the flat gather calls twice, the copy-the-first
-   shortcut writes Japan onto A, and a no-cache implementation calls twice. It works because
-   `_ground_place` caches *before* it compares (`grounding.py:131-132`), so the cache hit and
-   the independent comparison are provable in one assertion.
+   **(a) Same coordinate, DIFFERENT claims — BOTH claim orders, parametrized.** Two places at
+   identical coordinates with different LLM claims; the injected provider returns `JP`/`Japan`.
+   Assert the verifier was called **exactly once** in each case, and:
+
+   | case | claims (A, B) | expected rows (A, B) |
+   |---|---|---|
+   | a1 | `US`, `JP` | `NULL`, `Japan` |
+   | a2 | `JP`, `US` | `Japan`, `NULL` |
+   | a3 | `JP`, `US`, `JP` (three members) | `Japan`, `NULL`, `Japan` |
+
+   **Both orders are required, and round 3 is why** — a1 alone is not enough. In a1 the first
+   member's grounding returns `None`, so this implementation passes it *and* passes (b), while
+   still writing a wrong country:
+
+   ```python
+   first = await safe_ground(group[0])                              # WRONG
+   for place in group[1:]:
+       grounded = first if first is not None else await safe_ground(place)
+   ```
+
+   It only copies the first verdict when that verdict **succeeded** — and a1 is precisely the
+   case where it did not. Reverse to a2 and the successful `Japan` is copied onto a place
+   claiming `US`. a3 (alternating, three members) additionally forces the per-member loop shape
+   rather than any first-vs-rest special case.
+
+   The mechanism that makes these provable in one assertion each: `_ground_place` stores the
+   provider answer in the cache *before* it compares the member's claim
+   (`grounding.py:122-132`), so a cache hit and an independent comparison are separable in the
+   observed outcome. No wrong implementation reaches all three rows: the flat gather calls the
+   verifier twice, the copy-the-first shortcut mislabels one row, the conditional variant above
+   fails a2, and a cacheless implementation fails the call count.
 
    **(b) The first member of a group RAISES.** A stateful verifier that raises on its first
    call and returns `JP`/`Japan` on its second, with two same-coordinate places. Assert **the
@@ -505,8 +533,10 @@ CODE PATHS (pipeline/persist.py)                        USER-VISIBLE OUTCOME
   │   ├── [GAP] Mapbox raises                   -> NULL, trip still saves  <- guardrail #3
   │   ├── [GAP] cache-write raises              -> NULL  (A2, deliberate)
   │   ├── [GAP] 2 places, SAME coord, ONE call  -> verifier invoked EXACTLY ONCE  <- guardrail #7
-  │   ├── [GAP] SAME coord, DIFFERENT claims    -> A NULL + B "Japan" + 1 call  <- D2(a), guardrail #1
-  │   └── [GAP] SAME coord, 1st member RAISES   -> A NULL + B "Japan" + 2 calls <- D2(b)
+  │   ├── [GAP] SAME coord, claims US,JP        -> NULL, "Japan"   + 1 call  <- D2(a1), guardrail #1
+  │   ├── [GAP] SAME coord, claims JP,US        -> "Japan", NULL   + 1 call  <- D2(a2), REQUIRED
+  │   ├── [GAP] SAME coord, claims JP,US,JP     -> "Japan",NULL,"Japan"      <- D2(a3)
+  │   └── [GAP] SAME coord, 1st member RAISES   -> NULL, "Japan"   + 2 calls <- D2(b)
   └── _find_or_create_place()
       ├── [GAP] insert carries country + country_code + country_name (all three, C1)
       ├── [★★ TESTED] dedup hit reuses row — test_persist.py:154 (existing, unaffected)
@@ -515,19 +545,19 @@ CODE PATHS (pipeline/persist.py)                        USER-VISIBLE OUTCOME
 NOT COVERED BY DESIGN: _find_or_create_restaurant_place (A1, deferred)
 NOT A FAILURE MODE:     absent MAPBOX_SECRET_TOKEN — boot secret, see Failure modes below
 
-COVERAGE: 0/11 new paths tested — all 11 are the work of T1/T2.
+COVERAGE: 0/13 new paths tested — all 13 are the work of T1/T2.
 ```
 
-**Every one of those 11 outcomes is required.** Two are regression-class under the IRON RULE
+**Every one of those 13 outcomes is required.** Two are regression-class under the IRON RULE
 (mismatch→NULL, and Mapbox-raises→trip-still-saves): they pin behaviour that exists today and
 that this change could silently take away.
 
-**Eleven outcomes need not be eleven test functions** (round 2). Parametrize the compatible
+**Thirteen outcomes need not be thirteen test functions** (round 2). Parametrize the compatible
 single-place cases — verified / mismatch / no-claim / placeholder-URL / provider-raises all
-share one arrange-act shape and differ only in input and expected row. **Do NOT merge the three
-same-coordinate cases** (D2's call-count, (a) different-claims, (b) first-member-raises): their
-failure modes are distinct and each one's expected outcome is what makes a specific wrong
-implementation red.
+share one arrange-act shape and differ only in input and expected row. D2 (a1)/(a2)/(a3) are
+also naturally one parametrized test. **Do NOT merge across the same-coordinate group** (the
+call-count case, the (a) family, and (b) first-member-raises): their failure modes are distinct,
+and each one's expected outcome is what makes a *specific* wrong implementation red.
 
 **Fault-injection duty (BUILD-LOOP "tests that cannot fail").** Each test must redden from a
 guard only *it* can exercise. Specifically: the mismatch test and the no-claim test both expect
@@ -712,6 +742,54 @@ Float-keyed `(lat, lng)` grouping (Pydantic rejects NaN/inf; `-0.0`/`0.0` coales
 `except Exception` preserving `CancelledError`; no P0/critical findings; no new
 deployment/schema hazard. The backfill restraint, aggregate logging, third-writer deferral and
 semaphore removal were all endorsed as correctly scoped.
+
+---
+
+## 6f. Codex round 3 + GATE STATUS — READ THIS BEFORE IMPLEMENTING (2026-08-03)
+
+**Round 3 verdict: 6.9/10 — FAIL** (Correctness 6.8 · Safety 7.6 · Testability 6.2 ·
+Completeness 7.4 · Clarity 7.6). One blocking finding, now folded. **No round 4 was run — the
+process cap is 3 rounds.**
+
+### ⚠ The gate did NOT pass. Status when this session stopped:
+
+| Round | Overall | Blocking findings | Folded? |
+|---|---|---|---|
+| 1 | 6.3 FAIL | 3 (all test-design) | yes |
+| 2 | 6.9 FAIL | 1 (introduced by round 1's fix) | yes |
+| 3 | 6.9 FAIL | 1 (D2(a) only tested one claim order) | yes — **unverified** |
+
+Round 3's finding is folded into §6b D2 (a1/a2/a3) but **has not been re-reviewed**. Codex's own
+words: *"Minimal repair: make D2(a) cover both claim orders."* That is exactly what was folded,
+so a 4th round is expected to clear the 7.0 bar — but expected is not verified. **Run one
+targeted round 4 before implementing.** Per BUILD-LOOP, code does not start on a failed gate.
+
+### Round 3's finding, because it is subtle and worth not re-deriving
+
+D2(a) originally specified one claim order: A claims `US`, B claims `JP`, provider returns `JP`.
+That order makes the *first* member's grounding return `None` — so an implementation that copies
+the first verdict **only when it succeeded** passes it, and passes (b) too:
+
+```python
+first = await safe_ground(group[0])
+for place in group[1:]:
+    grounded = first if first is not None else await safe_ground(place)
+```
+
+Reverse the claims (A=`JP`, B=`US`) and the successful `Japan` gets copied onto a place claiming
+`US`. Both orders are now required, plus a three-member alternating case.
+
+**Three rounds, three findings, all the same shape:** an assertion that looked like it pinned a
+behaviour but left at least one wrong implementation green. None was a design flaw — §2's
+decision was endorsed as safe in every round. The design was right from the start; what took
+three rounds was making the tests able to *prove* it.
+
+### What is settled and needs no further review
+
+The architecture, the failure isolation, the ordering/determinism, the cancellation behaviour,
+the latency accounting, the backfill restraint, the third-writer deferral and the
+no-migration deployment analysis were all confirmed strong in round 3, with no P0/critical
+findings across any round.
 
 ---
 

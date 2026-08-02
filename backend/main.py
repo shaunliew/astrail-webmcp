@@ -19,6 +19,7 @@ import contextlib
 import logging
 import os
 from contextlib import asynccontextmanager
+from uuid import UUID
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,6 +38,9 @@ from api.schemas import (
     OrganizeSavedReelsRequest,
     OrganizeSavedReelsResponse,
     SettingsPreferencesResponse,
+    TripFeedback,
+    TripFeedbackRequest,
+    TripFeedbackResponse,
 )
 from api.streaming import stream_organize_events, stream_trip_events
 from auth import get_current_user_id, get_user_id_from_query_or_header
@@ -208,6 +212,10 @@ class _CaptureSavedReelRequest(CaptureSavedReelRequest):
     model_config = ConfigDict(extra="forbid")
 
 
+class _TripFeedbackRequest(TripFeedbackRequest):
+    model_config = ConfigDict(extra="forbid")
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -276,6 +284,75 @@ async def create_saved_reel(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="A valid Instagram Reel URL is required") from exc
     return CaptureSavedReelResponse(saved_reel=saved_reel)
+
+
+@app.post("/trips/{trip_id}/feedback", response_model=TripFeedbackResponse, status_code=201)
+@limiter.limit(BURST_LIMIT)
+async def submit_trip_feedback(
+    request: Request,          # must be named `request` — slowapi's key_func resolves it by name
+    response: Response,        # required: the limiter is headers_enabled=True
+    trip_id: UUID,             # UUID (not str) so a malformed id is a 422, never a Postgres 500
+    req: _TripFeedbackRequest,
+    user_id: str = Depends(get_current_user_id_stashed),
+) -> TripFeedbackResponse:
+    """Trip-level feedback (PRD §18, PRD:86 beta adoption metric).
+
+    Append-only: a resubmission inserts another row rather than replacing. The table has
+    no unique constraint, and a user who rates 2 then 5 after re-reading the itinerary is
+    signal worth keeping; analytics take latest-per-user via feedback_user_id_created_at_idx.
+
+    Owner check is app-code, NOT RLS: this backend connects with service_role, which is
+    exempt from every RLS policy (persist.py:515). feedback_insert_own_trip is a backstop
+    for a future direct-from-frontend path only.
+    """
+    trip_key = str(trip_id)
+    client = await get_supabase_client()
+
+    owner = await client.table("trips").select("user_id").eq("id", trip_key).maybe_single().execute()
+    # `owner is None` is load-bearing, NOT defensive noise. postgrest 2.31.0's
+    # AsyncMaybeSingleRequestBuilder.execute() returns a bare None when zero rows match
+    # (request_builder.py:167: `if len(parsed.data) == 0: return None`) -- NOT an object whose
+    # .data is None. Dereferencing owner.data would AttributeError into a 500, which leaks an
+    # existence oracle: 500 = no such trip, 404 = exists but not yours. This matches the repo's
+    # majority convention (jobs.py:80, generate_trip's replay precheck below,
+    # organizer.py:184) -- the `stream` route was the one outlier, fixed in 124417b.
+    if owner is None or owner.data is None or owner.data["user_id"] != user_id:  # guardrail #6
+        raise HTTPException(status_code=404, detail="Trip not found")  # 404 not 403: do not confirm existence
+
+    inserted = await client.table("feedback").insert({
+        "trip_id": trip_key,
+        "user_id": user_id,               # from the token, never the body
+        "artifact_type": "trip",          # trip-level scope; artifact-level is a later, additive arc
+        "artifact_id": None,
+        "feedback_type": req.feedback_type,
+        "rating": req.rating,
+        "comment": req.comment,
+        # PRD:1035's source_type / generation_stage / preference_source stay NULL for
+        # trip-level feedback -- they describe how an ARTIFACT was generated.
+        "source_type": None,
+        "generation_stage": None,
+        "preference_source": None,
+    }).execute()
+
+    if not inserted.data:
+        raise HTTPException(status_code=500, detail="Failed to store feedback")
+
+    # Build the response from the PERSISTED row, not from the request (plan-eng-review A2).
+    # Echoing req.* would make the 201 body incapable of ever reporting a persistence bug:
+    # it would look correct even if the row were wrong. Every field read here is part of the
+    # insert payload above, so it is present in BOTH the real client and the _Table test fake
+    # (only created_at would diverge, which is why the response omits it).
+    row = inserted.data[0]
+    return TripFeedbackResponse(
+        feedback=TripFeedback(
+            id=str(row["id"]),
+            trip_id=str(row["trip_id"]),
+            artifact_type=row["artifact_type"],
+            feedback_type=row["feedback_type"],
+            rating=row["rating"],
+            comment=row["comment"],
+        )
+    )
 
 
 @app.post("/generate-trip", response_model=GenerateTripResponse)
@@ -468,7 +545,11 @@ async def stream(
 ) -> StreamingResponse:
     client = await get_supabase_client()
     owner = await client.table("trips").select("user_id").eq("id", trip_id).maybe_single().execute()
-    if owner.data is None or owner.data["user_id"] != user_id:  # guardrail #6 owner check
+    # `owner is None` is load-bearing: maybe_single() returns a bare None on zero rows
+    # (postgrest request_builder.py:167). Without it this 500s instead of 404ing, which tells
+    # a caller which trip ids exist. Matches jobs.py:80 / generate_trip's replay precheck /
+    # organizer.py:184 / submit_trip_feedback's owner check.
+    if owner is None or owner.data is None or owner.data["user_id"] != user_id:  # guardrail #6
         raise HTTPException(status_code=404, detail="Trip not found")
     return StreamingResponse(stream_trip_events(client, trip_id), media_type="text/event-stream")
 

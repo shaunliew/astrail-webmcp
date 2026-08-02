@@ -1,10 +1,11 @@
 """POST /generate-trip route tests: async fakes for the create+persist path,
 the idempotent-replay path, the idempotency-race path (a concurrent POST wins
 the same key -> we delete our orphan trip and redirect without dispatching),
-and the auth gate. GET /generate-trip/stream is exercised end-to-end via
-api/test_streaming.py (the generator) plus the owner-check here is a thin
-FastAPI wrapper around trips lookups already covered by the runner's owner
-filters in pipeline/test_runner.py.
+and the auth gate. GET /generate-trip/stream is covered HERE at the route level
+(owner check + happy path); api/test_streaming.py covers stream_trip_events, the
+generator the route mounts, which is not the same thing. Believing otherwise —
+that the route is a thin wrapper over lookups already covered elsewhere — hid a
+500 AND left the whole route deletable with every test still green.
 
 Drives the ASGI app with an async httpx client over ASGITransport (NOT the sync
 `starlette.testclient.TestClient`, which is deprecated with httpx and spins a
@@ -40,13 +41,15 @@ class _Result:
 class _Table:
     """Async fake of a supabase-py postgrest filter builder over a shared in-memory db."""
 
-    def __init__(self, name, db, fail_ops=None):
+    def __init__(self, name, db, fail_ops=None, empty_result_ops=None):
         self.name = name
         self.db = db
         self._op = None
         self._filters: dict = {}
+        self._order_keys: list = []
         self._single = False
         self._fail_ops = fail_ops if fail_ops is not None else set()
+        self._empty_result_ops = empty_result_ops if empty_result_ops is not None else set()
 
     def insert(self, row):
         self._op = ("insert", row)
@@ -75,6 +78,33 @@ class _Table:
     def limit(self, *_args, **_kwargs):
         return self
 
+    def order(self, column, *, desc=False, **unsupported):
+        # This MUST sort. A bare `return self` is the worst kind of fake: every caller's
+        # `.order()` looks honoured while rows come back in insertion order, so a test
+        # asserting on ordering passes whether or not production ordered anything
+        # (test_saved_reels_organize.py's fake carries the same warning, learned the hard way).
+        # Ascending-only, matching every call site in the codebase; anything else fails loudly
+        # rather than silently sorting on nothing. Caveat if you trip that raise from a stream
+        # test: api/streaming.py wraps its query in `except Exception` (transient-blip retry),
+        # so the ValueError surfaces as a 300s poll-out, not a traceback. Read it as this raise.
+        if desc or unsupported:
+            raise ValueError(
+                f"fake implements only ascending .order(column), got "
+                f".order({column!r}, desc={desc!r}, **{unsupported!r})"
+            )
+        self._order_keys.append(column)
+        return self
+
+    def _ordered(self, rows):
+        # PostgREST reads chained `.order()` calls left-to-right, first call primary. Stable
+        # sorts applied last-key-first compose into exactly that. `None` sorts last, matching
+        # Postgres NULLS LAST on an ascending order, and the two-element key means two nulls
+        # compare equal instead of raising on `None < None`.
+        ordered = list(rows)
+        for key in reversed(self._order_keys):
+            ordered.sort(key=lambda row: (row.get(key) is None, row.get(key)))
+        return ordered
+
     def _matches(self, row):
         return all(row.get(k) == v for k, v in self._filters.items())
 
@@ -82,6 +112,8 @@ class _Table:
         op, arg = self._op
         if (self.name, op) in self._fail_ops:
             raise RuntimeError(f"forced {op} failure on {self.name}")
+        if (self.name, op) in self._empty_result_ops:
+            return _Result([])
         rows = self.db.setdefault(self.name, [])
         if op == "insert":
             row = {"id": f"{self.name}-{len(rows) + 1}", **arg}
@@ -96,9 +128,12 @@ class _Table:
             matched = [r for r in rows if self._matches(r)]
             self.db[self.name] = [r for r in rows if r not in matched]
             return _Result(matched)
-        matched = [r for r in rows if self._matches(r)]
+        matched = self._ordered(r for r in rows if self._matches(r))
         if self._single:
-            return _Result(matched[0] if matched else None)
+            # Faithful to postgrest 2.31.0: AsyncMaybeSingleRequestBuilder.execute() returns a
+            # bare None when zero rows match (request_builder.py:167), NOT a result whose .data
+            # is None. A forgiving fake here hid a real 500 in the stream owner check.
+            return _Result(matched[0]) if matched else None
         return _Result(matched)
 
 
@@ -127,9 +162,10 @@ class _Client:
         self.rpc_calls: list = []      # [(name, params), ...] — assert (non-)consumption of quota
         self.rpc_results: dict = {}    # name -> canned .data value, or _RAISE to raise on execute
         self.fail_ops: set = set()     # {(table_name, op)} whose .execute() raises
+        self.empty_result_ops: set = set()   # {(table, op)} whose execute() returns _Result([])
 
     def table(self, name):
-        return _Table(name, self.db, self.fail_ops)
+        return _Table(name, self.db, self.fail_ops, self.empty_result_ops)
 
     def rpc(self, name, params):
         self.rpc_calls.append((name, params))
@@ -181,6 +217,18 @@ async def ctx(monkeypatch):
     async with _async_client() as ac:
         yield ac, db, calls, client
     main.app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def stream_auth():
+    """The `stream` route's Depends(get_user_id_from_query_or_header) is not overridden by
+    ctx. Same function object as auth's, so keying on main.* resolves correctly."""
+    async def _user() -> str:
+        return "user-1"
+
+    main.app.dependency_overrides[main.get_user_id_from_query_or_header] = _user
+    yield
+    main.app.dependency_overrides.pop(main.get_user_id_from_query_or_header, None)
 
 
 @pytest.fixture(autouse=True)
@@ -877,3 +925,299 @@ async def test_readiness_503_when_db_unreachable(monkeypatch):
         r = await ac.get("/readiness")
     assert r.status_code == 503
     assert r.json()["ready"] is False
+
+
+# ---------------------------------------------------------------------------
+# GET /generate-trip/stream/{trip_id}: the guardrail #6 owner check + the
+# happy path (200, text/event-stream, ordered frames, `data: [DONE]` last).
+# ---------------------------------------------------------------------------
+
+_TRIP_ID = "11111111-1111-4111-8111-111111111111"
+_OTHER_TRIP_ID = "22222222-2222-4222-8222-222222222222"
+
+
+async def test_stream_on_a_nonexistent_trip_is_404_not_500(ctx, stream_auth):
+    # Regression (Codex plan review 2026-08-02): maybe_single() returns a bare None when no
+    # row matches, so `owner.data` AttributeErrors into a 500. 500-vs-404 is an existence
+    # oracle: it tells an unauthenticated-to-this-trip caller which trip ids are real.
+    ac, db, _calls, _client = ctx
+
+    response = await ac.get(f"/generate-trip/stream/{_TRIP_ID}?token=t")
+
+    assert response.status_code == 404
+
+
+async def test_stream_on_another_users_trip_is_404(ctx, stream_auth):
+    ac, db, _calls, _client = ctx
+    db.setdefault("trips", []).append({"id": _OTHER_TRIP_ID, "user_id": "user-2"})
+
+    response = await ac.get(f"/generate-trip/stream/{_OTHER_TRIP_ID}?token=t")
+
+    assert response.status_code == 404
+
+
+def _seed_stream_events(db, trip_id=_TRIP_ID):
+    """Seed generation_events for `trip_id`, INSERTED IN REVERSE of (created_at, id) ascending.
+
+    Two things ride on the scramble. (1) Frame order below then proves the route really
+    orders — under an unsorted fake the `result` row comes back first, the generator
+    terminates on it, and the earlier stages never reach the wire at all. (2) `ev-1`/`ev-2`
+    share a created_at, so the `.order("id")` tiebreak is what separates them.
+
+    The `result` row is seeded UP FRONT on purpose: stream_trip_events returns the moment it
+    sees one, so the first poll terminates and nothing sleeps. Omit it and httpx waits out
+    600 polls at 0.5s.
+    """
+    db.setdefault("generation_events", []).extend([
+        {"id": "ev-4", "trip_id": trip_id, "event_type": "result", "stage": "save",
+         "message": "done", "payload": {"itinerary": {"days": []}},
+         "created_at": "2026-08-02T00:00:02Z"},
+        {"id": "ev-3", "trip_id": trip_id, "event_type": "stage", "stage": "narrate",
+         "message": "narrating", "payload": {}, "created_at": "2026-08-02T00:00:01Z"},
+        {"id": "ev-2", "trip_id": trip_id, "event_type": "stage", "stage": "extract",
+         "message": "extracting", "payload": {}, "created_at": "2026-08-02T00:00:00Z"},
+        {"id": "ev-1", "trip_id": trip_id, "event_type": "stage", "stage": "scrape",
+         "message": "scraping", "payload": {}, "created_at": "2026-08-02T00:00:00Z"},
+    ])
+
+
+async def test_stream_for_the_owner_is_an_event_stream_terminated_by_done(ctx, stream_auth):
+    """The route's ONLY happy-path coverage. Without it, deleting the whole route leaves the
+    two 404 tests above green: their expected 404 is indistinguishable from FastAPI's
+    framework 404 for a route that isn't registered (Codex cross-model review 2026-08-02).
+    api/test_streaming.py covers stream_trip_events, never the route that mounts it."""
+    ac, db, _calls, _client = ctx
+    db.setdefault("trips", []).append({"id": _TRIP_ID, "user_id": "user-1"})
+    _seed_stream_events(db)
+
+    response = await ac.get(f"/generate-trip/stream/{_TRIP_ID}?token=t")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+
+    body = response.text
+    # The repo's most breaking contract: a `result` frame, then `data: [DONE]` LAST (CLAUDE.md
+    # "SSE termination"). The frontend breaks on the sentinel, so nothing may follow it.
+    assert '"type": "result"' in body
+    assert body.endswith("data: [DONE]\n\n")
+    # result.content is a JSON *string*, not a nested object — same frozen contract.
+    assert '"content": "{\\"itinerary\\": {\\"days\\": []}}"' in body
+    # Every stage frame reaches the client, in (created_at, id) order — NOT insertion order.
+    assert (
+        body.index("scraping")
+        < body.index("extracting")
+        < body.index("narrating")
+        < body.index('"type": "result"')
+    )
+    # The terminal event was in the first batch, so the generator returned without sleeping —
+    # this is what keeps the test off the 600-poll / 5-minute path.
+    assert ": heartbeat\n\n" not in body
+
+
+# --- POST /trips/{trip_id}/feedback ------------------------------------------------
+# _TRIP_ID and _OTHER_TRIP_ID were added in Task 2 — do not redefine them here.
+
+
+def _seed_trip(db, trip_id=_TRIP_ID, user_id="user-1", status="completed"):
+    db.setdefault("trips", []).append({"id": trip_id, "user_id": user_id, "status": status})
+
+
+async def test_feedback_rating_is_stored_for_the_owner(ctx):
+    ac, db, _calls, _client = ctx
+    _seed_trip(db)
+
+    response = await ac.post(
+        f"/trips/{_TRIP_ID}/feedback",
+        json={"feedback_type": "rating", "rating": 4, "comment": "loved day 2"},
+    )
+
+    assert response.status_code == 201
+    body = response.json()["feedback"]
+    assert body["trip_id"] == _TRIP_ID
+    assert body["artifact_type"] == "trip"
+    assert body["rating"] == 4
+    assert body["comment"] == "loved day 2"
+
+    rows = db["feedback"]
+    assert len(rows) == 1
+    assert rows[0]["trip_id"] == _TRIP_ID          # STORED trip_id, from the path (gap found in review)
+    assert rows[0]["user_id"] == "user-1"          # from the token, never the body
+    assert rows[0]["artifact_type"] == "trip"
+    assert rows[0]["artifact_id"] is None
+    # PRD:1035 columns are deliberately deferred for trip-level feedback.
+    assert rows[0]["source_type"] is None
+    assert rows[0]["generation_stage"] is None
+    assert rows[0]["preference_source"] is None
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"feedback_type": "thumbs_up"},
+        {"feedback_type": "thumbs_down", "comment": "too much walking"},
+        {"feedback_type": "free_text", "comment": "great but rushed"},
+        {"feedback_type": "correction", "comment": "the museum is closed Mondays"},
+    ],
+)
+async def test_feedback_accepts_every_non_rating_type(ctx, payload):
+    ac, db, _calls, _client = ctx
+    _seed_trip(db)
+
+    response = await ac.post(f"/trips/{_TRIP_ID}/feedback", json=payload)
+
+    assert response.status_code == 201
+    assert db["feedback"][0]["feedback_type"] == payload["feedback_type"]
+
+
+async def test_feedback_on_another_users_trip_is_404_and_writes_nothing(ctx):
+    # THE owner-check test (guardrail #6). service_role bypasses RLS, so this app-code
+    # check is the ONLY thing standing between a caller and someone else's trip.
+    ac, db, _calls, _client = ctx
+    _seed_trip(db, trip_id=_OTHER_TRIP_ID, user_id="user-2")
+
+    response = await ac.post(
+        f"/trips/{_OTHER_TRIP_ID}/feedback", json={"feedback_type": "thumbs_up"}
+    )
+
+    assert response.status_code == 404          # 404 not 403 — do not confirm the trip exists
+    assert db.get("feedback", []) == []         # the write must not have happened
+
+
+async def test_feedback_on_a_nonexistent_trip_is_404(ctx):
+    ac, db, _calls, _client = ctx
+
+    response = await ac.post(
+        f"/trips/{_TRIP_ID}/feedback", json={"feedback_type": "thumbs_up"}
+    )
+
+    assert response.status_code == 404
+    assert db.get("feedback", []) == []
+
+
+async def test_feedback_is_accepted_on_a_failed_trip(ctx):
+    # Deliberate: "this didn't work" is the most valuable beta signal we can collect.
+    ac, db, _calls, _client = ctx
+    _seed_trip(db, status="failed")
+
+    response = await ac.post(
+        f"/trips/{_TRIP_ID}/feedback", json={"feedback_type": "thumbs_down", "comment": "failed"}
+    )
+
+    assert response.status_code == 201
+
+
+async def test_feedback_is_append_only(ctx):
+    ac, db, _calls, _client = ctx
+    _seed_trip(db)
+
+    first = await ac.post(f"/trips/{_TRIP_ID}/feedback", json={"feedback_type": "rating", "rating": 2})
+    second = await ac.post(f"/trips/{_TRIP_ID}/feedback", json={"feedback_type": "rating", "rating": 5})
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert [r["rating"] for r in db["feedback"]] == [2, 5]
+    assert first.json()["feedback"]["id"] != second.json()["feedback"]["id"]
+
+
+async def test_feedback_rejects_a_client_supplied_user_id(ctx):
+    # user_id must come from the token. extra="forbid" makes smuggling it a 422.
+    ac, db, _calls, _client = ctx
+    _seed_trip(db)
+
+    response = await ac.post(
+        f"/trips/{_TRIP_ID}/feedback",
+        json={"feedback_type": "thumbs_up", "user_id": "user-2"},
+    )
+
+    assert response.status_code == 422
+    assert db.get("feedback", []) == []
+
+
+async def test_feedback_rejects_a_client_supplied_artifact_target(ctx):
+    # Aiming feedback at an arbitrary artifact must not be possible on this endpoint.
+    ac, db, _calls, _client = ctx
+    _seed_trip(db)
+
+    response = await ac.post(
+        f"/trips/{_TRIP_ID}/feedback",
+        json={"feedback_type": "thumbs_up", "artifact_type": "place", "artifact_id": _OTHER_TRIP_ID},
+    )
+
+    assert response.status_code == 422
+    assert db.get("feedback", []) == []
+
+
+async def test_feedback_rejects_a_malformed_trip_id_before_touching_the_db(ctx):
+    ac, db, _calls, client = ctx
+
+    response = await ac.post("/trips/not-a-uuid/feedback", json={"feedback_type": "thumbs_up"})
+
+    assert response.status_code == 422
+    assert db.get("feedback", []) == []
+
+
+async def test_feedback_requires_authentication():
+    # No ctx fixture: the real auth dependency runs, so no Authorization header -> 401.
+    async with _async_client() as ac:
+        response = await ac.post(
+            f"/trips/{_TRIP_ID}/feedback", json={"feedback_type": "thumbs_up"}
+        )
+    assert response.status_code == 401
+
+
+async def test_feedback_burst_limit_returns_429(ctx):
+    ac, db, _calls, _client = ctx
+    _seed_trip(db)
+
+    codes = []
+    for _ in range(4):
+        r = await ac.post(f"/trips/{_TRIP_ID}/feedback", json={"feedback_type": "thumbs_up"})
+        codes.append(r.status_code)
+
+    assert codes[:3] == [201, 201, 201]   # BURST_LIMIT default is 3/minute
+    assert codes[3] == 429
+
+
+async def test_feedback_insert_raising_surfaces_as_500_not_a_silent_success(ctx):
+    # A LOCAL transport with raise_app_exceptions=False. The shared `ac` from ctx defaults to
+    # True, so Starlette's error middleware sends the 500 AND re-raises -- httpx then re-raises
+    # into the test, which crashes before the assert instead of failing it. Same reason and
+    # same pattern as test_main.py:405.
+    _ac, db, _calls, client = ctx
+    _seed_trip(db)
+    client.fail_ops.add(("feedback", "insert"))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main.app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as ac:
+        response = await ac.post(f"/trips/{_TRIP_ID}/feedback", json={"feedback_type": "thumbs_up"})
+
+    assert response.status_code == 500
+    assert db.get("feedback", []) == []
+
+
+async def test_feedback_insert_returning_no_rows_is_a_500(ctx):
+    # Distinct from the raising case: this is the ONLY test that makes the explicit
+    # `if not inserted.data` guard load-bearing.
+    #
+    # THE STATUS CODE CANNOT TELL THE TWO PATHS APART (Codex round 2, demonstrated by
+    # execution). Delete the guard and `inserted.data[0]` raises IndexError, which the global
+    # unhandled_exception_handler ALSO renders as a 500 with an empty db -- so asserting
+    # `status_code == 500` and `db == []` stays green either way. Only the MESSAGE differs:
+    #   guard present -> {"code": "internal_error", "message": "Failed to store feedback"}
+    #   guard deleted -> {"code": "internal_error", "message": "Internal server error"}
+    # The message assertion below is therefore the whole test. Do not drop it.
+    _ac, db, _calls, client = ctx
+    _seed_trip(db)
+    client.empty_result_ops.add(("feedback", "insert"))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main.app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as ac:
+        response = await ac.post(f"/trips/{_TRIP_ID}/feedback", json={"feedback_type": "thumbs_up"})
+
+    assert response.status_code == 500
+    assert response.json()["error"]["message"] == "Failed to store feedback"
+    assert db.get("feedback", []) == []

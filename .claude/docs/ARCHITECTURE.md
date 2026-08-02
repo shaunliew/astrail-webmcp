@@ -126,6 +126,15 @@ Authenticated (Supabase JWT, ES256/JWKS):
 - `GET /generate-trip/stream/:tripId` — SSE stream (query-param `?token=` auth for EventSource, header fallback; owner-checked).
 - `GET /settings/preferences` — the caller's STORED mem0 memories, read live (PRD §18). `200 {"status":"ok|disabled|unavailable","facts":[{id,memory,created_at,source:"mem0"}]}`; always 200, `status` carries the bad news (guardrail #3). `ok` + `facts: []` is a legitimately empty memory, NOT an error. `user_id` is token-derived, so a cross-user read is structurally impossible. Facts are mem0's own prose — deliberately NOT the structured `UserPreferenceFact` shape, since synthesising `fact_key`/`confidence` would fabricate data (guardrail #1). `POST /settings/memory/clear` (PRD §18) is **not implemented yet**.
 - `POST /trips/:tripId/feedback` — trip-level feedback only (`artifact_type='trip'`, `artifact_id` NULL); append-only (a resubmission inserts another row, no unique constraint); owner-checked in app code because service_role bypasses RLS. Body `{feedback_type: "rating"|"thumbs_up"|"thumbs_down"|"correction"|"free_text", rating?: 1–5, comment?: ≤2000}` with `extra="forbid"` (a client-supplied `user_id`/`artifact_type` is a `422`); `201 {"feedback":{id,trip_id,artifact_type,feedback_type,rating,comment}}`, `404` for a trip that is missing **or** not yours (never 403 — do not confirm existence). Same slowapi burst limit as `/generate-trip` (`3/minute`, keyed on `request.state.user_id`).
+  **Before you build `DELETE /trips/:tripId` (PRD:816), read this.** `feedback.trip_id` is
+  `references public.trips(id) `**`on delete cascade`**
+  (`supabase/migrations/20260702012806_generated_trip_outputs.sql:86`). Hard-deleting a trip
+  therefore *silently* deletes all of its feedback — erasing the exact signal PRD:86 makes the
+  primary beta success measure. Nothing errors; the numbers just come out quietly low. Prefer
+  soft-delete. A nullable-`trip_id` migration is the alternative, but `ON DELETE SET NULL` will
+  not work as-is because the column is `NOT NULL`. Handle one more thing in that arc: this
+  route's owner check and its insert are two separate round trips, so a trip deleted between
+  them raises an FK violation and surfaces as a 500 — catch it and return 404.
 
 **No backend trip-read endpoints.** Finished-trip reads (list + detail) go **Supabase-direct under RLS** from the frontend (Supabase JS client — RLS is the sole read-authz control, gated in CI by `.github/workflows/rls-tests.yml`). FastAPI owns **writes / orchestration / streaming** only, plus external API calls requiring the Python SDK.
 

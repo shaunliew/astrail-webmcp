@@ -31,11 +31,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from organizer import ActiveOrganizeConflict, InvalidOrganizeRequest
 from scrape.reel_url import normalize_reel_url, short_code_of
 from telegram_ingest import ingest
+from telegram_ingest.api import UNKNOWN_DESCRIPTION, TelegramAPIError, set_message_reaction
 from telegram_ingest.config import TelegramConfig
 from telegram_ingest.reel_filter import extract_reel_urls
 
@@ -49,6 +51,12 @@ MESSAGE_ID = 4242
 CANARY_TEXT = "CANARY-SECRET"
 CANARY_USER = "CANARY-USER"
 CANARY_TITLE = "CANARY-TITLE"
+
+# Read off the real signature so `_FakeReact` stays a faithful stand-in (the file's first
+# convention). The VALUE is pinned in `test_api.py` against Telegram's permitted set — the
+# only place that can be, since a fake cannot tell you what Telegram accepts. What it buys
+# here is the other half: RED if `_react` ever starts passing an emoji of its own.
+REACTION_EMOJI = inspect.signature(set_message_reaction).parameters["emoji"].default
 
 
 def _reel(code: str) -> str:
@@ -184,7 +192,7 @@ class _FakeReact:
         self._raises = raises
 
     async def __call__(self, *, client: Any, token: str, chat_id: int, message_id: int,
-                       emoji: str = "✅") -> None:
+                       emoji: str = REACTION_EMOJI) -> None:
         self.calls.append({"client": client, "token": token, "chat_id": chat_id,
                            "message_id": message_id, "emoji": emoji})
         if self._raises is not None:
@@ -277,11 +285,11 @@ async def _run(update: dict, config: TelegramConfig, seams: _Seams) -> None:
 # --------------------------------------------------------------------------------------
 # 1. The mixed message. Named in the plan because two review rounds got it wrong.
 # --------------------------------------------------------------------------------------
-async def test_mixed_valid_and_unsupported_url_ingests_and_withholds_the_tick(
+async def test_mixed_valid_and_unsupported_url_ingests_and_withholds_the_reaction(
     config, seams, caplog
 ):
     """RED if the reaction condition reads only `urls`, or if `rejected_shapes` is
-    consulted only when `urls` is empty: both ship a ✅ on a message whose `/share/reel/`
+    consulted only when `urls` is empty: both acknowledge a message whose `/share/reel/`
     was never ingested, breaking the pinned promise."""
     message = _message(_reel("ABC123"), "https://www.instagram.com/share/reel/XYZ/")
     _precondition(message, urls=(_reel("ABC123"),), shapes=("/share/reel/…",))
@@ -387,8 +395,8 @@ async def test_chat_rejection_logs_once_per_chat_per_process(config, seams, capl
 # 5-7. The per-URL loop.
 # --------------------------------------------------------------------------------------
 async def test_one_urls_failure_does_not_touch_the_next(config, monkeypatch, caplog):
-    """Guardrail #3. RED if the loop aborts on the first failure, and RED if the ✅ still
-    fires: a tick on a message whose middle reel was dropped is the lie the contract is
+    """Guardrail #3. RED if the loop aborts on the first failure, and RED if the 👍 still
+    fires: a 👍 on a message whose middle reel was dropped is the lie the contract is
     written against."""
     boom = RuntimeError("second reel exploded")
     capture = _FakeCapture(raises={_reel("TWO"): boom})
@@ -443,7 +451,7 @@ async def test_queue_full_is_not_a_failure(config, monkeypatch, caplog):
     assert "job-saved-ABC123" in full[0].getMessage()
     assert _records(caplog, "telegram_reel_dropped") == []
     assert len(_records(caplog, "telegram_reel_accepted")) == 1
-    assert len(seams.react.calls) == 1          # still durable, so still ticked
+    assert len(seams.react.calls) == 1          # still durable, so still acknowledged
 
 
 async def test_active_organize_conflict_gets_no_special_case(config, monkeypatch, caplog):
@@ -520,7 +528,7 @@ async def test_the_same_reel_shared_twice_hits_idempotency_not_a_conflict(config
     Two messages carrying the same reel produce the same saved_reel id, so
     `create_organize_job` computes the same `_request_key` and the RPC's
     idempotency-key lookup (`20260720130000:66-79`) returns the LIVE job before the
-    active-item check that would raise AS409 can run. Both messages therefore earn a ✅.
+    active-item check that would raise AS409 can run. Both messages therefore earn a 👍.
     This is the branch that makes single-item jobs safe to re-share; it was the one part
     of `_FakeCreateJob` no test reached.
     """
@@ -565,11 +573,11 @@ async def test_an_over_budget_message_is_dropped_LOUDLY_not_silently(
     assert overflowed[0].levelno == logging.ERROR
     assert str(GROUP_CHAT_ID) in overflowed[0].getMessage()
     assert seams.call_count == 0            # nothing was parsed, so nothing is durable
-    assert seams.react.calls == []          # and absence of the tick is the human signal
+    assert seams.react.calls == []          # absence of the reaction is the human signal
 
 
-async def test_truncation_withholds_the_tick_and_logs_an_error(config, seams, caplog):
-    """An 11-reel message ingests 10. RED if `truncated` is not consulted: the ✅ would
+async def test_truncation_withholds_the_reaction_and_logs_an_error(config, seams, caplog):
+    """An 11-reel message ingests 10. RED if `truncated` is not consulted: the 👍 would
     claim every reel in that message was accepted, and one silently was not."""
     codes = [f"CODE{n}" for n in range(11)]
     message = _message(*[_reel(c) for c in codes])
@@ -590,7 +598,7 @@ async def test_a_reaction_failure_does_not_abort_and_is_only_a_warning(
     config, monkeypatch, caplog
 ):
     """A swallowed reaction error is indistinguishable from a real rejection. RED if the
-    failure is silent (a missing ✅ becomes undiagnosable) or if it escalates to ERROR /
+    failure is silent (a missing 👍 becomes undiagnosable) or if it escalates to ERROR /
     propagates (a durable reel would look dropped)."""
     seams = _install(monkeypatch, react=_FakeReact(raises=RuntimeError("no reaction rights")))
     message = _message(_reel("ABC123"))
@@ -631,6 +639,105 @@ async def test_a_reaction_failure_leaks_neither_the_bot_token_nor_the_error_text
     assert "RuntimeError" in _records(caplog, "telegram_reaction_failed")[0].getMessage()
 
 
+async def test_a_reaction_failure_names_the_allowlisted_telegram_reason(
+    config, monkeypatch, caplog
+):
+    """The diagnosability half of the 2026-08-02 incident.
+
+    `telegram_reaction_failed … error=TelegramAPIError` was the whole log line, so working
+    out that Telegram rejects ✅ took a manual call against the live API. `api` matches the
+    envelope's `description` against its allowlist; this asserts the matched constant
+    reaches the operator. RED if `_react` goes back to logging only the type name.
+    """
+    boom = TelegramAPIError(
+        "Telegram setMessageReaction failed: HTTP 400 (error_code=400)",
+        description="REACTION_INVALID",
+    )
+    seams = _install(monkeypatch, react=_FakeReact(raises=boom))
+    message = _message(_reel("ABC123"))
+    _precondition(message, urls=(_reel("ABC123"),), shapes=())
+
+    with caplog.at_level(logging.DEBUG):
+        await _run(_update(message), config, seams)
+
+    failed = _records(caplog, "telegram_reaction_failed")
+    assert len(failed) == 1
+    assert failed[0].levelno == logging.WARNING
+    assert "detail=REACTION_INVALID" in failed[0].getMessage()
+    assert "TelegramAPIError" in failed[0].getMessage()
+
+
+async def test_a_foreign_exceptions_description_attribute_never_reaches_the_log(
+    config, monkeypatch, caplog
+):
+    """Fault injection for the obvious wrong implementation of the line above.
+
+    `getattr(exc, "description", "unknown")` reads plausibly and is a leak: `.description`
+    is a common attribute name (werkzeug's `HTTPException`, click, botocore-style wrappers),
+    and NONE of those went through the api layer's allowlist. Only a `TelegramAPIError`
+    carries a description this module may print, so the check is `isinstance`, not `getattr`.
+    """
+    class _ForeignError(Exception):
+        description = f"{CANARY_TEXT} 123456:CANARY-BOT-TOKEN/setMessageReaction"
+
+    seams = _install(monkeypatch, react=_FakeReact(raises=_ForeignError()))
+    message = _message(_reel("ABC123"))
+    _precondition(message, urls=(_reel("ABC123"),), shapes=())
+
+    with caplog.at_level(logging.DEBUG):
+        await _run(_update(message), config, seams)
+
+    emitted = _formatted(caplog)
+    assert "CANARY" not in emitted, emitted
+    failed = _records(caplog, "telegram_reaction_failed")
+    assert f"detail={UNKNOWN_DESCRIPTION}" in failed[0].getMessage()
+
+
+async def test_an_unmatched_description_cannot_reach_the_log_through_the_real_api_layer(
+    config, monkeypatch, caplog
+):
+    """The end-to-end version: no fake exception, the REAL `set_message_reaction` against a
+    mocked transport that answers with a description carrying the bot token.
+
+    Both guards have to hold at once for this to pass — the api layer must refuse to attach
+    an unmatched description, and `_react` must print only what the api layer attached. The
+    two previous tests each prove one half against a hand-built exception; this one proves
+    the composition, which is what actually ships.
+    """
+    token = "123456:CANARY-BOT-TOKEN"                      # the `config` fixture's token
+    leaky = f"Bad Request: {CANARY_TEXT} https://api.telegram.org/bot{token}/x"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert token in str(request.url)                   # the token really is in flight
+        return httpx.Response(400, json={"ok": False, "error_code": 400,
+                                         "description": leaky})
+
+    seams = _install(monkeypatch)
+    monkeypatch.setattr(ingest, "set_message_reaction", set_message_reaction)
+    message = _message(_reel("ABC123"))
+    _precondition(message, urls=(_reel("ABC123"),), shapes=())
+
+    # httpx logs `HTTP Request: POST <url>` at INFO and the bot token is in that path;
+    # `worker._NOISY_TRANSPORT_LOGGERS` (worker.py:101) pins it to WARNING in production for
+    # exactly that reason. Raising the ROOT logger to DEBUG below would undo the production
+    # posture, so reproduce it — otherwise this test drowns in a leak that belongs to a
+    # different module and is proved separately (`test_worker.py`, deploy checklist item 3).
+    caplog.set_level(logging.WARNING, logger="httpx")
+
+    with caplog.at_level(logging.DEBUG):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            await ingest.handle_update(
+                _update(message), config=config, db=DB, http=http, queue=seams.queue,
+            )
+
+    emitted = _formatted(caplog)
+    assert "CANARY" not in emitted, emitted
+    assert token not in emitted
+    failed = _records(caplog, "telegram_reaction_failed")
+    assert len(failed) == 1
+    assert f"detail={UNKNOWN_DESCRIPTION}" in failed[0].getMessage()
+
+
 async def test_a_reel_in_a_caption_ingests_exactly_like_one_in_the_text(config, seams):
     """A reel forwarded as a video lands in `caption`, not `text` — the ordinary way
     people share on mobile. `reel_filter` reads both; RED if `handle_update` ever
@@ -669,7 +776,7 @@ async def test_happy_path_calls_the_seams_in_order_and_reacts_once(config, seams
     ]
     assert seams.react.calls == [{
         "client": HTTP, "token": "123456:CANARY-BOT-TOKEN", "chat_id": GROUP_CHAT_ID,
-        "message_id": MESSAGE_ID, "emoji": "✅",
+        "message_id": MESSAGE_ID, "emoji": REACTION_EMOJI,
     }]
     accepted = _records(caplog, "telegram_reel_accepted")
     assert len(accepted) == 1
@@ -677,7 +784,7 @@ async def test_happy_path_calls_the_seams_in_order_and_reacts_once(config, seams
 
 
 async def test_two_reels_in_one_message_earn_exactly_one_reaction(config, seams):
-    """RED if the ✅ moves back inside the loop (rev 4's bug): a partial failure would
+    """RED if the 👍 moves back inside the loop (rev 4's bug): a partial failure would
     still have looked accepted, once per surviving URL."""
     message = _message(_reel("ONE"), _reel("TWO"))
     _precondition(message, urls=(_reel("ONE"), _reel("TWO")), shapes=())
@@ -824,6 +931,36 @@ def test_the_module_never_calls_logger_exception_or_passes_exc_info():
             if isinstance(node.func, ast.Attribute):
                 assert node.func.attr != "exception", "logger.exception leaks __context__"
             assert not any(kw.arg == "exc_info" for kw in node.keywords)
+
+
+def test_the_module_formats_no_exception_and_reads_exactly_one_vetted_attribute():
+    """`test_worker.py:1279`'s guard, plus the half this module now needs on its own.
+
+    `_react` reads `exc.description`, and may, for one reason: `api` builds that value
+    through `_SAFE_DESCRIPTIONS` and `_react` gates the read behind `isinstance`. EVERY
+    other attribute of an exception is raw — `.args`, `.message`, `.detail`, `.request`,
+    `.response` carry whatever the callee put there, which on this module's call paths
+    means a URL with the bot token in it, a Postgrest row, or a service-role detail.
+
+    RED the moment a second attribute is read, which is the shape "let's make this error
+    line more useful" always takes, and RED on `getattr(exc, …)`, which reaches the same
+    attributes while stepping around the `isinstance` that makes the one read safe.
+    """
+    vetted = {"description"}
+    for node in ast.walk(_module_tree()):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            assert node.func.id not in {"str", "repr"} or not any(
+                isinstance(arg, ast.Name) and arg.id == "exc" for arg in node.args
+            ), "an exception value must never be formatted"
+            assert not (
+                node.func.id == "getattr" and node.args
+                and isinstance(node.args[0], ast.Name) and node.args[0].id == "exc"
+            ), "getattr on an exception steps around the isinstance check"
+        # `type(exc).__name__` is an Attribute on a Call, not on the name `exc`, so the
+        # permitted idiom does not need an exemption here.
+        if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+                and node.value.id == "exc"):
+            assert node.attr in vetted, f"unvetted exception attribute: exc.{node.attr}"
 
 
 def test_import_ingest_is_keyless_and_sdk_free_in_fresh_interpreter():

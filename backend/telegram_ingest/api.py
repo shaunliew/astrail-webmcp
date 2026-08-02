@@ -14,6 +14,11 @@ leaks a live credential into a log line. Therefore:
   - every raise goes through `_safe` / `_raise_api_failure`, which build the message from
     the method name and the status or exception TYPE only — never `exc`, `str(exc)`,
     `repr(exc)`, `exc.request`, or any URL;
+  - the ONE exception is `TelegramAPIError.description`, and it is an exception to the
+    *field*, not to the rule: what escapes is an allowlisted constant this module owns
+    (`_SAFE_DESCRIPTIONS`), matched against the envelope's `description`, never the
+    server's text itself. It exists because the 2026-08-02 `REACTION_INVALID` incident
+    took a manual live API call to diagnose from `error=TelegramAPIError` alone;
   - nothing is chained. `raise ... from None`, not `from exc`, and not a bare `raise X`
     inside an `except` block: `httpx.HTTPStatusError.__str__` IS the request URL, and both
     explicit chaining and Python's implicit `__context__` put it in the formatted traceback
@@ -47,16 +52,62 @@ _BASE = "https://api.telegram.org/bot{token}/{method}"
 # loop. The poller sleeps `retry_after + 1`.
 _RETRY_AFTER_FALLBACK_S = 5.0
 
+# What `description` becomes when the envelope carried none, or carried one we do not
+# recognise. The two cases are deliberately indistinguishable: "we are not printing this"
+# and "there was nothing to print" are the same thing to a reader, and collapsing them
+# means no code path can be tricked into treating an unmatched description as data.
+UNKNOWN_DESCRIPTION = "unknown"
+
+# The allowlist. Telegram's `description` is server-generated English and carries no URL,
+# which is what makes carrying ANY of it defensible — but "carries no URL today" is a
+# property of Telegram's current release, not an invariant we control, so nothing leaves
+# this module unless we recognise it by name.
+#
+# Entries are the bare uppercase MTProto constants Telegram embeds in the description
+# (`Bad Request: REACTION_INVALID`), never the surrounding prose.
+#
+# UNLIKE THE EMOJI, AN UNVERIFIED ENTRY HERE IS SAFE — and the asymmetry is worth stating,
+# because ✅ got into this file by exactly the reasoning this list would otherwise repeat.
+# The emoji is a LIVE-PATH value: wrong, and the feature breaks. An allowlist entry is a
+# FILTER: wrong, and it simply never matches, so the caller logs `unknown` — today's
+# behaviour exactly. It cannot break a call or leak a byte. What it can do is quietly buy
+# nothing, so treat an entry as unproven until you have seen it in a log line.
+_SAFE_DESCRIPTIONS = frozenset({
+    "REACTION_INVALID",      # MEASURED live 2026-08-02 — the emoji is not in Telegram's set
+    "MESSAGE_NOT_MODIFIED",  # unmeasured — the reaction is already on the message
+    "CHAT_WRITE_FORBIDDEN",  # unmeasured — the bot may not write in this chat
+    "MESSAGE_ID_INVALID",    # unmeasured — the message was deleted before we reacted
+})
+
 
 class TelegramAPIError(RuntimeError):
-    """Token-safe Bot API failure. The message NEVER contains the bot token."""
+    """Token-safe Bot API failure. The message NEVER contains the bot token.
+
+    `description` is an allowlisted `_SAFE_DESCRIPTIONS` constant or `UNKNOWN_DESCRIPTION`
+    — never the server's raw text, and never whatever a caller happened to pass in. It is
+    a separate attribute rather than part of the message so the message stays exactly
+    "method + status", which every existing token-safety assertion depends on.
+    """
+
+    def __init__(self, message: str, *, description: str = UNKNOWN_DESCRIPTION) -> None:
+        super().__init__(message)
+        # Clamped in the CONSTRUCTOR, not at the single call site that has a payload. The
+        # invariant a caller logs against — "this attribute is one of ours" — has to hold
+        # for every construction path, including one written later by someone who never
+        # read `_matched_description` and reaches for `payload["description"]` directly.
+        self.description = (
+            description if description in _SAFE_DESCRIPTIONS else UNKNOWN_DESCRIPTION
+        )
 
 
 class TelegramRetryAfter(TelegramAPIError):
     """429. Carries `retry_after` seconds parsed from `parameters.retry_after`."""
 
-    def __init__(self, message: str, retry_after: float) -> None:
-        super().__init__(message)
+    def __init__(
+        self, message: str, retry_after: float, *,
+        description: str = UNKNOWN_DESCRIPTION,
+    ) -> None:
+        super().__init__(message, description=description)
         self.retry_after = retry_after
 
 
@@ -82,6 +133,24 @@ def _safe(method: str, exc: Exception) -> TelegramAPIError:
     return TelegramAPIError(f"Telegram {method} failed: {type(exc).__name__}")
 
 
+def _matched_description(payload: dict[str, Any]) -> str:
+    """The allowlisted constant the envelope's `description` names, else `unknown`.
+
+    Substring rather than equality because Telegram wraps the constant in prose
+    (`Bad Request: REACTION_INVALID`). That is safe in a way a prose match would not be:
+    the return value is ALWAYS one of our own literals, so the worst a hostile description
+    could achieve is naming the wrong one of four constants — never printing itself.
+
+    `sorted` so a description containing two of them resolves identically on every run;
+    `frozenset` iteration order is not a thing to build a log line on.
+    """
+    description = payload.get("description")
+    if not isinstance(description, str):
+        return UNKNOWN_DESCRIPTION
+    matches = sorted(known for known in _SAFE_DESCRIPTIONS if known in description)
+    return matches[0] if matches else UNKNOWN_DESCRIPTION
+
+
 def _retry_after_seconds(payload: dict[str, Any]) -> float:
     """`parameters.retry_after`, or the documented fallback — never a KeyError."""
     parameters = payload.get("parameters")
@@ -94,8 +163,11 @@ def _retry_after_seconds(payload: dict[str, Any]) -> float:
 def _raise_api_failure(method: str, status: int, payload: dict[str, Any]) -> NoReturn:
     """Raise the right token-free error for a failed call: method + status only.
 
-    The envelope's `description` is deliberately dropped — it is server-controlled text
-    that would end up in our logs, and the rule here is method + status only.
+    The envelope's `description` still never reaches the MESSAGE — it is server-controlled
+    text — but it is matched against `_SAFE_DESCRIPTIONS` and the matched constant rides
+    along as an attribute. Diagnosing the 2026-08-02 `REACTION_INVALID` incident from
+    `error=TelegramAPIError` alone took a manual call to the live API; that is the cost of
+    dropping it entirely, and an allowlist buys the diagnosis without a passthrough.
 
     `from None` on every raise even though there is no active exception here today: it
     holds the no-chaining invariant if a future caller ever raises this from inside an
@@ -105,13 +177,16 @@ def _raise_api_failure(method: str, status: int, payload: dict[str, Any]) -> NoR
     if isinstance(code, bool) or not isinstance(code, int):
         code = status
     message = f"Telegram {method} failed: HTTP {status} (error_code={code})"
+    described = _matched_description(payload)
     if code == 429 or status == 429:
-        raise TelegramRetryAfter(message, _retry_after_seconds(payload)) from None
+        raise TelegramRetryAfter(
+            message, _retry_after_seconds(payload), description=described
+        ) from None
     if code == 409 or status == 409:
-        raise TelegramConflict(message) from None
+        raise TelegramConflict(message, description=described) from None
     if code == 401 or status == 401:
-        raise TelegramUnauthorized(message) from None
-    raise TelegramAPIError(message) from None
+        raise TelegramUnauthorized(message, description=described) from None
+    raise TelegramAPIError(message, description=described) from None
 
 
 def _expect_result(method: str, result: Any, kind: type) -> Any:
@@ -173,9 +248,18 @@ async def set_message_reaction(
     token: str,
     chat_id: int,
     message_id: int,
-    emoji: str = "✅",
+    emoji: str = "👍",
 ) -> None:
     """React to one message.
+
+    THE EMOJI IS NOT FREE TEXT. Telegram permits only a fixed, server-defined set of
+    reaction emoji and answers anything else with `Bad Request: REACTION_INVALID`. This
+    shipped as ✅ (U+2705), which is NOT in that set, so between deploy and 2026-08-02
+    every acknowledgement this bot sent failed while ingestion looked perfect — and the
+    reaction is the bot's entire user-facing surface. 👍 was measured `ok=True` against the
+    live API and reads as "accepted" rather than celebratory. Verify any replacement
+    against the live API BEFORE changing this; `test_api.py` pins it against the measured
+    set so an unverified edit fails CI.
 
     Raises on failure. Reactions are best-effort, but that is the *caller's* call to make:
     swallowing the failure here would hide a revoked bot behind a silent no-op.

@@ -92,7 +92,7 @@ Guardrail #12 forbids *silent* drops; this is the opposite of silent.
 silent paths *before* job creation, and judged the decision itself defensible but the implementation
 overstated. Three things make it real, all specified in T4: every caught per-URL failure logs at
 ERROR; an Instagram-looking URL that `normalize_reel_url` rejects logs at ERROR instead of vanishing
-into the filter's `ValueError` swallow; and the ✅ reaction is emitted **once per message, only when
+into the filter's `ValueError` swallow; and the 👍 reaction is emitted **once per message, only when
 the message is wholly clean** — no rejected shapes, no truncation, and every URL durable — so its
 absence is the human-visible signal. Paired with the pinned-message contract in T4, "the human
 re-shares" becomes a real recovery path rather than a hope.
@@ -180,7 +180,7 @@ form, not every form. `/share/reel/…` demonstrably exists in the wild — `fro
 `parse-inspiration.ts:32` carries a `(?:share\/)?` branch plus `m.` and `p|tv`, and nobody writes
 that speculatively. A human can still paste a link they obtained some other way. That case needs no
 speculative machinery here because **T4 already logs `telegram_reel_unsupported_url` at ERROR with
-the sanitized path shape and withholds the ✅** — the blind spot is instrumented rather than guessed
+the sanitized path shape and withholds the 👍** — the blind spot is instrumented rather than guessed
 at. If `/share/` shapes actually show up in the logs, add the resolver then, against evidence.
 
 **Prior art for T2, previously unrecorded in this plan:** `parse-inspiration.ts:32-39` is the closest
@@ -242,7 +242,7 @@ class FilterResult:
                                        # NEVER the URL, the code, or any surrounding text.
     truncated: bool                    # [R6/m2] True when the 10-URL cap discarded valid reels.
                                        # Without this, an 11-reel message ingests 10 and still
-                                       # gets a ✅ claiming every reel was accepted.
+                                       # gets a 👍 claiming every reel was accepted.
 
 def extract_reel_urls(message: dict) -> FilterResult:
     """Normalized IG reel URLs from one Telegram message, plus the shapes we had to reject.
@@ -323,28 +323,39 @@ skipped. Negative ids (supergroups) parse. `ASTRAIL_INGEST_USER_ID` must parse a
      while active (F1).
    - `queue.put_nowait(job_id)` — `QueueFull` → log WARN and move on; the web reaper picks it up.
    - **Any caught exception → `telegram_reel_dropped` at ERROR**, and this URL is not durable.
-5. **React ONCE per message, and only when the message is wholly clean.** ✅ requires **all three**:
+5. **React ONCE per message, and only when the message is wholly clean.** 👍 requires **all three**:
    `rejected_shapes` empty, **`truncated` False** (**[R6/m2]** — otherwise an 11-reel message
    ingests 10 and still claims all were accepted; a truncation also logs ERROR), and every URL in
    `urls` durable. Rev 4 reacted per URL (so a partial
-   failure still looked accepted); **[R5/M2]** rev 5 still ticked a message that mixed a valid
+   failure still looked accepted); **[R5/M2]** rev 5 still acknowledged a message that mixed a valid
    `/reel/ABC` with an unsupported `/share/reel/XYZ`, because the reaction condition only considered
-   valid URLs. Both are wrong against the pinned promise. Absence of a tick is the signal.
+   valid URLs. Both are wrong against the pinned promise. Absence of the reaction is the signal.
    `set_message_reaction(...)` is best-effort; **[R5/m1] log a reaction failure at WARN** so a
-   missing ✅ is diagnosable — a swallowed reaction error is indistinguishable from a real rejection,
+   missing 👍 is diagnosable — a swallowed reaction error is indistinguishable from a real rejection,
    and a needless re-share creates a duplicate job (harmless: `create_organize_job`'s idempotency
    branch covers only `initializing`/`pending`/`processing`, so a *completed* job is not returned —
    but the re-run is a cache hit with zero Apify/OpenAI charge).
 
-**The human contract, stated in the group's pinned message:** *"✅ means every reel in that message
-was accepted. No ✅ means re-share it or ping the operator."* Without this convention "the human
+**The human contract, stated in the group's pinned message:** *"👍 means every reel in that message
+was accepted. No 👍 means re-share it or ping the operator."* Without this convention "the human
 re-shares" (§3.1) is wishful thinking rather than a recovery path.
+
+**[IMPL 2026-08-02] THE REACTION EMOJI IS 👍, NOT ✅ — and everything above says 👍 for that reason.**
+Shipped as ✅ and it was broken on arrival: Telegram permits only a fixed, server-defined set of
+reaction emoji and ✅ (U+2705) is not in it, so every acknowledgement failed
+`Bad Request: REACTION_INVALID` while ingestion worked perfectly. Measured against the live API on
+the real group, 2026-08-02: `✅ ok=False` · `👍 ok=True` · `🎉 ok=True` · `👌 ok=True`. 👍 was chosen
+over the others because it reads as "accepted" rather than celebratory. Reaction emoji are the
+**only** server-defined enum in this feature whose members we cannot enumerate offline, so
+`test_api.py` pins the default against the measured set and an unverified change fails CI. **The
+review rows in §8 predate this and were written with ✅; they read 👍 so nobody follows a stale
+glyph out of a table.**
 
 **[R4/m2] No special-casing of `ActiveOrganizeConflict`.** Rev 4 caught AS409 and treated it as
 accepted. For single-item jobs it is unreachable (F1) — but *if* it ever fires from key drift or
 another caller, the claim "the reaper guarantees it runs" is false: the SQL counts `initializing` as
 active (`20260720130000:73`) while `recover_organize_jobs` lists only `pending`
-(`organizer.py:374`). So an unexpected AS409 takes the normal per-URL ERROR path and gets **no ✅**.
+(`organizer.py:374`). So an unexpected AS409 takes the normal per-URL ERROR path and gets **no 👍**.
 
 **No `send_message` anywhere**, so there is nothing to throttle and no `throttle.py`.
 
@@ -352,13 +363,13 @@ active (`20260720130000:73`) while `recover_organize_jobs` lists only `pending`
 saved_reel_id is ever passed to `create_organize_job` (that would resurrect AS409 — see F1); a
 `QueueFull` is treated as a failure; one URL's exception aborts the next; **a caught per-URL failure
 produces no ERROR log** (the silent path round 4 found); **an unsupported Instagram URL is dropped
-without an ERROR**; **a message with one failing URL still gets ✅**; a reaction failure aborts
+without an ERROR**; **a message with one failing URL still gets 👍**; a reaction failure aborts
 ingestion.
 
 **[R5/M2] The mixed-message RED test, named explicitly because two rounds missed this case:** a
 single message containing `https://www.instagram.com/reel/ABC` **and**
 `https://www.instagram.com/share/reel/XYZ`. Assert the valid reel becomes durable, an ERROR names
-the `/share/reel/…` shape, and **no ✅ is sent**. RED if the reaction condition looks only at
+the `/share/reel/…` shape, and **no 👍 is sent**. RED if the reaction condition looks only at
 `urls`, or if `rejected_shapes` is only consulted when `urls` is empty.
 
 ### T5 — `poller.py`
@@ -534,18 +545,25 @@ PHASE 1 — ZERO MIGRATIONS
      [IMPL] PIN THE HUMAN CONTRACT IN THE GROUP. Not optional, and not a nicety:
      §3.1 accepts LOSS on the argument that "a human re-shares", and the ONLY
      thing that turns that from a hope into a recovery path is group members
-     knowing that a missing tick means re-share. Nobody knows that by default —
-     an unreacted message looks exactly like a bot that is a little slow. Until
+     knowing that a missing reaction means re-share. Nobody knows that by default
+     — an unreacted message looks exactly like a bot that is a little slow. Until
      this is pinned, the loud-drop design has no host surface and the feature is
      lossy in practice however loud the logs are. Post this in the group and pin
      it (verbatim; the second line is the load-bearing one):
 
        Astrail reel bot 🤖
        Paste Instagram reel links here and I'll add them to our trip research.
-       ✅ on your message = every reel in it was accepted.
-       No ✅ = something was rejected. Re-share the link, or ping the operator.
-       One message can hold several links. If only some were bad, you get no ✅
+       👍 on your message = every reel in it was accepted.
+       No 👍 = something was rejected. Re-share the link, or ping the operator.
+       One message can hold several links. If only some were bad, you get no 👍
        — re-share the whole message.
+
+     [IMPL 2026-08-02] IF THE GROUP IS ALREADY PINNED WITH THE ✅ WORDING, RE-PIN IT.
+     The bot sent ✅ for its first days and Telegram rejected every one (see T4).
+     A pinned note promising ✅ while the bot sends 👍 is worse than no note: the
+     members it was written for will read "no tick" as "rejected" on messages that
+     were in fact accepted, and re-share reels that are already durable. This is a
+     LIVE-GROUP action, not a code change, and merging the fix does not perform it.
 
   3. Merge the code PR.
   4. [R6/B2] CREATE THE WORKER WITH ITS SECRETS ALREADY PRESENT.
@@ -661,11 +679,43 @@ settle**. They lived in the SDD ledger, which `.gitignore:51` excludes, so they 
 with the workspace — the single strongest finding of the final review. They are here now because
 this file is the one that survives. Run them in order; none costs more than a minute.
 
+> **[IMPL 2026-08-02] THIS CHECKLIST WAS NOT RUN, AND THAT IS HOW THE ✅ BUG REACHED PRODUCTION.**
+> Item 2 — "one reel round-trips end to end and earns a 👍… nothing else proves it fires" — would
+> have caught `REACTION_INVALID` in one glance at the group, on day one. The check existed, was
+> written down, and was skipped. **Treat items 1 and 3–7 as OUTSTANDING until someone reports
+> running them**, because nothing distinguishes them from item 2.
+>
+> **The absence pass that found the class, not just the instance.** Every value in this feature that
+> Telegram's servers define but our code hardcodes was verified against our own mocks only. There
+> are four, and they are not equally exposed:
+>
+> | Hardcoded copy of a Telegram enum | Status |
+> |---|---|
+> | Reaction emoji (`api.set_message_reaction`) | **Was wrong.** Fixed 2026-08-02, measured live, pinned in `test_api.py` |
+> | `chat.type` ∈ {`group`, `supergroup`} (`ingest._GROUP_CHAT_TYPES`) | **Proven by production** — a reel could not have been accepted from the live supergroup unless this matched |
+> | `allowed_updates=["message"]` (`api.get_updates`) | **Proven by production** — messages arrive |
+> | `getChatMember` status `"administrator"` (`worker._ADMIN_STATUS`) | **STILL UNVERIFIED.** The bot IS an admin (privacy mode would otherwise hide every plain-URL message and nothing would ingest), but that does not prove Telegram spells the status this way. If it does not, item 1 emits `telegram_bot_not_admin` on every boot — a false alarm on the one boot check that matters, which trains an operator to ignore it. Settled by reading the boot log once |
+>
+> Why the emoji was the one that broke: it is the only member of that list on a **write** path
+> whose failure is invisible to the thing being written. A wrong `chat.type` or `allowed_updates`
+> stops ingestion outright and announces itself; a wrong reaction emoji leaves ingestion perfect and
+> costs only the acknowledgement — which no log line and no unit test can see, and which happens to
+> be the entire user-facing surface.
+>
+> Also still shape-only, but self-limiting rather than dangerous: `parameters.retry_after` on a 429
+> (falls back to 5 s, `api._RETRY_AFTER_FALLBACK_S`), the `ok: false`-on-HTTP-200 branch, and three
+> of the four `api._SAFE_DESCRIPTIONS` entries (an unmatched one logs `unknown`, i.e. costs a
+> diagnosis and nothing else — see the comment there for why that asymmetry is safe).
+
 1. **No `telegram_bot_not_admin` in the boot log.** If it appears, the bot is not a group
    administrator and Telegram's privacy mode will hide every plain-URL message: the deployment is
    indistinguishable from one that never happened (risk #2). Promote the bot, restart.
-2. **One reel round-trips end to end and earns a ✅.** The T11 Phase 1 smoke above, in the real
-   group, by a real human. The tick is the whole human contract; nothing else proves it fires.
+2. **One reel round-trips end to end and earns a 👍.** The T11 Phase 1 smoke above, in the real
+   group, by a real human. The reaction is the whole human contract; nothing else proves it fires.
+   **[IMPL 2026-08-02] This item was skipped on the first deploy and the emoji was wrong for days
+   in production** — `REACTION_INVALID`, because Telegram permits only a fixed set and ✅ is not in
+   it. Run it by LOOKING AT THE GROUP, not at the logs: ingestion succeeds either way, so a green
+   `telegram_reel_accepted` proves nothing about the reaction.
 3. **★ `grep 'api.telegram.org/bot' <deploy logs>` → ZERO hits.** THE credential proof. A Render
    worker has no uvicorn, so `_configure_logging` must raise the root logger to INFO or the
    heartbeat disappears — but httpx logs `HTTP Request: POST <url>` at INFO and the **bot token is
@@ -714,6 +764,13 @@ reel said the same thing twice. Do not grep for it.
 | Per job | `telegram_job_failed` (ERROR — `run_organize_job` RAISED) · `telegram_job_reported_failed` (ERROR — it returned `status="failed"`; two distinct diagnoses, do not fold them) |
 | Boot / shutdown | `telegram_bot_not_admin` (WARNING — risk #2) · `telegram_admin_check_failed` (WARNING) · `telegram_chat_rejected` · `telegram_update_failed` (ERROR) · `telegram_drain_deadline_exceeded` (WARNING) · `telegram_worker_poller_failed` · `telegram_worker_consumer_failed` |
 
+**[IMPL 2026-08-02] `telegram_reaction_failed` carries `detail=`** — an allowlisted Telegram error
+constant (`api._SAFE_DESCRIPTIONS`) or `unknown`. `detail=REACTION_INVALID` is the emoji being
+outside Telegram's permitted set; `detail=unknown` means the failure was real but its description
+was not one we recognise, which is the token-safe default and NOT an error in itself. This is the
+only field in the feature sourced from a Telegram response body, and it rides an allowlist for that
+reason — the raw `description` is never logged.
+
 **No PostHog** (declared in `pyproject.toml`, imported nowhere) and **no Langfuse** (no-op tracer).
 **No `ingest_report.py`** — three runbook SQL queries: `saved_reels` per day for the ingest user;
 `user_daily_usage.reel_analysis_count` (**`cold_reel_analyses`** — this counts cold reel analyses,
@@ -721,7 +778,7 @@ reel said the same thing twice. Do not grep for it.
 `place_extractor.py:286`); `organize_jobs` by status. Write the script the third time you run them
 by hand.
 
-The ✅ reaction is itself a liveness signal a human sees without opening a dashboard.
+The 👍 reaction is itself a liveness signal a human sees without opening a dashboard.
 
 ## 6. Relationship to PLAN B — sequencing only
 
@@ -749,7 +806,7 @@ land PLAN B's T1–T2 first. PLAN A's own diff requires nothing from PLAN B.
 
 | # | Risk | Mitigation |
 |---|---|---|
-| 1 | ~~Share-sheet URLs don't match `normalize_reel_url` → the bot silently accepts nothing~~ | **RETIRED 2026-08-02 — T0 measured it: 3/3 canonical `/reel/<code>/`, `?igsh=` dropped on `parsed.path`.** No resolver. A stray `/share/` shape logs ERROR and withholds ✅ (T4) rather than vanishing |
+| 1 | ~~Share-sheet URLs don't match `normalize_reel_url` → the bot silently accepts nothing~~ | **RETIRED 2026-08-02 — T0 measured it: 3/3 canonical `/reel/<code>/`, `?igsh=` dropped on `parsed.path`.** No resolver. A stray `/share/` shape logs ERROR and withholds 👍 (T4) rather than vanishing |
 | 2 | **Bot is not a group admin (or gets demoted)** — privacy mode hides every plain URL, no error, no log | T11 Phase 0 asserts `administrator`; boot logs it as WARNING; the heartbeat (immediate, then ~100 s — T10 step 5) distinguishes "polling fine, ingesting nothing" from "dead"; promotion is a numbered runbook step |
 | 3 | **Migration A's `create or replace` on a shared user-facing function** — the one live thing this plan changes | Signature unchanged so no `PGRST202`; `coalesce(…, 5)` preserves every existing user byte-for-byte; pgTAP proves the 5-then-null boundary; applied in Phase 2 **against already-running code**, fully isolated from the worker; privilege contract re-asserted. **[R4/m3]** The `alter table … add column` is **no rewrite but NOT lock-free** — a constant default avoids the rewrite, but `ALTER TABLE` still takes a brief `ACCESS EXCLUSIVE` lock on `users`. Set `lock_timeout = '3s'` and `statement_timeout` so it fails fast rather than queueing behind a long read |
 | 4 | Runaway paid spend | `daily_reel_analysis_limit` is charged **only on a `reel_cache` MISS**, so it bounds exactly the Apify + OpenAI calls. Warm reels are free and uncapped by design |
@@ -816,7 +873,7 @@ Watch it with the runbook query already listed under Observability (`organize_jo
 | 3 | 5.5/10 | Added `update_id` identity, a `waiting` state, a clock RPC, charge CHECKs. Codex: *"the added coordination machinery is now its largest deployment risk"* |
 | 4 | 6.4/10 | **Deleted** the marker table, both quota RPCs, batching, the linger, the dedupe set, AS409 handling, the `waiting` state, the recovery split, the clock RPC, the `reaping.py` refactor, `throttle.py`, `authz.py`, `quota.py`, `bootstrap_ingest_account.py`, `ingest_report.py`. Two-phase decoupled release. **F1/F2/F3 verified TRUE**; verdict upgraded to NEEDS REVISION |
 | 5 | 6.8/10 | Restored the load-bearing limit `UPDATE`; pinned `branch: dev`; loud-drop contract; dropped the AS409 special-case; lock wording. **No blockers remained** |
-| 6 | 6.0/10 | `FilterResult` replaces the contradictory bare-tuple/count signature; **any** rejected Instagram URL logs ERROR and suppresses ✅ **even when the message also has valid reels** (the mixed-message hole); Blueprint **Auto Sync** verified disabled before merge, and the false "web is byte-identical in the repo" claim withdrawn; reaction failure at WARN |
+| 6 | 6.0/10 | `FilterResult` replaces the contradictory bare-tuple/count signature; **any** rejected Instagram URL logs ERROR and suppresses 👍 **even when the message also has valid reels** (the mixed-message hole); Blueprint **Auto Sync** verified disabled before merge, and the false "web is byte-identical in the repo" claim withdrawn; reaction failure at WARN |
 | 7 | 6.5/10 | Non-optional resume in PLAN B; secrets-before-first-start gate; `truncated` flag; metadata sweep. **MAJOR: None.** Correctness 8.2 |
 | 8 | **8.5/10 PASS** | Both runbooks REWRITTEN as sequences, not patched: PLAN B resumes **before** deploying (you cannot deploy to a suspended service — 409) and pins the worker's live SHA; PLAN A drops the Blueprint-first-creation path entirely (an existing Blueprint ignores `sync: false`, so "create then suspend" can never be atomic); Phase-2 renumbered; metadata reconciled. **Deployment safety 2.5 → 8.6 in one round.** No blockers, no majors |
 | **9** | — | Folds round 8's three documentation-hygiene minors (explicitly non-blocking): PLAN B metadata corrected, its step 7 clarified as *run* not *update* pgTAP, and PLAN A's T10 step 5 gains the worker live-SHA assertion. **No design, sequencing, or scope change** — the 8.5 verdict was rendered on rev 8 and carries |
@@ -859,7 +916,7 @@ runbook.
 | B1 — PLAN B suspends `astrail-backend` and **never resumes it** (conf 10/10) | **FIXED** PLAN B §5.5 step 4 — an explicit, non-optional resume: `/health` **and** `/readiness` (the deep probe; `/health` never touches the DB), one real DB-backed write, then resume the worker and confirm its heartbeat. Introduced by the round-5 m2 fix |
 | B2 — the manual Blueprint path still creates the worker **before** its secrets exist (conf 9/10) | **FIXED** T10 Phase 1 step 4 — dashboard creation with all `sync: false` values entered up front (preferred), or sync-then-immediately-suspend-then-set-secrets; plus an explicit eight-variable gate before first start. Rev 6 named the hazard and then sequenced around it anyway |
 | m1 — stale "`ValueError` dropped … return a tuple" contradicting `FilterResult` (conf 10/10) | **FIXED** T2 — replaced with explicit construction of all three fields |
-| m2 — the 10-URL cap can still produce a false ✅ (conf 9/10) | **FIXED** T2/T4 — `FilterResult.truncated`; ✅ now requires all three of no rejected shapes, no truncation, all URLs durable |
+| m2 — the 10-URL cap can still produce a false 👍 (conf 9/10) | **FIXED** T2/T4 — `FilterResult.truncated`; 👍 now requires all three of no rejected shapes, no truncation, all URLs durable |
 | m3 — stale revision/review metadata in both plans (conf 10/10) | **FIXED** — PLAN B header rewritten (was still "rev 5 / PLAN A rev 4 / round 4 pending"), its round-3 table's superseded 9+1 count corrected to 7+7, PLAN A's terminal verdict updated, and a duplicated step number in PLAN B's runbook repaired |
 
 ### Round-5 findings status
@@ -870,7 +927,7 @@ Round 5: **no blockers.** Two majors, two minors — all folded.
 |---|---|
 | M1 — Blueprint **Auto Sync** is a separate setting from `autoDeploy: false` and can sync on merge, before secrets exist | **FIXED** T10 Phase 1 step 0 — verify Auto Sync is disabled *before* merging, then manual sync with a preview gate and post-sync verification; fall back to creating the worker by hand |
 | M1b — the stale "no `render.yaml` line in [the web] block" claim | **FIXED** — withdrawn explicitly; T9 does add `branch: dev`, and the accurate claim is that the web *runtime* is unchanged |
-| M2 — the loud-drop contract still falsely acknowledges **mixed** messages, and T2's signature contradicted T4 | **FIXED** T2 returns `FilterResult{urls, rejected_shapes}`; T4 logs ERROR on **any** `rejected_shapes` regardless of valid URLs, and ✅ requires `rejected_shapes` empty **and** every URL durable; the mixed-message RED test is named explicitly |
+| M2 — the loud-drop contract still falsely acknowledges **mixed** messages, and T2's signature contradicted T4 | **FIXED** T2 returns `FilterResult{urls, rejected_shapes}`; T4 logs ERROR on **any** `rejected_shapes` regardless of valid URLs, and 👍 requires `rejected_shapes` empty **and** every URL durable; the mixed-message RED test is named explicitly |
 | m1 — a swallowed reaction failure is indistinguishable from a rejection | **FIXED** T4 — WARN on reaction failure; the duplicate-job consequence quantified as a zero-charge cache hit |
 | m2 — PLAN B's preflight checks emptiness without quiescing, and misses the worker | **FIXED** PLAN B §5.5 step 0 — suspend `astrail-backend` **and** `astrail-telegram-ingest` if PLAN A has shipped, *then* confirm empty |
 
@@ -880,8 +937,8 @@ Round 5: **no blockers.** Two majors, two minors — all folded.
 |---|---|
 | B1 — the ingest account's limit is never raised (conf 10/10) | **FIXED** T10 Phase 2 step 7 — explicit owner-verified `UPDATE … returning`, assert exactly one row. Deleting `bootstrap_ingest_account.py` had removed the only place this appeared |
 | B2 — Blueprint sync can retarget/redeploy `astrail-backend`; Phase 1 was not web-byte-identical (conf 10/10) | **FIXED** T9 — `branch: dev` pinned on the web block (a no-op against the running service), Blueprint preview must show the worker as the only change, post-sync verification required |
-| M1 — "not silent" not implemented end-to-end (conf 9/10) | **FIXED** §3.1 + T4 — per-URL ERROR on every caught failure; unsupported-Instagram-URL ERROR instead of a silent `ValueError` swallow; **one ✅ per message, only when every URL became durable**; pinned-message human contract; four new RED conditions |
-| m2 — "AS409 means accepted" not universally correct (conf 9/10) | **FIXED** T4 — special catch removed; an unexpected AS409 takes the normal per-URL ERROR path and gets no ✅ |
+| M1 — "not silent" not implemented end-to-end (conf 9/10) | **FIXED** §3.1 + T4 — per-URL ERROR on every caught failure; unsupported-Instagram-URL ERROR instead of a silent `ValueError` swallow; **one 👍 per message, only when every URL became durable**; pinned-message human contract; four new RED conditions |
+| m2 — "AS409 means accepted" not universally correct (conf 9/10) | **FIXED** T4 — special catch removed; an unexpected AS409 takes the normal per-URL ERROR path and gets no 👍 |
 | m3 — Migration A is metadata-only but not lock-free (conf 9/10) | **FIXED** Risk 3 — "no rewrite, brief `ACCESS EXCLUSIVE`" + `lock_timeout = '3s'` |
 | M2, M3, m1 | PLAN B — fixed in its rev 5 |
 | F1 / F2 / F3 | **ALL VERIFIED TRUE by round 4.** No blocker derives from them |

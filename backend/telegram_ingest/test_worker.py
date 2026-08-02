@@ -722,7 +722,7 @@ async def test_a_job_that_returns_failed_without_raising_is_logged_at_error(
     `run_organize_job` catches its own post-claim exceptions, marks the row failed and
     RETURNS `{"status": "failed"}` (`organizer.py:744-749`) — it does not raise, so the
     `except` above never sees it. The job is terminal, `recover_organize_jobs` selects only
-    `pending` so nothing retries it, and the human already has their ✅. Without this line
+    `pending` so nothing retries it, and the human already has their 👍. Without this line
     the reel dies with no record anywhere: the silent drop guardrail #12 forbids.
 
     A DISTINCT event from `telegram_job_failed`, because the two mean different things to

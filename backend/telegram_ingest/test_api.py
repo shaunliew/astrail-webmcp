@@ -5,6 +5,7 @@ the bot token travels in the URL PATH, so a leak here is a live credential in a 
 """
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 import traceback
@@ -15,6 +16,7 @@ import pytest
 from telegram_ingest import api
 from telegram_ingest.api import (
     _RETRY_AFTER_FALLBACK_S,
+    UNKNOWN_DESCRIPTION,
     TelegramAPIError,
     TelegramConflict,
     TelegramRetryAfter,
@@ -26,6 +28,29 @@ from telegram_ingest.api import (
 )
 
 TOKEN = "SECRET123"
+
+# Telegram permits only a FIXED set of reaction emoji. It is defined by Telegram's servers,
+# is not fetchable from the Bot API, and rejects everything outside it with
+# `Bad Request: REACTION_INVALID` — so this is a hardcoded copy and there is deliberately no
+# runtime lookup.
+#
+# It is a copy of what was MEASURED against the live API on 2026-08-02 (real bot, real
+# group), NOT a transcription of Telegram's whole set. Writing out ~80 emoji from memory
+# would be the same unverified guess that shipped this bug. Consequence: a permitted emoji
+# that nobody has measured yet fails this pin, and the fix is to measure it, not to widen
+# the set on faith.
+#
+# TO RE-VERIFY OR EXTEND: call `setMessageReaction` on a real message with the candidate —
+# `ok: true` means permitted, `Bad Request: REACTION_INVALID` means rejected. Move the emoji
+# into the matching set below and date the line.
+_VERIFIED_PERMITTED_REACTIONS = frozenset({
+    "👍",   # ok=True, 2026-08-02
+    "🎉",   # ok=True, 2026-08-02
+    "👌",   # ok=True, 2026-08-02
+})
+_MEASURED_REJECTED_REACTIONS = frozenset({
+    "✅",   # ok=False REACTION_INVALID, 2026-08-02 — what the worker shipped with
+})
 
 
 def _client(handler) -> httpx.AsyncClient:
@@ -233,8 +258,10 @@ async def test_set_message_reaction_sends_the_emoji_reaction_shape():
 
     assert result is None
     assert seen["url"] == f"https://api.telegram.org/bot{TOKEN}/setMessageReaction"
+    # The literal, on purpose: reading the value back out of the signature would make this
+    # assert only that the function sends whatever its own default happens to be.
     assert seen["body"] == {"chat_id": -1001, "message_id": 77,
-                            "reaction": [{"type": "emoji", "emoji": "✅"}]}
+                            "reaction": [{"type": "emoji", "emoji": "👍"}]}
 
 
 async def test_set_message_reaction_raises_rather_than_swallowing():
@@ -243,6 +270,144 @@ async def test_set_message_reaction_raises_rather_than_swallowing():
 
     with pytest.raises(TelegramAPIError):
         await set_message_reaction(client=client, token=TOKEN, chat_id=-1001, message_id=77)
+
+
+# --- the reaction emoji is a Telegram-defined enum, and we shipped a value not in it ---
+
+
+def test_the_default_reaction_emoji_is_one_telegram_actually_permits():
+    """The whole incident, pinned. Shipped default was ✅, which Telegram rejects with
+    `REACTION_INVALID`, so every acknowledgement the bot sent failed while ingestion looked
+    perfect — and the reaction is this bot's ENTIRE user-facing surface.
+
+    A unit test cannot ask Telegram, so it asserts against the measured copy above. RED on
+    any edit to the default that has not been verified against the live API first, which is
+    the only thing that would have caught this before deploy.
+    """
+    default = inspect.signature(set_message_reaction).parameters["emoji"].default
+
+    assert default in _VERIFIED_PERMITTED_REACTIONS
+    assert default not in _MEASURED_REJECTED_REACTIONS
+
+
+def test_the_tick_that_shipped_is_pinned_as_rejected_so_reverting_to_it_fails():
+    """Proves the pin above bites rather than passing vacuously.
+
+    "Let's use ✅, it reads clearer" is the exact edit that must fail CI instead of shipping,
+    and it only fails if the two sets are real and disjoint.
+    """
+    assert "✅" in _MEASURED_REJECTED_REACTIONS
+    assert not (_VERIFIED_PERMITTED_REACTIONS & _MEASURED_REJECTED_REACTIONS)
+    assert _VERIFIED_PERMITTED_REACTIONS
+
+
+# --- the error description: allowlisted, never raw ---------------------------------
+
+
+async def test_a_known_error_description_is_carried_as_the_matched_constant():
+    """Diagnosability. `error=TelegramAPIError` alone cost a manual live API call to work
+    out that the emoji was the problem; `detail=REACTION_INVALID` would have said it."""
+    client = _client(_responder(httpx.Response(
+        400, json={"ok": False, "error_code": 400,
+                   "description": "Bad Request: REACTION_INVALID"})))
+
+    with pytest.raises(TelegramAPIError) as excinfo:
+        await set_message_reaction(client=client, token=TOKEN, chat_id=-1001, message_id=77)
+
+    assert excinfo.value.description == "REACTION_INVALID"
+    # The exception MESSAGE is still method + status only; the description rides beside it.
+    assert "REACTION_INVALID" not in str(excinfo.value)
+    assert TOKEN not in _formatted(excinfo.value)
+
+
+async def test_an_unmatched_description_is_replaced_by_unknown_and_never_carried():
+    """The leak guard, fault-injected with the worst payload the field could hold.
+
+    `description` is server text. Today it holds no URL — that is why carrying it at all is
+    defensible — but the module's rule is that nothing leaves here unless we recognise it.
+    An allowlist MISS must be indistinguishable from having no description.
+    """
+    leaky = f"Bad Request: https://api.telegram.org/bot{TOKEN}/setMessageReaction failed"
+    client = _client(_responder(httpx.Response(
+        400, json={"ok": False, "error_code": 400, "description": leaky})))
+
+    with pytest.raises(TelegramAPIError) as excinfo:
+        await set_message_reaction(client=client, token=TOKEN, chat_id=-1001, message_id=77)
+
+    assert excinfo.value.description == UNKNOWN_DESCRIPTION
+    assert TOKEN not in excinfo.value.description
+    assert TOKEN not in str(excinfo.value)
+    assert TOKEN not in _formatted(excinfo.value)
+
+
+@pytest.mark.parametrize("description", [
+    None, 42, True, ["REACTION_INVALID"], {"d": "REACTION_INVALID"},
+])
+async def test_a_non_string_description_is_unknown_rather_than_a_crash(description):
+    """Boundary validation: `description` is whatever the wire sent, not whatever the docs
+    promise. A `TypeError` from `in` here would replace a handled error with a crash."""
+    client = _client(_responder(httpx.Response(
+        400, json={"ok": False, "error_code": 400, "description": description})))
+
+    with pytest.raises(TelegramAPIError) as excinfo:
+        await get_me(client=client, token=TOKEN)
+
+    assert excinfo.value.description == UNKNOWN_DESCRIPTION
+
+
+async def test_a_transport_failure_carries_no_description():
+    """There is no Bot API envelope at all when the socket fails, so `unknown` is honest."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom", request=request)
+
+    with pytest.raises(TelegramAPIError) as excinfo:
+        await get_updates(client=_client(handler), token=TOKEN)
+
+    assert excinfo.value.description == UNKNOWN_DESCRIPTION
+
+
+async def test_the_discriminated_subclasses_forward_the_description_too():
+    """RED if `TelegramRetryAfter.__init__` drops the keyword on its way to the base: a 429
+    is exactly where a caller wants both the backoff and the reason."""
+    client = _client(_responder(httpx.Response(
+        429, json={"ok": False, "error_code": 429, "parameters": {"retry_after": 3},
+                   "description": "Too Many Requests: CHAT_WRITE_FORBIDDEN"})))
+
+    with pytest.raises(TelegramRetryAfter) as excinfo:
+        await set_message_reaction(client=client, token=TOKEN, chat_id=-1001, message_id=77)
+
+    assert excinfo.value.retry_after == 3
+    assert excinfo.value.description == "CHAT_WRITE_FORBIDDEN"
+
+
+def test_the_constructor_clamps_a_description_the_allowlist_does_not_contain():
+    """The invariant is structural, not a property of one call site.
+
+    `_raise_api_failure` is the only thing that builds these today. A `raise
+    TelegramAPIError(msg, description=payload["description"])` written next year by someone
+    who never read `_matched_description` must still be safe, so the clamp lives in the
+    constructor rather than in the mapper.
+    """
+    direct = TelegramAPIError("boom", description=f"Bad Request: {TOKEN}")
+    subclass = TelegramRetryAfter("boom", 5.0, description=f"raw {TOKEN} text")
+
+    assert direct.description == UNKNOWN_DESCRIPTION
+    assert subclass.description == UNKNOWN_DESCRIPTION
+    assert TelegramAPIError("boom").description == UNKNOWN_DESCRIPTION
+
+
+def test_every_allowlisted_description_is_a_bare_constant_not_server_prose():
+    """Entries must be the uppercase MTProto constant Telegram embeds, nothing more.
+
+    An entry like `Bad Request: chat not found` would turn the allowlist into a prose
+    matcher whose output an operator cannot audit, and would put server-written English
+    into a log line by the back door.
+    """
+    assert api._SAFE_DESCRIPTIONS
+    for known in api._SAFE_DESCRIPTIONS:
+        assert known.isascii() and known.isupper()
+        assert known.replace("_", "").isalnum()
+    assert UNKNOWN_DESCRIPTION not in api._SAFE_DESCRIPTIONS
 
 
 async def test_get_me_returns_the_result_dict():

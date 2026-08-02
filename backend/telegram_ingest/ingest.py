@@ -5,13 +5,20 @@ here: a queue, a retry policy, a dedupe set, a state machine, a quota ledger, a 
 or any `send_message`. Every one of those is already provided by the system this module
 calls into, and the plan spent four review rounds deleting the duplicates.
 
-THE PINNED PROMISE, which is the whole design: *"✅ means every reel in that message was
-accepted. No ✅ means re-share it or ping the operator."* One reaction per MESSAGE, and
+THE PINNED PROMISE, which is the whole design: *"👍 means every reel in that message was
+accepted. No 👍 means re-share it or ping the operator."* One reaction per MESSAGE, and
 only when the message is wholly clean — no rejected shape, no truncation, and every URL
 durable. Reacting per URL (so a partial failure still looks accepted) and reacting on a
 message that mixed a valid `/reel/` with an unsupported `/share/reel/` were both shipped
-and both rejected in review. Absence of a tick is the signal, so the tick must be rare
-and honest rather than encouraging.
+and both rejected in review. Absence of the reaction is the signal, so the reaction must
+be rare and honest rather than encouraging.
+
+THE EMOJI IS 👍, NOT ✅, and that is not a style choice: Telegram permits only a fixed
+server-defined set of reaction emoji and ✅ (U+2705) is not in it. This shipped as ✅ and
+every acknowledgement failed with `REACTION_INVALID` until 2026-08-02 while ingestion
+worked perfectly — the reaction is this bot's only user-facing surface, so the whole human
+contract was broken and the logs said `error=TelegramAPIError`. `api.set_message_reaction`
+owns the value and `test_api.py` pins it against the measured set.
 
 NOT SILENT is the bar, not NEVER LOST (plan §3.1). ~100 reels/day, no user-facing surface,
 and every containment path here logs at ERROR: a dropped reel is dropped *loudly* and a
@@ -54,7 +61,11 @@ import httpx
 
 from organizer import create_organize_job
 from saved_reels import capture_saved_reel
-from telegram_ingest.api import set_message_reaction
+from telegram_ingest.api import (
+    UNKNOWN_DESCRIPTION,
+    TelegramAPIError,
+    set_message_reaction,
+)
 from telegram_ingest.config import TelegramConfig
 from telegram_ingest.reel_filter import extract_reel_urls
 
@@ -110,7 +121,7 @@ def _enqueue(job_id: str, queue: asyncio.Queue) -> None:
 
     The job row already exists and is leased; `main._reap_loop` (120 s, global) picks up
     anything the in-process queue never carried. Treating `QueueFull` as a drop would cost
-    the ✅ and make a human re-share a reel that was already durable.
+    the 👍 and make a human re-share a reel that was already durable.
     """
     try:
         queue.put_nowait(job_id)
@@ -124,7 +135,7 @@ async def _ingest_url(
     """Make one URL durable. Returns True when it is; never raises (guardrail #3).
 
     The exception is contained HERE, per URL, rather than around the loop: one bad reel
-    must not touch the next. It costs the message its ✅ and nothing else.
+    must not touch the next. It costs the message its 👍 and nothing else.
 
     `create_organize_job` gets a list of exactly ONE id, always. A batch resurrects the
     AS409 class the plan deleted — two reels shared in one message would each be
@@ -132,7 +143,7 @@ async def _ingest_url(
     the SQL counts `initializing` as active (`20260720130000:73`) while
     `recover_organize_jobs` lists only `pending` (`organizer.py:374`), so the claim that
     the reaper guarantees it runs is false. Hence no special case for it either: an
-    unexpected AS409 takes the ordinary ERROR path and costs the tick.
+    unexpected AS409 takes the ordinary ERROR path and costs the reaction.
     """
     try:
         row = await capture_saved_reel(db, config.ingest_user_id, url)
@@ -157,12 +168,14 @@ async def _ingest_url(
 async def _react(
     message: dict, *, config: TelegramConfig, http: httpx.AsyncClient, chat_id: int
 ) -> None:
-    """Tick the message. Best-effort, but a failure is LOGGED, never swallowed.
+    """Acknowledge the message. Best-effort, but a failure is LOGGED, never swallowed.
 
     A swallowed reaction error is indistinguishable from a real rejection: the operator
-    sees no ✅ and re-shares. That re-share is harmless — a single-item job re-run is a
-    cache hit with zero Apify/OpenAI charge — but an undiagnosable missing tick slowly
-    turns the pinned promise into folklore.
+    sees no 👍 and re-shares. That re-share is harmless — a single-item job re-run is a
+    cache hit with zero Apify/OpenAI charge — but an undiagnosable missing acknowledgement
+    slowly turns the pinned promise into folklore. It did: `error=TelegramAPIError` was the
+    entire line on 2026-08-02 and diagnosing it took a manual call to the live API, which
+    is why `detail` exists.
     """
     message_id = message.get("message_id")
     try:
@@ -170,9 +183,17 @@ async def _react(
             client=http, token=config.bot_token, chat_id=chat_id, message_id=message_id
         )
     except Exception as exc:  # noqa: BLE001 — a reaction must never abort ingestion
+        # `isinstance`, NOT `getattr(exc, "description", …)`. Only `api` builds a
+        # description through its allowlist; `.description` is a common attribute name on
+        # other libraries' exceptions and any of those would be raw, unvetted text going
+        # straight into a log line. The type name rule is unchanged and still applies to
+        # everything else about `exc`.
+        detail = (
+            exc.description if isinstance(exc, TelegramAPIError) else UNKNOWN_DESCRIPTION
+        )
         logger.warning(
-            "telegram_reaction_failed chat_id=%d message_id=%s error=%s",
-            chat_id, message_id, type(exc).__name__,
+            "telegram_reaction_failed chat_id=%d message_id=%s error=%s detail=%s",
+            chat_id, message_id, type(exc).__name__, detail,
         )
 
 
@@ -255,7 +276,7 @@ async def handle_update(
             all_durable = False
 
     # The conditions of the pinned promise, plus a non-empty `urls` so a message that
-    # contained no reel at all is never ticked. Both `not result.overflowed` and the
+    # contained no reel at all is never acknowledged. Both `not result.overflowed` and the
     # `result.urls` clause are belt-and-braces — an overflow always empties `urls` — but
     # they state the rule here instead of depending on a return three branches away.
     if (result.urls and all_durable and not result.rejected_shapes

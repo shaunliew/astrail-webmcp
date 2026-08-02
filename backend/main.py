@@ -19,6 +19,7 @@ import contextlib
 import logging
 import os
 from contextlib import asynccontextmanager
+from uuid import UUID
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,9 +33,14 @@ from api.schemas import (
     CaptureSavedReelResponse,
     GenerateTripRequest,
     GenerateTripResponse,
+    MemoryFact,
     OrganizeJobStatus,
     OrganizeSavedReelsRequest,
     OrganizeSavedReelsResponse,
+    SettingsPreferencesResponse,
+    TripFeedback,
+    TripFeedbackRequest,
+    TripFeedbackResponse,
 )
 from api.streaming import stream_organize_events, stream_trip_events
 from auth import get_current_user_id, get_user_id_from_query_or_header
@@ -150,13 +156,19 @@ async def lifespan(app: FastAPI):
             _spawn(_redispatch(client, job))
         for job in await recover_organize_jobs(client):
             _spawn(_redispatch_organize(client, job))
-        try:
-            from mem0_client import get_mem0_client
-            await get_mem0_client()   # warm once so the first trip skips the blocking ping
-        except Exception:
-            pass   # memory is best-effort; a warm failure must never down the app
     except Exception:
         pass   # boot-time DB blip must not down the app; the reaper re-picks pending jobs
+    # OUTSIDE the Supabase try, deliberately. This warm used to live INSIDE it, so any
+    # boot-time DB blip (get_supabase_client or either sweep raising) jumped straight to the
+    # except and skipped the warm entirely — leaving /readiness reporting `not_initialized`
+    # with a perfectly good key until the first trip lazily built the client, which is
+    # misleading in precisely the way the mem0 readiness field exists to prevent. Kept AFTER
+    # the sweeps so the 8s construction timeout never delays guardrail #12 job recovery.
+    try:
+        from mem0_client import get_mem0_client
+        await get_mem0_client()   # warm once so the first trip skips the blocking ping
+    except Exception:
+        pass   # memory is best-effort; a warm failure must never down the app
     try:
         yield
     finally:
@@ -200,6 +212,10 @@ class _CaptureSavedReelRequest(CaptureSavedReelRequest):
     model_config = ConfigDict(extra="forbid")
 
 
+class _TripFeedbackRequest(TripFeedbackRequest):
+    model_config = ConfigDict(extra="forbid")
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
@@ -207,14 +223,51 @@ async def health():
 
 @app.get("/readiness")
 async def readiness():
-    """Deep readiness probe: confirms Supabase is reachable. NOT the deploy gate
-    (that is /health) — a DB blip should not fail a rolling deploy."""
+    """Deep readiness probe: confirms Supabase is reachable, and reports mem0's
+    CONFIGURATION state. NOT the deploy gate (that is /health) — neither a DB blip nor a
+    mem0 outage should fail a rolling deploy.
+
+    Uses mem0_status(), which observes the singleton without constructing it: calling
+    get_mem0_client() here would retry an 8s blocking constructor on every poll during a
+    mem0 outage. mem0 is reported, never required — MEM0_API_KEY deliberately stays OUT of
+    REQUIRED_SECRETS (guardrail #3). Before this field existed, an unset or mistyped key
+    left the service fully green while memory silently did nothing, which is how the
+    2026-08-02 'mem0 is not working' report became undiagnosable from the outside.
+    """
+    from mem0_client import mem0_status
+
+    mem0_state = mem0_status()
     try:
         client = await get_supabase_client()
         await client.table("users").select("id").limit(1).execute()
-        return {"ready": True}
+        return {"ready": True, "mem0": mem0_state}
     except Exception:
-        return JSONResponse(status_code=503, content={"ready": False})
+        return JSONResponse(status_code=503, content={"ready": False, "mem0": mem0_state})
+
+
+@app.get("/settings/preferences", response_model=SettingsPreferencesResponse)
+@limiter.limit(BURST_LIMIT)
+async def get_settings_preferences(
+    request: Request,                                     # required by slowapi; must be named `request`
+    response: Response,                                   # REQUIRED with headers_enabled=True
+    user_id: str = Depends(get_current_user_id_stashed),  # token-derived: guardrails #5 + #6
+) -> SettingsPreferencesResponse:
+    """PRD §18. The user's STORED mem0 memories, read live. Degrades rather than erroring
+    (guardrail #3): `status` carries the bad news so an unrelated settings screen still
+    renders. Not identical to a generation's recall — see list_memory_facts."""
+    from mem0_client import get_mem0_client, mem0_status
+    from pipeline.preferences import list_memory_facts
+
+    status, facts = await list_memory_facts(await get_mem0_client(), user_id)
+    # A None client means EITHER "no key" OR "key set but construction failed", and
+    # list_memory_facts cannot tell them apart — it only sees None. Only the first is
+    # genuinely `disabled`. Reporting "memory is off by configuration" during a mem0
+    # OUTAGE is the precise misdiagnosis this arc exists to remove, and it would also
+    # contradict /readiness, which says `init_failed` for the same state.
+    if status == "disabled" and mem0_status() == "init_failed":
+        status = "unavailable"
+    return SettingsPreferencesResponse(
+        status=status, facts=[MemoryFact(**f) for f in facts])
 
 
 @app.post("/saved-reels", response_model=CaptureSavedReelResponse)
@@ -231,6 +284,75 @@ async def create_saved_reel(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail="A valid Instagram Reel URL is required") from exc
     return CaptureSavedReelResponse(saved_reel=saved_reel)
+
+
+@app.post("/trips/{trip_id}/feedback", response_model=TripFeedbackResponse, status_code=201)
+@limiter.limit(BURST_LIMIT)
+async def submit_trip_feedback(
+    request: Request,          # must be named `request` — slowapi's key_func resolves it by name
+    response: Response,        # required: the limiter is headers_enabled=True
+    trip_id: UUID,             # UUID (not str) so a malformed id is a 422, never a Postgres 500
+    req: _TripFeedbackRequest,
+    user_id: str = Depends(get_current_user_id_stashed),
+) -> TripFeedbackResponse:
+    """Trip-level feedback (PRD §18, PRD:86 beta adoption metric).
+
+    Append-only: a resubmission inserts another row rather than replacing. The table has
+    no unique constraint, and a user who rates 2 then 5 after re-reading the itinerary is
+    signal worth keeping; analytics take latest-per-user via feedback_user_id_created_at_idx.
+
+    Owner check is app-code, NOT RLS: this backend connects with service_role, which is
+    exempt from every RLS policy (persist.py:515). feedback_insert_own_trip is a backstop
+    for a future direct-from-frontend path only.
+    """
+    trip_key = str(trip_id)
+    client = await get_supabase_client()
+
+    owner = await client.table("trips").select("user_id").eq("id", trip_key).maybe_single().execute()
+    # `owner is None` is load-bearing, NOT defensive noise. postgrest 2.31.0's
+    # AsyncMaybeSingleRequestBuilder.execute() returns a bare None when zero rows match
+    # (request_builder.py:167: `if len(parsed.data) == 0: return None`) -- NOT an object whose
+    # .data is None. Dereferencing owner.data would AttributeError into a 500, which leaks an
+    # existence oracle: 500 = no such trip, 404 = exists but not yours. This matches the repo's
+    # majority convention (jobs.py:80, generate_trip's replay precheck below,
+    # organizer.py:184) -- the `stream` route was the one outlier, fixed in 124417b.
+    if owner is None or owner.data is None or owner.data["user_id"] != user_id:  # guardrail #6
+        raise HTTPException(status_code=404, detail="Trip not found")  # 404 not 403: do not confirm existence
+
+    inserted = await client.table("feedback").insert({
+        "trip_id": trip_key,
+        "user_id": user_id,               # from the token, never the body
+        "artifact_type": "trip",          # trip-level scope; artifact-level is a later, additive arc
+        "artifact_id": None,
+        "feedback_type": req.feedback_type,
+        "rating": req.rating,
+        "comment": req.comment,
+        # PRD:1035's source_type / generation_stage / preference_source stay NULL for
+        # trip-level feedback -- they describe how an ARTIFACT was generated.
+        "source_type": None,
+        "generation_stage": None,
+        "preference_source": None,
+    }).execute()
+
+    if not inserted.data:
+        raise HTTPException(status_code=500, detail="Failed to store feedback")
+
+    # Build the response from the PERSISTED row, not from the request (plan-eng-review A2).
+    # Echoing req.* would make the 201 body incapable of ever reporting a persistence bug:
+    # it would look correct even if the row were wrong. Every field read here is part of the
+    # insert payload above, so it is present in BOTH the real client and the _Table test fake
+    # (only created_at would diverge, which is why the response omits it).
+    row = inserted.data[0]
+    return TripFeedbackResponse(
+        feedback=TripFeedback(
+            id=str(row["id"]),
+            trip_id=str(row["trip_id"]),
+            artifact_type=row["artifact_type"],
+            feedback_type=row["feedback_type"],
+            rating=row["rating"],
+            comment=row["comment"],
+        )
+    )
 
 
 @app.post("/generate-trip", response_model=GenerateTripResponse)
@@ -423,7 +545,11 @@ async def stream(
 ) -> StreamingResponse:
     client = await get_supabase_client()
     owner = await client.table("trips").select("user_id").eq("id", trip_id).maybe_single().execute()
-    if owner.data is None or owner.data["user_id"] != user_id:  # guardrail #6 owner check
+    # `owner is None` is load-bearing: maybe_single() returns a bare None on zero rows
+    # (postgrest request_builder.py:167). Without it this 500s instead of 404ing, which tells
+    # a caller which trip ids exist. Matches jobs.py:80 / generate_trip's replay precheck /
+    # organizer.py:184 / submit_trip_feedback's owner check.
+    if owner is None or owner.data is None or owner.data["user_id"] != user_id:  # guardrail #6
         raise HTTPException(status_code=404, detail="Trip not found")
     return StreamingResponse(stream_trip_events(client, trip_id), media_type="text/event-stream")
 

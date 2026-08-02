@@ -94,16 +94,24 @@ class _BeatTimes(logging.Handler):
     `caplog` records carry wall-clock times, which are meaningless in a suite that never
     advances one. Counting beats is not enough for the cadence claim — "two beats" is
     equally true at 60 s and at 100 s — so the assertion needs the instants themselves.
+
+    Given the rig's `trace` it also writes each beat into that ONE ordered list beside the
+    polls, which is what lets a test say "the beat came BEFORE the first poll" rather than
+    "a beat happened at t=0" — a beat at t=0 is also what a zero-duration first poll would
+    produce, so the instant alone does not discriminate.
     """
 
-    def __init__(self, clock: _Clock) -> None:
+    def __init__(self, clock: _Clock, trace: list[tuple[str, Any]] | None = None) -> None:
         super().__init__()
         self._clock = clock
+        self._trace = trace
         self.times: list[float] = []
 
     def emit(self, record: logging.LogRecord) -> None:
         if record.getMessage().startswith("telegram_poller_alive"):
             self.times.append(self._clock.now)
+            if self._trace is not None:
+                self._trace.append(("beat", self._clock.now))
 
 
 class _FakeUpdates:
@@ -627,36 +635,88 @@ async def test_heartbeat_fires_while_the_poller_is_idle(config, monkeypatch, cap
         await rig.run()
 
     alive = _records(caplog, "telegram_poller_alive")
-    assert len(alive) == 3                                # polls 2, 3 and 4
+    assert len(alive) == 4                                # loop entry, then polls 2, 3, 4
     assert alive[0].levelno == logging.INFO
     assert "offset=None" in alive[0].getMessage()
 
 
 async def test_heartbeat_reports_the_current_offset(config, monkeypatch, caplog):
     """Forward progress, not just liveness: an offset frozen across heartbeats says the
-    bot is polling and ingesting nothing."""
+    bot is polling and ingesting nothing.
+
+    Three beats, not two: the first is the loop-entry beat, which necessarily reports
+    `None` because no poll has happened yet. The script is unchanged — it already produced
+    two settled `42` beats, and the repetition is the point of this test, so the entry beat
+    is asserted ALONGSIDE them rather than replacing one of them.
+    """
     rig = _rig(config, monkeypatch, [[_update(41)], []], advance=61.0)
 
     with caplog.at_level(logging.DEBUG):
         await rig.run()
 
     alive = _records(caplog, "telegram_poller_alive")
-    assert [r.getMessage() for r in alive] == ["telegram_poller_alive offset=42"] * 2
+    assert [r.getMessage() for r in alive] == [
+        "telegram_poller_alive offset=None",              # loop entry, nothing polled yet
+        "telegram_poller_alive offset=42",
+        "telegram_poller_alive offset=42",
+    ]
 
 
 async def test_heartbeat_fires_at_most_once_per_sixty_seconds(config, monkeypatch, caplog):
-    """30 s per poll over four polls (90 s of clock): exactly one beat, at t=60.
+    """30 s per poll over four polls (120 s of clock): the entry beat, then ONE at t=60.
 
     RED if the interval check is dropped, or if `last_beat` is not moved forward — either
     turns the liveness line into per-poll noise, and noise is how the ERROR lines stop
     being read.
+
+    Asserted as INSTANTS rather than a count. A count cannot tell "throttled to the
+    interval" from "fired on polls 1 and 3 for some other reason", and the entry beat makes
+    the count alone even weaker: `[0.0, 60.0]` says exactly which two.
     """
     rig = _rig(config, monkeypatch, [[], [], []], advance=30.0)
+    beats = _BeatTimes(rig.clock)
+    poller.logger.addHandler(beats)
+    try:
+        with caplog.at_level(logging.DEBUG):
+            await rig.run()
+    finally:
+        poller.logger.removeHandler(beats)
 
-    with caplog.at_level(logging.DEBUG):
-        await rig.run()
+    assert beats.times == [0.0, 60.0]          # entry, then throttled — NOT four
+    assert rig.clock.now == 120.0              # four polls happened
 
-    assert len(_records(caplog, "telegram_poller_alive")) == 1
+
+async def test_the_first_beat_fires_at_loop_entry_before_the_first_poll(
+    config, monkeypatch, caplog
+):
+    """★ The window where "is it alive?" is asked hardest: the first minutes of a deploy.
+
+    `last_beat` starts ONE INTERVAL in the past, so the beat at the top of the first
+    iteration fires immediately. Without it the first sign of life is the first beat of the
+    ~100 s cadence below, and an operator watching a fresh worker for a crash-loop sees
+    nothing at all for a minute and a half — the one moment the signal is both most needed
+    and absent. It also makes T11's deploy check a glance instead of a stopwatch.
+
+    Asserted from the INTERLEAVING, not from the instant. `beats.times[0] == 0.0` alone is
+    satisfied by a first poll that takes no time, which is exactly what the fakes do; only
+    the ordering against the poll distinguishes "beat at entry" from "beat after a free
+    poll". RED the moment the one-interval offset is dropped from `last_beat`.
+    """
+    rig = _rig(config, monkeypatch, [[_update(41)]])
+    beats = _BeatTimes(rig.clock, rig.trace)
+    poller.logger.addHandler(beats)
+    try:
+        with caplog.at_level(logging.DEBUG):
+            await rig.run()
+    finally:
+        poller.logger.removeHandler(beats)
+
+    assert rig.trace[0] == ("beat", 0.0)                # BEFORE any poll, at t=0
+    assert rig.trace[1] == ("poll", None)
+    # It reports the offset it actually has, which at entry is none yet — the honest value.
+    assert _records(caplog, "telegram_poller_alive")[0].getMessage() == (
+        "telegram_poller_alive offset=None"
+    )
 
 
 async def test_the_real_idle_cadence_is_the_interval_rounded_up_to_a_poll(
@@ -666,8 +726,10 @@ async def test_the_real_idle_cadence_is_the_interval_rounded_up_to_a_poll(
 
     The beat is checked once per loop ITERATION, and on a healthy idle worker one iteration
     is one full long poll. With the deployed 50 s timeout the elapsed time at each check
-    goes 0, 50, 100 — so the first beat lands at **t=100 s** and the cadence is 100 s, i.e.
-    `_HEARTBEAT_INTERVAL_S` rounded UP to the next poll boundary.
+    goes 50, 100 — so after the loop-entry beat the next lands at **t=100 s** and the
+    cadence is 100 s, i.e. `_HEARTBEAT_INTERVAL_S` rounded UP to the next poll boundary.
+    The entry beat buys the first one and nothing after it; the ~100 s spacing is what an
+    alert threshold has to accommodate.
 
     Every other heartbeat test here uses a poll longer than the interval (61 s) or an exact
     divisor (30 s), which is why four of them could be green while the deploy-day check
@@ -694,8 +756,9 @@ async def test_the_real_idle_cadence_is_the_interval_rounded_up_to_a_poll(
         poller.logger.removeHandler(beats)
 
     assert rig.clock.now == 300.0                       # six idle polls, 50 s each
-    # Two beats in five minutes. At the interval's face value there would be five.
-    assert beats.times == [100.0, 200.0]
+    # Entry, then two beats in five minutes. At the interval's face value the two would
+    # have been five, which is the threshold a 60 s alert would have been set against.
+    assert beats.times == [0.0, 100.0, 200.0]
 
 
 async def test_heartbeat_keeps_firing_while_the_transport_is_failing(
@@ -745,15 +808,27 @@ async def test_an_empty_batch_moves_nothing_and_calls_the_handler_zero_times(
 async def test_a_successful_poll_writes_no_log_records_at_all(config, monkeypatch, caplog):
     """A line per poll is ~1,700 records/day of nothing, and noise is how the ERROR lines
     stop being read. `handle_update` already logs one INFO per accepted reel; a second here
-    would carry a strict subset of it. RED if a per-poll or per-update INFO is added."""
-    rig = _rig(config, monkeypatch, [[_update(80), _update(81)]])
+    would carry a strict subset of it. RED if a per-poll or per-update INFO is added.
+
+    The two records that ARE here are both ONCE PER PROCESS, not per poll: the loop-entry
+    beat and the stop line. That distinction is what this fixture now proves — four polls
+    and five updates produce the same two records a single poll would, because the clock
+    never advances (`advance=0`) so no further beat is due. The earlier one-batch fixture
+    could not tell per-process from per-poll at all: with two polls, "2 records" and
+    "1 record" were both consistent with the bug.
+    """
+    rig = _rig(config, monkeypatch, [
+        [_update(80), _update(81)], [_update(82)], [_update(83), _update(84)],
+    ])
 
     with caplog.at_level(logging.DEBUG):
         await rig.run()
 
     assert [r.getMessage() for r in caplog.records] == [
-        "telegram_poller_stopped offset=82"
+        "telegram_poller_alive offset=None",       # once per PROCESS, at loop entry
+        "telegram_poller_stopped offset=85",
     ]
+    assert len(rig.handle.ids) == 5                # five updates, still two records
 
 
 async def test_no_failure_branch_moves_the_offset(config, monkeypatch):

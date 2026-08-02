@@ -97,11 +97,13 @@ _RETRY_AFTER_MARGIN_S = 1.0
 # A MINIMUM, NOT A PERIOD — do not quote it as one. The check runs once per loop
 # ITERATION, and on a healthy idle worker one iteration is one full long poll, so the beat
 # lands on the first poll boundary at or after this interval. At the deployed
-# `poll_timeout_s = 50` that is **every 100 s, first beat at t=100**, not every 60 s. It is
+# `poll_timeout_s = 50` that is **every 100 s**, not every 60 s. It is
 # pinned by a test rather than left to the reader's arithmetic — grep test_poller.py for
 # test_the_real_idle_cadence_is_the_interval_rounded_up_to_a_poll — because a monitoring
 # threshold set under the true cadence fires against a perfectly healthy worker, which is
-# worse than having no threshold at all. While the transport
+# worse than having no threshold at all. The FIRST beat is the exception and fires at loop
+# entry (see `poll_forever`'s `last_beat`); the ~100 s spacing starts after it. While the
+# transport
 # is failing on the top rung the gap is wider still (a poll can consume the httpx timeout
 # before a ~72 s backoff sleep), so anything alerting on this should sit at minutes.
 #
@@ -197,7 +199,9 @@ def _maybe_heartbeat(
     frozen across heartbeats is a bot that is polling fine and ingesting nothing.
 
     Called once per loop iteration, so the OBSERVED cadence is `_HEARTBEAT_INTERVAL_S`
-    rounded up to a poll boundary — ~100 s in production, not 60. See that constant.
+    rounded up to a poll boundary — ~100 s in production, not 60. See that constant. The
+    first beat is the exception: `poll_forever` starts `last_beat` one interval in the
+    past, so this fires immediately on the first call.
     """
     now = monotonic()
     if now - last_beat < _HEARTBEAT_INTERVAL_S:
@@ -276,7 +280,12 @@ async def poll_forever(
     """
     offset: int | None = None
     backoff = _BACKOFF_START_S
-    last_beat = monotonic()
+    # ONE INTERVAL IN THE PAST, so the first beat fires at loop entry instead of one full
+    # cadence later. The window where "is it alive?" is asked hardest is the first minutes
+    # of a deploy, when someone is watching for a crash-loop — and that is precisely where
+    # a `monotonic()` start leaves the only liveness signal this service has silent. Every
+    # beat after it keeps the ordinary cadence; this buys the first one, nothing else.
+    last_beat = monotonic() - _HEARTBEAT_INTERVAL_S
 
     while not stop.is_set():
         last_beat = _maybe_heartbeat(last_beat, offset=offset, monotonic=monotonic)

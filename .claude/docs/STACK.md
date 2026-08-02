@@ -4,7 +4,7 @@
 > `.claude/backups/CLAUDE.md.2026-07-03.bak`). Read this BEFORE adding, removing, or
 > substituting any dependency, service, or tool.
 
-**Frozen 2026-06-20** (Shaun + Zhi Hao V1 stack pass). Guiding principle: **"easier and lesser is better"** — defer every tool until a specific real problem forces it. Authoritative source: EMDEE `astrail/DECISIONS LOG` → entry `2026-06-20 — V1 production tech stack frozen`. At v1, cost is effectively free except Render $7/mo + OpenAI usage (hackathon credits).
+**Frozen 2026-06-20** (Shaun + Zhi Hao V1 stack pass). Guiding principle: **"easier and lesser is better"** — defer every tool until a specific real problem forces it. Authoritative source: EMDEE `astrail/DECISIONS LOG` → entry `2026-06-20 — V1 production tech stack frozen`. At v1, cost is effectively free except Render $14/mo (two Starter services — the backend and the Telegram ingest worker) + OpenAI usage (hackathon credits).
 
 ## What changed from the TripCanvas hackathon
 
@@ -29,7 +29,7 @@
 | Auth | Supabase Auth (Google OAuth in v1) — RLS enforced on every table. *(Clerk evaluated and rejected: ~10x cost at scale + JWT/RLS glue + a user-sync webhook, for orgs/UX features v1 doesn't use.)* |
 | DB + realtime + vector + storage | Supabase — Postgres + pgvector + Realtime + Storage (free tier, RLS on every table) |
 | Backend | FastAPI (Python ≥3.14) + Server-Sent Events |
-| Backend hosting | Render (Singapore region) — paid $7/mo Starter from launch (no free-tier spin-down that would kill in-flight agent runs). *(Fly.io evaluated: better for edge/multi-region, but more ops surface than a single-region weekend-team v1 needs.)* |
+| Backend hosting | Render (Singapore region) — paid $7/mo Starter from launch (no free-tier spin-down that would kill in-flight agent runs). **The Telegram ingest worker is a SECOND Starter service, so the Render baseline is $14/mo, not $7** — a `type: worker` cannot use the free tier for this (it has no inbound HTTP and must not spin down, or long polling stops). *(Fly.io evaluated: better for edge/multi-region, but more ops surface than a single-region weekend-team v1 needs.)* |
 | Job execution | FastAPI BackgroundTasks backed by a durable `jobs` table in Supabase + startup recovery sweep + idempotency keys |
 | LLM SDK | OpenAI Agents SDK |
 | Primary LLM | `gpt-5.5-2026-04-23` |
@@ -39,6 +39,7 @@
 | Agent memory | mem0 (hosted) + Agents SDK Sessions + Supabase columns for structured prefs |
 | Guardrails | Agents SDK-native input/tool guardrails — the prompt-injection defense for untrusted Reel content |
 | Reel scraping | Apify `instagram-reel-scraper` — **direct HTTP, no MCP, no Agents SDK**; kept logged-out (legal posture). Transcript via opt-in `includeTranscript` as a fallback when caption + `locationName` are thin |
+| Reel ingestion (Telegram) | Telegram Bot API — **direct HTTP via `httpx`, no SDK and NO NEW DEPENDENCY**. Long-polls `getUpdates` from a second Render service (`astrail-telegram-ingest`, `type: worker`, Singapore, same image as the backend); a reel URL posted in an allowlisted chat becomes an `organize_jobs` row. **`python-telegram-bot` deliberately NOT added** — the bot calls four methods (`getUpdates`, `setMessageReaction`, and `getMe`/`getChatMember` for the boot admin check), which is less code than the library's wiring; see the v2 trigger below. Authorization is one fail-closed chat allowlist (`TELEGRAM_ALLOWED_CHAT_IDS`, `.claude/docs/ENV.md`) |
 | Weather | Open-Meteo HTTP (free, no auth) — forecast ≤16 days; climate/historical normals for trips further out. Free tier is non-commercial → paid/self-host is a v2 trigger at monetization. No web search for weather (must stay structured) |
 | Transport routing | Mapbox Directions API |
 | Hotel search | Travala Travel MCP (`travala/travel-mcp`) for `travala_search_hotel` and optional `travala_search_package` only — **no booking/payment tools in v1** |
@@ -46,7 +47,8 @@
 | Rate limiting / abuse | Per-user daily trip quota in Postgres (the hard cap) + slowapi (in-memory request limiting) + result cache keyed by reel+prefs hash + OpenAI budget alerts (auto-recharge **off**) |
 | Observability | Langfuse Cloud Hobby (traces + golden eval dataset + LLM-as-judge) + UptimeRobot (`/health`). **Sentry REMOVED 2026-07-19** — it was declared but never wired (`sentry_sdk` was never imported in any backend file, in the whole of git history), and an unwired error tracker whose default behaviour captures request URLs is a standing re-open of ISSUES-B1, which put the Supabase JWT in `?token=`. **Re-add only with a `before_send` URL scrubber** — Sentry ships URLs to its own backend over HTTPS, entirely outside Python's `logging`, so `backend/log_redaction.py` structurally cannot cover it. |
 | Product analytics | PostHog (free tier) — activation, D1/D7/D30 retention, reel→itinerary funnel, cost-per-trip (feeds the Decision Gate) |
-| CI/CD | GitHub Actions → Vercel + Render; Supabase migrations in Git applied on merge to `main`; separate dev/prod Supabase projects; forward-only additive migrations |
+| CI/CD | GitHub Actions → Vercel + Render; separate dev/prod Supabase projects; forward-only additive migrations. **Schema is applied BY HAND — see the row below.** |
+| **Schema deployment (read this before planning any migration)** | **Migrations are NOT applied on merge.** Nothing in CI runs `supabase db push`. A migration reaches the deployed database only when a human applies it, and the code ships on merge — **two separate events, in either order**, with an arbitrary gap between them. This is the single most consequential deployment fact in the repo: every plan touching schema must state which order it tolerates and be correct in both, because neither is enforced. `/health` does no schema check, so a code deploy running ahead of its migration looks green while failing every request that needs the new object. Apply by hand with `psql -X -1 -v ON_ERROR_STOP=1 -f <migration>` — `-1` makes a failed migration all-or-nothing instead of half-applied (`supabase/migrations/20260802120000_per_account_reel_analysis_limit.sql`'s header derives this from a measurement). This row corrects a previous "applied on merge to `main`" claim, which stated the opposite of the truth. |
 | Python package manager | `uv` (`backend/pyproject.toml` — backend deps, NOT repo root) |
 
 ## Banned / never reintroduce
@@ -73,6 +75,7 @@
 - ClickStack — preferred over Grafana once multi-service infra observability outgrows per-platform dashboards
 - Cloudflare Turnstile — at public launch / observed abuse / spend spike
 - Temporal — when durable agent execution outgrows the `jobs` table
+- `python-telegram-bot` — when a **third** Bot API capability is needed beyond long-polling updates and reacting to a message. Until then the Telegram integration is `httpx` calls against `https://api.telegram.org/bot<token>/<method>` and adds no dependency
 - Portkey-style gateway — when per-feature cost/routing control can't live in app code
 - Cloud Run / Fly.io migration — when Render's single-region model is outgrown
 - Open-Meteo paid tier or self-host — at commercialization, or when >10k calls/day

@@ -64,12 +64,16 @@ signal this service has — a `type: worker` has no inbound HTTP, so it has no
 "alive and idle" and "dead" are otherwise the same silence, and it carries the offset so a
 frozen offset across beats reads as *polling fine, ingesting nothing*.
 
-**It fires roughly every 100 seconds, not every 60.** The interval constant is 60 s but the
-check runs once per loop iteration, and one iteration is one full 50 s long poll, so the beat
-lands on the first poll boundary at or after 60 s — first beat at t≈100 s from start. While
-the transport is failing the gap is wider. Do not set an alert threshold under ~3 minutes; a
-tighter one fires against a perfectly healthy worker. (Pinned by
-`backend/telegram_ingest/test_poller.py::test_the_real_idle_cadence_is_the_interval_rounded_up_to_a_poll`.)
+**The first beat is immediate; after that it fires roughly every 100 seconds, not every 60.**
+The interval constant is 60 s but the check runs once per loop iteration, and one iteration is
+one full 50 s long poll, so each beat lands on the first poll boundary at or after 60 s. The
+first is deliberately exempted — `last_beat` starts one interval in the past — so a freshly
+started worker announces itself at once instead of going quiet for a minute and a half in the
+window you are most likely to be watching it. While the transport is failing the gap between
+beats is wider than 100 s. Do not set an alert threshold under ~3 minutes; a tighter one fires
+against a perfectly healthy worker. (Both properties pinned in
+`backend/telegram_ingest/test_poller.py` — `test_the_first_beat_fires_at_loop_entry_before_the_first_poll`
+and `test_the_real_idle_cadence_is_the_interval_rounded_up_to_a_poll`.)
 
 **How to stop it — the entire Phase 1 rollback lever.** Suspend the service in the Render
 dashboard (Settings → Suspend), or scale `numInstances` to 0. Nothing else is needed and

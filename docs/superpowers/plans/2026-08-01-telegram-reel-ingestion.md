@@ -371,7 +371,8 @@ Backoff `1,2,4,…,60 s` ±20 % jitter, reset on first success. `TelegramRetryAf
 `retry_after + 1`. **409 Conflict** special-cased at ERROR — two worker instances, a Render scaling
 misconfiguration, not a transient. `telegram_poller_alive` heartbeat on a 60 s **minimum**
 interval — checked once per loop iteration, so the real cadence is ~100 s at the deployed 50 s long
-poll ([IMPL 2026-08-02]; T10 step 5) — substituting for
+poll, with the FIRST beat fired at loop entry so a fresh deploy announces itself at once
+([IMPL 2026-08-02]; T10 step 5) — substituting for
 the `healthCheckPath` a worker cannot have.
 
 **RED when:** the offset advances before the batch is handled; it uses `len(updates)` instead of
@@ -573,12 +574,18 @@ PHASE 1 — ZERO MIGRATIONS
      SUPABASE_SERVICE_ROLE_KEY, OPENAI_API_KEY, APIFY_TOKEN, MAPBOX_SECRET_TOKEN.
      A crash-loop here is loud and harmless, but it wastes the deploy window and
      looks like a code fault.
-  5. Start the worker. Expect `telegram_poller_alive` within 2 MINUTES.
-     [IMPL 2026-08-02] NOT 60 s — the earlier number would have raised a false
-     alarm against a perfectly healthy worker. The interval constant is 60 s but
-     the beat is checked once per loop ITERATION, and one iteration is one full
-     50 s long poll, so the first beat lands at t≈100 s and the cadence is ~100 s.
-     Constructed, not reasoned: see `_HEARTBEAT_INTERVAL_S` in `poller.py` and
+  5. Start the worker. Expect `telegram_poller_alive` IMMEDIATELY — it is the
+     first thing the poll loop does — and then roughly every 100 s.
+     [IMPL 2026-08-02] Both halves were wrong before and both are now pinned by
+     tests. The cadence is NOT 60 s: the interval constant is 60 s but the beat is
+     checked once per loop ITERATION, and one iteration is one full 50 s long
+     poll, so beats land at ~100 s spacing. That alone would have made this step a
+     100-second stopwatch exercise, so `last_beat` starts one interval in the past
+     and the FIRST beat fires at loop entry — which is what makes this check a
+     glance. If nothing appears within ~10 s of the process reaching the poll
+     loop, the INFO root level did not take effect (see checklist item 5).
+     See `_HEARTBEAT_INTERVAL_S` and `last_beat` in `poller.py`,
+     `test_the_first_beat_fires_at_loop_entry_before_the_first_poll` and
      `test_the_real_idle_cadence_is_the_interval_rounded_up_to_a_poll`.
      [R8/m3] ASSERT THE WORKER'S LIVE SHA equals the merge SHA from step 3. Dashboard
      creation builds from the tip of `dev`, and if `dev` advanced between the merge
@@ -670,8 +677,10 @@ this file is the one that survives. Run them in order; none costs more than a mi
    `wss://…?apikey=<SERVICE_ROLE_KEY>`. The `realtime` pin closes the DEBUG door; what actually
    keeps the key out today is that nothing calls `.channel()`/`.subscribe()`. Both halves are
    invisible to a unit test.
-5. **`telegram_poller_alive` observed at its real interval** — first beat ≈100 s from start, then
-   ~every 100 s (T10 step 5; do NOT expect 60 s). This is the ONLY check that the INFO root level
+5. **`telegram_poller_alive` observed at its real interval** — the first beat lands as soon as the
+   poll loop starts, then ~every 100 s (T10 step 5; do NOT expect 60 s). Its ABSENCE in the first
+   seconds is the failure signal, which is why the entry beat exists: it turns this from a
+   100-second stopwatch into a glance. This is the ONLY check that the INFO root level
    and `force=True` actually took effect in the real image. If it is missing, every INFO event this
    feature emits is invisible and the service has no liveness signal at all.
 6. **A deliberately wrong `TELEGRAM_BOT_TOKEN` produces `telegram_poll_unauthorized` at ERROR** —
@@ -699,7 +708,7 @@ reel said the same thing twice. Do not grep for it.
 
 | Where | Events |
 |---|---|
-| Liveness | `telegram_poller_alive` (the no-healthcheck substitute — **~100 s cadence, see T5**) · `telegram_worker_starting` · `telegram_ingest_user_ok` · `telegram_worker_draining` · `telegram_worker_stopped` · `telegram_poller_stopped` |
+| Liveness | `telegram_poller_alive` (the no-healthcheck substitute — **immediate at loop entry, then ~100 s cadence; see T5**) · `telegram_worker_starting` · `telegram_ingest_user_ok` · `telegram_worker_draining` · `telegram_worker_stopped` · `telegram_poller_stopped` |
 | Poll transport | `telegram_poll_error` (WARNING, transient) · `telegram_poll_conflict` (ERROR — two `getUpdates` consumers) · `telegram_poll_unauthorized` (ERROR — a wrong/revoked token, added after T6 review) · `telegram_poll_unexpected` (ERROR — unclassified) · `telegram_poll_offset_unresolved` (ERROR) |
 | Per reel | `telegram_reel_accepted` · `telegram_reel_dropped` (ERROR — §3.1) · `telegram_reel_unsupported_url` (ERROR) · `telegram_reel_truncated` (ERROR) · `telegram_reel_entities_overflowed` (ERROR) · `telegram_reel_filter_failed` (ERROR — a T2 regression) · `telegram_queue_full` · `telegram_reaction_failed` (WARNING) |
 | Per job | `telegram_job_failed` (ERROR — `run_organize_job` RAISED) · `telegram_job_reported_failed` (ERROR — it returned `status="failed"`; two distinct diagnoses, do not fold them) |
@@ -741,7 +750,7 @@ land PLAN B's T1–T2 first. PLAN A's own diff requires nothing from PLAN B.
 | # | Risk | Mitigation |
 |---|---|---|
 | 1 | ~~Share-sheet URLs don't match `normalize_reel_url` → the bot silently accepts nothing~~ | **RETIRED 2026-08-02 — T0 measured it: 3/3 canonical `/reel/<code>/`, `?igsh=` dropped on `parsed.path`.** No resolver. A stray `/share/` shape logs ERROR and withholds ✅ (T4) rather than vanishing |
-| 2 | **Bot is not a group admin (or gets demoted)** — privacy mode hides every plain URL, no error, no log | T11 Phase 0 asserts `administrator`; boot logs it as WARNING; the ~100 s heartbeat (T10 step 5) distinguishes "polling fine, ingesting nothing" from "dead"; promotion is a numbered runbook step |
+| 2 | **Bot is not a group admin (or gets demoted)** — privacy mode hides every plain URL, no error, no log | T11 Phase 0 asserts `administrator`; boot logs it as WARNING; the heartbeat (immediate, then ~100 s — T10 step 5) distinguishes "polling fine, ingesting nothing" from "dead"; promotion is a numbered runbook step |
 | 3 | **Migration A's `create or replace` on a shared user-facing function** — the one live thing this plan changes | Signature unchanged so no `PGRST202`; `coalesce(…, 5)` preserves every existing user byte-for-byte; pgTAP proves the 5-then-null boundary; applied in Phase 2 **against already-running code**, fully isolated from the worker; privilege contract re-asserted. **[R4/m3]** The `alter table … add column` is **no rewrite but NOT lock-free** — a constant default avoids the rewrite, but `ALTER TABLE` still takes a brief `ACCESS EXCLUSIVE` lock on `users`. Set `lock_timeout = '3s'` and `statement_timeout` so it fails fast rather than queueing behind a long read |
 | 4 | Runaway paid spend | `daily_reel_analysis_limit` is charged **only on a `reel_cache` MISS**, so it bounds exactly the Apify + OpenAI calls. Warm reels are free and uncapped by design |
 | 5 | Untrusted group text leaking into logs or downstream (#11) | `extract_reel_urls` is the single reader; everything downstream is typed to normalized URLs; the caplog canary fails if any module formats message text. **No message text ever reaches an LLM** — the extractor's only input is `scrape_reel`'s output for a validated URL, identical to the web path |

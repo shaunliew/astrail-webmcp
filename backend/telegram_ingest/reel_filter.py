@@ -81,13 +81,22 @@ def _entity_int(entity: dict, key: str) -> int | None:
 def _slice_utf16(src: str, offset: int, length: int) -> str | None:
     """`src[offset:offset+length]` measured in UTF-16 code units, Telegram's own unit.
 
-    Returns None when the slice lands mid surrogate pair — a hostile or malformed offset,
-    never a URL.
+    Returns None on either codec failure — a candidate we cannot slice contributes nothing,
+    exactly like a malformed entity:
+      - `UnicodeEncodeError`: `src` holds an UNPAIRED surrogate. Stdlib `json` does not
+        validate surrogate pairing on `\\uXXXX` escapes, so a group member controls this.
+        The encode must be INSIDE the guard — `_candidate_url` is called with no try/except
+        around it, so an escape here crosses the module boundary, and the exception message
+        quotes the offending character.
+      - `UnicodeDecodeError`: the slice landed mid surrogate pair — a hostile offset.
+
+    `except ValueError` covers exactly those two (both subclass it, and nothing else in the
+    body can raise it), matching how `_is_instagram_host` and `_path_shape` narrow.
     """
-    units = src.encode("utf-16-le")
     try:
+        units = src.encode("utf-16-le")
         return units[offset * 2 : (offset + length) * 2].decode("utf-16-le")
-    except UnicodeDecodeError:
+    except ValueError:
         return None
 
 

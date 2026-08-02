@@ -22,9 +22,46 @@ from telegram_ingest.reel_filter import FilterResult, extract_reel_urls
 OUTPUT_CONTRACT = re.compile(r"^https://www\.instagram\.com/reel/[A-Za-z0-9_-]+$")
 
 
+# An unpaired UTF-16 surrogate. `str.encode("utf-16-le")` refuses it, and stdlib
+# `json.loads` does NOT validate surrogate pairing on `\uXXXX` escapes — verified:
+# `json.loads(r'{"text": "a \ud800 b"}')` returns the lone surrogate intact. A hostile group
+# member therefore controls this byte sequence exactly, straight out of the Bot API response.
+LONE_SURROGATE = "\ud800"
+
+
 def _utf16_len(text: str) -> int:
     """Length of `text` in UTF-16 code units — Telegram's offset/length unit."""
     return len(text.encode("utf-16-le")) // 2
+
+
+def _utf16_len_unsafe(text: str) -> int:
+    """`_utf16_len` that tolerates unpaired surrogates. FIXTURES ONLY.
+
+    Telegram counts a lone surrogate as one code unit, so this is the offset the Bot API
+    would really send. `surrogatepass` here is a property of the *test fixture*, never of
+    the production slice — the module under test must cope with the raw `.encode` failing.
+    """
+    return len(text.encode("utf-16-le", errors="surrogatepass")) // 2
+
+
+def _formatted(exc: BaseException) -> str:
+    """The full traceback text a caller's `logger.exception(...)` would emit."""
+    return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+
+
+def _must_not_raise(message: dict) -> FilterResult:
+    """Call the module and turn any escape into a failure that shows the leaked traceback.
+
+    `UnicodeEncodeError`/`UnicodeDecodeError`/`ValueError` messages all quote the offending
+    content, so an exception crossing this boundary is a guardrail #11 leak, not just a bug.
+    """
+    try:
+        return extract_reel_urls(message)
+    except BaseException as exc:  # noqa: BLE001 — the escape itself is the defect
+        raise AssertionError(
+            "extract_reel_urls raised; a caller's logger.exception(...) would emit:\n"
+            + _formatted(exc)
+        ) from None
 
 
 def _url_message(*urls: str, lead: str = "", field: str = "text") -> dict:
@@ -377,15 +414,132 @@ def test_an_unparseable_candidate_never_raises_out_of_this_module():
     `https://[::1/…` is the live trigger: `urlparse` raises `ValueError: Invalid IPv6 URL`
     on it, from inside the very handler that is holding the leaky exception.
     """
-    message = _url_message("https://[::1/reel/CANARY-SECRET", "https://[")
+    result = _must_not_raise(_url_message("https://[::1/reel/CANARY-SECRET", "https://["))
 
-    try:
-        result = extract_reel_urls(message)
-    except BaseException as exc:  # noqa: BLE001 — the raise itself is the defect
-        raise AssertionError(
-            "extract_reel_urls raised; a caller's traceback would carry chat content:\n"
-            + "".join(traceback.format_exception(exc))
-        ) from None
+    assert result == FilterResult((), (), False)
+
+
+# --------------------------------------------------------------------------------------
+# Unpaired surrogates — the encode side of the same exception family.
+# --------------------------------------------------------------------------------------
+
+
+def test_lone_surrogate_in_text_with_a_url_entity_never_raises():
+    """`src.encode("utf-16-le")` raises `UnicodeEncodeError` on an unpaired surrogate.
+
+    The encode must sit INSIDE the guard: `_candidate_url` is called from
+    `extract_reel_urls` with no try/except around it, so an unguarded encode propagates
+    straight out of the module — and `UnicodeEncodeError`'s message quotes the offending
+    character, so the escape leaks content as well as crashing the caller's loop.
+    """
+    prefix = f"hello {LONE_SURROGATE} world "
+    url = _reel("ABC123")
+    message = {
+        "text": prefix + url,
+        "entities": [
+            {
+                "type": "url",
+                "offset": _utf16_len_unsafe(prefix),
+                "length": _utf16_len_unsafe(url),
+            }
+        ],
+    }
+
+    result = _must_not_raise(message)
+
+    assert result == FilterResult((), (), False)
+    assert LONE_SURROGATE not in repr(result)
+
+
+def test_lone_surrogate_in_caption_with_a_caption_url_entity_never_raises():
+    prefix = f"\U0001F4CD {LONE_SURROGATE} trip "
+    url = _reel("CAP001")
+    message = {
+        "caption": prefix + url,
+        "caption_entities": [
+            {
+                "type": "url",
+                "offset": _utf16_len_unsafe(prefix),
+                "length": _utf16_len_unsafe(url),
+            }
+        ],
+    }
+
+    result = _must_not_raise(message)
+
+    assert result == FilterResult((), (), False)
+
+
+def test_the_surrogate_guard_is_scoped_to_the_slice_not_a_blanket_swallow():
+    """A `text_link` carries its URL out of band and never calls `_slice_utf16`, so a
+    surrogate in the visible text is irrelevant to it. Red if the fix were a blanket
+    try/except around the whole function body returning an empty result."""
+    message = {
+        "text": f"look {LONE_SURROGATE} here",
+        "entities": [
+            {"type": "text_link", "offset": 0, "length": 4, "url": _reel("TL0001")}
+        ],
+    }
+
+    result = _must_not_raise(message)
+
+    assert result.urls == ("https://www.instagram.com/reel/TL0001",)
+
+
+def test_a_surrogate_poisoned_text_does_not_cost_the_caption_its_valid_reel():
+    """Containment: one unusable field must not take the whole message down with it."""
+    dead = _reel("DEAD01")
+    prefix = f"bad {LONE_SURROGATE} "
+    good = _reel("GOOD01")
+    message = {
+        "text": prefix + dead,
+        "entities": [
+            {
+                "type": "url",
+                "offset": _utf16_len_unsafe(prefix),
+                "length": _utf16_len_unsafe(dead),
+            }
+        ],
+        "caption": good,
+        "caption_entities": [
+            {"type": "url", "offset": 0, "length": _utf16_len(good)}
+        ],
+    }
+
+    result = _must_not_raise(message)
+
+    assert result.urls == ("https://www.instagram.com/reel/GOOD01",)
+
+
+def test_containment_is_per_field_a_surrogate_voids_that_fields_url_entities():
+    """The granularity the guard actually achieves, asserted rather than left to chance.
+
+    A `url` entity's offset is defined over the WHOLE field, so the whole field must be
+    encoded to resolve any one of them. One unpaired surrogate anywhere therefore voids
+    every `url` entity in that field — not just the candidate that spans it. Per-FIELD, not
+    per-candidate. `errors="surrogatepass"` would buy per-candidate containment and keep
+    offsets exact; that is a deliberate open question, not an oversight (see the report).
+    """
+    lead = f"{LONE_SURROGATE} "
+    first, second = _reel("AAA111"), _reel("BBB222")
+    text = f"{lead}{first} {second}"
+    message = {
+        "text": text,
+        "entities": [
+            {
+                "type": "url",
+                "offset": _utf16_len_unsafe(lead),
+                "length": _utf16_len_unsafe(first),
+            },
+            {
+                "type": "url",
+                "offset": _utf16_len_unsafe(f"{lead}{first} "),
+                "length": _utf16_len_unsafe(second),
+            },
+        ],
+    }
+
+    result = _must_not_raise(message)
 
     assert result == FilterResult((), (), False)
 

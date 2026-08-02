@@ -120,6 +120,41 @@ No new dependency: `httpx>=0.27.0` is already at `backend/pyproject.toml:11`, an
 `httpx.MockTransport` in tests). A framework for four endpoints would land in the **shared**
 `pyproject.toml` the web service also builds from.
 
+## 4.1 [IMPL 2026-08-02] Two cross-cutting defect classes found during implementation
+
+Both were hit **independently in three separate modules** by three implementers. Neither appears in
+the plan's original text, and eight review rounds did not surface either — you cannot fault-inject a
+document, and both are properties of Python rather than of this design.
+
+**CLASS 1 — an implicitly chained exception leaks whatever the swallowed one carried.** Python sets
+`__context__` on any exception raised inside an `except` block, and `traceback.format_exception` (so
+also `logger.exception(...)` and `exc_info=True`) prints it exactly as it prints an explicit
+`__cause__`. **Swallowing an exception does not erase it.** Three instances, three asset classes:
+
+| Module | The swallowed exception carries | Fix |
+|---|---|---|
+| `api.py` (T1) | `httpx.HTTPStatusError`'s `str()` **is** the URL, and the bot token is in the URL path | `raise … from None` |
+| `reel_filter.py` (T2) | `normalize_reel_url`'s `ValueError` message **is** the candidate URL — untrusted group content. `urlparse("https://[::1/reel/A")` raises *from inside that very handler* | narrow `except ValueError` at each risky stdlib call |
+| `config.py` (T3) | `int()` and `uuid.UUID()` both put the string they rejected into their **own** `ValueError`, so a pasted token in `TELEGRAM_ALLOWED_CHAT_IDS` reaches the boot log through a spotless message | parsers return a value-free reason and never raise; the single `raise` sits **outside** every `except` |
+
+**The testing consequence:** a leak assertion on `str(exc)` is insufficient. Assert on
+`traceback.format_exception(...)`. Every one of these passed a `str(exc)` check.
+
+**CLASS 2 — `int()` does not mean "an integer".** It accepts every Unicode decimal script and PEP 515
+underscores: `int("٤٢") == 42`, `int("４２") == 42`, `int("4_2") == 42`, `int("+100123") == 100123`.
+On an **allowlist** that is an authorization bypass — the string authorizes a chat other than the one
+a human reading the Render dashboard sees. `TELEGRAM_ALLOWED_CHAT_IDS` is parsed with a strict
+`-?[0-9]+` fullmatch, with `int()` behind it only for CPython's 4300-digit limit. Anywhere else in
+the codebase that parses an identifier from config or untrusted input has the same exposure.
+
+**A method note, because it produced two of the three:** fault injection proves the guards you *have*
+are load-bearing; it is structurally blind to a guard that was never written. T2 shipped 21 passing
+faults and still had a Critical. Run a **separate absence pass** — *which described behaviour has no
+code and no test at all?* — as its own sweep. In T3 that pass found an allow-all mutation of
+`is_allowed_chat` that **no behavioural test could ever have caught**, because the only object
+exposing it was one the loader never builds; the fix was to make the empty allowlist unconstructable
+in `__post_init__`, turning fail-closed into a property of the type.
+
 ## 5. Tasks
 
 ### T0 — SPIKE: what URL forms does the Instagram share sheet produce? ✅ DONE 2026-08-02

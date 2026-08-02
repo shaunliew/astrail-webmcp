@@ -89,13 +89,31 @@ pipeline onto an RPC that currently only the organize path uses, days before bet
 
 ### T1 — Prove the current behaviour before changing it
 
-Write a failing test first. `pipeline/persist.py`'s `_find_or_create_place` receives a
-`CanonicalPlace` carrying `country_code`/`country_name`; assert the inserted row has them. It will
-fail. That test is the specification.
+> **AMENDED by the Codex plan review, round 1 (blocking finding #1).** The original wording
+> below made `_find_or_create_place` the subject of the specifying test. That test can pass
+> while every live `/generate-trip` still writes NULL: the helper gains the parameter, its
+> focused test goes green, and nobody wires `persist_itinerary` to pass it. **The load-bearing
+> test MUST enter through `persist_itinerary`** — the function the runner actually calls — with
+> a real-looking `source_url`, `MAPBOX_SECRET_TOKEN` set via `monkeypatch`, and an injected
+> verifier whose invocation is asserted. A helper-level test may exist alongside it, but it is
+> not the specification.
+
+Write a failing test first: drive `persist_itinerary` with a `CanonicalPlace` carrying
+`country_code`/`country_name` and an injected verifier that agrees; assert the row inserted into
+`places` has `country`, `country_code` and `country_name`. It will fail. That test is the
+specification.
 
 Also pin the **existing** guarantee so this change cannot weaken it: a place whose coordinate does
 NOT reverse-geocode to its claimed country must still end up with `country` NULL, not a filled-in
 guess. That is the assertion protecting against option 1 being re-introduced later.
+
+And pin the **provenance** of the value, not merely its presence (Codex blocking finding #2):
+`_ground_place` deliberately overwrites the LLM's country_name with Mapbox's
+(`grounding.py:134`), so a test whose input and provider both say `JP`/`Japan` cannot tell a
+correct implementation from one that uses grounding as a boolean gate and then inserts the LLM's
+original name. Use a **poisoned name**: input `country_code="JP", country_name="United States"`,
+provider returns `JP`/`Japan`, assert the row reads `country="Japan"`, `country_code="JP"`,
+`country_name="Japan"`. Without this, `Tokyo, United States` ships and every other test is green.
 
 ### T2 — Ground before persisting
 
@@ -120,6 +138,26 @@ backfill script would populate them with the same verified-country guarantee.
 `country` becomes queryable. Against: 90 Mapbox calls, and nothing currently reads `places.country`
 for anything user-visible — confirm that with a grep before spending the effort. If nothing reads
 it, backfilling is tidiness, not value.
+
+> **AMENDED twice. Read both.**
+>
+> **(i) The "nothing reads it" premise is false** — §6b A. `PlaceIntelPanel` renders it. So the
+> value side of this judgement call is higher than §3 assumed.
+>
+> **(ii) But a coordinate-only backfill CANNOT deliver the same guarantee** (Codex round 1,
+> non-blocking #2 — the finding that actually decides this task). `country` means
+> "reverse-geocoded **and agreed with an independent claim**". Those 90 rows no longer carry the
+> LLM claim they were born with — `places` never stored it — and the restaurant-writer rows
+> (A1) never had one at all. So reverse-geocoding 90 coordinates proves only what Mapbox says,
+> which is a **strictly weaker** guarantee than the one the live path will now uphold.
+>
+> Running it anyway would put two different meanings in one column with no way to tell them
+> apart — the exact failure §2 rejects, arriving through the back door. **A valid backfill must
+> reconstruct each row's original claim from durable extraction data (`reel_cache` /
+> the extraction cache), compare it, and leave the row NULL when the claim cannot be
+> recovered.** "Run 90 Mapbox calls" is not a backfill design.
+>
+> See §6d for the resulting recommendation.
 
 ### T4 — Guardrail check
 
@@ -211,10 +249,14 @@ repair of 90 rows**, not tidiness. It is still not urgent — a missing line bea
 before the day-loop, passing the verified country into `_find_or_create_place` explicitly.**
 
 1. **In `persist.py`, not `runner.py`.** §1 diagnoses this as "a dropped value at the
-   persistence boundary". Put the fix at that boundary and the guarantee is a property of the
-   write itself. In `runner.py` it would hold only while the runner remembers to do it —
-   `persist_itinerary` has other callers (`scripts/live_run.py`, `scripts/smoke_generate.py`,
-   the tests), and every one of them would silently regress.
+   persistence boundary". Put the fix at that boundary and the guarantee becomes a property of
+   the write itself rather than of one call site's discipline. To be accurate about the
+   strength of this argument: `runner.py:370` is today the **only** production caller
+   (`scripts/live_run.py` and `scripts/smoke_generate.py` drive the API, not this function), so
+   this is not "several callers would regress" — it is that a guarantee about what a row
+   contains belongs next to the INSERT that writes the row, where the next caller inherits it
+   for free. The second, concrete reason: the value has to reach `_find_or_create_place`'s
+   insert dict anyway, so `runner.py` would only be threading it through.
 2. **Batched, not per-place-sequential.** `persist_itinerary` already pays N sequential
    round-trips (`_find_or_create_place` does one `places` SELECT per place). Grounding
    per-place inside that loop roughly doubles it on the live SSE critical path. One
@@ -228,14 +270,38 @@ before the day-loop, passing the verified country into `_find_or_create_place` e
    misses — a real restructure of a live function, not worth it days before beta.
    **Trigger to revisit:** if `geocode_country_cache` growth shows a sustained majority of
    groundings landing on dedup hits.
-4. **Bounded.** Up to 5 reels × 10 places pre-dedup means a single trip could otherwise fire
-   ~50 simultaneous Mapbox reverse calls. Cap the gather with an `asyncio.Semaphore`. A 429
-   degrades to NULL (harmless), but it would burn quota and can bleed into other calls.
-5. **Keyed by `id(place)`.** Matches `group_places_by_day`'s existing identity contract, so two
+4. **Grouped by coordinate: parallel ACROSS coordinates, sequential WITHIN one.**
+   *(Revised by the Codex plan review, round 1, blocking finding #3 — the earlier "just gather
+   them all" design was self-defeating.)* `_ground_place` is read-cache → call provider →
+   upsert-cache. Fire two same-coordinate places concurrently and **both** observe a cache miss
+   before either upsert lands, so **both** call Mapbox — which is not a correctness bug (the PK
+   upsert is idempotent) but it defeats the cache and makes the write-through test in §6b D2
+   unwritable: asserting "the second place does not re-call the provider" would fail against
+   the implementation.
+
+   So: group the places by `(lat, lng)`, `gather` across the distinct coordinates, and walk each
+   group's members **sequentially**. The first member seeds the cache; later members hit it.
+
+   Critically, each member still runs its **own** `_ground_place` call and therefore its own
+   claim comparison — do NOT reuse the first member's grounded result for the rest. Two places
+   at one coordinate can carry different LLM country claims, and the second one's claim must be
+   checked against the cached answer, not assumed to match the first one's.
+
+5. **No semaphore.** *(Also revised in round 1 — the original bound was solving a problem that
+   does not exist.)* `dedupe_places` caps `canonical` at `DEFAULT_MAX_PLACES = 8`
+   (`pipeline/dedup.py:17`), so the fan-out is at most 8 distinct coordinates, not the ~50 the
+   earlier draft feared. Eight concurrent reverse calls need no limiter, and a per-trip
+   semaphore would not have bounded aggregate concurrency across simultaneous jobs anyway — it
+   would have been a comforting no-op. The one way `canonical` exceeds 8 is the
+   `user_requested`-only edge case at `dedup.py:119-122`, and those places have no `source_url`,
+   so `is_placeholder_url` short-circuits them before any network call. The unbounded case is
+   exactly the case that makes zero Mapbox calls. **Trigger for a process-wide limiter:**
+   observed 429s from concurrent jobs.
+6. **Keyed by `id(place)`.** Matches `group_places_by_day`'s existing identity contract, so two
    distinct places sharing a name stay distinct. Safe **only** because `canonical` holds a
    strong reference for the whole call — no object can be freed and its id reused. Say so in a
    comment; it is the kind of invariant that silently rots.
-6. **Write all three columns** — `country`, `country_code`, `country_name` — exactly as
+7. **Write all three columns** — `country`, `country_code`, `country_name` — exactly as
    `find_or_create_place` does (`p_country` is the country *name*). `places_country_fields_pair_check`
    (`20260718130000`) requires code and name to be set together, so it is all three or none.
 
@@ -262,8 +328,16 @@ with `country` NULL, which is exactly today's behaviour. Two consequences worth 
    `_lookup_cached_country`'s blanket `except` swallows an `AttributeError` as a cache MISS and
    `_store_cached_country` raises. Both degrade quietly, so the **cache half of guardrail #7
    would never be exercised.** Extend the fake with both methods, faithfully (per the
-   fake-fidelity rule: a partial fake is the same bug wearing a hat), and add a test that a
-   second place at the same coordinate does NOT call `verify_country` again.
+   fake-fidelity rule: a partial fake is the same bug wearing a hat).
+
+   The cache test itself must then assert the thing the grouping in §6b B4 buys: **two places
+   at the SAME coordinate, driven through ONE `persist_itinerary` call, invoke the injected
+   verifier exactly once.** Round 1 flagged that this assertion is what makes the
+   parallel-across / sequential-within design load-bearing — under a naive flat `gather` it
+   fails, and under a purely sequential implementation it passes for a reason that has nothing
+   to do with this change (the existing sequential cache test at
+   `test_geocode_country_cache.py:121` already covers that). Assert the call **count**, not just
+   the values.
 
 ### E. Known limitations this change deliberately does NOT fix
 
@@ -289,6 +363,236 @@ in production (`20260701162954`, `20260718130000`). So the schema/code merge-ord
 the class of defect the Codex gate has historically caught here — is structurally absent. The
 review surface is instead: code shipping onto a live Render service on merge, `autoDeploy:false`,
 `/health` performing no schema check, and `persist.py` running on every `/generate-trip`.
+
+---
+
+## 6c. Eng review findings (gstack `/plan-eng-review`, 2026-08-03)
+
+> Run autonomously (the user was asleep and had pre-authorised the review gates). The skill's
+> per-finding `AskUserQuestion` prompts could not fire, so every finding below carries an
+> explicit recommendation and a **DECIDED / FOR USER** marker instead. Nothing here changes §2.
+
+### Step 0 — scope challenge
+
+Complexity check does **not** trigger: 2 production files (`pipeline/persist.py`,
+`pipeline/test_persist.py`), 0 new classes, 0 new services, 0 new dependencies, no migration.
+The `asyncio.gather` + `Semaphore` approach is stdlib **[Layer 1]** — no custom concurrency
+primitive is being invented. Scope accepted as-is.
+
+### A1 — [P1] (confidence 8/10) There is a THIRD writer to `places`, and §1 misses it
+
+`backend/pipeline/persist.py:378` —
+```python
+    inserted = (await client.table("places").insert({
+        "name": cand.name,
+```
+`pipeline/persist.py` inserts into `places` at **two** distinct sites, not one:
+
+| Site | Creates | Fixed by T2? |
+|---|---|---|
+| `_find_or_create_place` (persist.py:102) | itinerary places from reels | **yes** |
+| `_find_or_create_restaurant_place` (persist.py:378) | Mapbox restaurant POIs | **no** |
+
+This matters because the plan's own §7 evidence points at the writer it does not fix:
+
+```
+10 via neither mention nor trip_places -> country=None  (all restaurants, via persist.py)
+```
+
+A row absent from `trip_places` was not created by `persist_itinerary` — that function links
+every place it creates. So those 10 rows came from the **restaurant** writer, and **T2 as
+scoped would not have fixed the most recent rows the plan cites as evidence.** The plan's title
+("two writers") undercounts by one.
+
+**Recommendation: leave it out of scope — DECIDED — but for a §2-consistent reason, stated.**
+A Mapbox Search Box POI carries no LLM-claimed country, so `_ground_place`'s fail-closed
+comparison (`country.country_code != place.country_code`) has nothing to compare *against*.
+Grounding a restaurant would mean writing a bare reverse-geocode result, which produces a
+**second, weaker meaning of non-NULL `country`** — "reverse-geocoded" rather than
+"reverse-geocoded AND agreed with an independent claim" — and leaves no way to tell the two
+apart in the column afterwards. That is the same failure mode §2 rejects in option 1, arriving
+by a different road. Fixing it needs its own decision about what the column means for
+provider-sourced rows, which is a plan, not a patch.
+
+Blast radius of deferring: bounded. `PlaceIntelPanel` renders `country` only for `TripPlace`
+rows (the `trip_places` join), and restaurant places reach the frontend through
+`restaurant_suggestions` / `suggestionPlaces`, which do not render a country line. So the
+deferred half is **not** user-visible today; it degrades the `places` corpus, not the UI.
+
+**Trigger to revisit:** when anything renders a country for a restaurant place, or when a
+`places` query starts filtering on `country` (at which point a NULL-heavy corpus silently
+under-returns).
+
+### A2 — [P2] (confidence 9/10) Grounding failure vs cache-write failure are different, and only one is obvious
+
+`grounding.py:82` `_store_cached_country` **raises by design** (strict write-through,
+guardrail #7). Wrapping all of `_ground_place` in one `except` means a *successful* Mapbox
+verification whose cache write failed is discarded, and the place persists with `country` NULL.
+
+**Recommendation: keep that behaviour — DECIDED.** It is guardrail #7 read correctly ("we do
+not hand back a verified result we could not persist"), and NULL is the honest degradation. But
+it must be a written decision rather than a side effect of a broad `except`, because the
+alternative (use the country, skip the cache) is what a later reader will assume was intended.
+
+### C1 — [P2] (confidence 9/10) `country` must be the country NAME, matching the other writer
+
+`20260720160000_serialized_place_find_or_create.sql:104` inserts
+`(name, place_type, lat, lng, country, country_code, country_name, city)` with `p_country`
+bound from `grounded["country_name"]` at `grounding.py:185`. If persist.py writes the *code*
+into `country` while the RPC writes the *name*, one column carries two formats and
+`PlaceIntelPanel` renders `"Tokyo, JP"` for some places and `"Tokyo, Japan"` for others.
+**Assert this explicitly in a test** — it is a one-character mistake with a user-visible result.
+
+### T1 — [P1] Test coverage diagram
+
+Every row enters through `persist_itinerary` (Codex round 1 blocking #1), never through the
+helper alone.
+
+```
+CODE PATHS (pipeline/persist.py)                        USER-VISIBLE OUTCOME
+[~] persist_itinerary()
+  ├── _ground_all() (new: grouped by coord, parallel across / sequential within)
+  │   ├── [GAP] verified: code matches claim    -> country written  PlaceIntelPanel: "Tokyo, Japan"
+  │   ├── [GAP] POISONED NAME: claim JP/"United States", provider JP/"Japan"
+  │   │                                         -> row reads "Japan"   <- provenance, not presence
+  │   ├── [GAP] MISMATCH: code != claim         -> country NULL     "Tokyo"   <- guards option 1
+  │   ├── [GAP] no LLM claim (country_code=None)-> NULL, no network call
+  │   ├── [GAP] placeholder/None source_url     -> NULL, no network call  (user_requested)
+  │   ├── [GAP] Mapbox raises                   -> NULL, trip still saves  <- guardrail #3
+  │   ├── [GAP] cache-write raises              -> NULL  (A2, deliberate)
+  │   └── [GAP] 2 places, SAME coord, ONE call  -> verifier invoked EXACTLY ONCE  <- guardrail #7
+  └── _find_or_create_place()
+      ├── [GAP] insert carries country + country_code + country_name (all three, C1)
+      ├── [★★ TESTED] dedup hit reuses row — test_persist.py:154 (existing, unaffected)
+      └── [★★ TESTED] no-coord place dropped — test_persist.py:143 (existing, unaffected)
+
+NOT COVERED BY DESIGN: _find_or_create_restaurant_place (A1, deferred)
+NOT A FAILURE MODE:     absent MAPBOX_SECRET_TOKEN — boot secret, see Failure modes below
+
+COVERAGE: 0/9 new paths tested — all 9 are the work of T1/T2.
+```
+
+**Every one of those 9 is a required test.** Two are regression-class under the IRON RULE
+(mismatch→NULL, and Mapbox-raises→trip-still-saves): they pin behaviour that exists today and
+that this change could silently take away.
+
+**Fault-injection duty (BUILD-LOOP "tests that cannot fail").** Each test must redden from a
+guard only *it* can exercise. Specifically: the mismatch test and the no-claim test both expect
+`country IS NULL`, so **neither alone proves the comparison runs** — deleting
+`country.country_code != place.country_code` leaves the no-claim test green. Give the mismatch
+test an outcome the other paths cannot produce: seed a claim that a *successful* geocode
+contradicts, and assert the row is NULL **while a second, agreeing place in the same call is
+non-NULL**. One call, both outcomes; no single deletion satisfies both.
+
+### P1 — [P2] Performance: the batch is a latency win, not a cost-free one
+
+`persist_itinerary` already pays one `places` SELECT plus one INSERT per place, serially.
+Per-place grounding would add a third serial round-trip each; the batched gather adds ~1 total.
+The real new cost is **up to N Mapbox reverse calls per cold trip** where there were 0 — bounded
+by the semaphore, absorbed by `geocode_country_cache` on repeat coordinates, and degrading to
+NULL on 429. Accepted. Deferred alternative and its trigger are in §6b B(3).
+
+### Required outputs
+
+**What already exists (reused, not rebuilt):** `_ground_place` (verification + comparison),
+`_lookup_cached_country` / `_store_cached_country` + the `geocode_country_cache` table
+(PK `(coord_key, verification_version)`, so the concurrent upsert is idempotent — checked),
+`is_placeholder_url`, and the `places` country columns + CHECK constraints. This change writes
+**no new grounding logic**; it moves an existing guarantee onto a second path.
+
+**NOT in scope** (each with the trigger that reopens it):
+- Restaurant writer grounding — A1; needs its own decision on what `country` means for
+  provider-sourced rows.
+- Dedup convergence / option 3 — §5; bundling makes both harder to review.
+- `user_requested` places — §6b E; blocked on the placeholder-URL gate's provenance meaning.
+- Organized-places branch pass-through — §6b E. **DECIDED: defer.** Two lines, but it edits the
+  Saved Reels branch, which has 5 open PRs against it; and those places dedup onto rows that
+  already carry a verified country, so the gap is near-theoretical.
+- Repairing an existing row's NULL country on dedup hit — that is what T3's backfill is for.
+
+**Failure modes (new codepaths only):**
+
+| Failure | Test? | Handled? | User sees |
+|---|---|---|---|
+| Mapbox 5xx/timeout | required above | yes, per-place `except` | `"Tokyo"` not `"Tokyo, Japan"` — silent, correct |
+| Mapbox 401 / 429 | required above | yes, same `except` | same |
+| Cache write fails | required above | yes, by design (A2) | country NULL |
+| Geocoder disagrees | required above | yes, that IS the guard | country NULL |
+| ~~Token missing in prod~~ | n/a | **cannot happen** | — |
+
+**Correction (Codex round 1, non-blocking #5): the "silent missing token" critical gap I flagged
+was wrong.** `MAPBOX_SECRET_TOKEN` is in `REQUIRED_SECRETS` (`config_validation.py:29-33`), so a
+genuinely absent token stops the service booting — it can never degrade silently in production.
+It IS unset in the offline test suite, which is why the existing 1186 tests stay green, but
+that is a test-environment property, not a production failure mode.
+
+What remains genuinely silent is the set that survives boot: an invalid/revoked credential, a
+401, a 429, a provider outage, and plain programming error. **Recommendation — DECIDED,
+implemented in T2:** emit ONE aggregate structured log line per trip carrying the counts —
+grounded / mismatched / failed, with the failure exception types. Round 1's improvement on my
+original idea: a bare "zero countries verified" warning is ambiguous, because a trip where every
+coordinate legitimately disagrees with its claim produces zero too. Counts separate
+"eight mismatches" (working as designed) from "eight `HTTPStatusError`s" (credential is dead).
+
+**Parallelization:** sequential — T1 and T2 both rewrite `pipeline/persist.py` and its test
+file. No worktree split. T3 (backfill script) is independent but gated on T4's result, which is
+already in.
+
+---
+
+## 6d. Codex cross-model plan review — round 1 disposition (2026-08-03)
+
+`codex exec -m gpt-5.6-sol`, reasoning effort high, read-only, prompted with the deployment
+reality per BUILD-LOOP §6.
+
+**Round 1 verdict: 6.3/10 — FAIL** (Correctness 7.0 · Safety 7.0 · **Testability 4.0** ·
+Completeness 5.5 · Clarity 8.0). §2's decision was explicitly endorsed as safe: *"Reusing
+`_ground_place` is the right way to preserve the meaning of non-NULL country. I do not recommend
+rewriting that decision."* Every failure was in the **test design**, which is the dimension a
+plan is most able to get wrong and least able to notice.
+
+| # | Blocking finding | Folded into | Disposition |
+|---|---|---|---|
+| 1 | The specifying test targets `_find_or_create_place`, so it can pass while `persist_itinerary` is never wired and every live trip still writes NULL | §3 T1 | **Accepted** — the load-bearing test now enters through `persist_itinerary` |
+| 2 | A `JP/Japan` → `JP/Japan` success test cannot distinguish "uses the verified name" from "uses grounding as a boolean gate, inserts the LLM's name" — ships `Tokyo, United States` | §3 T1, §6c diagram | **Accepted** — poisoned-name test added |
+| 3 | The same-coordinate cache assertion is **incompatible with the flat `gather`** the plan proposed: both tasks miss the cache and both call Mapbox | §6b B4 | **Accepted** — design changed to parallel-across-coordinates / sequential-within |
+
+Finding 3 is the one worth remembering: it was not a gap in the plan's tests, it was a test the
+plan required and an implementation the plan required, which **could not both be true**. That is
+only visible to a reviewer that reads the plan and the code together.
+
+**Non-blocking findings, all folded:** the third writer (independently confirmed my A1, and
+agreed with deferring it); the backfill guarantee problem (§3 T3 amendment (ii)); the semaphore
+being a per-trip no-op against an 8-place cap (§6b B5); Mapbox's 2 attempts × 15s timeout adding
+~30s on an outage (note for the live smoke); and my incorrect "silent missing token" gap
+(§6c Failure modes). Also: **catch `Exception`, never `BaseException`**, so `CancelledError`
+from a lost lease keeps propagating through the gather.
+
+**Confirmed non-findings** (worth recording, so nobody re-derives them): no schema/deploy-order
+blocker (no migration ships); no structural eval-anchor risk, *provided grounding never filters
+or mutates `canonical`* — a constraint the implementation must hold and the anchor run must
+confirm; and the shared Supabase client is safe under the gather (per-request builders over one
+async HTTP client, cache PK + `on_conflict` upsert).
+
+### Backfill recommendation (T3) — **DO NOT RUN, and do not write the naive script**
+
+Answering the judgement call delegated in §3 T3, with both amendments in hand:
+
+- **Value is real**: `PlaceIntelPanel` renders `country`, and the 90 rows **do not self-heal**.
+  Deferral (e) means a later trip that dedups onto an existing NULL row reuses it *without*
+  repairing the country, so those rows stay blank indefinitely.
+- **But the obvious script is wrong**: it would write a weaker guarantee into the same column,
+  which is §2's rejected option 1 wearing a different costume.
+- **So the deliverable here is the reasoning, not a script.** Writing
+  `for row in places: reverse_country(row)` would hand over something that looks ready to run
+  and quietly corrupts the column's meaning the moment it does.
+
+**Recommended sequence, for the user to decide on:** (1) a read-only query establishing how many
+of the 90 still have a recoverable original claim in the extraction cache — this is cheap and it
+determines whether a correct backfill is even possible; (2) if the claims are recoverable, a
+backfill that re-runs the *same* `_ground_place` comparison per row and leaves the rest NULL;
+(3) if they are not, accept the 90 as permanently NULL and let the corpus improve forward-only.
+**No production query has been run and no script has been written.**
 
 ---
 

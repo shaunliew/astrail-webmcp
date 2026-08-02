@@ -1,3 +1,231 @@
+# Astrail Handoff — 2026-08-02
+
+> **Two things shipped today.** The **trip-feedback endpoint** (PR #54) is live and unblocks Zhi
+> Hao's feedback UI. The **Telegram reel-ingestion bot** (PR #55/#56) is deployed, verified against
+> production, and ingesting. Part 1 below is written to be pasted to Zhi Hao as-is. Part 2 is the
+> backend state and the three things still open.
+>
+> The 2026-07-20 Saved Reels handoff further down is not superseded — it is still the reference for
+> that arc. This section is additive.
+
+---
+
+## PART 1 — For Zhi Hao (paste as-is)
+
+**Feedback endpoint is live. You're unblocked on the feedback UI.**
+
+`POST /trips/{tripId}/feedback` — deployed to Render, verified working against production (not just
+merged — it's live on `https://astrail-backend.onrender.com`).
+
+### The contract
+
+```
+POST /trips/{tripId}/feedback
+Authorization: Bearer <supabase JWT>
+
+{
+  "feedback_type": "rating" | "thumbs_up" | "thumbs_down" | "correction" | "free_text",
+  "rating":  1-5,      // required if feedback_type is "rating", rejected otherwise
+  "comment": "..."     // optional, max 2000 chars
+                       // required for "free_text" and "correction"
+}
+
+201 -> { "feedback": { id, trip_id, artifact_type, feedback_type, rating, comment } }
+401 -> no/invalid token
+404 -> trip doesn't exist OR isn't yours (deliberately the same response for both,
+       so it can't be used to probe which trip IDs exist)
+422 -> validation, including any field you send that isn't in the list above
+429 -> more than 3 per minute per user
+```
+
+TS types are already in `frontend/lib/trip/backend-types.ts` — `TripFeedbackRequest`,
+`TripFeedback`, `TripFeedbackResponse`. Nothing to write.
+
+It's generic on purpose: you can ship stars, or thumbs, or just a text note, and none of them need
+another backend PR. Pick whatever fits the UI and go.
+
+### Things to know
+
+- **No GET endpoint yet**, so you can't read back "your feedback". Tell me if the UI needs it and
+  I'll add it — it's small.
+- **Submissions are append-only.** If someone rates twice there's no overwrite. Intentional: a 2
+  then a 5 afterwards is useful signal. Doesn't change anything for you.
+- **Works on any trip they own, including failed ones.** Feedback on a broken trip is the most
+  useful kind, so don't hide the UI on failures.
+- **Don't send `user_id`** — it comes from the token. Sending it is a 422.
+
+### Also changed, on an endpoint you already use
+
+`GET /generate-trip/stream/{tripId}` used to return **500** when the trip didn't exist. It now
+returns **404**, which is correct. Should be a no-op for you — EventSource fires `onerror` the same
+way for any non-200 and nothing in `api.ts` branches on the status — but flagging it because it's a
+deployed behaviour change on an endpoint you already consume, not new code.
+
+### Why this matters for beta
+
+The PRD makes user feedback the primary measure of whether beta worked, and right now the endpoint
+has **zero callers**. The backend being done doesn't mean the metric exists — it only starts
+existing when your UI posts to it. Beta is **Aug 8**.
+
+Full detail is in PR #54 if you want the reasoning, but you shouldn't need it.
+
+---
+
+## PART 2 — Telegram reel-ingestion bot: live, and what's still open
+
+### What it is
+
+Reels shared into one allowlisted Telegram group are pushed through the **existing** Saved Reels
+organize pipeline, pre-warming three **global** caches (`reel_cache`, `geocode_country_cache`,
+`places`) that every website user already reads. A new front door onto an existing engine — not a
+new pipeline.
+
+```
+getUpdates -> filter -> capture -> create job -> enqueue -> react -> advance offset
+
+durable queue = organize_jobs   (shipped: leased, CAS-claimed, reaped)
+recovery      = main._reap_loop (shipped, 120s, global, UNCHANGED)
+spend bound   = users.daily_reel_analysis_limit
+```
+
+**Footprint: 0 new tables · 0 new RPCs · 1 migration (not yet applied) · `backend/main.py` untouched.**
+
+### Live configuration
+
+| | |
+|---|---|
+| Render service | `astrail-telegram-ingest` (`srv-d9nk9jtaeets73c4ipu0`), Singapore, Starter, worker |
+| Bot | `@astrail_reel_bot` (id `8566591365`), privacy mode **off**, group **administrator** |
+| Group | *Astrail Beta User Group*, supergroup `-1004454958909`, forum topics enabled |
+| Ingest account | `f795fcad-71d5-44e2-af2d-47ae018dfa4f` / `telegram-ingest@astrail.xyz` |
+| Daily cold-analysis cap | **5** (the pre-existing hardcoded limit; Phase 2 raises it to 100) |
+| Deployed migrations | **29 of 30.** Only `20260802120000_per_account_reel_analysis_limit` is pending, by design |
+
+### Verified in production, 2026-08-02
+
+- Boot sequence clean: `telegram_worker_starting` → `telegram_ingest_user_ok` →
+  `telegram_poller_alive`, under two seconds.
+- Two reels ingested end to end; **4 jobs, all `succeeded`, 0 failed**; 2 cold analyses charged.
+- **Warm-cache hit proven**: a re-share logged
+  `[cache] HIT … -> 1 places (skipped scrape+extract)` — zero Apify, zero OpenAI. That is the
+  entire cost-saving thesis, working.
+- Both reels are in the **global** `reel_cache` at `v=2026-07-20.1`, so the website gets the same
+  hit.
+- Allowlist refused a non-allowlisted chat and a DM, logging `chat_id` only, with no reply.
+- **Graceful shutdown observed**: `telegram_worker_draining queued=0` → `telegram_worker_stopped`.
+  That also proves python is PID 1 after the `exec` was dropped from `dockerCommand`.
+- **T11 credential audit: PASS.** Across 500 log lines spanning an hour of real operation including
+  two crash-loops, a 409 burst and a shutdown: zero hits for `api.telegram.org/bot`, zero for
+  `apikey=`, zero occurrences of any of the six secret **values** verbatim, zero for their last-8
+  fragments, and zero chat titles / usernames / message text. Logs carry `chat_id`, `message_id`,
+  `update_id` and normalized reel URLs — nothing else.
+
+### The human contract — pin this in the group
+
+```
+👍 means every reel in that message was accepted.
+No 👍 means re-share it or ping the operator.
+```
+
+**Not yet pinned.** Without it, "the human re-shares" is a hope rather than a recovery path. Note
+the emoji is 👍, **not** ✅ — Telegram rejects ✅ as a reaction with `REACTION_INVALID`, which is a
+bug that shipped and was fixed in PR #56.
+
+### Two deploy facts that cost four failed deploys — do not relearn them
+
+**1. Render's `dockerCommand` is ARGV, not a shell.** Established the hard way:
+
+```
+sh -c "cd backend && exec python -m …"   ->  sh: 1: <whole string>: not found
+cd backend && exec python -m …           ->  exit 128, NO output at all
+python -m telegram_ingest.worker         ->  boots clean
+```
+
+The second is the proof: no `sh:` error means no shell ran. `cd`, `&&`, `exec` and quotes are all
+unusable in that field. This is **not** the same as the Dockerfile's
+`CMD ["sh","-c","cd backend && exec uvicorn …"]` — that is exec-form, a JSON array Docker passes as
+argv verbatim, so the `sh -c` is required *there*. Same text, different parser. `astrail-backend`
+leaves `dockerCommand` empty and uses the Dockerfile CMD, so the field had no working precedent in
+this repo and two code reviews had nothing to compare against.
+
+**2. On a Blueprint-managed service, the dashboard loses to `render.yaml`.** A working hand-set
+`dockerCommand` was silently overwritten when PR #56 merged and Render re-applied the Blueprint —
+which still carried the wrong value. **Anything the worker cannot boot without belongs in
+`render.yaml`, not the dashboard**, because a hand-set value reverts at the next sync and the sync
+is triggered by a merge. `PYTHONPATH=/app/backend` is now declared in the file with a literal value
+for exactly this reason.
+
+### Open items
+
+**1. `country` is NULL on ~87% of places (90 of 104). Pre-existing, affects the web path equally.**
+
+Diagnosed, not fixed. `_ground_place` (`backend/grounding.py:99`) early-returns before ever calling
+Mapbox:
+
+```python
+if (place.lat is None or place.lng is None
+    or is_placeholder_url(place.source_url)
+    or not place.country_code          # <- the LLM did not emit these
+    or not place.country_name):
+    return None
+```
+
+So the extractor omitted `country_code`/`country_name`. **It is not a geocoding failure** — I
+reverse-geocoded three of the affected coordinates directly and Mapbox returned `JP / Japan` for
+every one. Note this is *not* the known Mapbox-Japan-language issue in memory: that concerns
+**forward** geocoding by name; this path uses **reverse** geocoding on lat/lng and works fine.
+
+Oldest affected row is 2026-07-05, long before this bot existed.
+
+The fix has a real guardrail-#1 decision in it, which is why it was not patched at the end of a
+long day. The country comparison exists to **verify** the LLM's claim against the coordinate. If
+the LLM makes no claim, do you (a) fix the extractor to always emit one, or (b) let reverse-geocode
+*supply* the country? Option (b) is a two-line change that quietly removes a cross-check catching
+hallucinated coordinates. Decide deliberately; `grounding.py` is on every website organize run.
+
+**2. T11 items 5–7 not formally run.**
+- Heartbeat cadence in the real image: first beat is immediate, then ~100 s (the interval is
+  checked once per loop and the long poll is 50 s). Observed informally in the logs; not recorded.
+- Wrong-token behaviour: with a deliberately bad `TELEGRAM_BOT_TOKEN`, confirm
+  `telegram_poll_unauthorized` at **ERROR** — not `telegram_poll_error` at WARNING — naming the env
+  var.
+- Redeploy drain: effectively seen during the 15:29 handover (`telegram_worker_draining` →
+  `telegram_worker_stopped`), but not run as a deliberate check.
+
+**3. The 409 conflict message overstates itself during a routine deploy.** It says *"NOT transient —
+this will not clear on its own,"* and during the 15:29 deploy handover it cleared on its own in
+about 60 seconds, because Render overlaps the old and new instances. The wording is right for the
+cases worth shouting about (`numInstances > 1`, a stale webhook) but does not distinguish the one
+benign case, which happens on **every** redeploy. An operator who reads that during a normal deploy
+learns to distrust it. Suggested: *"not transient unless a deploy is in progress — if it persists
+past ~2 minutes, check numInstances and deleteWebhook."*
+
+### Phase 2, when you want the cap raised
+
+Deliberately deferred; Phase 1 works at 5 cold reels/day and its rollback is "suspend the worker".
+
+1. Apply `supabase/migrations/20260802120000_per_account_reel_analysis_limit.sql`.
+   **By hand, with `psql -X -1 -v ON_ERROR_STOP=1`** — the header explains why. Do **not** wrap it
+   in `begin;`/`commit;`: the Supabase CLI already wraps each migration, and an in-file `commit`
+   ends that transaction early, removing atomicity while appearing to add it. Measured twice.
+2. `update public.users set daily_reel_analysis_limit = 100 where id = 'f795fcad-…' returning id, daily_reel_analysis_limit;`
+   Assert exactly one row before testing.
+3. Verify a 6th cold reel succeeds.
+
+Rollback is `supabase/migrations/rollback/20260802120000_down.sql`, host-tested, function-restored-
+first. Needs no code coordination — no Python reads that column, which is what makes Phase 1's
+rollback a one-click worker suspend.
+
+### Where the detail lives
+
+`docs/superpowers/plans/2026-08-01-telegram-reel-ingestion.md` — the full plan, its §4.1 record of
+two cross-cutting Python defect classes found during implementation, T10's release runbook and
+T11's deploy-day checklist. `docs/superpowers/plans/2026-08-01-extractor-place-cache.md` is PLAN B,
+**not built** — scope-cut to T1–T3 behind a <5 % hit-rate kill gate, and its T3 probe is still
+unrun.
+
+---
+
 # Astrail Saved Reels Handoff
 
 > **Current stop point: 2026-07-20 — backend AND frontend are deployed, migrated and verified in

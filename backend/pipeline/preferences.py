@@ -146,11 +146,20 @@ async def list_memory_facts(mem0, user_id: str) -> tuple[str, list[dict]]:
                          page=_MEM0_PAGE, page_size=_MEM0_PAGE_SIZE),
             timeout=4)
         # Parsing lives INSIDE the guard: an unexpected shape must degrade, not 500.
-        rows = res.get("results") if isinstance(res, dict) else res
+        #
+        # ENVELOPE vs ROW, and why the distinction matters. An unrecognised ENVELOPE means
+        # we could not read the response at all — that is `unavailable`. Coercing it to []
+        # and returning "ok" would tell the user "you have no saved preferences" when the
+        # truth is "memory is broken", which is the exact ambiguity `status` exists to
+        # remove. Individual malformed ROWS inside a valid envelope are different: the
+        # response WAS readable, so we drop the junk and report `ok` with what survived.
+        rows = res if isinstance(res, list) else (res.get("results") if isinstance(res, dict) else None)
+        if not isinstance(rows, list):
+            raise ValueError("unrecognised mem0 get_all envelope")
         facts = [{"id": str(m.get("id") or ""),
                   "memory": m["memory"],
                   "created_at": str(m.get("created_at") or "")}
-                 for m in (rows if isinstance(rows, list) else [])
+                 for m in rows
                  if isinstance(m, dict)
                  and isinstance(m.get("memory"), str) and m["memory"].strip()]
     except Exception as e:   # noqa: BLE001 — error, TimeoutError, or an unparseable shape

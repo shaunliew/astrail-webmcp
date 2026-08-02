@@ -130,9 +130,11 @@ def test_build_context_timeout_degrades_to_default(monkeypatch):
     # timeout value without a real 4s sleep by faking asyncio.wait_for itself.
     from pipeline import preferences as prefs_mod
 
+    seen = {}
+
     async def _timing_out_wait_for(coro, timeout):
         coro.close()  # avoid "coroutine was never awaited"
-        assert timeout == 4
+        seen["timeout"] = timeout   # RECORD here, assert OUTSIDE (see below)
         raise TimeoutError
 
     monkeypatch.setattr(prefs_mod.asyncio, "wait_for", _timing_out_wait_for)
@@ -140,6 +142,11 @@ def test_build_context_timeout_degrades_to_default(monkeypatch):
     ctx = asyncio.run(prefs_mod.build_preference_context(
         mem, "user-1", explicit_text="", pace="balanced", destination_hint="Tokyo"))
     assert ctx.source == "inferred_default"
+    # Asserted OUT here, not inside the fake: build_preference_context wraps the search in
+    # a blanket `except`, so an AssertionError raised inside the fake is SWALLOWED and the
+    # function still returns inferred_default — the pin could never fail. Verified by
+    # Codex, which reproduced it with timeout == 999 still passing.
+    assert seen["timeout"] == 4
 
 
 _MEM0_PAGE = 1               # keep in sync with preferences._MEM0_PAGE
@@ -221,17 +228,44 @@ def test_list_memory_facts_empty_is_ok_not_an_error():
 
 
 @pytest.mark.parametrize("payload", [None, {"results": None}, {"results": "nope"},
-                                     {"results": ["a string", None, 42]}, {}, "not a dict"])
-def test_list_memory_facts_survives_malformed_payloads(payload):
-    # A degrading read must never 500 on a shape it did not expect.
+                                     {}, "not a dict", 42])
+def test_list_memory_facts_unrecognised_envelope_is_unavailable_not_ok(payload):
+    # An unreadable ENVELOPE means "memory is broken", NOT "you have no saved
+    # preferences". The earlier version of this test asserted `status in ("ok",
+    # "unavailable")` and so could not tell those apart — it passed while every malformed
+    # fixture wrongly returned ("ok", []). Assert the EXACT status (BUILD-LOOP case 7).
     from pipeline.preferences import list_memory_facts
 
     class _Odd:
         async def get_all(self, **kw): return payload
 
-    status, facts = asyncio.run(list_memory_facts(_Odd(), "u1"))
-    assert status in ("ok", "unavailable")
-    assert facts == []
+    assert asyncio.run(list_memory_facts(_Odd(), "u1")) == ("unavailable", [])
+
+
+@pytest.mark.parametrize("payload", [{"results": []}, {"results": ["a string", None, 42]}])
+def test_list_memory_facts_valid_envelope_with_bad_rows_is_ok(payload):
+    # The other side of the fork: the envelope WAS readable, so junk rows are dropped and
+    # the status stays `ok`. A row-level problem is not a memory outage.
+    from pipeline.preferences import list_memory_facts
+
+    class _Odd:
+        async def get_all(self, **kw): return payload
+
+    assert asyncio.run(list_memory_facts(_Odd(), "u1")) == ("ok", [])
+
+
+def test_list_memory_facts_accepts_a_bare_list_envelope():
+    # Defensive: some mem0 versions return a bare list rather than {"results": [...]}.
+    # Tightening the envelope check must not break that shape.
+    from pipeline.preferences import list_memory_facts
+    rows = [{"id": "m1", "memory": "likes ramen", "created_at": "2026-07-07"}]
+
+    class _Bare:
+        async def get_all(self, **kw): return rows
+
+    status, facts = asyncio.run(list_memory_facts(_Bare(), "u1"))
+    assert status == "ok"
+    assert facts == [{"id": "m1", "memory": "likes ramen", "created_at": "2026-07-07"}]
 
 
 def test_list_memory_facts_keeps_valid_rows_beside_garbage_entries():

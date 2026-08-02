@@ -17,6 +17,13 @@
 -- user's organize run goes through. Restoring the function first means the column is unreferenced
 -- before it is dropped, so the window does not exist.
 --
+-- THAT WINDOW ONLY EXISTS IF THIS RUNS STATEMENT-BY-STATEMENT IN AUTOCOMMIT, which is psql's
+-- default. RUN IT WITH `psql -1`: Postgres DDL is transactional, so one transaction makes the
+-- intermediate state invisible to every concurrent session, makes the ordering above moot, and
+-- makes a failure all-or-nothing instead of half-applied — with `lock_timeout` set, a rollback that
+-- cannot get its lock aborts cleanly and is simply retried. The ordering is kept anyway, as the
+-- backstop for whoever runs this without `-1` at 3am.
+--
 -- The function below is the byte-for-byte definition from
 -- 20260719101000_saved_reels_exactly_once_quota.sql:38-101, hardcoded `< 5` and all. Copied from
 -- that file, not from memory. `create or replace` keeps the signature, so PostgREST's cache stays

@@ -119,17 +119,20 @@ Stage events (additive — frontend tolerates unknown types):
 
 Infra (unauthenticated by design):
 - `GET /health` — dumb liveness; the Render `healthCheckPath` deploy gate (never touches the DB, so a DB blip can't fail a deploy).
-- `GET /readiness` — deep probe (confirms Supabase reachable); monitoring only, NOT the deploy gate. `200 {"ready":true}` / `503 {"ready":false}`.
+- `GET /readiness` — deep probe (confirms Supabase reachable) + mem0's configuration state; monitoring only, NOT the deploy gate. `200 {"ready":true,"mem0":"configured|disabled|init_failed|not_initialized"}` / `503 {"ready":false,"mem0":…}` (mem0 is reported on the failure path too). `mem0` is **observed, not probed** — `mem0_status()` reads the singleton without constructing it, because `get_mem0_client()` retries an 8s blocking constructor after a failure and a polled probe must not amplify a mem0 outage. `configured` is a **configuration** claim (key set + client built), never a connectivity claim; mem0 is reported, never required (guardrail #3 — `MEM0_API_KEY` stays out of `REQUIRED_SECRETS`).
 
 Authenticated (Supabase JWT, ES256/JWKS):
 - `POST /generate-trip` — accepts `reel_urls` (1–5) + `start_date`/`end_date` + optional `destination_hint`/`pace`/`preferences`; creates a Supabase trip row + enqueues a durable job; returns `{trip_id}` (snake_case, per the shipped `GenerateTripResponse`). **Two-layer per-user rate limit:** slowapi in-memory burst (`3/minute`, keyed on `request.state.user_id`) + a durable daily quota (`5/day` via an atomic `security definer` RPC on `user_daily_usage`) → `429` on either (burst 429 carries `Retry-After`; daily-cap 429 does not).
 - `GET /generate-trip/stream/:tripId` — SSE stream (query-param `?token=` auth for EventSource, header fallback; owner-checked).
+- `GET /settings/preferences` — the caller's STORED mem0 memories, read live (PRD §18). `200 {"status":"ok|disabled|unavailable","facts":[{id,memory,created_at,source:"mem0"}]}`; always 200, `status` carries the bad news (guardrail #3). `ok` + `facts: []` is a legitimately empty memory, NOT an error. `user_id` is token-derived, so a cross-user read is structurally impossible. Facts are mem0's own prose — deliberately NOT the structured `UserPreferenceFact` shape, since synthesising `fact_key`/`confidence` would fabricate data (guardrail #1). `POST /settings/memory/clear` (PRD §18) is **not implemented yet**.
 
 **No backend trip-read endpoints.** Finished-trip reads (list + detail) go **Supabase-direct under RLS** from the frontend (Supabase JS client — RLS is the sole read-authz control, gated in CI by `.github/workflows/rls-tests.yml`). FastAPI owns **writes / orchestration / streaming** only, plus external API calls requiring the Python SDK.
 
 **Error envelope:** every non-2xx response is one JSON shape `{"error":{"code","message"}}` — registered on the Starlette base `HTTPException`, so framework 404/405 and pre-stream auth failures are enveloped too. TS mirror: `frontend/lib/trip/backend-types.ts` → `ErrorResponse`.
 
-**Deployment:** live on Render as `astrail-backend` (Docker, Starter, `region: singapore`, Blueprint-managed via `render.yaml`, `autoDeploy` on its tracked branch). Launches `cd backend && uvicorn main:app` (bare imports need `backend/` as cwd). Env keys in `render.yaml` / `.claude/docs/ENV.md`.
+**Deployment:** live on Render as `astrail-backend` (Docker, Starter, `region: singapore`, Blueprint-managed via `render.yaml`). Launches `cd backend && uvicorn main:app` (bare imports need `backend/` as cwd). Env keys in `render.yaml` / `.claude/docs/ENV.md`.
+
+**`autoDeploy: false` — deploys are MANUAL, and merging is NOT deploying** (`render.yaml:32`). There is no pre-deploy migration hook anywhere, so schema is applied **by hand** and code ships only when someone triggers a Render deploy. For a migration-bearing branch the order is: apply the migration → confirm the *currently deployed* code still works against the new schema → merge → trigger the deploy. `/health` performs **no schema check**, so a code-first deploy against an old schema stays GREEN while jobs silently fail. Do not re-enable `autoDeploy` without landing a real pre-deploy migration gate — `render.yaml:12-30` records the incident that disabled it.
 
 ## The 4-Phase Pipeline
 
@@ -206,6 +209,6 @@ On match: append new evidence quote, increment `timesReferenced`. On miss: creat
 20. Landing page, settings
 21. Wire memory (mem0), guardrails, rate limiting (slowapi + per-user quota), and result caching
 22. Observability: Langfuse + UptimeRobot; product analytics: PostHog. (Sentry removed 2026-07-19 — never wired, and its default request-URL capture would re-open ISSUES-B1. Re-add only with a `before_send` URL scrubber; see STACK.md.)
-23. CI/CD: GitHub Actions → Vercel + Render; Supabase migrations applied on merge to `main`
+23. CI/CD: GitHub Actions → Vercel + Render. **Supabase migrations are applied BY HAND, not on merge** — `render.yaml` sets `autoDeploy: false` and there is no pre-deploy migration hook (see the Deployment note above).
 24. Deploy: Vercel + Render + Supabase
 25. Open beta

@@ -37,20 +37,33 @@ def test_blank_input_no_memory_infers_default():
 
 def test_distill_only_writes_on_explicit():
     explicit = merge_preferences(explicit_text="loves ramen", pace="relaxed", memory_facts=[])
-    assert distill_memory_text(explicit, synopsis="Planned a 3-day Tokyo trip.") \
-        == "Travel preferences: loves ramen. Planned a 3-day Tokyo trip."
+    assert distill_memory_text(explicit) == "Travel preferences: loves ramen"
     mem = merge_preferences(explicit_text="", pace="balanced", memory_facts=["likes ramen"])
-    assert distill_memory_text(mem, synopsis="x") is None   # nothing NEW to learn
+    assert distill_memory_text(mem) is None   # nothing NEW to learn
     default = merge_preferences(explicit_text="", pace="balanced", memory_facts=[])
-    assert distill_memory_text(default, synopsis="x") is None
+    assert distill_memory_text(default) is None
 
 
-def test_distill_never_leaks_synopsis_secrets():
-    # synopsis is a templated string built by the caller; distill only concatenates —
-    # this pins that raw reel text is never introduced here.
-    ctx = merge_preferences(explicit_text="quiet trip", pace="relaxed", memory_facts=[])
-    out = distill_memory_text(ctx, synopsis="Planned a 2-day Kyoto trip (relaxed pace).")
-    assert "reel" not in out.lower() and "caption" not in out.lower()
+def test_distill_emits_only_the_users_own_words():
+    # Was test_distill_never_leaks_synopsis_secrets. The synopsis it guarded is gone
+    # (PRD §357), but the guarantee it protected still matters: the mem0 payload carries
+    # the user's stated preference and NOTHING else a caller could smuggle in.
+    from pipeline.preferences import distill_memory_text, merge_preferences
+    ctx = merge_preferences(explicit_text="ramen, quiet days", pace="relaxed", memory_facts=[])
+    assert distill_memory_text(ctx) == "Travel preferences: ramen, quiet days"
+
+
+def test_distill_memory_text_excludes_trip_history():
+    # PRD §357: distilled preference facts only — never trip history.
+    from pipeline.preferences import distill_memory_text, merge_preferences
+    ctx = merge_preferences(explicit_text="nice food", pace="balanced", memory_facts=[])
+    assert distill_memory_text(ctx) == "Travel preferences: nice food"
+
+
+def test_trip_synopsis_is_gone():
+    # Deleted, not merely bypassed — an accepted-but-ignored parameter is a trap.
+    import pipeline.preferences as p
+    assert not hasattr(p, "trip_synopsis")
 
 
 class _FakeMem0:
@@ -117,9 +130,11 @@ def test_build_context_timeout_degrades_to_default(monkeypatch):
     # timeout value without a real 4s sleep by faking asyncio.wait_for itself.
     from pipeline import preferences as prefs_mod
 
+    seen = {}
+
     async def _timing_out_wait_for(coro, timeout):
         coro.close()  # avoid "coroutine was never awaited"
-        assert timeout == 4
+        seen["timeout"] = timeout   # RECORD here, assert OUTSIDE (see below)
         raise TimeoutError
 
     monkeypatch.setattr(prefs_mod.asyncio, "wait_for", _timing_out_wait_for)
@@ -127,6 +142,146 @@ def test_build_context_timeout_degrades_to_default(monkeypatch):
     ctx = asyncio.run(prefs_mod.build_preference_context(
         mem, "user-1", explicit_text="", pace="balanced", destination_hint="Tokyo"))
     assert ctx.source == "inferred_default"
+    # Asserted OUT here, not inside the fake: build_preference_context wraps the search in
+    # a blanket `except`, so an AssertionError raised inside the fake is SWALLOWED and the
+    # function still returns inferred_default — the pin could never fail. Verified by
+    # Codex, which reproduced it with timeout == 999 still passing.
+    assert seen["timeout"] == 4
+
+
+_MEM0_PAGE = 1               # keep in sync with preferences._MEM0_PAGE
+_MEM0_PAGE_SIZE = 100        # keep in sync with preferences._MEM0_PAGE_SIZE
+
+
+class _FakeMem0GetAll:
+    def __init__(self, rows=None, raises=False):
+        self.rows, self.raises, self.calls = rows, raises, []
+
+    async def get_all(self, **kwargs):
+        self.calls.append(kwargs)          # recorded so tests can assert the real contract
+        if self.raises:
+            raise RuntimeError("mem0 down")
+        return {"results": self.rows}
+
+
+def test_list_memory_facts_returns_ok_and_maps_rows():
+    from pipeline.preferences import list_memory_facts
+    mem = _FakeMem0GetAll(rows=[
+        {"id": "m1", "memory": "User prefers ramen", "created_at": "2026-07-07T03:08:44"},
+        {"id": "m2", "memory": "  ", "created_at": "x"},        # blank -> dropped
+        {"id": "m3", "memory": None, "created_at": "y"},        # non-str -> dropped
+    ])
+    status, facts = asyncio.run(list_memory_facts(mem, "u1"))
+    assert status == "ok"
+    assert facts == [{"id": "m1", "memory": "User prefers ramen",
+                      "created_at": "2026-07-07T03:08:44"}]
+
+
+def test_list_memory_facts_sends_v2_filter_and_both_pagination_keys():
+    from pipeline.preferences import list_memory_facts
+    mem = _FakeMem0GetAll(rows=[])
+    asyncio.run(list_memory_facts(mem, "u1"))
+    assert mem.calls[0]["version"] == "v2"
+    assert mem.calls[0]["filters"] == {"AND": [{"user_id": "u1"}]}
+    # BOTH keys required: mem0ai 2.0.10 client/main.py get_all only emits pagination query
+    # params under `if "page" in params and "page_size" in params`. page_size alone is
+    # SILENTLY IGNORED and the read comes back unbounded — and this fake would accept it,
+    # so only asserting BOTH keys catches the real SDK's rule.
+    assert mem.calls[0]["page"] == _MEM0_PAGE
+    assert mem.calls[0]["page_size"] == _MEM0_PAGE_SIZE
+
+
+def test_list_memory_facts_disabled_when_client_is_none():
+    from pipeline.preferences import list_memory_facts
+    assert asyncio.run(list_memory_facts(None, "u1")) == ("disabled", [])
+
+
+def test_list_memory_facts_unavailable_on_error():
+    from pipeline.preferences import list_memory_facts
+    assert asyncio.run(list_memory_facts(_FakeMem0GetAll(raises=True), "u1")) == ("unavailable", [])
+
+
+def test_list_memory_facts_unavailable_on_timeout(monkeypatch):
+    from pipeline import preferences as prefs_mod
+    seen = {}
+
+    async def _timing_out_wait_for(coro, timeout):
+        coro.close()
+        seen["timeout"] = timeout      # RECORD, do not assert in here
+        raise TimeoutError
+
+    monkeypatch.setattr(prefs_mod.asyncio, "wait_for", _timing_out_wait_for)
+    assert asyncio.run(prefs_mod.list_memory_facts(_FakeMem0GetAll(rows=[]), "u1")) \
+        == ("unavailable", [])
+    # Asserted OUT here, not inside the fake: an AssertionError raised inside the fake
+    # lands in list_memory_facts's blanket `except Exception` and is swallowed, so the
+    # function returns ("unavailable", []) anyway and the timeout pin can never fail.
+    # (The same latent flaw exists at test_preferences.py:120-123 — do not copy it.)
+    assert seen["timeout"] == 4
+
+
+def test_list_memory_facts_empty_is_ok_not_an_error():
+    # A legitimately empty memory is NOT a failure — the UI must distinguish "you have no
+    # saved preferences" from "memory is broken".
+    from pipeline.preferences import list_memory_facts
+    assert asyncio.run(list_memory_facts(_FakeMem0GetAll(rows=[]), "u1")) == ("ok", [])
+
+
+@pytest.mark.parametrize("payload", [None, {"results": None}, {"results": "nope"},
+                                     {}, "not a dict", 42])
+def test_list_memory_facts_unrecognised_envelope_is_unavailable_not_ok(payload):
+    # An unreadable ENVELOPE means "memory is broken", NOT "you have no saved
+    # preferences". The earlier version of this test asserted `status in ("ok",
+    # "unavailable")` and so could not tell those apart — it passed while every malformed
+    # fixture wrongly returned ("ok", []). Assert the EXACT status (BUILD-LOOP case 7).
+    from pipeline.preferences import list_memory_facts
+
+    class _Odd:
+        async def get_all(self, **kw): return payload
+
+    assert asyncio.run(list_memory_facts(_Odd(), "u1")) == ("unavailable", [])
+
+
+@pytest.mark.parametrize("payload", [{"results": []}, {"results": ["a string", None, 42]}])
+def test_list_memory_facts_valid_envelope_with_bad_rows_is_ok(payload):
+    # The other side of the fork: the envelope WAS readable, so junk rows are dropped and
+    # the status stays `ok`. A row-level problem is not a memory outage.
+    from pipeline.preferences import list_memory_facts
+
+    class _Odd:
+        async def get_all(self, **kw): return payload
+
+    assert asyncio.run(list_memory_facts(_Odd(), "u1")) == ("ok", [])
+
+
+def test_list_memory_facts_accepts_a_bare_list_envelope():
+    # Defensive: some mem0 versions return a bare list rather than {"results": [...]}.
+    # Tightening the envelope check must not break that shape.
+    from pipeline.preferences import list_memory_facts
+    rows = [{"id": "m1", "memory": "likes ramen", "created_at": "2026-07-07"}]
+
+    class _Bare:
+        async def get_all(self, **kw): return rows
+
+    status, facts = asyncio.run(list_memory_facts(_Bare(), "u1"))
+    assert status == "ok"
+    assert facts == [{"id": "m1", "memory": "likes ramen", "created_at": "2026-07-07"}]
+
+
+def test_list_memory_facts_keeps_valid_rows_beside_garbage_entries():
+    # The `isinstance(m, dict)` row guard must be LOAD-BEARING, and the test above cannot
+    # prove that: it accepts ("ok", []) OR ("unavailable", []), and the blanket `except`
+    # produces the latter on its own — so deleting the row guard leaves it green.
+    # Surviving a good row beside a bad one is an outcome the `except` path CANNOT fake,
+    # because it returns []. Drop the junk, keep the real memory.
+    from pipeline.preferences import list_memory_facts
+    mem = _FakeMem0GetAll(rows=["a string", None, 42,
+                                {"id": "m1", "memory": "User prefers ramen",
+                                 "created_at": "2026-07-07T03:08:44"}])
+    status, facts = asyncio.run(list_memory_facts(mem, "u1"))
+    assert status == "ok"
+    assert facts == [{"id": "m1", "memory": "User prefers ramen",
+                      "created_at": "2026-07-07T03:08:44"}]
 
 
 class _FakeMem0Add(_FakeMem0):
@@ -161,8 +316,7 @@ def test_write_back_writes_event_and_adds_on_explicit():
     ctx = merge_preferences(explicit_text="loves ramen", pace="relaxed", memory_facts=[])
     mem, client = _FakeMem0Add(), _FakeClient()
     learned = asyncio.run(persist_trip_memory(
-        client, mem, user_id="u1", trip_id="t1", ctx=ctx,
-        synopsis="Planned a 3-day Tokyo trip (relaxed pace)."))
+        client, mem, user_id="u1", trip_id="t1", ctx=ctx))
     assert learned == ["loves ramen"]
     assert client.events and client.events[0]["event_type"] == "learned"
     assert client.events[0]["trip_id"] == "t1"
@@ -174,8 +328,7 @@ def test_write_back_swallows_add_error():
     ctx = merge_preferences(explicit_text="quiet trip", pace="relaxed", memory_facts=[])
     mem, client = _FakeMem0Add(add_raises=True), _FakeClient()
     # must NOT raise — write-back is best-effort
-    asyncio.run(persist_trip_memory(client, mem, user_id="u1", trip_id="t1",
-                                    ctx=ctx, synopsis="x"))
+    asyncio.run(persist_trip_memory(client, mem, user_id="u1", trip_id="t1", ctx=ctx))
     assert client.events and client.events[-1]["event_type"] == "failed"
 
 
@@ -184,7 +337,7 @@ def test_write_back_noop_when_nothing_learned():
     ctx = merge_preferences(explicit_text="", pace="balanced", memory_facts=["likes ramen"])
     mem, client = _FakeMem0Add(), _FakeClient()
     learned = asyncio.run(persist_trip_memory(client, mem, user_id="u1", trip_id="t1",
-                                              ctx=ctx, synopsis="x"))
+                                              ctx=ctx))
     assert learned == [] and mem.added == []   # memory-only trip: nothing new to store
 
 
@@ -196,25 +349,9 @@ def test_write_back_disabled_memory_writes_no_event():
     ctx = merge_preferences(explicit_text="loves ramen", pace="relaxed", memory_facts=[])
     client = _FakeClient()
     learned = asyncio.run(persist_trip_memory(client, None, user_id="u1", trip_id="t1",
-                                              ctx=ctx, synopsis="x"))
+                                              ctx=ctx))
     assert learned == ["loves ramen"]
     assert client.events == []   # no audit row when memory is disabled
-
-
-def test_trip_synopsis_uses_real_itinerary_shape_and_destination():
-    # Finding 2: ItineraryDay has no `.places`/`.city` — trip_synopsis must derive the
-    # day count from the real ItineraryOutput shape and take destination from the caller.
-    from models.trip import ItineraryDay, ItineraryOutput
-    from pipeline.preferences import trip_synopsis
-    itinerary = ItineraryOutput(
-        title="Tokyo trip", source="reels", source_places=["Tokyo Tower"],
-        days=[
-            ItineraryDay(day_number=1, date="2026-08-01", place_names=["Tokyo Tower"]),
-            ItineraryDay(day_number=2, date="2026-08-02", place_names=["Senso-ji"]),
-        ])
-    result = trip_synopsis(itinerary, "relaxed", "Tokyo")
-    assert result == "Planned a 2-day Tokyo trip (relaxed pace)."
-    assert "the destination" not in result
 
 
 @pytest.mark.live

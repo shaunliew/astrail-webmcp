@@ -11,8 +11,9 @@ Determinism / eval-safety: nothing here touches dedupe/assemble_itinerary (the
 frozen 6229.0 anchor). Personalization reaches the trip ONLY through the enrich
 agents' prompts (restaurant, narrator) via preference_block().
 
-Untrusted content (guardrail #11): the mem0.add payload is ONLY distilled prefs +
-a templated synopsis — never raw reel caption/transcript, never secrets.
+Untrusted content (guardrail #11): the mem0.add payload is ONLY the user's own
+distilled preference text — never raw reel caption/transcript, never secrets, and
+(PRD §357) never trip history.
 
 NOTE (design): this is retrieve-once-per-generation / write-once-per-trip — the
 OPPOSITE of the mem0 travel-assistant cookbook's per-turn add(raw_message). The
@@ -22,6 +23,7 @@ toward it.
 from __future__ import annotations
 
 import asyncio
+import sys
 
 from models.prefs import PreferenceContext
 
@@ -68,14 +70,19 @@ def preference_block(ctx: PreferenceContext) -> str | None:
     return " | ".join(parts) or None
 
 
-def distill_memory_text(ctx: PreferenceContext, *, synopsis: str) -> str | None:
+def distill_memory_text(ctx: PreferenceContext) -> str | None:
     """The mem0.add payload — ONLY when the user stated something NEW this trip
-    (source=explicit). A memory-only or inferred trip has nothing new to learn, so
-    we skip the write (saves the API call + the free-tier quota, avoids duplicates).
-    synopsis is a caller-built templated string (never raw reel text)."""
+    (source=explicit). A memory-only or inferred trip has nothing new to learn, so we skip
+    the write (saves the API call + free-tier quota, avoids duplicates).
+
+    PRD §357: preference facts ONLY. The trip synopsis that used to be appended here made
+    mem0 store a second, trip-history memory per trip ("User has planned a four-day trip
+    to Tokyo…"), which surfaced to the user as a "saved travel preference" and would
+    become visible content on the Settings screen. Do not reintroduce it.
+    """
     if ctx.source != "explicit" or not ctx.explicit_text:
         return None
-    return f"Travel preferences: {ctx.explicit_text}. {synopsis}"
+    return f"Travel preferences: {ctx.explicit_text}"
 
 
 async def build_preference_context(mem0, user_id: str, *, explicit_text: str | None,
@@ -101,24 +108,78 @@ async def build_preference_context(mem0, user_id: str, *, explicit_text: str | N
     return merge_preferences(explicit_text=explicit_text, pace=pace, memory_facts=facts)
 
 
-def trip_synopsis(itinerary, pace: str, destination: str) -> str:
-    """A templated one-line trip summary for the mem0.add payload — NO LLM, NO raw
-    reel text. Derived only from the assembled itinerary's shape + a caller-supplied
-    destination (ItineraryDay has no per-place city; the caller derives it from the
-    canonical places / destination_hint)."""
-    days = getattr(itinerary, "days", []) or []
-    n = len(days)
-    return f"Planned a {n}-day {destination} trip ({pace} pace)."
+# Bounded so one pathological account cannot pull an unbounded page into memory. We
+# deliberately return only the first page rather than looping, which would multiply calls
+# against the free-tier budget (see the pagination deferral).
+#
+# BOTH page AND page_size must be sent: mem0ai 2.0.10 (client/main.py, get_all) only
+# promotes them to query params under `if "page" in params and "page_size" in params`;
+# page_size alone falls through to the unpaginated POST and is silently ignored.
+_MEM0_PAGE = 1
+_MEM0_PAGE_SIZE = 100
+
+
+async def list_memory_facts(mem0, user_id: str) -> tuple[str, list[dict]]:
+    """This user's STORED mem0 memories, for GET /settings/preferences.
+
+    NOTE the precise claim: these are the memories mem0 holds, read with `get_all` and
+    capped at the first page. They are NOT identical to what any given generation recalls
+    — recall uses a semantic `search(..., top_k=10)` and only runs when the user left
+    preferences blank (build_preference_context). Do not describe this endpoint as showing
+    "exactly what recall will use"; it is a superset, differently ordered.
+
+    Read LIVE rather than from a cached table: a cache that drifts from mem0 is precisely
+    what hid the 2026-08-02 diagnosis. Degrades per guardrail #3 — a None client, an
+    error, a hang, or an unparseable payload yields a status the UI can render, never an
+    exception. `status` separates 'no saved preferences' (ok, []) from 'memory is broken'
+    (unavailable, []).
+
+    mem0's prose is passed through verbatim. Callers must NOT synthesise
+    fact_key/confidence to fit the older UserPreferenceFact shape — inventing data to
+    satisfy a type is what guardrail #1 forbids.
+    """
+    if mem0 is None:
+        return "disabled", []
+    try:
+        res = await asyncio.wait_for(
+            mem0.get_all(version="v2", filters={"AND": [{"user_id": user_id}]},
+                         page=_MEM0_PAGE, page_size=_MEM0_PAGE_SIZE),
+            timeout=4)
+        # Parsing lives INSIDE the guard: an unexpected shape must degrade, not 500.
+        #
+        # ENVELOPE vs ROW, and why the distinction matters. An unrecognised ENVELOPE means
+        # we could not read the response at all — that is `unavailable`. Coercing it to []
+        # and returning "ok" would tell the user "you have no saved preferences" when the
+        # truth is "memory is broken", which is the exact ambiguity `status` exists to
+        # remove. Individual malformed ROWS inside a valid envelope are different: the
+        # response WAS readable, so we drop the junk and report `ok` with what survived.
+        rows = res if isinstance(res, list) else (res.get("results") if isinstance(res, dict) else None)
+        if not isinstance(rows, list):
+            raise ValueError("unrecognised mem0 get_all envelope")
+        facts = [{"id": str(m.get("id") or ""),
+                  "memory": m["memory"],
+                  "created_at": str(m.get("created_at") or "")}
+                 for m in rows
+                 if isinstance(m, dict)
+                 and isinstance(m.get("memory"), str) and m["memory"].strip()]
+    except Exception as e:   # noqa: BLE001 — error, TimeoutError, or an unparseable shape
+        # Log the TYPE only — never the payload (it may carry user preference text).
+        # An observability arc that degrades silently would repeat the very failure it
+        # exists to fix: the user sees "unavailable" and the server records nothing about
+        # why. Mirrors mem0_client.py:74's convention.
+        print(f"[mem0] list_memory_facts unavailable: {type(e).__name__}", file=sys.stderr)
+        return "unavailable", []
+    return "ok", facts
 
 
 async def persist_trip_memory(client, mem0, *, user_id: str, trip_id: str,
-                              ctx: PreferenceContext, synopsis: str) -> list[str]:
+                              ctx: PreferenceContext) -> list[str]:
     """Write-once, awaited AFTER the terminal `result` event so it's invisible to the
     stream yet can't be GC'd. Records a memory_events audit row and pushes mem0.add —
     BOTH best-effort (guardrail #3): a mem0 error OR TIMEOUT can't fail the (already
     saved) trip. Only writes when the user stated something NEW this trip
     (distill_memory_text is None otherwise)."""
-    text = distill_memory_text(ctx, synopsis=synopsis)
+    text = distill_memory_text(ctx)
     learned = [ctx.explicit_text] if text else []
     if not text:
         return learned   # memory-only / inferred trip: nothing new to store or audit

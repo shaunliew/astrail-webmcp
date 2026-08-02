@@ -208,8 +208,27 @@ tests.** Every one was found by deleting the production code and watching what f
    its row with no lat/lng, so the distance gate skipped it and the predicate under test never ran.
    It passed with the country check deleted. This one had been in the repo for a long time.
 
-**The rule that catches all six:** before trusting any test, state *what specifically makes it red
-when the guard is removed* — then delete the guard and prove it. Clear `__pycache__` first
+7. **A disjunctive assertion, so no single guard is attributable** (learned 2026-08-02, the mem0
+   settings arc — this one fired FOUR times in one arc, twice inside a plan that quotes this very
+   section). `test_list_memory_facts_survives_malformed_payloads` asserted
+   `status in ("ok", "unavailable")` and `facts == []`. Two independent guards — the blanket
+   `except` and the per-row `isinstance(m, dict)` filter — each produce one of those outcomes on
+   their own, so deleting **either** left the test green. It genuinely proved "never 500s"; it could
+   not prove *which mechanism* delivered that. Same shape in `mem0_client`: a success-path
+   `_init_failed = False` was unobservable because `mem0_status()` short-circuits on
+   `_client is not None` before ever reading the flag, so removing the line broke nothing.
+   The fix is never a stricter assertion — it is choosing an **outcome only the guard under test can
+   produce**: assert a valid row *survives beside* garbage rows (the `except` path returns `[]`, so
+   it cannot fake that), and assert the flag across a failure→recovery sequence (the only path that
+   reads it).
+
+**The rule that catches all seven:** before trusting any test, state *what specifically makes it red
+when the guard is removed* — then delete the guard and prove it. When several guards can yield the
+same safe result (defense in depth), you need one test per guard whose expected value is
+**unreachable from the others**. And when a fault genuinely cannot be made to redden alone — as with
+an outer `try` that only matters once the inner guards are also gone — say so explicitly in the plan
+and prove it reddens *in combination*, rather than deleting the guard as "dead code."
+Clear `__pycache__` first
 (`find . -name __pycache__ -type d -not -path "./.venv/*" -exec rm -rf {} +`); restoring a file can
 leave stale bytecode so every signal reads clean while the interpreter runs faulted code.
 

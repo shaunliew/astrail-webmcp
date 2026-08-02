@@ -269,3 +269,11 @@ export interface ErrorResponse {
     message: string;
   };
 }
+
+// --- Settings: mem0 preference memory (mirrors api/schemas.py) ---
+// Deliberately NOT UserPreferenceFact: mem0 returns prose, not structured facts, and
+// synthesising fact_key/confidence to fit that type would be inventing data.
+// These are STORED memories — not identical to what a given generation recalls.
+export type MemoryStatus = 'ok' | 'disabled' | 'unavailable'
+export type MemoryFact = { id: string; memory: string; created_at: string; source: 'mem0' }
+export type SettingsPreferencesResponse = { status: MemoryStatus; facts: MemoryFact[] }

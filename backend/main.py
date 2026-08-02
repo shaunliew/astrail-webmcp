@@ -32,9 +32,11 @@ from api.schemas import (
     CaptureSavedReelResponse,
     GenerateTripRequest,
     GenerateTripResponse,
+    MemoryFact,
     OrganizeJobStatus,
     OrganizeSavedReelsRequest,
     OrganizeSavedReelsResponse,
+    SettingsPreferencesResponse,
 )
 from api.streaming import stream_organize_events, stream_trip_events
 from auth import get_current_user_id, get_user_id_from_query_or_header
@@ -150,13 +152,19 @@ async def lifespan(app: FastAPI):
             _spawn(_redispatch(client, job))
         for job in await recover_organize_jobs(client):
             _spawn(_redispatch_organize(client, job))
-        try:
-            from mem0_client import get_mem0_client
-            await get_mem0_client()   # warm once so the first trip skips the blocking ping
-        except Exception:
-            pass   # memory is best-effort; a warm failure must never down the app
     except Exception:
         pass   # boot-time DB blip must not down the app; the reaper re-picks pending jobs
+    # OUTSIDE the Supabase try, deliberately. This warm used to live INSIDE it, so any
+    # boot-time DB blip (get_supabase_client or either sweep raising) jumped straight to the
+    # except and skipped the warm entirely — leaving /readiness reporting `not_initialized`
+    # with a perfectly good key until the first trip lazily built the client, which is
+    # misleading in precisely the way the mem0 readiness field exists to prevent. Kept AFTER
+    # the sweeps so the 8s construction timeout never delays guardrail #12 job recovery.
+    try:
+        from mem0_client import get_mem0_client
+        await get_mem0_client()   # warm once so the first trip skips the blocking ping
+    except Exception:
+        pass   # memory is best-effort; a warm failure must never down the app
     try:
         yield
     finally:
@@ -207,14 +215,51 @@ async def health():
 
 @app.get("/readiness")
 async def readiness():
-    """Deep readiness probe: confirms Supabase is reachable. NOT the deploy gate
-    (that is /health) — a DB blip should not fail a rolling deploy."""
+    """Deep readiness probe: confirms Supabase is reachable, and reports mem0's
+    CONFIGURATION state. NOT the deploy gate (that is /health) — neither a DB blip nor a
+    mem0 outage should fail a rolling deploy.
+
+    Uses mem0_status(), which observes the singleton without constructing it: calling
+    get_mem0_client() here would retry an 8s blocking constructor on every poll during a
+    mem0 outage. mem0 is reported, never required — MEM0_API_KEY deliberately stays OUT of
+    REQUIRED_SECRETS (guardrail #3). Before this field existed, an unset or mistyped key
+    left the service fully green while memory silently did nothing, which is how the
+    2026-08-02 'mem0 is not working' report became undiagnosable from the outside.
+    """
+    from mem0_client import mem0_status
+
+    mem0_state = mem0_status()
     try:
         client = await get_supabase_client()
         await client.table("users").select("id").limit(1).execute()
-        return {"ready": True}
+        return {"ready": True, "mem0": mem0_state}
     except Exception:
-        return JSONResponse(status_code=503, content={"ready": False})
+        return JSONResponse(status_code=503, content={"ready": False, "mem0": mem0_state})
+
+
+@app.get("/settings/preferences", response_model=SettingsPreferencesResponse)
+@limiter.limit(BURST_LIMIT)
+async def get_settings_preferences(
+    request: Request,                                     # required by slowapi; must be named `request`
+    response: Response,                                   # REQUIRED with headers_enabled=True
+    user_id: str = Depends(get_current_user_id_stashed),  # token-derived: guardrails #5 + #6
+) -> SettingsPreferencesResponse:
+    """PRD §18. The user's STORED mem0 memories, read live. Degrades rather than erroring
+    (guardrail #3): `status` carries the bad news so an unrelated settings screen still
+    renders. Not identical to a generation's recall — see list_memory_facts."""
+    from mem0_client import get_mem0_client, mem0_status
+    from pipeline.preferences import list_memory_facts
+
+    status, facts = await list_memory_facts(await get_mem0_client(), user_id)
+    # A None client means EITHER "no key" OR "key set but construction failed", and
+    # list_memory_facts cannot tell them apart — it only sees None. Only the first is
+    # genuinely `disabled`. Reporting "memory is off by configuration" during a mem0
+    # OUTAGE is the precise misdiagnosis this arc exists to remove, and it would also
+    # contradict /readiness, which says `init_failed` for the same state.
+    if status == "disabled" and mem0_status() == "init_failed":
+        status = "unavailable"
+    return SettingsPreferencesResponse(
+        status=status, facts=[MemoryFact(**f) for f in facts])
 
 
 @app.post("/saved-reels", response_model=CaptureSavedReelResponse)

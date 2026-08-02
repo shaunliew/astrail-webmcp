@@ -861,16 +861,19 @@ async def test_runner_write_back_failure_is_non_critical():
 @pytest.mark.asyncio
 async def test_runner_write_back_raise_does_not_double_result_or_flip_status(monkeypatch):
     # Finding 1: the write-back sits AFTER _set_status/result/mark_job_done inside
-    # run_generation's outermost try. If trip_synopsis (or persist_trip_memory) raises
-    # uncaught, the outer `except Exception: _fail(...)` would emit a SECOND `result`
-    # event and flip the already-`succeeded` trip/job to `failed`. The runner tail must
-    # wrap the write-back in its own try/except so a raise here is fully absorbed.
+    # run_generation's outermost try. If persist_trip_memory raises uncaught, the outer
+    # `except Exception: _fail(...)` would emit a SECOND `result` event and flip the
+    # already-`succeeded` trip/job to `failed`. The runner tail must wrap the write-back
+    # in its own try/except so a raise here is fully absorbed.
+    # Patched at the DEFINITION site: runner.py imports persist_trip_memory inside the
+    # function body, so the patch is resolved at call time (a module-level import would
+    # have needed runner's own binding patched instead).
     from pipeline import preferences as prefs_mod
 
-    def _boom_synopsis(*_a, **_k):
-        raise RuntimeError("synopsis boom")
+    async def _boom_write_back(*_a, **_k):
+        raise RuntimeError("write-back boom")
 
-    monkeypatch.setattr(prefs_mod, "trip_synopsis", _boom_synopsis)
+    monkeypatch.setattr(prefs_mod, "persist_trip_memory", _boom_write_back)
 
     c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
 

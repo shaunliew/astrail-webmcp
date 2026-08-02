@@ -793,6 +793,55 @@ findings across any round.
 
 ---
 
+## 6g. Mapbox research — grounded in live docs, 2026-08-03
+
+> Done via the `mapbox-docs-mcp` server against `docs.mapbox.com/api/search/geocoding.md`, not
+> from memory. Three facts, each closing a question the plan had been answering by assertion.
+
+### 1. A batch reverse endpoint EXISTS — and we should still not use it here
+
+`POST https://api.mapbox.com/search/geocode/v6/batch` accepts reverse queries, supports
+`permanent=true`, and bundles many coordinates into one HTTP request. Cap: the prose says 1000,
+the error table says `Batch queries must include 50 queries or less` — **50 is the real limit**.
+
+**Decision: do NOT adopt it for T2.** Three reasons, in order of weight:
+
+1. **It cannot reuse `_ground_place`.** That function's entire structure is per-place:
+   cache-read → provider → cache-write → compare. A batch call inverts it (collect all misses →
+   one request → fan the results back out), so adopting it means writing the *second grounding
+   implementation* §3 T2 explicitly forbids, on the live path, five days before beta.
+2. **It saves almost nothing.** The batch's win is round-trips — but the coordinate-grouped
+   `gather` (§6b B4) already collapses up to 8 calls into ~1 round-trip of wall-clock. Batch
+   would save connection overhead, not a serial chain.
+3. **It is not cheaper.** *"Each individual search in a batch geocoding request counts as one
+   request"* — 8 coordinates bill as 8 either way.
+
+**Where it IS the right tool: the T3 backfill.** 90 coordinates is 2 batch requests instead of
+90 calls, on an offline script with no live-path risk and no `_ground_place` reuse constraint.
+Recorded for whoever builds that script — see §6d's backfill sequence, which this does not
+otherwise change (the claim-recovery problem is still the blocker, not the call count).
+
+### 2. The rate limit is 1000 requests/minute — the no-semaphore call is now quantified
+
+§6b B5 dropped the semaphore on the argument that 8 was small. The measured number: the default
+Geocoding rate limit is **1000 req/min**, adjustable per account. A trip's worst case of 8
+concurrent reverse calls is **0.8%** of that. Even 10 simultaneous trips would sit at 8%. The
+semaphore was solving nothing, and this replaces the plan's hand-waving with a figure.
+**Trigger for revisiting stays the same: observed 429s.**
+
+### 3. Our existing call is valid, and this change does not alter the compliance posture
+
+`geocode/mapbox_reverse.py:89-97` sends `types=country` **and** `limit=1` together, which the
+docs require — *"limit must be combined with a single type parameter when reverse geocoding"*
+(422 otherwise). It also sends `permanent=true`, the storable-results tier, which is what makes
+persisting the answer into `places.country` legitimate rather than a ToS violation.
+
+Both were already true on the organize path. **This change applies the identical call on a
+second path — it introduces no new Mapbox surface, no new parameter, and no new compliance
+question.** That is the strongest argument that the provider-facing risk here is near zero.
+
+---
+
 ## 7. Evidence appendix — commands that produced §1
 
 ```

@@ -38,14 +38,30 @@
 - **Postgres daily quota layer.** *Trigger: observed abuse.*
 - **Aggregate/admin analytics endpoint.** *Trigger: someone needs the beta numbers in-app rather than via the Supabase dashboard.*
 
+## TODO for whoever builds `DELETE /trips/:tripId` (plan-eng-review finding A1)
+
+`feedback.trip_id` is `references public.trips(id) **on delete cascade**`
+(`supabase/migrations/20260702012806_generated_trip_outputs.sql:86`). `DELETE /trips/:tripId` is
+required by PRD:816 and **is not built yet** (verified: no `@app.delete` in `backend/main.py`).
+
+The moment it ships, a user deleting a trip silently deletes all its feedback — erasing the exact
+adoption signal PRD:86 makes the primary beta success measure. Nothing errors; the numbers are
+just quietly low.
+
+Options for that arc, in preference order: (1) soft-delete trips instead of hard-deleting;
+(2) migrate `feedback` to keep a denormalized trip snapshot and a nullable `trip_id`. Option (2)
+cannot use `ON DELETE SET NULL` as-is because `trip_id` is `NOT NULL`.
+
+Deliberately **not** fixed here: it needs a migration, and this arc is migration-free by design.
+
 ## File Structure
 
 | File | Responsibility | Action |
 |---|---|---|
 | `backend/api/schemas.py` | `TripFeedbackRequest`, `TripFeedback`, `TripFeedbackResponse` + cross-field validator | Modify (append) |
-| `backend/main.py` | The route: auth, limit, owner check, insert | Modify (append route + import) |
+| `backend/test_main.py` | **Task 2:** make `_Table`/`_Client` faithful to postgrest. **Task 3:** route tests | Modify |
+| `backend/main.py` | **Task 2:** fix the `main.py:470` stream owner check. **Task 3:** the feedback route | Modify |
 | `frontend/lib/trip/backend-types.ts` | snake_case 1:1 TS mirror (guardrail #4) | Modify (append) |
-| `backend/test_main.py` | Route tests reusing the `_Client` in-memory-DB fake + `ctx` fixture | Modify (append) |
 | `backend/api/test_schemas.py` | Validator unit tests | Modify (append) |
 | `.claude/docs/ARCHITECTURE.md` | Endpoint list entry | Modify |
 
@@ -117,6 +133,26 @@ def test_comment_longer_than_2000_chars_is_rejected():
         TripFeedbackRequest(feedback_type="free_text", comment="x" * 2001)
 
 
+def test_comment_of_exactly_2000_chars_is_accepted():
+    # Boundary: max_length is inclusive. Without this, changing le/lt goes unnoticed.
+    assert len(TripFeedbackRequest(feedback_type="free_text", comment="x" * 2000).comment) == 2000
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\n\t "])
+def test_whitespace_only_comment_is_rejected_for_text_feedback(blank):
+    # A bare truthiness check would let "   " through and store an empty-signal row.
+    with pytest.raises(ValidationError, match="comment is required"):
+        TripFeedbackRequest(feedback_type="free_text", comment=blank)
+
+
+@pytest.mark.parametrize("sneaky", [True, "4", 5.0])
+def test_rating_rejects_non_int_types(sneaky):
+    # strict=True. Non-strict Pydantic would coerce True->1, "4"->4, 5.0->5 and silently
+    # write a rating the user never gave.
+    with pytest.raises(ValidationError):
+        TripFeedbackRequest(feedback_type="rating", rating=sneaky)
+
+
 def test_valid_shapes_are_accepted():
     assert TripFeedbackRequest(feedback_type="rating", rating=4).rating == 4
     assert TripFeedbackRequest(feedback_type="thumbs_up").rating is None
@@ -148,7 +184,10 @@ class TripFeedbackRequest(BaseModel):
     as a 500.
     """
     feedback_type: Literal["rating", "thumbs_up", "thumbs_down", "correction", "free_text"]
-    rating: int | None = Field(default=None, ge=1, le=5)
+    # strict=True (Codex MINOR): non-strict Pydantic coerces JSON `true` -> 1, `"4"` -> 4 and
+    # `5.0` -> 5. A boolean silently becoming a 1-star rating is analytics poison in the exact
+    # dataset this endpoint exists to produce.
+    rating: int | None = Field(default=None, ge=1, le=5, strict=True)
     comment: str | None = Field(default=None, max_length=2000)
 
     @model_validator(mode="after")
@@ -157,7 +196,9 @@ class TripFeedbackRequest(BaseModel):
             raise ValueError("rating is required when feedback_type is 'rating'")
         if self.feedback_type != "rating" and self.rating is not None:
             raise ValueError("rating is only valid when feedback_type is 'rating'")
-        if self.feedback_type in ("free_text", "correction") and not self.comment:
+        # .strip() (Codex MINOR): a whitespace-only comment passes a bare truthiness check and
+        # stores a row with no information -- the same defect as an empty comment.
+        if self.feedback_type in ("free_text", "correction") and not (self.comment or "").strip():
             raise ValueError(f"comment is required when feedback_type is '{self.feedback_type}'")
         return self
 
@@ -243,7 +284,177 @@ git commit -m "feat(feedback): trip feedback request/response schemas + TS mirro
 
 ---
 
-### Task 2: The `POST /trips/{trip_id}/feedback` route
+### Task 2: Make the supabase test fake faithful, and fix the stream owner check it was hiding
+
+**Why this task exists (found by the Codex plan review, verified against installed source):**
+`_Table.execute()` returns `_Result(matched[0] if matched else None)` for `maybe_single()` — an
+object whose `.data` is `None`. The real client returns a **bare `None`**
+(`postgrest/_async/request_builder.py:162`: `if len(parsed.data) == 0: return None`). The fake is
+*more forgiving than production*, so a route that does `result.data` passes every test and
+`AttributeError`s into a 500 in production.
+
+Exactly one production call site has that bug: `backend/main.py:470`, the SSE stream owner check.
+Every other site already handles it (`jobs.py:80`, `main.py:301`, `main.py:487`, `organizer.py:76`,
+`:184`, `:537`, `:653`, `grounding.py:71`, `preferences.py:25`). No existing test covers the stream
+owner check, which is why the bug survived.
+
+This task must land before Task 3: without the honest fake, Task 3's own 404-on-missing-trip test
+would pass whether or not its guard exists.
+
+```
+BEFORE (fake lies)                      AFTER (fake tells the truth)
+  0 rows + maybe_single()                 0 rows + maybe_single()
+      -> _Result(data=None)                   -> None
+      -> `owner.data` OK  -> 404              -> `owner.data` AttributeError -> 500
+      -> test GREEN, prod 500                 -> test RED until the guard is added
+```
+
+**Files:**
+- Modify: `backend/test_main.py:99` (the `_Table.execute()` single-row branch) and `_Client.__init__`
+- Modify: `backend/main.py:470-472` (stream owner check)
+- Test: `backend/test_main.py` (new stream owner-check tests — the route currently has none)
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces, for Task 3:
+  - `_Table.execute()` returns `None` (not `_Result(None)`) when `maybe_single()` matches 0 rows.
+  - `_Client.empty_result_ops: set[tuple[str, str]]` — `(table, op)` pairs whose `execute()`
+    returns `_Result([])`, for testing "the write reported success but returned no row".
+
+- [ ] **Step 1: Write the failing stream owner-check tests**
+
+Append to `backend/test_main.py`:
+
+```python
+async def test_stream_on_a_nonexistent_trip_is_404_not_500(ctx):
+    # Regression (Codex plan review 2026-08-02): maybe_single() returns a bare None when no
+    # row matches, so `owner.data` AttributeErrors into a 500. 500-vs-404 is an existence
+    # oracle: it tells an unauthenticated-to-this-trip caller which trip ids are real.
+    ac, db, _calls, _client = ctx
+
+    response = await ac.get(f"/generate-trip/stream/{_TRIP_ID}?token=t")
+
+    assert response.status_code == 404
+
+
+async def test_stream_on_another_users_trip_is_404(ctx):
+    ac, db, _calls, _client = ctx
+    db.setdefault("trips", []).append({"id": _OTHER_TRIP_ID, "user_id": "user-2"})
+
+    response = await ac.get(f"/generate-trip/stream/{_OTHER_TRIP_ID}?token=t")
+
+    assert response.status_code == 404
+```
+
+These reference `_TRIP_ID`/`_OTHER_TRIP_ID`, which Task 3 defines. Define them in **this** task,
+directly above these tests, so Task 2 stands alone:
+
+```python
+_TRIP_ID = "11111111-1111-4111-8111-111111111111"
+_OTHER_TRIP_ID = "22222222-2222-4222-8222-222222222222"
+```
+
+The stream route authenticates via `get_user_id_from_query_or_header`, not
+`get_current_user_id_stashed`. Check whether the `ctx` fixture already overrides it; if not, add
+an override in these two tests only:
+
+```python
+main.app.dependency_overrides[main.get_user_id_from_query_or_header] = lambda: "user-1"
+```
+and clear it at the end of each test.
+
+- [ ] **Step 2: Run to verify the first test fails**
+
+Run: `cd backend && uv run pytest test_main.py -q -k "stream_on_a"`
+Expected: `test_stream_on_a_nonexistent_trip_is_404_not_500` **PASSES** (the fake still lies) and
+`test_stream_on_another_users_trip_is_404` PASSES. **This is the point** — both pass against the
+dishonest fake. Step 3 makes the fake honest, which turns the first one RED.
+
+- [ ] **Step 3: Make the fake faithful**
+
+In `backend/test_main.py`, change the single-row branch of `_Table.execute()`:
+
+```python
+        matched = [r for r in rows if self._matches(r)]
+        if self._single:
+            # Faithful to postgrest 2.31.0: AsyncMaybeSingleRequestBuilder.execute() returns a
+            # bare None when zero rows match (request_builder.py:162), NOT a result whose .data
+            # is None. A forgiving fake here hid a real 500 in the stream owner check.
+            return _Result(matched[0]) if matched else None
+        return _Result(matched)
+```
+
+And add the empty-result seam to `_Client.__init__`:
+
+```python
+        self.empty_result_ops: set = set()   # {(table, op)} whose execute() returns _Result([])
+```
+
+...and honour it in `_Table.execute()`, immediately after the existing `fail_ops` check:
+
+```python
+        if (self.name, op) in self._empty_result_ops:
+            return _Result([])
+```
+
+Thread it through: `_Table.__init__` takes `empty_result_ops=None` and stores
+`self._empty_result_ops = empty_result_ops if empty_result_ops is not None else set()`;
+`_Client.table()` passes `self.empty_result_ops`.
+
+- [ ] **Step 4: Run the FULL suite — the blast-radius check**
+
+Run: `cd backend && uv run pytest`
+Expected: exactly ONE new failure — `test_stream_on_a_nonexistent_trip_is_404_not_500`, with an
+`AttributeError: 'NoneType' object has no attribute 'data'`. That failure IS the deployed bug,
+now visible.
+
+**If any OTHER test fails, STOP and report it.** It means a second production call site has the
+same latent bug, and that is a finding, not something to paper over.
+
+- [ ] **Step 5: Fix the stream owner check**
+
+`backend/main.py:470-472`:
+
+```python
+    owner = await client.table("trips").select("user_id").eq("id", trip_id).maybe_single().execute()
+    # `owner is None` is load-bearing: maybe_single() returns a bare None on zero rows
+    # (postgrest request_builder.py:162). Without it this 500s instead of 404ing, which tells
+    # a caller which trip ids exist. Matches jobs.py:80 / main.py:301 / organizer.py:184.
+    if owner is None or owner.data is None or owner.data["user_id"] != user_id:  # guardrail #6
+        raise HTTPException(status_code=404, detail="Trip not found")
+```
+
+- [ ] **Step 6: Run the full suite again**
+
+Run: `cd backend && uv run pytest`
+Expected: 844 + the new tests passed, 8 skipped, 0 failed.
+
+- [ ] **Step 7: Prove the fix is load-bearing**
+
+```bash
+find . -name __pycache__ -type d -not -path "./.venv/*" -exec rm -rf {} +
+```
+Remove `owner is None or ` from `main.py:470`, re-run
+`cd backend && uv run pytest test_main.py -q -k stream_on_a`, and confirm
+`test_stream_on_a_nonexistent_trip_is_404_not_500` goes RED. Restore, clear `__pycache__` again,
+confirm green.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add backend/test_main.py backend/main.py
+git commit -m "fix(stream): 404 not 500 on a missing trip — maybe_single returns bare None
+
+The in-memory supabase fake returned _Result(data=None) where postgrest 2.31.0
+returns a bare None, so main.py:470's owner check passed every test and
+AttributeError'd into a 500 in production. That 500-vs-404 split is an
+existence oracle. Fake is now faithful; the stream owner check has its first
+test. Found by the Codex plan review of the trip-feedback arc."
+```
+
+---
+
+### Task 3: The `POST /trips/{trip_id}/feedback` route
 
 **Files:**
 - Modify: `backend/main.py` (extend the `from api.schemas import (...)` block at line 30; append the route near the other POST routes)
@@ -252,6 +463,9 @@ git commit -m "feat(feedback): trip feedback request/response schemas + TS mirro
 
 **Interfaces:**
 - Consumes from Task 1: `TripFeedbackRequest`, `TripFeedback`, `TripFeedbackResponse`.
+- Consumes from Task 2: the faithful `_Table.execute()` (bare `None` on a zero-row
+  `maybe_single()`), `_Client.empty_result_ops`, and the module-level `_TRIP_ID` /
+  `_OTHER_TRIP_ID` constants. **Do not redefine those constants** — Task 2 already added them.
 - Produces: the HTTP contract `POST /trips/{trip_id}/feedback` → `201 {"feedback": {...}}`.
 
 **Route-shape requirements (all load-bearing, all easy to get wrong):**
@@ -266,9 +480,7 @@ Append to `backend/test_main.py`. These reuse the existing `ctx` fixture, which 
 
 ```python
 # --- POST /trips/{trip_id}/feedback ------------------------------------------------
-
-_TRIP_ID = "11111111-1111-4111-8111-111111111111"
-_OTHER_TRIP_ID = "22222222-2222-4222-8222-222222222222"
+# _TRIP_ID and _OTHER_TRIP_ID were added in Task 2 — do not redefine them here.
 
 
 def _seed_trip(db, trip_id=_TRIP_ID, user_id="user-1", status="completed"):
@@ -293,6 +505,7 @@ async def test_feedback_rating_is_stored_for_the_owner(ctx):
 
     rows = db["feedback"]
     assert len(rows) == 1
+    assert rows[0]["trip_id"] == _TRIP_ID          # STORED trip_id, from the path (gap found in review)
     assert rows[0]["user_id"] == "user-1"          # from the token, never the body
     assert rows[0]["artifact_type"] == "trip"
     assert rows[0]["artifact_id"] is None
@@ -430,14 +643,40 @@ async def test_feedback_burst_limit_returns_429(ctx):
     assert codes[3] == 429
 
 
-async def test_feedback_insert_failure_surfaces_as_500_not_a_silent_success(ctx):
-    ac, db, _calls, client = ctx
+async def test_feedback_insert_raising_surfaces_as_500_not_a_silent_success(ctx):
+    # A LOCAL transport with raise_app_exceptions=False. The shared `ac` from ctx defaults to
+    # True, so Starlette's error middleware sends the 500 AND re-raises -- httpx then re-raises
+    # into the test, which crashes before the assert instead of failing it. Same reason and
+    # same pattern as test_main.py:405.
+    _ac, db, _calls, client = ctx
     _seed_trip(db)
     client.fail_ops.add(("feedback", "insert"))
 
-    response = await ac.post(
-        f"/trips/{_TRIP_ID}/feedback", json={"feedback_type": "thumbs_up"}
-    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main.app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as ac:
+        response = await ac.post(f"/trips/{_TRIP_ID}/feedback", json={"feedback_type": "thumbs_up"})
+
+    assert response.status_code == 500
+    assert db.get("feedback", []) == []
+
+
+async def test_feedback_insert_returning_no_rows_is_a_500(ctx):
+    # Distinct from the raising case: this is the ONLY test that makes the explicit
+    # `if not inserted.data` guard load-bearing. The raising test passes with that guard
+    # deleted, because the exception short-circuits before it. Deleting the guard must turn
+    # THIS test red (it would otherwise IndexError on inserted.data[0], also a 500 -- so the
+    # assertion below checks the DB stayed empty AND that no row was fabricated).
+    _ac, db, _calls, client = ctx
+    _seed_trip(db)
+    client.empty_result_ops.add(("feedback", "insert"))
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main.app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as ac:
+        response = await ac.post(f"/trips/{_TRIP_ID}/feedback", json={"feedback_type": "thumbs_up"})
 
     assert response.status_code == 500
     assert db.get("feedback", []) == []
@@ -446,7 +685,11 @@ async def test_feedback_insert_failure_surfaces_as_500_not_a_silent_success(ctx)
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `cd backend && uv run pytest test_main.py -q -k feedback`
-Expected: FAIL — all with 404 (route not registered) except the 401 and 422-malformed cases, which may coincidentally pass. **Do not treat those coincidental passes as coverage**; they must be re-verified in Step 4.
+Expected: **every** feedback test fails, all for the same reason — no route matches
+`POST /trips/{trip_id}/feedback`, so Starlette returns a framework 404 before any dependency,
+path coercion, or body validation runs. In particular the 401-auth and 422-malformed-UUID tests
+fail here too (they get 404, not their expected status); they do NOT coincidentally pass. Any
+feedback test that PASSES at this step is asserting nothing — investigate it before continuing.
 
 - [ ] **Step 3: Implement the route**
 
@@ -496,7 +739,14 @@ async def submit_trip_feedback(
     client = await get_supabase_client()
 
     owner = await client.table("trips").select("user_id").eq("id", trip_key).maybe_single().execute()
-    if owner.data is None or owner.data["user_id"] != user_id:  # guardrail #6 owner check
+    # `owner is None` is load-bearing, NOT defensive noise. postgrest 2.31.0's
+    # AsyncMaybeSingleRequestBuilder.execute() returns a bare None when zero rows match
+    # (request_builder.py:162: `if len(parsed.data) == 0: return None`) -- NOT an object whose
+    # .data is None. Dereferencing owner.data would AttributeError into a 500, which leaks an
+    # existence oracle: 500 = no such trip, 404 = exists but not yours. This matches the repo's
+    # majority convention (jobs.py:80, main.py:301, organizer.py:184) -- main.py:470 was the
+    # one outlier, and Task 3 fixes it.
+    if owner is None or owner.data is None or owner.data["user_id"] != user_id:  # guardrail #6
         raise HTTPException(status_code=404, detail="Trip not found")  # 404 not 403: do not confirm existence
 
     inserted = await client.table("feedback").insert({
@@ -517,14 +767,20 @@ async def submit_trip_feedback(
     if not inserted.data:
         raise HTTPException(status_code=500, detail="Failed to store feedback")
 
+    # Build the response from the PERSISTED row, not from the request (plan-eng-review A2).
+    # Echoing req.* would make the 201 body incapable of ever reporting a persistence bug:
+    # it would look correct even if the row were wrong. Every field read here is part of the
+    # insert payload above, so it is present in BOTH the real client and the _Table test fake
+    # (only created_at would diverge, which is why the response omits it).
     row = inserted.data[0]
     return TripFeedbackResponse(
         feedback=TripFeedback(
             id=str(row["id"]),
-            trip_id=trip_key,
-            feedback_type=req.feedback_type,
-            rating=req.rating,
-            comment=req.comment,
+            trip_id=str(row["trip_id"]),
+            artifact_type=row["artifact_type"],
+            feedback_type=row["feedback_type"],
+            rating=row["rating"],
+            comment=row["comment"],
         )
     )
 ```
@@ -543,13 +799,19 @@ find . -name __pycache__ -type d -not -path "./.venv/*" -exec rm -rf {} +
 cp backend/main.py /tmp/main.py.bak
 ```
 
-Comment out the two owner-check lines (`if owner.data is None or ...` and the `raise`), then:
+Run **three** separate injections; each must redden a specific test:
+
+| Injection | Must turn RED | Proves |
+|---|---|---|
+| Comment out the whole `if owner is None or ... raise` block | `test_feedback_on_another_users_trip_is_404_and_writes_nothing` **and** `test_feedback_on_a_nonexistent_trip_is_404` | the owner check exists |
+| Delete only `owner is None or ` from the condition | `test_feedback_on_a_nonexistent_trip_is_404` (AttributeError → 500) | the bare-`None` branch is load-bearing, not defensive noise |
+| Delete the `if not inserted.data: raise` guard | `test_feedback_insert_returning_no_rows_is_a_500` | the empty-write guard is real — note the *raising* test still passes here, which is exactly why the second test exists |
 
 ```bash
-cd backend && uv run pytest test_main.py -q -k "another_users_trip or nonexistent_trip"
+cd backend && uv run pytest test_main.py -q -k "another_users_trip or nonexistent_trip or insert_returning"
 ```
 
-Expected: **both tests FAIL.** If either still passes, the test is not testing the guard — fix the test, not the code.
+If any listed test still passes under its injection, the test is not testing the guard — fix the test, not the code.
 
 Restore and clear stale bytecode (restoring a file can leave a `.pyc` that looks current, so the interpreter keeps running faulted code while `git status` reads clean):
 
@@ -598,9 +860,27 @@ Against the deployed stack with a real Supabase JWT:
 1. `POST /trips/{own_trip_id}/feedback` with `{"feedback_type":"rating","rating":4}` → **201**, row visible in the Supabase `feedback` table with `artifact_type='trip'`, `artifact_id` NULL, and `user_id` matching the token's `sub`.
 2. `POST /trips/{another_users_trip_id}/feedback` → **404**, and **no row written** (this is the guardrail #6 proof; the repo has 25 live trips to pick a non-owned one from).
 3. `POST` with no `Authorization` header → **401**.
+4. `POST /trips/{a-well-formed-uuid-that-does-not-exist}/feedback` → **404**, NOT 500. This is the
+   Codex-found case; `/health` cannot catch it, so it must be checked by hand.
+5. `GET /generate-trip/stream/{nonexistent-uuid}` → **404**, NOT 500 (the Task 2 stream fix).
 
 ## Rollback risk
 
-**Very low.** Additive only: one new route, three new Pydantic models, three new TS types, no migration, no change to any existing code path. Nothing reads the `feedback` table yet, so a bad row is inert. Rollback is `git revert` of the two commits — no schema to unwind, no data to migrate, and the `feedback` table simply returns to receiving zero writes.
+**Low, with one caveat that did not exist before Task 2 was added.**
 
-**The one real deployment note:** Render deploys from `dev` with `autoDeploy: false`, so **merging is not deploying**. The endpoint returns 404 in production until someone triggers a Render deploy. Tell Zhi Hao explicitly — otherwise he builds the UI against a route that merged but is not live.
+Task 1 and Task 3 are purely additive: one new route, three new Pydantic models, three new TS
+types, no migration, no change to any existing code path. Nothing reads the `feedback` table yet,
+so a bad row is inert.
+
+Task 2 is the only task that touches existing behaviour. Its production change is one condition on
+`backend/main.py:470`, strictly widening a guard that already returned 404 — a caller who used to
+get a 500 now gets a 404, and no other status changes. Its test change makes the shared `_Table`
+fake stricter, which affects test code only, never production.
+
+Rollback is `git revert` of the three commits: no schema to unwind, no data to migrate. Reverting
+Task 2 alone restores the 500 behaviour but breaks nothing else.
+
+**Deployment note (unchanged and important):** Render deploys from `dev` with `autoDeploy: false`.
+**Merging is not deploying.** Both the feedback endpoint and the stream fix stay dormant in
+production until someone triggers a Render deploy. Tell Zhi Hao explicitly — otherwise he builds
+the UI against a route that merged but is not live.

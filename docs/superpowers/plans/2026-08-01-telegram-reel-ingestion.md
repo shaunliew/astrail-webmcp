@@ -167,8 +167,29 @@ long polling holds the socket). **The bot token is in the URL path**, so every r
 `_safe(exc)` that rebuilds the message from method + status only. 429 → parse
 `parameters.retry_after` → `TelegramRetryAfter`.
 
+**[IMPL 2026-08-02] `from None`, not merely the absence of `from exc`.** Rebuilding the message is
+necessary but **not sufficient**. Python sets `__context__` *implicitly* on any exception raised
+inside an `except` block, and `traceback.format_exception` prints implicit context exactly as it
+prints an explicit `__cause__` — so a bare `raise _safe(method, exc)` still puts the URL-bearing
+httpx exception, token and all, in the formatted traceback. The correct form is
+`raise _safe(method, exc) from None`, which sets `__suppress_context__` and drops both chains.
+Proven by fault injection (a bare `raise` reddens the traceback test) and reproduced independently
+by the reviewer outside the implementer's harness.
+
+**[IMPL 2026-08-02] CORRECTION — the `ConnectError` leak claim below was empirically FALSE.**
+`str(httpx.ConnectError("boom", request=req))` is exactly `"boom"`, and a propagating
+`ConnectError`'s traceback carries no URL. A test resting on that premise would have been **false
+coverage** — the sixth shape on BUILD-LOOP's "tests that cannot fail" list, asserted here for eight
+review rounds because it *sounds* right and nobody constructed the object. The real leak vector is
+**`httpx.HTTPStatusError`**, whose `str()` is the token-bearing URL in the exact form
+`raise_for_status()` builds (`Client error '400 Bad Request' for url '<url>'`). The shipped tests
+use that instead; the `ConnectError` test remains red-on-delete via `pytest.raises(TelegramAPIError)`,
+which is a different guarantee than the one originally claimed.
+
 **RED when:** `_safe` is removed (token `SECRET123` appears in `str(exc)`); the `httpx.HTTPError`
-branch is removed (a `ConnectError`'s `.request.url` leaks it); the `retry_after` parse is removed.
+branch is removed (a raw `ConnectError` then propagates and is not a `TelegramAPIError`); the
+`from None` is removed (an `HTTPStatusError`'s URL reappears in the formatted traceback via implicit
+`__context__`); the `retry_after` parse is removed.
 
 ### T2 — `reel_filter.py` — the only function that reads message text
 

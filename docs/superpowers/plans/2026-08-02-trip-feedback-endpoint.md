@@ -13,7 +13,7 @@
 - **No migration.** The `feedback` table already exists (`supabase/migrations/20260702012806_generated_trip_outputs.sql:85`) and was verified live in deployed Supabase on 2026-08-02 (read-only probe: `HTTP 200`, 0 rows). Do not write a migration file.
 - **Guardrail #5 — auth on every endpoint.** Use `get_current_user_id_stashed`; never accept `user_id` from the body or query.
 - **Guardrail #6 — owner check in APP CODE.** `service_role` bypasses RLS (`backend/pipeline/persist.py:515`), so the `feedback_insert_own_trip` policy is **not** the enforcement path here. The route must itself verify the trip belongs to the caller.
-- **404, never 403.** Every existing owner check in this repo (`main.py:470-472`, `organizer.py:181-185`) makes "trip absent" and "trip not yours" indistinguishable. Match it exactly.
+- **404, never 403.** Every existing owner check in this repo (`main.py:470-472`, `organizer.py:181-185`) makes "trip absent" and "trip not yours" indistinguishable. Match it exactly — but note `main.py:470` only *intends* this and currently 500s on an absent trip, which Task 2 fixes. Copy the corrected form, not the deployed one.
 - **Guardrail #4 — schema parity.** Every new Pydantic model gets a snake_case 1:1 mirror in `frontend/lib/trip/backend-types.ts` in the same PR. No DB side needed (table exists).
 - **Eval safety.** This arc touches no pipeline code. `uv run pytest evals/ -q` must stay green with the frozen `#16` anchor `mean_intra_day_travel_m = 6229.0` unmoved.
 - **Style.** `Literal[...]` mirrors a Postgres CHECK constraint; plain `str` where no CHECK exists (`backend/api/schemas.py:35` states this rule). Free text gets an explicit `max_length`.
@@ -78,7 +78,8 @@ Deliberately **not** fixed here: it needs a migration, and this arc is migration
 
 **Interfaces:**
 - Consumes: nothing from earlier tasks.
-- Produces, for Task 2:
+- Produces, for **Task 3** (Task 2 is independent of this task and may run in either order,
+  though the numbering assumes 1 → 2 → 3):
   - `TripFeedbackRequest(feedback_type: Literal["rating","thumbs_up","thumbs_down","correction","free_text"], rating: int | None, comment: str | None)`
   - `TripFeedback(id: str, trip_id: str, artifact_type: Literal["trip"], feedback_type: str, rating: int | None, comment: str | None)`
   - `TripFeedbackResponse(feedback: TripFeedback)`
@@ -151,6 +152,24 @@ def test_rating_rejects_non_int_types(sneaky):
     # write a rating the user never gave.
     with pytest.raises(ValidationError):
         TripFeedbackRequest(feedback_type="rating", rating=sneaky)
+```
+
+**`strict=True` behaviour was verified on the installed Pydantic 2.13.4, through JSON parsing
+(the path FastAPI actually uses), not just Python-object construction:**
+
+| JSON body | Result |
+|---|---|
+| `{"rating": 4}` | accepted → `4` |
+| `{"rating": "4"}` | **rejected** |
+| `{"rating": true}` | **rejected** |
+| `{"rating": 5.0}` | **rejected** |
+| `rating` omitted | accepted → `None` |
+
+So `strict=True` does not break the ordinary integer path from a JSON client — it only closes the
+coercion holes.
+
+```python
+# (continuing backend/api/test_schemas.py)
 
 
 def test_valid_shapes_are_accepted():
@@ -298,6 +317,21 @@ Every other site already handles it (`jobs.py:80`, `main.py:301`, `main.py:487`,
 `:184`, `:537`, `:653`, `grounding.py:71`, `preferences.py:25`). No existing test covers the stream
 owner check, which is why the bug survived.
 
+**Three fakes share the infidelity; this task fixes ONE, deliberately.** `test_main.py:100`,
+`test_jobs.py:127`, and `test_saved_reels_organize.py:221` all return `_Result(None)` where
+production returns a bare `None`. Only `test_main.py`'s is fixed here, because only it is needed
+for Task 3's tests to be honest.
+
+That is safe, and here is the reasoning rather than an assertion: I audited all 11 production
+`maybe_single()` call sites, and every site reached by the other two fakes already guards
+correctly. So **no second live bug is hiding behind them.** The residual exposure is narrower and
+worth writing down: those correct `is None` guards are *untested* — delete `is None or` from
+`jobs.py:80` today and nothing goes red. A future refactor could drop one and ship green.
+
+*Deferred, with a trigger:* fix the other two fakes when someone next touches `jobs.py` or
+`organizer.py` error paths. Doing it here would redden an unknown number of the 844 baseline tests
+for zero bug-fix value, six days before beta.
+
 This task must land before Task 3: without the honest fake, Task 3's own 404-on-missing-trip test
 would pass whether or not its guard exists.
 
@@ -326,7 +360,7 @@ BEFORE (fake lies)                      AFTER (fake tells the truth)
 Append to `backend/test_main.py`:
 
 ```python
-async def test_stream_on_a_nonexistent_trip_is_404_not_500(ctx):
+async def test_stream_on_a_nonexistent_trip_is_404_not_500(ctx, stream_auth):
     # Regression (Codex plan review 2026-08-02): maybe_single() returns a bare None when no
     # row matches, so `owner.data` AttributeErrors into a 500. 500-vs-404 is an existence
     # oracle: it tells an unauthenticated-to-this-trip caller which trip ids are real.
@@ -337,7 +371,7 @@ async def test_stream_on_a_nonexistent_trip_is_404_not_500(ctx):
     assert response.status_code == 404
 
 
-async def test_stream_on_another_users_trip_is_404(ctx):
+async def test_stream_on_another_users_trip_is_404(ctx, stream_auth):
     ac, db, _calls, _client = ctx
     db.setdefault("trips", []).append({"id": _OTHER_TRIP_ID, "user_id": "user-2"})
 
@@ -354,14 +388,28 @@ _TRIP_ID = "11111111-1111-4111-8111-111111111111"
 _OTHER_TRIP_ID = "22222222-2222-4222-8222-222222222222"
 ```
 
-The stream route authenticates via `get_user_id_from_query_or_header`, not
-`get_current_user_id_stashed`. Check whether the `ctx` fixture already overrides it; if not, add
-an override in these two tests only:
+**The stream route needs its own auth override — verified, not assumed.** It authenticates via
+`get_user_id_from_query_or_header` (`main.py:467`, imported from `auth` at `main.py:42`), NOT
+`get_current_user_id_stashed`. The `ctx` fixture overrides only the latter (`test_main.py:180`),
+so without this the tests get a real 401 and never reach the owner check they exist to test.
+
+Add this fixture next to `ctx` in `backend/test_main.py`, and take it as a second argument in
+both stream tests (`async def test_stream_...(ctx, stream_auth)`). `ctx`'s teardown calls
+`dependency_overrides.clear()`, so ordering is safe either way, but the explicit `pop` keeps this
+fixture self-contained:
 
 ```python
-main.app.dependency_overrides[main.get_user_id_from_query_or_header] = lambda: "user-1"
+@pytest.fixture
+def stream_auth():
+    """The stream route uses get_user_id_from_query_or_header (main.py:467), which ctx does
+    not override. Same function object as auth's, so keying on main.* resolves correctly."""
+    async def _user() -> str:
+        return "user-1"
+
+    main.app.dependency_overrides[main.get_user_id_from_query_or_header] = _user
+    yield
+    main.app.dependency_overrides.pop(main.get_user_id_from_query_or_header, None)
 ```
-and clear it at the end of each test.
 
 - [ ] **Step 2: Run to verify the first test fails**
 
@@ -424,12 +472,38 @@ same latent bug, and that is a finding, not something to paper over.
         raise HTTPException(status_code=404, detail="Trip not found")
 ```
 
-- [ ] **Step 6: Run the full suite again**
+- [ ] **Step 6: Fix the same bug in `backend/scripts/live_run.py:44-52`**
+
+Found by Codex round 2 — a second unsafe dereference my audit missed. It matters because this is
+the script BUILD-LOOP step 7 uses to live-verify, so it breaks exactly when you point it at a trip
+id that does not exist. Note the guard on the next line is currently **unreachable**: the author
+wrote `if trip is None:` but `.data` is dereferenced one line above it, so a missing trip
+`AttributeError`s before the check runs.
+
+```python
+    trip_result = (
+        await client.table("trips")
+        .select("id,status,destination_hint,start_date,end_date,title,summary,"
+                "preference_summary,preference_sources")
+        .eq("id", trip_id).maybe_single().execute()
+    )
+    # maybe_single() returns a bare None on zero rows, so `.data` cannot be read inline --
+    # doing so AttributeErrors past the `if trip is None` guard directly below.
+    trip = trip_result.data if trip_result is not None else None
+    if trip is None:
+        print(f"no trip {trip_id}")
+        return
+```
+
+No test: this is an unimported manual smoke script (nothing in `backend/` imports it), so there is
+no seam to test it through and adding one is not worth it. Verify by reading the diff.
+
+- [ ] **Step 7: Run the full suite again**
 
 Run: `cd backend && uv run pytest`
 Expected: 844 + the new tests passed, 8 skipped, 0 failed.
 
-- [ ] **Step 7: Prove the fix is load-bearing**
+- [ ] **Step 8: Prove the fix is load-bearing**
 
 ```bash
 find . -name __pycache__ -type d -not -path "./.venv/*" -exec rm -rf {} +
@@ -439,10 +513,10 @@ Remove `owner is None or ` from `main.py:470`, re-run
 `test_stream_on_a_nonexistent_trip_is_404_not_500` goes RED. Restore, clear `__pycache__` again,
 confirm green.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add backend/test_main.py backend/main.py
+git add backend/test_main.py backend/main.py backend/scripts/live_run.py
 git commit -m "fix(stream): 404 not 500 on a missing trip — maybe_single returns bare None
 
 The in-memory supabase fake returned _Result(data=None) where postgrest 2.31.0
@@ -664,10 +738,15 @@ async def test_feedback_insert_raising_surfaces_as_500_not_a_silent_success(ctx)
 
 async def test_feedback_insert_returning_no_rows_is_a_500(ctx):
     # Distinct from the raising case: this is the ONLY test that makes the explicit
-    # `if not inserted.data` guard load-bearing. The raising test passes with that guard
-    # deleted, because the exception short-circuits before it. Deleting the guard must turn
-    # THIS test red (it would otherwise IndexError on inserted.data[0], also a 500 -- so the
-    # assertion below checks the DB stayed empty AND that no row was fabricated).
+    # `if not inserted.data` guard load-bearing.
+    #
+    # THE STATUS CODE CANNOT TELL THE TWO PATHS APART (Codex round 2, demonstrated by
+    # execution). Delete the guard and `inserted.data[0]` raises IndexError, which the global
+    # unhandled_exception_handler ALSO renders as a 500 with an empty db -- so asserting
+    # `status_code == 500` and `db == []` stays green either way. Only the MESSAGE differs:
+    #   guard present -> {"code": "internal_error", "message": "Failed to store feedback"}
+    #   guard deleted -> {"code": "internal_error", "message": "Internal server error"}
+    # The message assertion below is therefore the whole test. Do not drop it.
     _ac, db, _calls, client = ctx
     _seed_trip(db)
     client.empty_result_ops.add(("feedback", "insert"))
@@ -679,6 +758,7 @@ async def test_feedback_insert_returning_no_rows_is_a_500(ctx):
         response = await ac.post(f"/trips/{_TRIP_ID}/feedback", json={"feedback_type": "thumbs_up"})
 
     assert response.status_code == 500
+    assert response.json()["error"]["message"] == "Failed to store feedback"
     assert db.get("feedback", []) == []
 ```
 
@@ -805,7 +885,7 @@ Run **three** separate injections; each must redden a specific test:
 |---|---|---|
 | Comment out the whole `if owner is None or ... raise` block | `test_feedback_on_another_users_trip_is_404_and_writes_nothing` **and** `test_feedback_on_a_nonexistent_trip_is_404` | the owner check exists |
 | Delete only `owner is None or ` from the condition | `test_feedback_on_a_nonexistent_trip_is_404` (AttributeError → 500) | the bare-`None` branch is load-bearing, not defensive noise |
-| Delete the `if not inserted.data: raise` guard | `test_feedback_insert_returning_no_rows_is_a_500` | the empty-write guard is real — note the *raising* test still passes here, which is exactly why the second test exists |
+| Delete the `if not inserted.data: raise` guard | `test_feedback_insert_returning_no_rows_is_a_500`, **on its message assertion, not its status assertion** | the empty-write guard is real. The *raising* test still passes here, and so would this one on status alone — `inserted.data[0]` IndexErrors into an identical 500. Only `"Failed to store feedback"` vs `"Internal server error"` separates them. |
 
 ```bash
 cd backend && uv run pytest test_main.py -q -k "another_users_trip or nonexistent_trip or insert_returning"
@@ -884,3 +964,35 @@ Task 2 alone restores the 500 behaviour but breaks nothing else.
 **Merging is not deploying.** Both the feedback endpoint and the stream fix stay dormant in
 production until someone triggers a Render deploy. Tell Zhi Hao explicitly — otherwise he builds
 the UI against a route that merged but is not live.
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Codex Review | outside voice (`codex exec -m gpt-5.6-sol`) | Independent 2nd opinion | 2 | CLEAR | R1 **FAIL 6.8** (2 MAJOR, 2 MINOR) → R2 **PASS 7.9** (1 MAJOR, 2 MINOR, all folded) |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR | 2 issues, 2 test gaps, 0 critical gaps |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | backend-only, not applicable |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+**Completion summary**
+- Step 0 Scope Challenge — scope accepted as-is (6 files, 0 new classes/services, 0 deps, 0 migrations), then **deliberately widened once** by user decision S1 to fix a deployed bug the review exposed.
+- Architecture Review: 2 issues (A1 `ON DELETE CASCADE` erases feedback once `DELETE /trips` ships → documented TODO; A2 response echoed the request instead of the persisted row → fixed).
+- Code Quality Review: 0 issues.
+- Test Review: coverage diagram produced, 2 gaps (stored `trip_id` never asserted; no `comment == 2000` boundary) → both folded in.
+- Performance Review: 0 issues. One indexed SELECT + one INSERT per call.
+- NOT in scope: written (5 deferrals, each with a concrete trigger).
+- What already exists: written — the `feedback` table + RLS, `get_current_user_id_stashed`, `limiter`, `get_supabase_client`, the `_Client` fake and the global error handlers are all reused, none rebuilt.
+- Failure modes: 0 critical gaps.
+- Outside voice: ran (Codex `gpt-5.6-sol`, 2 rounds).
+- Parallelization: Task 1 and Task 2 are independent (different concerns, no shared symbols); Task 3 depends on both. `Lane A: Task 1` / `Lane B: Task 2` → `Task 3`. Both lanes touch `backend/`, so a worktree split is not worth the coordination for a 3-task arc — **run sequentially**.
+
+**CODEX:** Round 1 FAIL 6.8 caught that `postgrest 2.31.0`'s `maybe_single()` returns a bare `None`, so the planned `owner.data` check would 500 instead of 404 — an existence oracle. Tracing it exposed the same bug in *deployed* code at `main.py:470` plus a third instance at `scripts/live_run.py:44`. Round 2 PASS 7.9 caught that the empty-insert guard was still not load-bearing because `IndexError` and the explicit guard produce an identical 500; only the error *message* separates them.
+
+**CROSS-MODEL:** No tension. The two reviews found disjoint classes of defect — the Claude pass found contract and data-lifecycle issues (response fidelity, cascade), Codex found runtime-library behaviour verified by execution against locked versions. Neither found anything the other did; both agreed the no-migration call and all five accepted scope limits are sound.
+
+**Accepted, not fixed (1):** no test distinguishes reading the response from the persisted row versus echoing the request, because the fake returns the insert payload unchanged, so both produce identical output. Codex classes this as a test-coverage gap, not a production defect. Building a fake that mutates on write to close it is not worth the complexity here.
+
+**VERDICT:** ENG + CODEX CLEARED — ready to implement.
+
+NO UNRESOLVED DECISIONS

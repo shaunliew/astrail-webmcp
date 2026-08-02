@@ -198,9 +198,17 @@ async def handle_update(
 
     result = extract_reel_urls(message)
     # ~99% of group traffic, and it must not log: chatter in the log is how the ERROR
-    # lines below stop being read.
-    if not result.urls and not result.rejected_shapes:
+    # lines below stop being read. `overflowed` is a SIGNAL, not an absence, so it must not
+    # be swallowed here — an over-budget message looks exactly like chatter (`urls` and
+    # `rejected_shapes` both empty) and may have carried real reels.
+    if not result.urls and not result.rejected_shapes and not result.overflowed:
         return
+
+    # The entity budget refused to parse the message, so any reel in it is gone. Loud, not
+    # silent (guardrail #12): no count, because `FilterResult` reports the fact and not the
+    # size, and 101 versus 5000 changes nothing the operator does about it.
+    if result.overflowed:
+        logger.error("telegram_reel_entities_overflowed chat_id=%d", chat_id)
 
     # REGARDLESS of whether `urls` is also non-empty. Consulting the shapes only when
     # `urls` is empty is the bug two review rounds shipped: it makes the T0 spike's blind
@@ -223,8 +231,10 @@ async def handle_update(
         if not await _ingest_url(url, config=config, db=db, queue=queue, chat_id=chat_id):
             all_durable = False
 
-    # The three conditions of the pinned promise, plus a non-empty `urls` so a message
-    # that contained no reel at all is never ticked. Step 3 already returned in that case;
-    # this states it rather than depending on a return three branches away.
-    if result.urls and all_durable and not result.rejected_shapes and not result.truncated:
+    # The conditions of the pinned promise, plus a non-empty `urls` so a message that
+    # contained no reel at all is never ticked. Both `not result.overflowed` and the
+    # `result.urls` clause are belt-and-braces — an overflow always empties `urls` — but
+    # they state the rule here instead of depending on a return three branches away.
+    if (result.urls and all_durable and not result.rejected_shapes
+            and not result.truncated and not result.overflowed):
         await _react(message, config=config, http=http, chat_id=chat_id)

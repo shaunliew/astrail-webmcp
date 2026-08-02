@@ -63,6 +63,18 @@ class FilterResult:
     """True when the 10-URL cap discarded valid reels. Without it an 11-reel message
     ingests 10 and still earns a ✅ claiming every reel was accepted."""
 
+    overflowed: bool
+    """True when the entity budget refused to parse the message at all.
+
+    Without it, the `_MAX_ENTITIES` return is byte-identical to the one for ordinary
+    chatter — `((), (), False)` — so the caller cannot tell "no reels here" from "there
+    may have been reels and I did not look", and a real reel disappears with no log line
+    at all. That is the silent drop guardrail #12 forbids outright, and it is the same
+    shape as the surrogate bug fixed in review: one cheap hostile input, reels gone
+    without a trace. The cap itself stays; bounding work on a hostile message is sound.
+    Deliberately NOT the entity count — see `ingest.handle_update`, which acts on the
+    boolean and nothing else."""
+
 
 def _entity_list(message: dict, key: str) -> list[Any]:
     """`message[key]` if it is a list, else `[]` — a malformed field is not a crash."""
@@ -189,7 +201,10 @@ def extract_reel_urls(message: dict) -> FilterResult:
     entities = _entity_list(message, "entities")
     caption_entities = _entity_list(message, "caption_entities")
     if len(entities) + len(caption_entities) > _MAX_ENTITIES:
-        return FilterResult((), (), False)
+        # `overflowed=True` is the whole point of the flag: this return is otherwise
+        # indistinguishable from the one ordinary chatter produces, and a reel in here is
+        # dropped. The caller logs it at ERROR and withholds the ✅.
+        return FilterResult((), (), truncated=False, overflowed=True)
 
     urls: list[str] = []
     shapes: list[str] = []
@@ -217,4 +232,5 @@ def extract_reel_urls(message: dict) -> FilterResult:
         tuple(urls[:_MAX_URLS]),
         tuple(shapes[:_MAX_SHAPES]),
         truncated=len(urls) > _MAX_URLS,
+        overflowed=False,
     )

@@ -100,7 +100,9 @@ def test_url_entity_is_sliced_in_utf16_code_units_not_python_characters():
 
     # The fixture only proves anything if the two unit systems actually diverge here.
     assert _utf16_len(prefix) - len(prefix) == 3
-    assert result == FilterResult(("https://www.instagram.com/reel/ABC123",), (), False)
+    assert result == FilterResult(
+        ("https://www.instagram.com/reel/ABC123",), (), False, False
+    )
 
 
 # --------------------------------------------------------------------------------------
@@ -136,7 +138,7 @@ def test_lookalike_hosts_are_ordinary_chat_not_instagram(hostile: str):
 
     # Not merely un-captured: they must not even be *rejections*, or the substring form
     # of the host test would leak "/reel/…" shapes for every lookalike domain.
-    assert result == FilterResult((), (), False)
+    assert result == FilterResult((), (), False, False)
 
 
 def test_share_reel_url_is_rejected_as_a_shape_and_never_leaks_its_code():
@@ -293,7 +295,10 @@ def test_entity_budget_is_the_sum_of_both_lists_not_either_one_alone():
     ]
 
     assert len(message["entities"]) + len(message["caption_entities"]) == 101
-    assert extract_reel_urls(message) == FilterResult((), (), False)
+    # `overflowed=True` is the load-bearing half: the reel in this message IS dropped, and
+    # without the flag the caller cannot tell that from a message that had no reels. RED if
+    # the early return goes back to reporting the same shape as ordinary chatter.
+    assert extract_reel_urls(message) == FilterResult((), (), False, True)
 
 
 def test_exactly_one_hundred_entities_is_within_budget():
@@ -306,7 +311,11 @@ def test_exactly_one_hundred_entities_is_within_budget():
     }
 
     assert len(message["entities"]) + len(message["caption_entities"]) == 100
-    assert extract_reel_urls(message).urls == ("https://www.instagram.com/reel/BUDGET",)
+    result = extract_reel_urls(message)
+    assert result.urls == ("https://www.instagram.com/reel/BUDGET",)
+    # The boundary case of the flag, not just of the cap: an ERROR on every busy-but-legal
+    # message is how the operator learns to ignore `telegram_reel_entities_overflowed`.
+    assert result.overflowed is False
 
 
 def test_caption_only_message_is_read():
@@ -338,7 +347,7 @@ def test_non_url_entity_types_contribute_nothing(kind: str):
         "entities": [{"type": kind, "offset": 0, "length": _utf16_len(url)}],
     }
 
-    assert extract_reel_urls(message) == FilterResult((), (), False)
+    assert extract_reel_urls(message) == FilterResult((), (), False, False)
 
 
 @pytest.mark.parametrize(
@@ -359,7 +368,7 @@ def test_non_url_entity_types_contribute_nothing(kind: str):
 def test_malformed_entities_contribute_nothing_and_never_raise(entity: object):
     message = {"text": "\U0001F525 hi", "entities": [entity]}
 
-    assert extract_reel_urls(message) == FilterResult((), (), False)
+    assert extract_reel_urls(message) == FilterResult((), (), False, False)
 
 
 @pytest.mark.parametrize(
@@ -375,7 +384,7 @@ def test_malformed_entities_contribute_nothing_and_never_raise(entity: object):
     ],
 )
 def test_empty_and_absent_fields_return_an_empty_result(message: dict):
-    assert extract_reel_urls(message) == FilterResult((), (), False)
+    assert extract_reel_urls(message) == FilterResult((), (), False, False)
 
 
 # --------------------------------------------------------------------------------------
@@ -401,7 +410,7 @@ def test_caplog_canary_no_message_content_reaches_any_log_record(caplog):
     assert "token=abc" not in emitted
     assert "CANARY-SECRET" not in repr(result)
     assert "token=abc" not in repr(result)
-    assert result == FilterResult((), (), False)
+    assert result == FilterResult((), (), False, False)
 
 
 def test_an_unparseable_candidate_never_raises_out_of_this_module():
@@ -416,7 +425,7 @@ def test_an_unparseable_candidate_never_raises_out_of_this_module():
     """
     result = _must_not_raise(_url_message("https://[::1/reel/CANARY-SECRET", "https://["))
 
-    assert result == FilterResult((), (), False)
+    assert result == FilterResult((), (), False, False)
 
 
 # --------------------------------------------------------------------------------------

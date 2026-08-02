@@ -96,7 +96,7 @@ def _update(message: dict, *, key: str = "message") -> dict:
 
 
 def _precondition(message: dict, *, urls: tuple[str, ...], shapes: tuple[str, ...],
-                  truncated: bool = False) -> None:
+                  truncated: bool = False, overflowed: bool = False) -> None:
     """Assert the fixture really produces the FilterResult the test is about.
 
     Without this a fixture can drift — a mis-computed offset, a URL shape the filter
@@ -106,6 +106,7 @@ def _precondition(message: dict, *, urls: tuple[str, ...], shapes: tuple[str, ..
     assert result.urls == urls
     assert result.rejected_shapes == shapes
     assert result.truncated is truncated
+    assert result.overflowed is overflowed
 
 
 def _formatted(caplog: pytest.LogCaptureFixture) -> str:
@@ -478,6 +479,42 @@ async def test_ordinary_chatter_produces_no_log_records_at_all(config, seams, ca
 
     assert caplog.records == []
     assert seams.call_count == 0
+
+
+async def test_an_over_budget_message_is_dropped_LOUDLY_not_silently(
+    config, seams, caplog
+):
+    """The one input class that used to vanish without a trace.
+
+    101 entities trips `reel_filter`'s budget, which returns empty `urls` and empty
+    `rejected_shapes` — byte-identical to ordinary chatter — while a real
+    `/reel/OVERFLOW` sits inside the message. Before `overflowed` existed this update
+    produced ZERO log records: a silent drop, which guardrail #12 forbids outright.
+
+    RED in two distinct ways, and both matter: dropping `not result.overflowed` from the
+    both-empty early return sends this message down the chatter path and the ERROR is
+    never reached, and deleting the ERROR itself restores the silence. The `caplog` shape
+    below cannot tell those apart, which is exactly why both are fault-injected.
+    """
+    url = _reel("OVERFLOW")
+    message = {
+        "message_id": MESSAGE_ID,
+        "chat": {"id": GROUP_CHAT_ID, "type": "supergroup"},
+        "text": url,
+        "entities": ([{"type": "url", "offset": 0, "length": _utf16_len(url)}]
+                     + [{"type": "bold", "offset": 0, "length": 1}] * 100),
+    }
+    _precondition(message, urls=(), shapes=(), overflowed=True)
+
+    with caplog.at_level(logging.DEBUG):
+        await _run(_update(message), config, seams)
+
+    overflowed = _records(caplog, "telegram_reel_entities_overflowed")
+    assert len(overflowed) == 1
+    assert overflowed[0].levelno == logging.ERROR
+    assert str(GROUP_CHAT_ID) in overflowed[0].getMessage()
+    assert seams.call_count == 0            # nothing was parsed, so nothing is durable
+    assert seams.react.calls == []          # and absence of the tick is the human signal
 
 
 async def test_truncation_withholds_the_tick_and_logs_an_error(config, seams, caplog):

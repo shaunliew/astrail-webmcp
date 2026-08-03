@@ -83,8 +83,39 @@ services:
         sync: false
       - key: ALLOWED_ORIGINS
         value: https://astrail.xyz,https://www.astrail.xyz
+      # BETA CAPACITY. Retuned 5 -> 10 by the free-trial + beta-seat entitlement arc: a beta
+      # seat's "unlimited" planning rides this daily quota, so 5 was the real ceiling on a
+      # granted seat. Over the cap returns 429 `rate_limited`.
+      #
+      # DECLARED HERE, NOT DASHBOARD-ONLY, and that is the point. This key already carried a
+      # literal `value:`, so a Blueprint CONFIGURATION SYNC re-applies it — and a sync is NOT
+      # governed by `autoDeployTrigger` (see the header note above). Setting 10 in the dashboard
+      # while this file still said 5 would let a sync overwrite it back to 5, halving beta
+      # capacity with nothing in the deploy log naming the quota as the cause. Not hypothetical:
+      # the 2026-08-02 worker breakage recorded in the `PYTHONPATH` note below is this exact
+      # failure mode. (A Blueprint sync DOES redeploy the services it touches — the danger is
+      # not silence, it is that the redeploy looks routine and the reverted value is not called
+      # out anywhere.)
+      #
+      # ENTITLEMENTS_ENABLED and TRIAL_LIFETIME_LIMIT are DELIBERATELY NOT declared here.
+      # Render PRESERVES dashboard env vars that a Blueprint omits — it does not delete them —
+      # so an undeclared key set by hand survives a sync untouched. That is what makes
+      # ENTITLEMENTS_ENABLED a real rollback lever: a `value: "true"` here would instead be
+      # re-asserted by any sync and could undo an in-progress rollback. Their code defaults in
+      # `backend/rate_limit.py` (true / 1) independently equal the intended production values,
+      # so the undeclared state is also correct-by-default.
+      #
+      # COROLLARY for rollback: while rollback overrides are active, do NOT modify this file or
+      # manually sync the Blueprint — a sync would re-assert this quota to 10 while
+      # ENTITLEMENTS_ENABLED=false still routes to the legacy no-lifetime-cap path. An ordinary
+      # push to `dev` that does NOT touch render.yaml is fine; Blueprint sync is triggered by a
+      # change to the Blueprint file, not by any push. KNOWN RESIDUAL (deferred, not a blocker):
+      # rollback spans two settings in two places (dashboard flag + Blueprint quota), so it is
+      # not atomic. The structural fix — have ENTITLEMENTS_ENABLED=false force the legacy quota
+      # in code, making rollback one flag — is a `rate_limit.py` behaviour change and is
+      # deliberately NOT bundled into this deploy; see docs/deploy/2026-08-03-entitlements-go-live.md.
       - key: DAILY_TRIP_QUOTA
-        value: "5"
+        value: "10"
       - key: BURST_LIMIT
         value: 3/minute
 

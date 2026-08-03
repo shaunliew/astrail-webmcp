@@ -63,7 +63,9 @@ async def _inspect(client, trip_id: str) -> None:
     ).data
     pids = [t["place_id"] for t in tps]
     places = (
-        (await client.table("places").select("id,name,place_type,lat,lng").in_("id", pids).execute()).data
+        (await client.table("places")
+         .select("id,name,place_type,lat,lng,country,country_code,country_name")
+         .in_("id", pids).execute()).data
         if pids else []
     )
     by_id = {p["id"]: p for p in places}
@@ -94,8 +96,23 @@ async def _inspect(client, trip_id: str) -> None:
     print(f"=== trip_places: {len(tps)} | places: {len(places)} | trip_days: {len(tds)}")
     for tp in sorted(tps, key=lambda x: (x["day_number"] or 0, x["sort_order"] or 0)):
         p = by_id.get(tp["place_id"], {})
+        # `country` is a VERIFICATION RECEIPT, not a label: non-NULL means the coordinate was
+        # reverse-geocoded AND agreed with the extractor's independent claim. NULL is the honest
+        # answer for anything unverified, so print it explicitly rather than blanking it.
+        country = p.get("country")
+        cc, cn = p.get("country_code"), p.get("country_name")
+        badge = f"{country} ({cc}/{cn})" if country else "country=NULL"
         print(f"    day {tp['day_number']} #{tp['sort_order']}  {p.get('name', '?')} "
-              f"[{p.get('place_type', '?')}] ({round(p.get('lat', 0), 4)},{round(p.get('lng', 0), 4)})")
+              f"[{p.get('place_type', '?')}] ({round(p.get('lat', 0), 4)},{round(p.get('lng', 0), 4)})"
+              f"  {badge}")
+    verified = [p for p in places if p.get("country")]
+    print(f"=== grounding: {len(verified)}/{len(places)} places carry a VERIFIED country")
+    mismatched = [p for p in places
+                  if p.get("country") and (p.get("country") != p.get("country_name"))]
+    if mismatched:
+        # `find_or_create_place` binds p_country from the verified country NAME; if these ever
+        # diverge the two writers have drifted apart again, which is the whole point of the fix.
+        print(f"    !! {len(mismatched)} row(s) where country != country_name — WRITERS HAVE DRIFTED")
     print("=== trip_days weather:")
     for d in sorted(tds, key=lambda x: x["day_number"]):
         print(f"    day {d['day_number']} {d['day_date']}  {d.get('weather_source')}: {d.get('weather_summary')} "

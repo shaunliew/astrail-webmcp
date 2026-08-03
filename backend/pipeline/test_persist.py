@@ -1844,6 +1844,164 @@ async def test_persist_transport_driving_profile_never_transit_hints():
     assert leg["transport_mode"] == "drive" and leg["warning"] is None
 
 
+# --- persist_transport: route_geometry (#42) --------------------------------
+# Two stops, one day — the smallest fixture that produces exactly one leg.
+_GEOM_TRIP = {
+    "trip_places": [
+        {"trip_id": "trip-1", "place_id": "pa", "day_number": 1, "sort_order": 0},
+        {"trip_id": "trip-1", "place_id": "pb", "day_number": 1, "sort_order": 1},
+    ],
+    "trip_days": [{"id": "d1", "trip_id": "trip-1", "day_number": 1}],
+    "places": [{"id": "pa", "lat": 35.0, "lng": 139.7}, {"id": "pb", "lat": 35.7, "lng": 139.8}],
+}
+# An explicitly DRAWABLE LineString: two distinct, in-range (lng, lat) pairs. Every gated-out
+# test below reuses it so that the gate under test is the ONLY reason the geometry is dropped.
+_DRAWABLE = {"type": "LineString", "coordinates": [[139.7, 35.0], [139.8, 35.7]]}
+
+
+def _geom_trip():
+    """A fresh copy per test — `_Client` mutates the dicts it is handed."""
+    return {k: [dict(r) for r in v] for k, v in _GEOM_TRIP.items()}
+
+
+@pytest.mark.asyncio
+async def test_persist_transport_writes_route_geometry():
+    # DECLARED SHARED / NON-ATTRIBUTABLE: call-site forwarding (the `route_geometry=` kwarg) and
+    # insert serialization (the key in `_insert_leg`'s dict) produce the SAME failure here, so no
+    # single guard owns this result. Kept as the end-to-end pin that the column is written at all.
+    c = _Client(_geom_trip())
+
+    async def fake_legs(coords, *, profile="walking"):
+        return [{"duration_s": 600, "distance_m": 800, "code": "Ok", "geometry": _DRAWABLE}]
+
+    written = await persist.persist_transport(c, "trip-1", fetch_legs=fake_legs)
+    assert written == 1
+    leg = c.db["transport_legs"][0]
+    assert leg["route_geometry"] == _DRAWABLE
+    assert leg["status"] == "ok" and leg["duration_seconds"] == 600 and leg["distance_meters"] == 800
+
+
+@pytest.mark.asyncio
+async def test_persist_transport_no_route_geometry_is_gated_out():
+    # ATTRIBUTABLE to the `code == "Ok"` gate, and it is the ONLY test that proves it. The
+    # geometry here is EXPLICITLY DRAWABLE — "merely non-NULL" is too loose: with `{}` or a
+    # Polygon the SHAPE gate nulls it anyway, so deleting the code gate would change nothing
+    # and this test would stay green.
+    c = _Client(_geom_trip())
+
+    async def fake_legs(coords, *, profile="walking"):
+        return [{"duration_s": None, "distance_m": None, "code": "NoRoute", "geometry": _DRAWABLE}]
+
+    written = await persist.persist_transport(c, "trip-1", fetch_legs=fake_legs)
+    assert written == 1
+    leg = c.db["transport_legs"][0]
+    assert leg["status"] == "no_route"
+    assert leg["route_geometry"] is None
+
+
+@pytest.mark.asyncio
+async def test_persist_transport_malformed_geometry_is_gated_out():
+    # ATTRIBUTABLE to the `is_drawable_linestring` storage gate: a routed (code="Ok") leg whose
+    # geometry is structurally invalid stores NULL — with duration/distance intact, which is D1
+    # ("NULL geometry, metrics preserved") rather than a discarded leg.
+    c = _Client(_geom_trip())
+
+    async def fake_legs(coords, *, profile="walking"):
+        return [{"duration_s": 600, "distance_m": 800, "code": "Ok",
+                 "geometry": {"type": "Polygon", "coordinates": [[139.7, 35.0], [139.8, 35.7]]}}]
+
+    written = await persist.persist_transport(c, "trip-1", fetch_legs=fake_legs)
+    assert written == 1
+    leg = c.db["transport_legs"][0]
+    assert leg["status"] == "ok"
+    assert leg["route_geometry"] is None
+    assert leg["duration_seconds"] == 600 and leg["distance_meters"] == 800
+
+
+@pytest.mark.asyncio
+async def test_persist_transport_failed_day_nulls_geometry_and_later_day_still_writes():
+    # ATTRIBUTABLE to the per-day `except` isolation (guardrail #3). Day 1 raises → `failed` rows
+    # with NULL geometry (the failure path omits the kwarg). Day 2 must STILL write its geometry —
+    # without asserting the LATER day this cannot distinguish "day 1 was isolated" from "the whole
+    # function aborted after day 1".
+    c = _Client({
+        "trip_places": [
+            {"trip_id": "trip-1", "place_id": "pa", "day_number": 1, "sort_order": 0},
+            {"trip_id": "trip-1", "place_id": "pb", "day_number": 1, "sort_order": 1},
+            {"trip_id": "trip-1", "place_id": "pc", "day_number": 2, "sort_order": 0},
+            {"trip_id": "trip-1", "place_id": "pd", "day_number": 2, "sort_order": 1},
+        ],
+        "trip_days": [
+            {"id": "d1", "trip_id": "trip-1", "day_number": 1},
+            {"id": "d2", "trip_id": "trip-1", "day_number": 2},
+        ],
+        "places": [
+            {"id": "pa", "lat": 35.60, "lng": 139.70}, {"id": "pb", "lat": 35.61, "lng": 139.71},
+            {"id": "pc", "lat": 35.62, "lng": 139.72}, {"id": "pd", "lat": 35.63, "lng": 139.73},
+        ],
+    })
+
+    async def fake_legs(coords, *, profile="walking"):
+        if coords[0] == (35.60, 139.70):      # day 1 — simulate a Mapbox blip
+            raise RuntimeError("Mapbox Directions request failed: ConnectError")
+        return [{"duration_s": 600, "distance_m": 800, "code": "Ok", "geometry": _DRAWABLE}]
+
+    written = await persist.persist_transport(c, "trip-1", fetch_legs=fake_legs)
+    assert written == 2
+    day1 = [leg for leg in c.db["transport_legs"] if leg["trip_day_id"] == "d1"]
+    day2 = [leg for leg in c.db["transport_legs"] if leg["trip_day_id"] == "d2"]
+    assert len(day1) == 1 and day1[0]["status"] == "failed"
+    assert day1[0]["route_geometry"] is None
+    assert len(day2) == 1 and day2[0]["status"] == "ok"
+    assert day2[0]["route_geometry"] == _DRAWABLE
+
+
+@pytest.mark.asyncio
+async def test_persist_transport_storage_gate_calls_the_shared_predicate(monkeypatch):
+    # ATTRIBUTABLE to the storage boundary's use of the SHARED predicate. The Polygon test above
+    # proves only that SOME validator rejects a Polygon — a weaker local `dict + type ==
+    # "LineString"` check passes every other test here while accepting one-point, all-identical
+    # and out-of-range LineStrings.
+    #
+    # The spy therefore CONTROLS the outcome rather than observing it: an argument-only assertion
+    # is satisfied by production calling the predicate and DISCARDING its result. Feed a genuinely
+    # drawable geometry, force the verdict to False, and require the stored value to flip.
+    seen = []
+
+    def spy(obj):
+        seen.append(obj)
+        return False
+
+    monkeypatch.setattr(persist, "is_drawable_linestring", spy)
+    c = _Client(_geom_trip())
+
+    async def fake_legs(coords, *, profile="walking"):
+        return [{"duration_s": 600, "distance_m": 800, "code": "Ok", "geometry": _DRAWABLE}]
+
+    await persist.persist_transport(c, "trip-1", fetch_legs=fake_legs)
+    leg = c.db["transport_legs"][0]
+    assert seen == [_DRAWABLE]                # the boundary asked about the exact geometry…
+    assert leg["route_geometry"] is None      # …and OBEYED the verdict it got back
+    assert leg["duration_seconds"] == 600 and leg["distance_meters"] == 800   # D1: metrics intact
+
+
+@pytest.mark.asyncio
+async def test_persist_transport_transit_hint_keeps_geometry():
+    # DECLARED NON-ATTRIBUTABLE: removing the generic wiring produces the same failure as this
+    # test's own subject. Kept as the D3 contract pin — a routed long walk is re-tagged
+    # `transit_hint` but KEEPS its polyline, because the gate keys on `code`, never on
+    # `transport_mode`.
+    c = _Client(_geom_trip())
+
+    async def fake_legs(coords, *, profile="walking"):
+        return [{"duration_s": 5640, "distance_m": 10054, "code": "Ok", "geometry": _DRAWABLE}]
+
+    await persist.persist_transport(c, "trip-1", fetch_legs=fake_legs)
+    leg = c.db["transport_legs"][0]
+    assert leg["transport_mode"] == "transit_hint" and leg["warning"]
+    assert leg["route_geometry"] == _DRAWABLE
+
+
 # --- persist_restaurants ----------------------------------------------------
 from models.enrichment import RestaurantCandidate
 

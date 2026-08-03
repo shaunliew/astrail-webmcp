@@ -547,9 +547,15 @@ def test_write_back_skipped_when_the_trip_lookup_fails():
 
 def test_write_back_skipped_when_the_trip_row_is_absent():
     # maybe_single() returns a BARE None on zero rows (postgrest 2.31.0), not a result whose
-    # .data is None. `client.ops` proves the SHORT-CIRCUIT, which is the only outcome the
-    # `if not started_at` branch can produce on its own: with it gone the memory_events
-    # lookup runs (and then fails on `.gt(col, None)`), which the ops list sees.
+    # .data is None. `client.ops` proves the SHORT-CIRCUIT.
+    #
+    # PROVE THIS BRANCH BY INVERTING IT (`return True` -> `return False`), NOT BY DELETING IT.
+    # Deleting the branch leaves this test GREEN, which reads like "dead code" and is a trap:
+    # `_FakeTable.gt()` raises ValueError during query CONSTRUCTION, before `.execute()`, so
+    # `ops.append()` never fires and `ops` still reads ["select:trips"]; the ValueError is then
+    # swallowed by the cleared-lookup `except`, which returns True — the right answer for the
+    # wrong reason. Inversion reddens this test and the owner-check test above; deletion reddens
+    # neither. (Measured 2026-08-03 during the Task-3 review.)
     client = _FakeClient(trips=[], memory_events=[_cleared_row()])
     mem = _FakeMem0Add()
     _run_write_back(client, mem)

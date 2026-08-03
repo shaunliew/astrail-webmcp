@@ -309,6 +309,126 @@ async def test_unreachable_stops_immediately_instead_of_retrying_every_table():
     assert len(client.calls) == assert_schema.PROBE_ATTEMPTS
 
 
+# --------------------------------------------------------------------------------------
+# The manifest guard — the gate that protects the gate.
+#
+# `REQUIRED_SCHEMA` is Python, not SQL. A PR that empties or narrows it touches no migration,
+# so CI (which runs pytest and pgTAP) has nothing to object to; the gate then probes nothing,
+# prints `verified 0 columns across 0 tables`, exits 0, and waves every drifted deploy through.
+# `test_manifest_is_well_formed` below catches that at TEST time — these catch it at RUN time,
+# which is the only place that helps if the same PR also edits the test.
+# --------------------------------------------------------------------------------------
+
+_DRIFT_HINT_PHRASE = "Apply the pending migration"
+
+
+def _anchored(extra: dict[str, tuple[str, ...]] | None = None) -> dict[str, tuple[str, ...]]:
+    """A minimal manifest that SATISFIES the guard, so a test can break exactly one rule.
+
+    Every negative test below pairs this with a fake database that satisfies it too, so that
+    with the guard removed the run reaches `return 0`. A fixture the probe loop would reject
+    anyway cannot tell a working guard from a deleted one.
+    """
+    manifest = {table: ("id",) for table in assert_schema.ANCHOR_TABLES}
+    manifest.update(extra or {})
+    return manifest
+
+
+async def test_empty_manifest_aborts_without_touching_the_database(monkeypatch, capsys):
+    """The headline case: a manifest emptied to `{}` verifies nothing, so it must not pass.
+
+    `client.calls == []` is the load-bearing half. Without the guard this exact run exits 0
+    after zero probes — the gate reports success precisely because it checked nothing.
+    """
+    monkeypatch.setattr(assert_schema, "REQUIRED_SCHEMA", {})
+    client = FakeSupabase({})
+
+    code = await assert_schema.run(client, sleep=_no_sleep)
+
+    assert code == 1
+    assert client.calls == [], "a manifest that verifies nothing must not reach the database"
+    combined = "".join(capsys.readouterr())
+    assert "manifest" in combined.lower()
+    assert "EMPTY" in combined
+
+
+async def test_invalid_manifest_is_reported_before_the_credential_check(monkeypatch, capsys):
+    """ORDERING. The guard reads one dict in this repo — it needs no credential and no socket,
+    so it runs first. Reversed, the operator is told to go fix the Render dashboard while the
+    actual defect is a file in this repository."""
+    monkeypatch.setattr(assert_schema, "REQUIRED_SCHEMA", {})
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+
+    code = await assert_schema.run(sleep=_no_sleep)
+
+    assert code == 1
+    combined = "".join(capsys.readouterr())
+    assert "manifest" in combined.lower()
+    assert "SUPABASE_URL" not in combined, "the credential check must not preempt the guard"
+
+
+async def test_table_mapped_to_no_columns_aborts(monkeypatch, capsys):
+    """`{"places": ()}` selects the empty string — a probe that asks the database nothing and
+    can never fail. Narrowing a table to zero columns is how the manifest gets hollowed out one
+    entry at a time rather than all at once."""
+    manifest = _anchored({"places": ()})
+    monkeypatch.setattr(assert_schema, "REQUIRED_SCHEMA", manifest)
+    client = FakeSupabase(schema_from_manifest(manifest))
+
+    code = await assert_schema.run(client, sleep=_no_sleep)
+
+    assert code == 1
+    assert client.calls == []
+    assert "places: mapped to no columns" in "".join(capsys.readouterr())
+
+
+@pytest.mark.parametrize("anchor", assert_schema.ANCHOR_TABLES)
+async def test_missing_anchor_table_aborts_and_names_which(monkeypatch, capsys, anchor):
+    """The non-empty and zero-column rules both pass on a manifest narrowed to one healthy
+    table, so the anchors are what makes "narrowed" detectable at all. Naming the anchor
+    matters: the fix is to restore that entry, not to audit all sixteen."""
+    manifest = {t: c for t, c in assert_schema.REQUIRED_SCHEMA.items() if t != anchor}
+    monkeypatch.setattr(assert_schema, "REQUIRED_SCHEMA", manifest)
+    client = FakeSupabase(schema_from_manifest(manifest))
+
+    code = await assert_schema.run(client, sleep=_no_sleep)
+
+    assert code == 1
+    assert client.calls == []
+    assert f"anchor table '{anchor}' is absent" in "".join(capsys.readouterr())
+
+
+def test_the_shipped_manifest_passes_the_guard():
+    """POSITIVE CONTROL. Without it, `return ["broken"]` unconditionally passes every negative
+    test above — while aborting every deploy this gate is supposed to let through.
+
+    `test_verified_schema_exits_zero` is the end-to-end half: it drives the real manifest all
+    the way to exit 0, so the guard cannot pass here and still block the happy path.
+    """
+    assert assert_schema._validate_manifest(assert_schema.REQUIRED_SCHEMA) == []
+
+
+async def test_misconfiguration_reads_differently_from_drift(monkeypatch, capsys):
+    """The two reports drive OPPOSITE on-call responses — apply a migration to production, or
+    revert a file in this repo — so an operator must never have to guess which one they are
+    looking at. Asserted in both directions: each report carries a marker the other lacks."""
+    monkeypatch.setattr(assert_schema, "REQUIRED_SCHEMA", {})
+    assert await assert_schema.run(FakeSupabase({}), sleep=_no_sleep) == 1
+    misconfigured = "".join(capsys.readouterr())
+
+    monkeypatch.undo()
+    drifted = schema_from_manifest()
+    drifted["places"].discard("name_local")
+    assert await assert_schema.run(FakeSupabase(drifted), sleep=_no_sleep) == 1
+    drift = "".join(capsys.readouterr())
+
+    assert "MISCONFIGURED" in misconfigured and "MISCONFIGURED" not in drift
+    assert _DRIFT_HINT_PHRASE in drift and _DRIFT_HINT_PHRASE not in misconfigured
+    # The misconfiguration report must send the operator at this repo, not at the database.
+    assert "scripts/assert_schema.py" in misconfigured
+
+
 def test_manifest_is_well_formed():
     """A typo here aborts EVERY deploy (a manifest column that does not exist probes as drift),
     and a mangled entry corrupts the select string it is joined into."""

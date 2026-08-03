@@ -15,6 +15,11 @@ WHAT IT CANNOT SEE. Columns only. A changed RPC signature, a dropped constraint,
 conflict key or a changed SQLSTATE (`20260720130000_organize_job_error_codes` moved P0001 ->
 AS4xx) are all invisible to a column probe. This gate narrows the window; it does not close it.
 
+TWO DISTINCT VERDICTS, because the on-call response differs. "SCHEMA GATE FAILED" is drift —
+production is behind this code, so apply the migration. "SCHEMA GATE MISCONFIGURED" is
+`_validate_manifest` refusing to run a hollowed-out manifest — the database may be perfectly
+healthy and the fix is in this file, not in Postgres.
+
 Run by hand (from `backend/`, with the credentials in the environment):
     uv run --env-file .env python -m scripts.assert_schema
 """
@@ -112,6 +117,33 @@ REQUIRED_SCHEMA: dict[str, tuple[str, ...]] = {
     # for that migration having landed — the same migration installs the 3-arg function.
     "users": ("id", "daily_reel_analysis_limit"),
 }
+
+# Tables this backend cannot serve a single request without: `jobs` is the durable-job row every
+# run opens, `trips`/`trip_places` are what a run produces, `transport_legs` is what Phase 3
+# writes. A manifest that no longer names all four has stopped describing this codebase — which
+# is the only thing `_validate_manifest` can detect without a second copy of the schema.
+ANCHOR_TABLES: tuple[str, ...] = ("jobs", "trips", "trip_places", "transport_legs")
+
+
+def _validate_manifest(schema: dict[str, tuple[str, ...]]) -> list[str]:
+    """Structural check on the MANIFEST, before any credential or socket. Empty list == valid.
+
+    THE GATE PROTECTING THE GATE. `REQUIRED_SCHEMA` is Python, not SQL, so a PR that empties or
+    narrows it touches no migration and CI has nothing to object to. The gate then probes
+    nothing, prints `verified 0 columns across 0 tables`, exits 0, and waves through the exact
+    drifted deploy it exists to abort — failing silently in the one direction that matters.
+
+    STRUCTURAL, NOT A COUNT. A floor like `>= 158 columns` would abort the first deploy that
+    legitimately DROPS a column, and a gate that blocks healthy deploys gets switched off. These
+    rules only trip when the manifest has stopped describing this backend at all.
+    """
+    if not schema:
+        return ["the manifest is EMPTY — it names no table, so this gate verifies nothing"]
+    problems = [f"{table}: mapped to no columns — that probe asks the database nothing"
+                for table, columns in schema.items() if not columns]
+    problems += [f"anchor table '{table}' is absent from the manifest"
+                 for table in ANCHOR_TABLES if table not in schema]
+    return problems
 
 
 class _Unreachable(Exception):
@@ -220,6 +252,18 @@ async def run(client=None, *, schema: dict[str, tuple[str, ...]] | None = None,
               attempts: int = PROBE_ATTEMPTS, backoff_s: float = RETRY_BACKOFF_S,
               sleep=None) -> int:
     """Probe every manifest object. Returns a process exit code: 0 verified, 1 abort the deploy."""
+    # FIRST, and above the SDK import: the manifest is a dict in this repo, so a broken one is a
+    # gate MISCONFIGURATION that no credential and no round-trip can diagnose. Reporting
+    # "SUPABASE_URL not set" or a drift verdict for it aims the operator at the wrong system.
+    #
+    # The subject is the SHIPPED manifest, never the `schema=` a caller injects: production
+    # reaches this through `main() -> run()` with no arguments, and `schema=` exists only so a
+    # test can drive the probe loop with two columns instead of all 158. Validating the injected
+    # one instead would force every such test to carry four anchor tables it does not use.
+    problems = _validate_manifest(REQUIRED_SCHEMA)
+    if problems:
+        return _abort(problems, headline=_MISCONFIGURED_HEADLINE, hint=_MANIFEST_HINT)
+
     from postgrest.exceptions import APIError
 
     schema = REQUIRED_SCHEMA if schema is None else schema
@@ -257,17 +301,27 @@ async def run(client=None, *, schema: dict[str, tuple[str, ...]] | None = None,
     return 0
 
 
+_DRIFT_HEADLINE = ("SCHEMA GATE FAILED — aborting this deploy. The currently-deployed code "
+                   "keeps serving.")
+# A separate headline, not a longer failure line: the two aim the operator at different systems,
+# and at 3am the first word is all that gets read.
+_MISCONFIGURED_HEADLINE = ("SCHEMA GATE MISCONFIGURED — aborting this deploy. The GATE is "
+                           "broken, not the database; production may be perfectly healthy.")
+
 _DRIFT_HINT = ("Apply the pending migration(s) to production, then redeploy. If instead the "
                "manifest in scripts/assert_schema.py is what is stale, fix it in the same PR as "
                "the migration.")
+_MANIFEST_HINT = ("This is NOT schema drift — do not touch the database. REQUIRED_SCHEMA in "
+                  "backend/scripts/assert_schema.py no longer describes this backend; restore "
+                  "the entries (git log that file) and redeploy.")
 _CREDENTIAL_HINT = ("The gate could not run at all, so it aborts rather than wave the deploy "
                     "through. Both vars are declared `sync: false` in render.yaml and are set "
                     "in the Render dashboard.")
 
 
-def _abort(failures: list[str], *, hint: str = _DRIFT_HINT) -> int:
-    print("SCHEMA GATE FAILED — aborting this deploy. The currently-deployed code keeps serving.",
-          file=sys.stderr)
+def _abort(failures: list[str], *, headline: str = _DRIFT_HEADLINE,
+           hint: str = _DRIFT_HINT) -> int:
+    print(headline, file=sys.stderr)
     for failure in failures:
         print(f"  - {failure}", file=sys.stderr)
     print(hint, file=sys.stderr)

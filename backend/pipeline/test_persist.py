@@ -810,6 +810,56 @@ async def test_persist_grounds_distinct_coordinates_in_parallel(monkeypatch):
     assert verifier.calls == 2
 
 
+class _VerifierCancelledAt(_Verifier):
+    """`CancelledError` out of ONE coordinate — every other one answers normally."""
+
+    def __init__(self, *args, cancel_at, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cancel_at = cancel_at
+
+    async def __call__(self, lat, lng, *, token):
+        if (lat, lng) == self.cancel_at:
+            self.calls += 1
+            raise asyncio.CancelledError()
+        return await super().__call__(lat, lng, token=token)
+
+
+@pytest.mark.asyncio
+async def test_persist_propagates_a_cancelled_error_raised_inside_a_grounding_group(monkeypatch):
+    """The gather's OWN disposal of a child `BaseException`, which no other test reaches.
+
+    `_safe_ground`'s `except Exception` deliberately does not catch `CancelledError`, so a lost
+    lease's abort travels OUT of the group and into `_ground_all`'s `asyncio.gather`. Captured
+    there by `return_exceptions=True` and then discarded by a `BaseException` filter, it becomes
+    nothing at all: that group's places ground to `{}` — NULL countries, counted as
+    `mismatched` — and the superseded worker walks on into the destructive rewrite. The
+    documented guarantee is the opposite, and it is a guarantee about this one line.
+
+    Not covered by the lease test that parks in grounding: that one cancels the OUTER task from
+    outside, and `gather` re-raises a cancellation it requested itself under either spelling.
+    The discrimination needs the cancellation to originate in a CHILD, which is what the
+    verifier above does. Two coordinates, so one group is cancelled while a healthy sibling
+    returns real results — the exact shape a filter turns into a half-ground trip that saves.
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c = _Client()
+    verifier = _VerifierCancelledAt(cancel_at=_SG,
+                                    by_coord={_JP: CountryResult(country_code="JP",
+                                                                 country_name="Japan")})
+    places = [_gp("Tokyo Tower", *_JP),
+              _gp("Marina Bay", *_SG, country_code="SG", country_name="Singapore")]
+
+    with pytest.raises(asyncio.CancelledError):
+        await persist.persist_itinerary(c, "trip-1", places, ["2026-08-01"],
+                                        job_id=None, lease_token=None, verify_country=verifier)
+
+    # Nothing persisted — not "persisted with the cancelled group's countries NULL", which is
+    # what the trip looks like when the abort is swallowed.
+    assert c.db.get("trip_places", []) == []
+    assert c.db.get("places", []) == []
+    assert c.db.get("trip_days", []) == []
+
+
 _OSAKA = (34.6937, 135.5023)
 _KYOTO = (35.0116, 135.7681)
 

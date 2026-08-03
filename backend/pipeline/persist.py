@@ -201,9 +201,21 @@ async def _ground_all(client, canonical: list[CanonicalPlace], *,
         *[_ground_group(client, group, verify_country, failures) for group in by_coord.values()],
         return_exceptions=True,
     )
-    grounded_by_id = {pid: grounded
-                      for r in results if not isinstance(r, BaseException)
-                      for pid, grounded in r}
+    grounded_by_id: dict[int, dict | None] = {}
+    for result in results:
+        # `return_exceptions=True` is kept for its OTHER property — it waits for every group
+        # instead of returning on the first raise and leaving the siblings running detached,
+        # mid-cache-write, on a trip nobody is going to save. But it captures `CancelledError`
+        # too, and DISCARDING one here (`if not isinstance(r, BaseException)`) absorbs a lost
+        # lease's abort into a group of silent NULLs: those places are counted `mismatched` and
+        # the superseded worker walks on into the destructive rewrite. `_safe_ground` already
+        # absorbs every ordinary per-place `Exception`, so nothing reaching this point is
+        # best-effort material — it is that cancellation or a programming error, and both must
+        # propagate. Deterministic when several groups raise: `by_coord` is insertion-ordered,
+        # so the first raiser in canonical order always wins.
+        if isinstance(result, BaseException):
+            raise result
+        grounded_by_id.update(result)
     _log_grounding(canonical, grounded_by_id, failures)
     return grounded_by_id
 

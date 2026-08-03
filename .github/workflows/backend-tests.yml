@@ -21,7 +21,10 @@ jobs:
       # a suite that passes on a different interpreter than production runs is a false signal.
       # Bump this and the Dockerfile together.
       - name: Setup uv
-        uses: astral-sh/setup-uv@v9
+        # Pin the FULL version, not a floating major: astral-sh/setup-uv publishes
+        # v9.0.0 but no `v9` tag (it shipped v7.6 alongside v7.6.0, then stopped at v8).
+        # `@v9` resolves to nothing and the job dies in the setup step.
+        uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: "3.14"
           working-directory: backend

@@ -753,22 +753,34 @@ SSE), so they get a schema comment, not a TS row mirror.
 terminal writes. **Fix 5:** the pre-CAS unfenced `error` event is moved OFF the leased path — on a
 leased failure the RPC's CAS is the sole writer, so "a superseded worker writes nothing" is now
 literally true (the error detail still rides the fenced terminal `result` event's payload). The two
-unfenced fallbacks (no durable job; job-without-lease) keep today's behavior, error event included:
-```python
-superseded = lease_lost is not None and lease_lost.is_set()
-if superseded:
-    return {"error": message}                                    # replacement owns terminal state
+unfenced fallbacks (no durable job; job-without-lease) keep today's behavior, error event included.
 
-if job_id is not None and lease_token is not None:               # fenced: the CAS is the ONLY writer
-    try:                                                         # (no unfenced error event here — Fix 5)
+> **APPROACH-O CORRECTION (2026-08-03, at implementation — the delivered `_fail`).** The earlier
+> snippet opened with `superseded = lease_lost…; if superseded: return`. That short-circuit is a
+> **bug** and was dropped: `_heartbeat` sets `lease_lost` BOTH when a replacement claimed the job AND
+> when the worker hit past-TTL unreachability but STILL owns the row (`jobs.py` `trip_lease_unrenewable_past_ttl`).
+> `_fail` can't tell them apart, so returning early drops the terminal SSE result in the still-owning
+> case → the launch-audit "silent spinner" P1. Instead the leased path ALWAYS calls the CAS and lets
+> it arbitrate: a replacement-superseded worker loses the CAS and writes nothing (no unfenced event
+> exists to leak — Fix 5 still holds); a still-owning worker wins and delivers the terminal result +
+> refund promptly. This matches this section's own Fix-5 test ("superseded **CAS-false** … no error
+> event" — the CAS is *called* and loses, not skipped). `lease_lost` is retained in the signature for
+> caller compat but no longer gates any write. Committed `8f28813`.
+
+```python
+# Leased path: the RPC's CAS is the SOLE terminal writer (Fix 5) — called regardless of lease_lost,
+# the CAS arbitrates (superseded→loses→writes nothing; still-owning→wins→delivers result + refund).
+if job_id is not None and lease_token is not None:
+    try:
         ok = await _complete_trip_run(client, job_id, trip_id, lease_token, status="failed",
                                       stage=stage, message="Astrail couldn't finish this trip",
                                       payload={"error": message})
         logger.info("trip_fail_fenced job_id=%s won=%s", job_id, ok)
-    except Exception: pass
+    except Exception:
+        logger.warning("trip_fail_fenced_error job_id=%s", job_id, exc_info=True)  # sole writer+refund: leave a trace
     return {"error": message}
 
-# Unfenced fallbacks — no lease to fence with, so best-effort writes are all we have.
+# Unfenced fallbacks — no lease to fence with (a no-lease worker is never superseded).
 try: await record_event(client, trip_id, event_type="error", stage=stage, message=message)
 except Exception: pass
 try: await _set_status(client, trip_id, user_id, "failed")
@@ -781,7 +793,8 @@ if job_id is None:                                               # no durable jo
 return {"error": message}
 ```
 The success path (`_complete_trip_run(status="succeeded")` at `:526`) is untouched. **Test (Fix 5):**
-a superseded leased worker (CAS loses) writes NO `error` event either — assert zero rows written.
+a leased worker whose CAS loses (lease_lost NOT set, `_complete_trip_run`→False) writes NO `error`
+event either — assert zero rows written.
 
 **`POST /request-seat`** — auth + burst limit; service-role
 `update public.users set seat_requested_at = coalesce(seat_requested_at, now()) where id = :uid

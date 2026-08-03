@@ -10,6 +10,8 @@ import {
   type DraftInspirationItem, type BriefInput,
 } from '@/lib/trip/parse-inspiration'
 import type { StreamEvent } from '@/lib/trip/backend-types'
+import { classifyGenerateError, useEntitlement } from '@/lib/entitlement'
+import TrialExhaustedCard from '@/components/entitlement/TrialExhaustedCard'
 import SignOutButton from '@/components/auth/SignOutButton'
 import InspirationTray from './InspirationTray'
 import TripBriefForm from './TripBriefForm'
@@ -41,6 +43,12 @@ export default function CreateTripFlow() {
   const [events, setEvents] = useState<StreamEvent[]>([])
   const [tripId, setTripId] = useState<string | null>(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
+  // Post-hoc gate: a generation that raced past the pre-emptive check and got a 403
+  // trial_exhausted flips this so the card replaces the affordance (belt-and-suspenders
+  // for `isTrialExhausted`, which is the pre-emptive read).
+  const [caughtTrialExhausted, setCaughtTrialExhausted] = useState(false)
+  const ent = useEntitlement()
+  const gated = ent.isTrialExhausted || caughtTrialExhausted
   const handleRef = useRef<{ cancel: () => void } | null>(null)
   const activeRef = useRef(true)
 
@@ -92,7 +100,24 @@ export default function CreateTripFlow() {
     } catch (err) {
       if (!activeRef.current) return
       setPhase('compose')
+      // trial_exhausted → the card (single classifier, shared with the pre-emptive gate);
+      // every other backend code (incl. the structured conflict_retry/409) surfaces its
+      // verbatim message via ApiError extends Error.
+      if (classifyGenerateError(err)) {
+        setCaughtTrialExhausted(true)
+        return
+      }
       setSubmitError(err instanceof Error ? err.message : 'Could not start generation.')
+    }
+  }
+
+  // Task-8 carry-forward: requestSeat() has no internal catch, so an unwrapped call would be
+  // an unhandled rejection. Wrap it and give the failure a home in the flow's error surface.
+  async function handleRequestSeat() {
+    try {
+      await ent.requestSeat()
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Could not request a seat.')
     }
   }
 
@@ -120,14 +145,22 @@ export default function CreateTripFlow() {
         </p>
       </header>
 
-      {phase === 'compose' ? (
+      {submitError ? (
+        <p className="type-body text-xs text-[var(--fail)]" role="alert">{submitError}</p>
+      ) : null}
+
+      {gated ? (
+        <TrialExhaustedCard
+          seatRequested={ent.seatRequested}
+          onRequestSeat={handleRequestSeat}
+          requesting={ent.requesting}
+          canonicalTripId={ent.canonicalTripId}
+          canonicalTripLoading={ent.canonicalTripLoading}
+        />
+      ) : phase === 'compose' ? (
         <>
           <InspirationTray items={items} onChange={setItems} />
           <TripBriefForm brief={brief} onChange={setBrief} />
-
-          {submitError ? (
-            <p className="type-body text-xs text-[var(--fail)]" role="alert">{submitError}</p>
-          ) : null}
 
           <button
             type="button"

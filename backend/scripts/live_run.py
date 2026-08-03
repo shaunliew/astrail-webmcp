@@ -27,6 +27,25 @@ import datetime as _dt
 import logging
 import os
 
+# The ONLY logger this tool lifts to INFO, and why it is a list of one rather than the root
+# logger: `pipeline.persist` emits the per-trip `trip_place_grounding` counters (see
+# `_configure_logging`). Add a name here only after checking it cannot print a URL.
+_VERBOSE_LOGGERS = ("pipeline.persist",)
+
+# Third-party loggers pinned to WARNING so a future root-level change cannot re-leak. What each
+# entry buys is documented once, at `telegram_ingest/worker.py`'s copy of this tuple — read it
+# before deleting one. The reason this script needs its own copy is that the credential differs:
+#
+#   httpx     THE live leak here. Logs `HTTP Request: GET <url>` at INFO, and MAPBOX_SECRET_TOKEN
+#             is IN that URL as `access_token=sk...` — the Search Box / Geocoding APIs have no
+#             header auth, so `geocode/mapbox_forward.py` and `geocode/mapbox_reverse.py` must
+#             pass it as a query param, and both go to lengths to keep it out of their own error
+#             messages. One root logger at INFO undid all of it, on every geocode of a real run.
+#   httpcore  DEBUG-only and carries no URL path today. Pinned pre-emptively.
+#   realtime  `get_supabase_client()` constructs an `AsyncRealtimeClient` on every boot, which
+#             logs `wss://…?apikey=<SERVICE_ROLE_KEY>` at DEBUG.
+_NOISY_TRANSPORT_LOGGERS = ("httpx", "httpcore", "realtime")
+
 # Default reels: the repo's real Japan demo set (evals/fixtures/japan_demo_reels.json).
 _DEFAULT_REELS = [
     "https://www.instagram.com/reel/DYbmT-SNzVK/",
@@ -266,12 +285,27 @@ async def _run(args: argparse.Namespace) -> None:
 
 
 def _configure_logging(quiet: bool) -> None:
-    """Surface backend INFO logs. `pipeline.persist` emits ONE `trip_place_grounding` line per
-    trip carrying grounded/ineligible/mismatched/failed counts — the only signal that separates
-    "every coordinate legitimately disagreed" from "the Mapbox credential is dead". Without this
-    the smoke silently discards it, since nothing else in this script configures logging."""
-    logging.basicConfig(level=logging.WARNING if quiet else logging.INFO,
-                        format="  [log] %(name)s %(message)s")
+    """Surface the grounding counters WITHOUT handing INFO to every library in the process.
+
+    `pipeline.persist` emits ONE `trip_place_grounding` line per trip carrying
+    grounded/ineligible/mismatched/failed counts — the only signal that separates "every
+    coordinate legitimately disagreed" from "the Mapbox credential is dead". Nothing else in
+    this script configures logging, so without this the smoke discards it silently.
+
+    Root STAYS at WARNING and the one logger we want is lifted instead. Raising root to get
+    that line also raises `httpx`, which prints the Mapbox secret token on every geocode (see
+    `_NOISY_TRANSPORT_LOGGERS`) — this tool runs with the real one in its environment.
+    """
+    logging.basicConfig(level=logging.WARNING, format="  [log] %(name)s %(message)s")
+    # Assigned unconditionally, in BOTH directions: a `if not quiet: raise it` would leave
+    # `--quiet` meaning "whatever this logger was already set to", which is a promise about
+    # process state rather than about the flag.
+    for name in _VERBOSE_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING if quiet else logging.INFO)
+    # NOT optional tidying — see `_NOISY_TRANSPORT_LOGGERS`. Deleting this loop puts a live
+    # Mapbox token back in the smoke output the day anyone lifts root again.
+    for name in _NOISY_TRANSPORT_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

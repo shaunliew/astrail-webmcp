@@ -28,7 +28,7 @@ def _client(monkeypatch, *, mem0, uid_box):
     # Production stashes request.state.user_id (rate_limit.py:50) and the limiter keys on
     # it. A bare `lambda: "u1"` would silently key on IP, so the tests would not exercise
     # per-user limiting at all. uid_box makes the identity switchable mid-test
-    # (pattern: test_main.py:487 test_burst_limit_is_per_user_not_shared).
+    # (pattern: test_main.py::test_burst_limit_is_per_user_not_shared).
     async def _override(request: Request) -> str:
         request.state.user_id = uid_box["uid"]
         return uid_box["uid"]
@@ -120,7 +120,7 @@ async def test_get_preferences_requires_auth(monkeypatch):
 async def test_burst_limit_is_per_user_not_shared(monkeypatch):
     # Codex P2.3: four requests from ONE user 429 whether the limiter keys on the user or
     # the IP, so that proves nothing. Exhaust user A, then switch to user B on the SAME
-    # client and prove B has a fresh bucket. (pattern: test_main.py:487)
+    # client and prove B has a fresh bucket. (pattern: test_main.py::test_burst_limit_is_per_user_not_shared)
     box = {"uid": "user-A"}
     async with _client(monkeypatch, mem0=_Mem0(rows=[]), uid_box=box) as c:
         a = [(await c.get("/settings/preferences")).status_code for _ in range(4)]
@@ -270,7 +270,7 @@ async def test_clear_memory_reports_unavailable_when_supabase_client_fails(monke
 async def test_clear_burst_limit_is_per_user_not_shared(monkeypatch):
     # Four requests from ONE user 429 whether the limiter keys on the user or the IP, so
     # that alone proves nothing. Exhaust user A, then switch to user B on the SAME client
-    # and prove B has a fresh bucket. (pattern: test_main.py:487)
+    # and prove B has a fresh bucket. (pattern: test_main.py::test_burst_limit_is_per_user_not_shared)
     spy = _ClearSpy("cleared")
     _install_clear(monkeypatch, spy)
     box = {"uid": "user-A"}

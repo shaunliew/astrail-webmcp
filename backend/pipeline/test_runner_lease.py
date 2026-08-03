@@ -441,12 +441,42 @@ def parked_at_first_place_lookup(entered: asyncio.Event, release: asyncio.Event)
     real = persist._find_or_create_place
     armed = [True]
 
-    async def hook(client, place):
+    async def hook(client, place, *, grounded=None):
         if armed[0]:
             armed[0] = False
             entered.set()
             await release.wait()
-        return await real(client, place)
+        return await real(client, place, grounded=grounded)
+
+    return hook
+
+
+def parked_at_first_grounding_call(entered: asyncio.Event, release: asyncio.Event,
+                                   asked: list[str]):
+    """Park the FIRST worker to reach the GROUNDING phase, inside `persist_itinerary`.
+
+    `persist_itinerary` now opens with `_ground_all`, so `parked_at_first_place_lookup` above
+    parks at the SECOND await point of the save path and leaves the first one uncovered.
+
+    The hook replaces `_ground_place` and NOT `_safe_ground`, and that is the whole of the
+    discrimination. `_safe_ground`'s `except Exception` decides something only for an exception
+    raised INSIDE its `try`, and `_ground_place` is the single call that `try` awaits. Parking
+    one level up — on `_safe_ground` or on `_ground_group` — delivers the `CancelledError` to
+    the hook itself, and the test then passes identically against an `except BaseException`
+    that absorbs a lost lease into a silent NULL.
+
+    One-shot, like its sibling: every later member returns immediately, so an implementation
+    that keeps grounding after the abort is observed by `asked` rather than by a hang.
+    """
+    armed = [True]
+
+    async def hook(client, place, *, verify_country=None):
+        asked.append(place.name)
+        if armed[0]:
+            armed[0] = False
+            entered.set()
+            await release.wait()
+        return None            # unverifiable — the honest degradation, per guardrail #3
 
     return hook
 
@@ -593,6 +623,66 @@ async def test_losing_the_lease_mid_save_cancels_the_worker_before_it_writes(mon
     assert client.db.get("trip_days") is None
     # `_fail` still runs its FENCED terminal (that is its job) — and the fence refuses it,
     # which is what keeps "aborted" from surfacing to the user as a real outcome.
+    assert results(client) == []
+
+
+async def test_losing_the_lease_during_grounding_stops_the_worker_where_it_stands(monkeypatch):
+    """The EARLIER cancellation window: country grounding, now the save path's first await.
+
+    The test above parks at `_find_or_create_place`, which used to be where a worker first
+    suspended inside `persist_itinerary`. It is now the second: every canonical place is
+    grounded against Mapbox before the day loop starts, and that phase is a fan-out of
+    unbounded network calls — precisely where a superseded worker sits longest.
+
+    What this pins is `_safe_ground`'s `except Exception`. A `CancelledError` is a
+    BaseException, so a lost lease unwinds THROUGH the grounding phase instead of being
+    absorbed into a silent NULL; widen that `except` to `BaseException` and the abort is
+    swallowed, the group's loop rolls on to its next member, and the worker keeps paying
+    Mapbox for a job a replacement already owns. Both places sit on ONE coordinate on purpose:
+    that puts them in a single `_ground_group`, whose members are grounded SEQUENTIALLY, so
+    "the next member was never asked" is an observable rather than a timing accident.
+
+    `asked` carries this test, not the write assertions. `asyncio.gather` re-raises a
+    cancellation it requested even when every child swallowed it, so the rewrite stays
+    unattempted under BOTH spellings — the write assertions state the guarantee, and the
+    grounding-stopped assertion is the one that can tell the two apart.
+    """
+    monkeypatch.setattr(jobs, "JOB_LEASE_RENEW_S", 0)
+    client = seeded_client()
+    entered, release = asyncio.Event(), asyncio.Event()
+    asked: list[str] = []
+    monkeypatch.setattr(persist, "_ground_place",
+                        parked_at_first_grounding_call(entered, release, asked))
+
+    async def extract_two_places_on_one_coordinate(_reel_data):
+        return [_place("Tokyo Tower"), _place("Zojoji")]
+
+    renewals: list[bool] = []
+    real_renew = jobs._renew_job_lease
+
+    async def watched_renew(*args):
+        outcome = await real_renew(*args)
+        renewals.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(jobs, "_renew_job_lease", watched_renew)
+
+    task = asyncio.create_task(run(client, extract=extract_two_places_on_one_coordinate))
+    await _spin_until(entered.is_set)                # parked INSIDE the grounding phase
+
+    job_row(client)["lease_token"] = "t-replacement"
+    await _spin_until(lambda: False in renewals)     # the RUNNING beat saw the zero-row CAS
+
+    out = await asyncio.wait_for(task, timeout=5)    # unwinds with NOTHING releasing it
+
+    assert not release.is_set()
+    assert asked == ["Tokyo Tower"], \
+        "the abort must unwind out of grounding, not be absorbed into the next member"
+    assert out == {"error": "unexpected generation error"}       # not a payload, not "saved"
+    assert "replace_trip_itinerary" not in [name for name, _params in client.rpc_calls], \
+        "a cancelled worker must not have attempted the destructive rewrite"
+    assert client.db.get("trip_places") is None                  # no half-written state
+    assert client.db.get("trip_days") is None
     assert results(client) == []
 
 

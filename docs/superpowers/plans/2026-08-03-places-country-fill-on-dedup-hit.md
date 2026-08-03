@@ -133,6 +133,11 @@ on a conflicting row still returns that row's id.
 
 ## 5c. MEASURED 2026-08-03 — Option F supersedes R3 for the observed case
 
+> **This section is a SKETCH, superseded.** It scored 5.4/10 as an executable plan (no tasks, no
+> test spec, no DoD). The executable version is
+> `docs/superpowers/plans/2026-08-03-places-country-exact-coordinate-repair.md`. Kept for the
+> measurement and the reasoning; **do not implement from this section.**
+
 Live smoke `trip 752435ea` (4-venue reel, cold): `grounded=4`, and **0/4 rows carried a
 country** — all four deduped onto pre-existing NULL rows, so four verified answers were paid
 for and discarded. Then the decisive measurement:
@@ -176,9 +181,13 @@ But it captures the entire *measured* case at a fraction of the risk, and R3 can
 later if a measurement ever shows the non-identical case matters.
 
 **Still required for F, do not skip:** the CAS (two trips can race the same NULL row), and the
-honest note that the CAS closes pipeline-vs-pipeline only — the RPC can still lose it and
-overwrite unconditionally (`20260720180000:93`). Benign here, since both write a verified value
-for coordinates within 500 m, but say so rather than implying F closes it.
+honest note that the CAS closes pipeline-vs-pipeline only.
+
+> **RETRACTED.** This paragraph originally called the RPC race "benign, since both write a
+> verified value for coordinates within 500 m". **That is false**, and the F plan gate caught it:
+> the RPC's country was verified for the RPC's *own* incoming coordinate, not the selected row's,
+> and R1 exists precisely because 500 m can cross a border. It is an **accepted residual risk**.
+> See `2026-08-03-places-country-exact-coordinate-repair.md` §5.
 
 **What F must NOT become:** a repair driven by a `geocode_country_cache` lookup instead of the
 in-memory `grounded` result. `_store_cached_country` runs at `grounding.py:131`, **before** the

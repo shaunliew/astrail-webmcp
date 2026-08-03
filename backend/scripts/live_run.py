@@ -116,6 +116,30 @@ async def _inspect(client, trip_id: str) -> None:
              if trip_created and (p.get("created_at") or "") >= trip_created]
     print(f"=== grounding: {len(verified)}/{len(places)} places carry a VERIFIED country "
           f"({len(fresh)} row(s) created by THIS run, {len(places) - len(fresh)} reused)")
+
+    # Would an exact-coordinate repair reach these rows? A row's OWN coordinate has been
+    # Mapbox-verified iff its `_coord_cache_key` is already in `geocode_country_cache` — the key
+    # is a lossless repr() and deliberately un-bucketed, so a hit is byte-identity, not
+    # proximity. This is the measurement that decides whether the cheap exact-coordinate repair
+    # captures the observed NULL-on-reuse gap or almost none of it.
+    #
+    # A cache hit does NOT by itself license writing the country: `_store_cached_country` runs
+    # BEFORE `_ground_place`'s claim comparison (grounding.py:131 vs :132), so a hit means
+    # "Mapbox answered", never "the claim agreed". This only reports reachability.
+    from grounding import _coord_cache_key, GEOCODE_CACHE_TABLE, LOCATION_VERIFICATION_VERSION
+
+    null_rows = [p for p in places if not p.get("country")]
+    if null_rows:
+        reachable = 0
+        for p in null_rows:
+            hit = (await client.table(GEOCODE_CACHE_TABLE).select("country_code")
+                   .eq("coord_key", _coord_cache_key(p["lat"], p["lng"]))
+                   .eq("verification_version", LOCATION_VERIFICATION_VERSION)
+                   .execute()).data
+            mark = "exact-coord VERIFIED in cache" if hit else "own coord never grounded"
+            reachable += 1 if hit else 0
+            print(f"    NULL row {p.get('name', '?')!r}: {mark}")
+        print(f"=== exact-coordinate repair would reach {reachable}/{len(null_rows)} NULL row(s)")
     mismatched = [p for p in places
                   if p.get("country") and (p.get("country") != p.get("country_name"))]
     if mismatched:

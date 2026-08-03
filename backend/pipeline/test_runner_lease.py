@@ -23,8 +23,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import pytest
-
 import jobs
 from organizer import LeaseLost
 from pipeline import persist, runner
@@ -197,6 +195,66 @@ async def test_a_superseded_workers_failure_terminal_is_fenced_too(monkeypatch):
     assert out == {"error": "boom"}
     assert results(client) == []                          # the stale result never lands
     assert job_row(client)["status"] == "running"         # the replacement's state stands
+
+
+async def test_a_leased_worker_whose_cas_loses_writes_nothing_unfenced(monkeypatch):
+    """FIX 5 — the core new guard. The leased path's SOLE terminal writer is the fenced CAS.
+
+    Approach O removes the unfenced `error` event + `_set_status('failed')` from `_fail`'s leased
+    path entirely: `complete_trip_run` does `jobs.status`, `trips.status`, the refund and the
+    terminal `result` in ONE fenced transaction, so `_fail` calls ONLY the CAS and lets it
+    arbitrate. Here `lease_lost` is deliberately NOT set and the CAS is stubbed to LOSE — the exact
+    state a worker superseded between renewals reaches, and the one the old code got wrong: with
+    `lease_lost` clear it wrote BOTH unfenced writes. Under O there is nothing left to leak.
+
+    Discriminator, not decoration: re-add a single `record_event(error)` before the CAS in `_fail`
+    and this test goes red — `client.events` gains the stray row. That is the whole point of Fix 5.
+    """
+    client = seeded_client()
+    token = await jobs.mark_job_running(client, "job-1")
+
+    async def cas_loses(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(runner, "_complete_trip_run", cas_loses)
+
+    out = await runner._fail(client, "trip-1", "user-1", "job-1", "save", "boom",
+                             lease_token=token, lease_lost=asyncio.Event())   # NOT set
+
+    assert out == {"error": "boom"}
+    assert client.events == [], \
+        "no unfenced generation_events row — the fenced CAS is the sole terminal writer"
+    assert client.trip_updates == [], \
+        "no unfenced trips write — trips.status rides the fenced CAS, which lost here"
+
+
+async def test_a_leased_failure_routes_the_error_through_the_fenced_cas_once(monkeypatch):
+    """The leased happy path calls the CAS exactly once, carrying the error in its payload.
+
+    The failure detail no longer rides an unfenced `error` event — it rides the fenced `result`
+    the RPC writes, via `payload={"error": message}`, so the frontend still sees WHY the trip
+    failed and the SSE stream still terminates on that single fenced row.
+    """
+    client = seeded_client()
+    token = await jobs.mark_job_running(client, "job-1")
+
+    calls: list[dict] = []
+
+    async def capture(_client, _job_id, _trip_id, _lease_token, *, status, stage, message, payload):
+        calls.append({"status": status, "stage": stage, "message": message, "payload": payload})
+        return True
+
+    monkeypatch.setattr(runner, "_complete_trip_run", capture)
+
+    out = await runner._fail(client, "trip-1", "user-1", "job-1", "extract", "no places",
+                             lease_token=token, lease_lost=asyncio.Event())
+
+    assert out == {"error": "no places"}
+    assert len(calls) == 1                                 # exactly one fenced terminal write
+    assert calls[0]["status"] == "failed"
+    assert calls[0]["payload"] == {"error": "no places"}   # the detail rides the fenced result
+    assert [event for event in client.events if event["event_type"] == "error"] == [], \
+        "the leased path emits NO unfenced error event — the CAS is the only writer"
 
 
 async def test_fail_without_a_lease_token_does_not_write_job_status():
@@ -750,7 +808,14 @@ async def test_a_worker_whose_heartbeat_cannot_reach_postgres_stops(monkeypatch)
 
 
 async def test_a_live_worker_still_writes_its_own_failure():
-    """The gate must not silence a legitimate failure — that would hide every real error."""
+    """The gate must not silence a legitimate failure — that would hide every real error.
+
+    Fix 5 moved the WRITER, not the guarantee: a live worker still holding its lease wins the
+    fenced CAS (`complete_trip_run`), which stamps `trips.status='failed'` inside the transaction.
+    So the failure still reaches `trips.status` — now through the CAS, not the unfenced
+    `_set_status` the leased path no longer issues. `lease_lost` is NOT set, but under Approach O
+    that is irrelevant: the CAS's own predicate arbitrates, and here it matches (own token).
+    """
     client = seeded_client()
     token = await jobs.mark_job_running(client, "job-1")
 
@@ -759,4 +824,4 @@ async def test_a_live_worker_still_writes_its_own_failure():
 
     assert out == {"error": "boom"}
     assert any(u.get("status") == "failed" for u in client.trip_updates), \
-        "a live worker's own failure must still reach trips.status"
+        "a live worker's own failure must still reach trips.status (now via the fenced CAS)"

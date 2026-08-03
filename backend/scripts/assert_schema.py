@@ -62,8 +62,14 @@ _CONNECT_TIMEOUT_S = 10.0
 # ---------------------------------------------------------------------------------------------
 REQUIRED_SCHEMA: dict[str, tuple[str, ...]] = {
     # --- durable jobs + trip generation (web service) ---
+    # `charge_kind`/`charge_date`/`charge_refunded_at` (20260803120000) put the entitlement
+    # charge ON the job. A column probe cannot see reserve_and_enqueue_trip_job or the extended
+    # complete_trip_run, so these columns are the observable proxy for that RPC-bearing migration
+    # having landed — deploying the entitlement code against a DB without them makes generate-trip
+    # fail-closed (503) for everyone.
     "jobs": ("id", "trip_id", "user_id", "idempotency_key", "status", "lease_token",
-             "lock_expires_at", "completed_at"),
+             "lock_expires_at", "completed_at",
+             "charge_kind", "charge_date", "charge_refunded_at"),
     "trips": ("id", "user_id", "status", "start_date", "end_date", "destination_hint",
               "budget_level", "origin_city", "preference_summary", "preference_sources",
               "title", "summary", "tradeoffs", "adult_count", "room_count"),
@@ -115,7 +121,12 @@ REQUIRED_SCHEMA: dict[str, tuple[str, ...]] = {
     # `daily_reel_analysis_limit` (20260802120000) is read by `reserve_organize_item_analysis`.
     # A column probe cannot see an RPC's argument list, so this column is the observable proxy
     # for that migration having landed — the same migration installs the 3-arg function.
-    "users": ("id", "daily_reel_analysis_limit"),
+    # `plan`/`lifetime_trip_count`/`seat_requested_at` (20260803120000) back the free-trial +
+    # beta-seat gate. Same proxy logic as the jobs charge columns above — the request_seat and
+    # reserve_and_enqueue_trip_job RPC bodies are invisible to a column probe, so these columns
+    # stand in for that migration having landed.
+    "users": ("id", "daily_reel_analysis_limit", "plan", "lifetime_trip_count",
+              "seat_requested_at"),
 }
 
 # ANCHOR TABLES — the manifest's floor, and the only thing `_validate_manifest` can check

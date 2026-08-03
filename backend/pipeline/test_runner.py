@@ -141,13 +141,21 @@ class _Table:
 
 
 class _CompleteTripRunRpc:
-    """Mirror of `public.complete_trip_run` (20260720090000_job_leases.sql).
+    """Mirror of `public.complete_trip_run` (extended in 20260803120000_entitlement_free_trial.sql).
 
     The fence and the insert are ONE unit here for the same reason they are one transaction
     there: a superseded worker must write NEITHER the job status NOR the terminal `result`
     event. A fake that inserted unconditionally would leave the caller's `False` branch dead
     under test while the real fence could be missing entirely — and every fencing test in
     `test_runner_lease.py` would pass while proving nothing.
+
+    Fix 5 (entitlement arc): the failure branch of the RPC now owns `trips.status='failed'`
+    INSIDE the fence, so the fake writes it here too — otherwise `_fail`'s leased path (which no
+    longer issues an unfenced `_set_status`) would leave `trips` untouched in the fake and the
+    runner-level "the trip is marked failed" property would silently stop being tested. Only
+    `trips.status` is mirrored: the counter refund + `charge_refunded_at` are RPC-internal
+    entitlement effects owned by pgTAP (`supabase/tests/017_entitlement_rpcs.sql`), not asserted
+    at the runner level, so mirroring them here would be dead scaffolding.
     """
 
     def __init__(self, client, params):
@@ -162,6 +170,13 @@ class _CompleteTripRunRpc:
         if job is None:
             return _Result(False)
         job.update({"status": params["p_status"], "completed_at": "2026-07-20T00:00:00+00:00"})
+        if params["p_status"] == "failed":
+            # Fenced terminal write (RPC B): trips.status='failed' rides the same transaction as
+            # the job mark + result event. Routed through the trips table so `trip_updates` records
+            # it exactly as an unfenced `_set_status` would have — the property moves writers, not
+            # visibility.
+            await self.client.table("trips").update({"status": "failed"}).eq(
+                "id", params["p_trip_id"]).execute()
         events = self.client.db.setdefault("generation_events", [])
         events.append({
             "id": f"generation_events-{len(events) + 1}",
@@ -410,6 +425,9 @@ async def test_all_reels_fail_is_critical_failure():
     assert "error" in out
     assert [e for e in c.events if e["event_type"] == "result"][0]["payload"]["error"]
     assert c.db["jobs"][0]["status"] == "failed"
+    # Fix 5: on the leased path `trips.status='failed'` now rides the FENCED CAS
+    # (`complete_trip_run`), not an unfenced `_set_status` — the property is unchanged, the writer
+    # moved. The last trips write is still `failed` (the CAS runs after the `generating` mark).
     assert c.trip_updates[-1]["status"] == "failed"
 
 

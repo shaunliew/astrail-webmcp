@@ -77,14 +77,23 @@ In the match loop, after the name and distance gates pass, skip the candidate wh
 
 ### T4 — Tests
 
-| # | Case | Expected | Wrong impl it kills |
+Round 3 specified the exact fixture shape each case needs; a loose reading of the same six
+lets a wrong implementation through, so build them this way:
+
+| # | Case | Fixture + required proof | Wrong impl it kills |
 |---|---|---|---|
-| 1 | conflict-only candidate | **not reused**; a new verified row is inserted | suppress-the-write-but-still-reuse (the first draft) |
-| 2 | **conflict first, compatible second** | the compatible row is reused; no insert | inserting immediately on the first conflict |
-| 3 | compatible candidate (same code) | reused, as today | over-rejecting |
-| 4 | candidate with **NULL** country_code | reused, as today (repair is R3, deferred) | rejecting NULL rows as "conflicting" |
-| 5 | `grounded is None` | first match wins, **exactly as today** | applying the country term on the unverified path |
-| 6 | fake-contract: unselected column absent | `country_code` missing from the row dict | P1 not actually implemented |
+| 1 | conflict-only candidate | assert the trip links the NEW id, exactly one verified row inserted with all three country fields, and **the conflicting row is untouched** | suppress-the-write-but-still-reuse (the first draft) |
+| 2 | **conflict first, compatible second** | both candidates must pass the name AND `<500m` gates; assert the exact compatible id and **zero inserts** | inserting immediately on the first conflict |
+| 3 | compatible candidate | same `country_code` but **deliberately poisoned/different `country`/`country_name`**; assert reuse | an implementation comparing NAMES instead of the code — it passes all six otherwise |
+| 4 | candidate with explicit `country_code: None` | assert its exact id is reused, with no insert and no repair | rejecting NULL rows as "conflicting" |
+| 5 | `grounded is None` | JP-claim place, **SG first / JP second**; assert SG (the first match) wins, no insert, rows unchanged | applying the country term on the unverified path |
+| 6 | fake-contract | seed `{id, country_code}`, call `.select("id")`, assert the result is **exactly** `{"id": ...}` | P1 not actually implemented |
+
+Case 5 cannot literally prove "byte-for-byte today" — T2 necessarily changes the response
+projection. It proves the observable contract (country-agnostic first-match, identical returned
+id, identical insert behaviour); code review confirms nothing else on the unverified path moved.
+Case 6 pins T1's fake contract; cases 1–2 then pin T2, but **only once the fake omits unselected
+fields**. That layering is deliberate.
 
 Case 2 is the one round 2 specifically called out as missing: an implementation that inserts on
 the first conflict passes Case 1 and still violates the required fall-through.
@@ -95,8 +104,10 @@ state what makes each red when its guard is removed, then delete the guard and p
 ## 4. Constraints
 
 - No migration. `pipeline/persist.py` is on every `/generate-trip`; beta 2026-08-08.
-- Frozen `#16` anchor `6229.0` — R1 changes which global row a place links to, never which
-  places survive. Run `uv run pytest evals/ -q` regardless.
+- Frozen `#16` anchor `6229.0`. **Precision (round 3):** the eval is safe because it does not
+  exercise persistence at all — *not* because persisted stop survival cannot change. R1 can
+  change `dropped` by avoiding an id collision, which **preserves** a stop that would otherwise
+  have been skipped. Run `uv run pytest evals/ -q` regardless.
 - Guardrails #1 (never write **or reuse** an unverified/contradicting country), #3, #7.
 - **R1 depends on the parent branch's grounded result**, so merge the parent and R1 before the
   same manual Render deploy, or deploy them back-to-back.

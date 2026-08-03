@@ -96,7 +96,14 @@ REQUIRED_SCHEMA: dict[str, tuple[str, ...]] = {
                           "price_snapshot", "status"),
     "feedback": ("trip_id", "user_id", "artifact_type", "artifact_id", "feedback_type",
                  "rating", "comment", "source_type", "generation_stage", "preference_source"),
-    "memory_events": ("user_id", "trip_id", "event_type", "learned_facts_json"),
+    # `id` and `created_at` are the clear/write-back interlock (pipeline/memory_clear.py +
+    # pipeline/preferences.py): `id` scopes the two id-only writes that retract or fail the
+    # add-intent row, and `created_at` is the ONE Postgres clock both sides compare against
+    # (the write-back guard's `.gt()` and the clear's in-flight cutoff). Drift dropping
+    # either makes clears fail closed and the write-back abort learning — silently, since
+    # both paths are best-effort by design.
+    "memory_events": ("id", "user_id", "trip_id", "event_type", "learned_facts_json",
+                      "created_at"),
     "traveler_profiles": ("id", "origin_city", "travel_style_tags", "preference_tags",
                           "preference_notes"),
     # --- write-through caches (guardrail #7) ---

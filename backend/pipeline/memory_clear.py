@@ -11,7 +11,14 @@ from datetime import datetime, timedelta
 
 _CLEAR_TIMEOUT_S = 5             # ~13x the measured 374ms steady-state delete
 _VERIFY_TIMEOUT_S = 4            # matches list_memory_facts' existing read timeout
-_ADD_VISIBILITY_WINDOW_S = 15    # ~2x the measured 4-8s PENDING -> readable latency
+# The window must cover the WHOLE interval in which a generation's add can still land, not
+# just mem0's materialization (C12). 15s covered only the measured 4-8s PENDING -> readable
+# latency, so an intent could age out of view while its own add was still pending — the clear
+# then answered 'cleared' and the add landed behind it (Codex reproduced it). The budget it
+# has to cover: preferences' bounded pre-add path (4 + 4 + 4 = 12s to issue the add) + the
+# add's own 5s bound + 4-8s materialization ~= 25s. 30 leaves margin. Narrowing this without
+# narrowing those bounds reopens the race.
+_ADD_VISIBILITY_WINDOW_S = 30
 
 
 def _minus_seconds(ts: str, seconds: int) -> str | None:

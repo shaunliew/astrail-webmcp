@@ -28,11 +28,16 @@ def _shift(ts: str, seconds: int) -> str:
     return (datetime.fromisoformat(ts) + timedelta(seconds=seconds)).isoformat()
 
 
-# -5s is INSIDE and -20s is OUTSIDE the module's 15s _ADD_VISIBILITY_WINDOW_S. Written as
+# -5s is INSIDE and -40s is OUTSIDE the module's 30s _ADD_VISIBILITY_WINDOW_S. Written as
 # literals rather than derived from the constant on purpose: derived offsets would follow
 # the window anywhere, so a window inflated to an hour would keep every test green.
+#
+# -20s is the band C12 widened the window to cover: outside the old 15s, inside today's 30s.
+# The write-back's bounded budget (4+4+4 to issue the add, 5 for the add, then mem0's 4-8s
+# PENDING->readable) means an intent that old can still be materializing.
 _RECENT = _shift(_NOW, -5)
-_STALE = _shift(_NOW, -20)
+_AGING = _shift(_NOW, -20)
+_STALE = _shift(_NOW, -40)
 
 
 def _stale_add(**overrides) -> dict:
@@ -468,6 +473,15 @@ async def test_add_older_than_the_visibility_window_still_reports_cleared():
     # every clear would report unknown forever.
     client, mem = _wire(rows=[_stale_add()])
     assert await clear_memory(client, mem, user_id="u1") == "cleared"
+
+
+async def test_an_add_20s_old_is_still_treated_as_possibly_in_flight():
+    # THE PIN for C12's widened window, and it reddens the moment 30 goes back to 15.
+    # 15s covered only mem0's measured 4-8s materialization; it did not cover the write-back's
+    # own pre-add budget, so an intent could age out of view while its add was still pending —
+    # the clear then reported `cleared` and the add landed behind it (Codex reproduced it).
+    client, mem = _wire(rows=[_recent_add(id="evt-aging", created_at=_AGING)])
+    assert await clear_memory(client, mem, user_id="u1") == "unknown"
 
 
 async def test_a_flipped_clear_marker_does_not_count_as_an_in_flight_add():

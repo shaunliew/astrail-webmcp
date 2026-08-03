@@ -309,6 +309,11 @@ _TRIP_START = "2026-08-03T12:00:00+00:00"     # trips.created_at — this genera
 _BEFORE_START = "2026-08-03T11:59:00+00:00"   # a clear from an EARLIER session
 _AFTER_START = "2026-08-03T12:01:00+00:00"    # a clear DURING this generation
 _LATER = "2026-08-03T12:05:00+00:00"          # later still (recovery re-run fixture)
+# 20s before _LATER, and that offset is the entire point (C12): it sits OUTSIDE the 15s
+# window `_add_possibly_in_flight` used to look back over and INSIDE the 30s one it looks
+# back over now. An intent stamped here is exactly the row Codex watched age out of a
+# concurrent clear's view while the add it announced was still pending.
+_AGED_INTENT = "2026-08-03T12:04:40+00:00"
 
 _DEFAULT_TRIP = {"id": "t1", "user_id": "u1", "created_at": _TRIP_START}
 
@@ -430,7 +435,8 @@ class _FakeTable:
             client.seq += 1
             # The DB supplies both as defaults and the guard reads created_at.
             row.setdefault("id", f"{self._name}-{client.seq}")
-            row.setdefault("created_at", _LATER)   # audit rows land after the trip started
+            if "created_at" not in row:
+                row["created_at"] = client.next_created_at()
             rows.append(row)
             return _Result([dict(row)])
         if self._op == "update":
@@ -474,7 +480,7 @@ class _FakeTable:
 class _FakeClient:
     def __init__(self, *, trips=None, memory_events=None, select_raises=(),
                  insert_raises=(), insert_returns_no_row=(), update_raises=(),
-                 delete_raises=()) -> None:
+                 delete_raises=(), insert_created_at=()) -> None:
         seeded_trips = [_DEFAULT_TRIP] if trips is None else trips
         self.db = {
             "trips": [dict(r) for r in seeded_trips],
@@ -488,6 +494,14 @@ class _FakeClient:
         self.seq = 0
         self.ops: list[str] = []   # so ORDER and short-circuiting are assertable
         self.after_guard_read = None   # one-shot async hook; see _FakeTable.execute
+        # Postgres stamps created_at on insert. A test needing two inserts at DIFFERENT
+        # instants — the aged-intent case, where the write-back's intent row predates the
+        # clear's marker — scripts them here, oldest first. Unscripted inserts fall back to
+        # _LATER, which is what every pre-C12 test assumed.
+        self._created_at_script = list(insert_created_at)
+
+    def next_created_at(self) -> str:
+        return self._created_at_script.pop(0) if self._created_at_script else _LATER
 
     def table(self, name):
         if name not in self.db:
@@ -497,6 +511,26 @@ class _FakeClient:
     @property
     def events(self):
         return self.db["memory_events"]
+
+
+def _wait_for_recorder(seen: list, *, expire_call: int | None = None):
+    """Fake `asyncio.wait_for` recording every bound IN CALL ORDER, optionally expiring the
+    Nth one. Every call the write-back makes is bounded (C12), so a fake that expired them
+    ALL could only ever prove the first one.
+
+    Assert on `seen` OUTSIDE the fake, never in here: persist_trip_memory and all three of
+    its helpers wrap their bounded call in a blanket `except`, so an AssertionError raised
+    inside this fake is swallowed and the pin could never fail. That is the trap
+    test_build_context_timeout_degrades_to_default already documents — Codex reproduced it
+    there with `timeout == 999` still passing.
+    """
+    async def _fake(awaitable, timeout):
+        seen.append(timeout)
+        if len(seen) == expire_call:
+            awaitable.close()          # avoid "coroutine was never awaited"
+            raise TimeoutError
+        return await awaitable
+    return _fake
 
 
 def test_write_back_writes_event_and_adds_on_explicit():
@@ -792,23 +826,21 @@ def test_a_failed_add_flips_the_intent_to_failed_and_never_deletes_it():
 
 def test_a_timed_out_add_flips_the_intent_to_failed(monkeypatch):
     # The other half of C11 test 5, and the case MOST likely to still land server-side.
+    # Expires the FOURTH bounded call specifically — the three before it are the write-back's
+    # own Supabase calls, which C12 bounded too, and expiring those instead aborts the run
+    # long before the add.
     from pipeline import preferences as prefs_mod
 
-    seen = {}
-
-    async def _timing_out_wait_for(coro, timeout):
-        coro.close()                 # avoid "coroutine was never awaited"
-        seen["timeout"] = timeout    # RECORD here, assert OUTSIDE
-        raise TimeoutError
-
-    monkeypatch.setattr(prefs_mod.asyncio, "wait_for", _timing_out_wait_for)
+    seen: list = []
+    monkeypatch.setattr(prefs_mod.asyncio, "wait_for",
+                        _wait_for_recorder(seen, expire_call=4))
     client, mem = _FakeClient(), _FakeMem0Add()
     _run_write_back(client, mem)
     assert mem.added == []
     assert [r["event_type"] for r in client.events] == ["failed"]
     # Asserted OUT here: persist_trip_memory's blanket `except` would swallow an
     # AssertionError raised inside the fake and the pin could never fail.
-    assert seen["timeout"] == 5
+    assert seen[3] == 5
 
 
 def test_a_failing_retraction_is_swallowed_and_never_escapes():
@@ -908,6 +940,203 @@ async def test_a_clear_between_the_guard_read_and_the_add_reports_unknown():
     # ...and the add really did land after the clear returned, which is WHY `unknown` is the
     # only honest answer: `cleared` would have been a lie by the time the user read it.
     assert mem.added and mem.added[0][1] == "u1"
+
+
+# ---------------------------------------------------------------------------------
+# BOUNDED write-back (C12). C11 put the intent row before the guard's snapshot, but the
+# write-back's own Supabase calls were unbounded — they inherit the shared 30s HTTP timeout.
+# A slow guard read therefore lets the intent age out of the clear's visibility window while
+# the add it announces is still pending, which is the state Codex reproduced against the real
+# functions: `expired_intent_verdict='cleared'` with `add_landed=True`. Two independent
+# bounds close it: every call here is capped, and the window is widened to cover the capped
+# worst case.
+# ---------------------------------------------------------------------------------
+
+
+def test_every_write_back_call_is_bounded_and_the_budget_fits_the_visibility_window(monkeypatch):
+    # THE PIN for all four bounds, by exact value and in call order. Literals, not the
+    # module constants: `assert seen == [_ADD_INTENT_TIMEOUT_S, ...]` would follow the
+    # constants anywhere and a bound inflated to 300 would keep this green.
+    from pipeline import preferences as prefs_mod
+    from pipeline.memory_clear import _ADD_VISIBILITY_WINDOW_S
+
+    seen: list = []
+    monkeypatch.setattr(prefs_mod.asyncio, "wait_for", _wait_for_recorder(seen))
+    client, mem = _FakeClient(), _FakeMem0Add()
+    _run_write_back(client, mem)
+
+    assert mem.added                    # the happy path really ran end to end
+    # intent insert, the guard's trips read, the guard's cleared read, mem0.add
+    assert seen == [4, 4, 4, 5]
+    # ...and the arithmetic C12 turns on. Everything between committing the intent row and
+    # the add returning must fit inside the window the clear looks back over, or an intent
+    # can age out of view while its own add is still pending — Codex's `cleared` +
+    # `add_landed`. 4+4+4+5 = 17s here, plus mem0's measured 4-8s PENDING->readable, still
+    # under 30s. Derived from the RECORDED bounds so a widened timeout cannot slip past it.
+    assert sum(seen) < _ADD_VISIBILITY_WINDOW_S
+
+
+def test_an_intent_insert_that_overruns_its_bound_skips_the_add(monkeypatch):
+    # Same fail-safe as an insert that raises (D7), reached down a different path: with no
+    # intent on record an add would be invisible to every later clear, so it must not happen.
+    from pipeline import preferences as prefs_mod
+
+    seen: list = []
+    monkeypatch.setattr(prefs_mod.asyncio, "wait_for",
+                        _wait_for_recorder(seen, expire_call=1))
+    client, mem = _FakeClient(), _FakeMem0Add()
+
+    assert _run_write_back(client, mem) == ["loves ramen"]   # nothing raises (guardrail #3)
+    assert mem.added == []
+    assert client.events == []
+    assert client.ops == []             # the insert never even reached the fake
+    assert seen == [4]
+
+
+def test_a_trip_lookup_that_overruns_its_bound_retracts_the_intent_and_skips_the_add(monkeypatch):
+    # The guard's first read. An unbounded one is half of the C12 defect: it can outlast the
+    # window while holding a pre-clear snapshot. Bounded, it takes the same fail-safe path as
+    # a raising lookup — assume a clear happened, retract, add nothing.
+    from pipeline import preferences as prefs_mod
+
+    seen: list = []
+    monkeypatch.setattr(prefs_mod.asyncio, "wait_for",
+                        _wait_for_recorder(seen, expire_call=2))
+    client, mem = _FakeClient(), _FakeMem0Add()
+
+    assert _run_write_back(client, mem) == ["loves ramen"]
+    assert mem.added == []
+    assert client.events == []          # the intent was retracted, not left to linger
+    assert client.ops == ["insert:memory_events", "delete:memory_events"]
+    assert seen == [4, 4, 4]            # intent, the expired trips read, the retraction
+
+
+def test_a_cleared_lookup_that_overruns_its_bound_retracts_the_intent_and_skips_the_add(monkeypatch):
+    # The guard's SECOND read has its own bound and its own `except`; proving one says
+    # nothing about the other. This is the read C12's race is against.
+    from pipeline import preferences as prefs_mod
+
+    seen: list = []
+    monkeypatch.setattr(prefs_mod.asyncio, "wait_for",
+                        _wait_for_recorder(seen, expire_call=3))
+    client, mem = _FakeClient(), _FakeMem0Add()
+
+    assert _run_write_back(client, mem) == ["loves ramen"]
+    assert mem.added == []
+    assert client.events == []
+    assert client.ops == ["insert:memory_events", "select:trips", "delete:memory_events"]
+    assert seen == [4, 4, 4, 4]         # intent, trips, the expired cleared read, retraction
+
+
+def test_a_retraction_that_overruns_its_bound_is_swallowed_and_never_escapes(monkeypatch):
+    # A hung DELETE must not wedge the write-back task either — the trip is already saved and
+    # streamed. The stale intent lingering over-suppresses the next clear (`unknown`), which
+    # is the safe direction.
+    from pipeline import preferences as prefs_mod
+
+    seen: list = []
+    monkeypatch.setattr(prefs_mod.asyncio, "wait_for",
+                        _wait_for_recorder(seen, expire_call=4))
+    client = _FakeClient(memory_events=[_cleared_row()])
+    mem = _FakeMem0Add()
+
+    assert _run_write_back(client, mem) == ["loves ramen"]
+    assert mem.added == []
+    assert [r["event_type"] for r in client.events] == ["cleared", "learned"]
+    assert seen == [4, 4, 4, 4]         # intent, trips, cleared, the expired retraction
+
+
+def test_a_mark_failed_that_overruns_its_bound_is_swallowed_and_never_escapes(monkeypatch):
+    # The third write's own bound. The row stays 'learned', which the clear's in-flight check
+    # still matches — the conservative direction holds even when the flip cannot be recorded.
+    from pipeline import preferences as prefs_mod
+
+    seen: list = []
+    monkeypatch.setattr(prefs_mod.asyncio, "wait_for",
+                        _wait_for_recorder(seen, expire_call=5))
+    client, mem = _FakeClient(), _FakeMem0Add(add_raises=True)
+
+    assert _run_write_back(client, mem) == ["loves ramen"]
+    assert [r["event_type"] for r in client.events] == ["learned"]
+    assert seen == [4, 4, 4, 5, 4]      # intent, trips, cleared, add, the expired flip
+
+
+async def test_an_aged_intent_blocks_the_clear_and_an_overrunning_guard_read_never_adds(monkeypatch):
+    """C12's regression test — the state Codex REPRODUCED, in one fixture.
+
+    An intent committed 20s before the clear (outside the old 15s window, inside the new
+    30s one) while the guard holding the pre-clear snapshot overruns its bound. Codex saw
+    `expired_intent_verdict='cleared'` with `add_landed=True`; the two assertions below own
+    one half each:
+
+      * `verdict == "unknown"` fails if `_ADD_VISIBILITY_WINDOW_S` goes back to 15 — the
+        clear stops seeing the aged intent and claims a success it cannot support.
+      * `mem.added == []` fails if the bound around the guard's read is removed — the read
+        resumes on its stale snapshot and issues the add the clear just told the user was
+        gone.
+
+    Remove BOTH and the fixture reproduces Codex's pair exactly.
+    """
+    from pipeline import preferences as prefs_mod
+    from pipeline.memory_clear import clear_memory
+    from pipeline.preferences import persist_trip_memory
+
+    real_wait_for = asyncio.wait_for      # bound BEFORE the patch: the watchdog below must
+                                          # not run through the fake
+    client = _FakeClient(insert_created_at=[_AGED_INTENT])   # the clear's marker gets _LATER
+    mem = _FakeMem0ClearAndAdd()
+    guard_read = asyncio.Event()
+    clear_finished = asyncio.Event()
+    bounded = {"depth": 0}               # >0 while a wait_for is awaiting, so the hook can
+    overran = {"guard_read": False}      # tell a BOUNDED slow read from an unbounded one
+
+    async def _suspend_until_the_clear_has_run():
+        guard_read.set()
+        await clear_finished.wait()
+        # Attributed to THIS call, never latched globally: a flag that outlived the read
+        # would be consumed by the next bounded call instead (mem0.add), and removing the
+        # guard's bound would still look like "no add landed" — a false-green injection.
+        if bounded["depth"]:
+            overran["guard_read"] = True
+
+    client.after_guard_read = _suspend_until_the_clear_has_run
+
+    async def _expiring_wait_for(awaitable, timeout):
+        # A deterministic stand-in for the real bound: the op the hook marked as slow is let
+        # through to its interleaving point and THEN expired, exactly as asyncio.wait_for
+        # would have expired it mid-flight. Every other bounded call passes through, so the
+        # clear's own timeouts behave normally.
+        bounded["depth"] += 1
+        try:
+            result = await awaitable
+        finally:
+            bounded["depth"] -= 1
+        if overran["guard_read"]:
+            overran["guard_read"] = False
+            raise TimeoutError
+        return result
+
+    monkeypatch.setattr(prefs_mod.asyncio, "wait_for", _expiring_wait_for)
+
+    async def _clear_landing_mid_generation():
+        await guard_read.wait()
+        try:
+            return await clear_memory(client, mem, user_id="u1")
+        finally:
+            clear_finished.set()          # never strand the write-back, even on a failure
+
+    # Watchdog, not a timing dependency: it turns "the hook was never reached" into a red
+    # test instead of a hung suite.
+    _, verdict = await real_wait_for(asyncio.gather(
+        persist_trip_memory(client, mem, user_id="u1", trip_id="t1", ctx=_explicit_ctx()),
+        _clear_landing_mid_generation(),
+    ), timeout=5)
+
+    assert verdict == "unknown"           # exact — 'unavailable' comes from a different guard
+    assert mem.deleted == ["u1"]          # the clear really did run its delete
+    assert mem.added == []                # the overrunning read failed safe instead of adding
+    # ...and the intent it wrote was retracted, so the next clear is not suppressed by it.
+    assert [r["event_type"] for r in client.events] == ["cleared"]
 
 
 @pytest.mark.live

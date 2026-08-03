@@ -210,13 +210,63 @@ async def _cleared_since_generation_start(client, *, user_id: str, trip_id: str)
     return bool(getattr(res, "data", None))
 
 
+async def _write_add_intent(client, *, user_id: str, trip_id: str,
+                            learned: list[str]) -> str | None:
+    """Insert the audit row BEFORE the add is attempted and return its id (None on failure).
+
+    It is `event_type='learned'` with `trip_id` set FROM THE START, because that is exactly
+    what memory_clear._add_possibly_in_flight matches ('learned' or 'failed', trip_id NOT
+    NULL): the row is visible to a concurrent clear the instant it exists. A dedicated
+    'intent' event_type would need a migration and would have to be added to that filter to
+    do the same job.
+    """
+    try:
+        res = await client.table("memory_events").insert({
+            "user_id": user_id, "trip_id": trip_id, "event_type": "learned",
+            # Object shape to match the existing convention (supabase/tests/001_…:34-37).
+            "learned_facts_json": [{"fact": f} for f in learned],
+        }).execute()
+        return ((getattr(res, "data", None) or [{}])[0]).get("id")
+    except Exception as e:                  # noqa: BLE001
+        # Type only — a postgrest error can carry connection details.
+        print(f"[mem0] write-back: intent insert raised: {type(e).__name__}", file=sys.stderr)
+        return None
+
+
+async def _retract_add_intent(client, intent_id: str) -> None:
+    """DELETE the intent by id — the guard fired, so nothing was sent and there is no audit
+    event to keep. This preserves the pre-C11 behaviour exactly (guard fires ⇒ no row).
+    Flipping it to 'failed' instead would keep matching the in-flight check and make the
+    next clear report a false `unknown` for 15s."""
+    try:
+        await client.table("memory_events").delete().eq("id", intent_id).execute()
+    except Exception as e:                  # noqa: BLE001
+        print(f"[mem0] write-back: intent retraction failed: {type(e).__name__}", file=sys.stderr)
+
+
+async def _mark_intent_failed(client, intent_id: str) -> None:
+    """Flip the intent to 'failed' by id. 'failed' means "issued, outcome unconfirmed" —
+    which is what the clear's in-flight check must treat as may-still-land, so the row is
+    updated in place rather than deleted."""
+    try:
+        await client.table("memory_events").update({"event_type": "failed"}) \
+            .eq("id", intent_id).execute()
+    except Exception as e:                  # noqa: BLE001
+        print(f"[mem0] write-back: intent mark-failed failed: {type(e).__name__}", file=sys.stderr)
+
+
 async def persist_trip_memory(client, mem0, *, user_id: str, trip_id: str,
                               ctx: PreferenceContext) -> list[str]:
     """Write-once, awaited AFTER the terminal `result` event so it's invisible to the
-    stream yet can't be GC'd. Records a memory_events audit row and pushes mem0.add —
-    BOTH best-effort (guardrail #3): a mem0 error OR TIMEOUT can't fail the (already
-    saved) trip. Only writes when the user stated something NEW this trip
-    (distill_memory_text is None otherwise)."""
+    stream yet can't be GC'd. Only writes when the user stated something NEW this trip
+    (distill_memory_text is None otherwise).
+
+    ORDER IS LOAD-BEARING: intent row -> guard -> add (C11). The audit row is written
+    FIRST so a clear landing mid-write-back can observe it; the guard's own read is part
+    of the race window, so an intent written just before the add would not close it.
+    Nothing here may RAISE (guardrail #3 — the trip is already saved and streamed), but a
+    failed intent insert does ABORT the add: an add nobody can observe is precisely the
+    false-`cleared` this ordering exists to prevent."""
     text = distill_memory_text(ctx)
     learned = [ctx.explicit_text] if text else []
     if not text:
@@ -226,28 +276,30 @@ async def persist_trip_memory(client, mem0, *, user_id: str, trip_id: str,
                           # memory_events row either — preferences already live in
                           # trips.preference_summary (Task 3)
 
-    if await _cleared_since_generation_start(client, user_id=user_id, trip_id=trip_id):
-        # The user cleared memory during this generation. Re-adding would silently
-        # un-clear it. No audit row: nothing was learned and nothing failed.
+    # INTENT-FIRST (C11). `_add_possibly_in_flight` can only see an in-flight add if a row
+    # exists BEFORE the guard reads memory_events — the race is between the guard's READ
+    # and the add, so an intent written just before mem0.add() would not close it.
+    intent_id = await _write_add_intent(client, user_id=user_id, trip_id=trip_id,
+                                        learned=learned)
+    if intent_id is None:
+        # Cannot record the intent -> do NOT add. An add nobody can observe is exactly the
+        # false-`cleared` this fix removes (that is C4-bis). Losing one learned memory on a
+        # DB blip is the fail-safe direction, consistent with D7.
+        print("[mem0] write-back: intent row failed; skipping add", file=sys.stderr)
         return learned
 
-    event_type = "learned"
+    if await _cleared_since_generation_start(client, user_id=user_id, trip_id=trip_id):
+        # The user cleared during this generation. Nothing was sent, so the intent must not
+        # linger: a stale 'learned' row would make the NEXT clear report `unknown` for 15s.
+        await _retract_add_intent(client, intent_id)
+        return learned
+
     try:
         # Timeout-bounded (Codex): a hung hosted add must not wedge the task.
         await asyncio.wait_for(
             mem0.add([{"role": "user", "content": text}], user_id=user_id,
                      metadata={"source": "generation", "trip_id": trip_id}),
             timeout=5)
-    except Exception:
-        event_type = "failed"   # add error OR TimeoutError → record for observability
-
-    try:
-        await client.table("memory_events").insert({
-            "user_id": user_id, "trip_id": trip_id, "event_type": event_type,
-            # Object shape to match the existing convention (supabase/tests/001_…:34-37).
-            "learned_facts_json": [{"fact": f} for f in learned],
-        }).execute()
-    except Exception:
-        pass   # audit is best-effort too
-
+    except Exception:                       # noqa: BLE001
+        await _mark_intent_failed(client, intent_id)   # 'failed' still reads as may-have-landed
     return learned

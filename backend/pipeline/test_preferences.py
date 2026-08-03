@@ -323,6 +323,12 @@ class _FakeTable:
     Filters GENUINELY (BUILD-LOOP trap #4: a `return self` builder makes every window and
     ownership case vacuous), and unsupported shapes raise rather than filtering on nothing
     — the rule test_memory_clear.py and test_saved_reels_organize.py already follow.
+
+    `not_`/`is_`/`in_` are modelled exactly (C11 test 8 runs the REAL clear_memory against
+    this same fake, and its in-flight lookup is
+    `.in_("event_type", …).not_.is_("trip_id", "null")`): a `not_` that returned self while
+    `is_` ignored the flag would silently INVERT that query — it would then match only the
+    clear's own markers and never a generation's, while every test still passed.
     """
 
     def __init__(self, client, name: str) -> None:
@@ -330,23 +336,59 @@ class _FakeTable:
         self._op = None
         self._payload = None
         self._eq: dict = {}
+        self._in: dict = {}
         self._gt: dict = {}
+        self._is_null: set = set()
+        self._not_is_null: set = set()
+        self._negate_next = False
         self._single = False
 
     def insert(self, row): self._op, self._payload = "insert", dict(row); return self
 
+    def update(self, patch): self._op, self._payload = "update", dict(patch); return self
+
+    def delete(self): self._op = "delete"; return self
+
     def select(self, *_cols): self._op = "select"; return self
 
+    @property
+    def not_(self):
+        # postgrest's `not_` is a PROPERTY that sets negate_next and returns self; the very
+        # next filter() consumes and resets it (base_request_builder.py). Modelled exactly.
+        self._negate_next = True
+        return self
+
+    def _take_negation(self) -> bool:
+        negated, self._negate_next = self._negate_next, False
+        return negated
+
     def eq(self, column, value):
+        if self._take_negation():
+            raise ValueError("fake does not implement `not_.eq`")
         if value is None:
             raise ValueError(".eq(col, None) is never valid against postgrest; use .is_(col, 'null')")
         self._eq[column] = value
         return self
 
     def gt(self, column, value):
+        if self._take_negation():
+            raise ValueError("fake does not implement `not_.gt`")
         if value is None:
             raise ValueError(".gt(col, None) is never valid against postgrest; use .is_(col, 'null')")
         self._gt[column] = value
+        return self
+
+    def in_(self, column, values):
+        if self._take_negation():
+            raise ValueError("fake does not implement `not_.in_`")
+        self._in[column] = tuple(values)
+        return self
+
+    def is_(self, column, value):
+        negated = self._take_negation()
+        if value not in (None, "null"):
+            raise ValueError(f"fake implements only `is.null`, got .is_({column!r}, {value!r})")
+        (self._not_is_null if negated else self._is_null).add(column)
         return self
 
     def maybe_single(self):
@@ -354,20 +396,36 @@ class _FakeTable:
         return self
 
     def _matches(self, row) -> bool:
+        if self._negate_next:
+            raise ValueError("`not_` was armed but no filter consumed it")
         if any(row.get(col) != value for col, value in self._eq.items()):
+            return False
+        if any(row.get(col) not in values for col, values in self._in.items()):
             return False
         for col, value in self._gt.items():
             current = row.get(col)
             # Postgres: `NULL > x` is NULL, so a row missing the column does NOT match.
             if current is None or not current > value:
                 return False
+        if any(row.get(col) is not None for col in self._is_null):
+            return False
+        if any(row.get(col) is None for col in self._not_is_null):
+            return False
         return True
+
+    def _is_the_guards_cleared_lookup(self) -> bool:
+        """The write-back guard's second read — the query C11's race is against."""
+        return self._name == "memory_events" and self._eq.get("event_type") == "cleared"
 
     async def execute(self):
         client = self._client
         client.ops.append(f"{self._op}:{self._name}")
         rows = client.db[self._name]
         if self._op == "insert":
+            if self._name in client.insert_raises:
+                raise RuntimeError(f"insert into {self._name} failed")
+            if self._name in client.insert_returns_no_row:
+                return _Result([])          # postgrest can answer with data == []
             row = dict(self._payload)
             client.seq += 1
             # The DB supplies both as defaults and the guard reads created_at.
@@ -375,10 +433,33 @@ class _FakeTable:
             row.setdefault("created_at", _LATER)   # audit rows land after the trip started
             rows.append(row)
             return _Result([dict(row)])
+        if self._op == "update":
+            if self._name in client.update_raises:
+                raise RuntimeError(f"update on {self._name} failed")
+            matched = [r for r in rows if self._matches(r)]
+            for r in matched:
+                r.update(self._payload)
+            return _Result([dict(r) for r in matched])
+        if self._op == "delete":
+            if self._name in client.delete_raises:
+                raise RuntimeError(f"delete on {self._name} failed")
+            # Deliberately NOT refusing an unfiltered delete: dropping `.eq("id", …)` must
+            # REDIRECT (wipe the table) so the id-scoping test reddens, not crash — a crash
+            # is not the absence of the filter.
+            removed = [dict(r) for r in rows if self._matches(r)]
+            client.db[self._name] = [r for r in rows if not self._matches(r)]
+            return _Result(removed)
         if self._op == "select":
             if self._name in client.select_raises:
                 raise RuntimeError(f"select on {self._name} failed")
             matched = [dict(r) for r in rows if self._matches(r)]
+            # C11 test 8's interleaving point, and the ONE that matters: the guard's
+            # snapshot is taken but persist_trip_memory has not resumed, so anything landing
+            # here is invisible to it. One-shot — the clear's OWN memory_events reads must
+            # not re-enter the hook (that would deadlock).
+            if self._is_the_guards_cleared_lookup() and client.after_guard_read is not None:
+                hook, client.after_guard_read = client.after_guard_read, None
+                await hook()
             if self._single:
                 if len(matched) > 1:
                     raise ValueError("maybe_single() matched multiple rows")
@@ -391,15 +472,22 @@ class _FakeTable:
 
 
 class _FakeClient:
-    def __init__(self, *, trips=None, memory_events=None, select_raises=()) -> None:
+    def __init__(self, *, trips=None, memory_events=None, select_raises=(),
+                 insert_raises=(), insert_returns_no_row=(), update_raises=(),
+                 delete_raises=()) -> None:
         seeded_trips = [_DEFAULT_TRIP] if trips is None else trips
         self.db = {
             "trips": [dict(r) for r in seeded_trips],
             "memory_events": [dict(r) for r in (memory_events or [])],
         }
         self.select_raises = frozenset(select_raises)
+        self.insert_raises = frozenset(insert_raises)
+        self.insert_returns_no_row = frozenset(insert_returns_no_row)
+        self.update_raises = frozenset(update_raises)
+        self.delete_raises = frozenset(delete_raises)
         self.seq = 0
         self.ops: list[str] = []   # so ORDER and short-circuiting are assertable
+        self.after_guard_read = None   # one-shot async hook; see _FakeTable.execute
 
     def table(self, name):
         if name not in self.db:
@@ -560,7 +648,9 @@ def test_write_back_skipped_when_the_trip_row_is_absent():
     mem = _FakeMem0Add()
     _run_write_back(client, mem)
     assert mem.added == []
-    assert client.ops == ["select:trips"]
+    # The intent row (C11) precedes the guard and is retracted when it fires, so the guard's
+    # short-circuit is the ABSENT `select:memory_events`, not a two-op log.
+    assert client.ops == ["insert:memory_events", "select:trips", "delete:memory_events"]
     assert [r["event_type"] for r in client.events] == ["cleared"]
 
 
@@ -571,8 +661,9 @@ def test_write_back_skipped_when_the_cleared_lookup_fails():
     mem = _FakeMem0Add()
     _run_write_back(client, mem)
     assert mem.added == []
-    assert client.ops == ["select:trips", "select:memory_events"]
-    assert client.events == []
+    assert client.ops == ["insert:memory_events", "select:trips", "select:memory_events",
+                          "delete:memory_events"]
+    assert client.events == []   # the intent row is retracted, not left behind
 
 
 def test_write_back_ignores_a_trip_owned_by_another_user():
@@ -583,7 +674,7 @@ def test_write_back_ignores_a_trip_owned_by_another_user():
     mem = _FakeMem0Add()
     _run_write_back(client, mem)
     assert mem.added == []
-    assert client.ops == ["select:trips"]
+    assert client.ops == ["insert:memory_events", "select:trips", "delete:memory_events"]
 
 
 def test_write_back_recovery_rerun_compares_against_the_original_trip_start():
@@ -601,6 +692,222 @@ def test_write_back_recovery_rerun_compares_against_the_original_trip_start():
     _run_write_back(client, mem)
     assert mem.added == []
     assert [r["event_type"] for r in client.events] == ["cleared", "failed"]
+
+
+# ---------------------------------------------------------------------------------
+# INTENT-FIRST write-back (C11). The guard above closes the window between a clear and the
+# NEXT generation; it does NOT close the window between its own read and the mem0.add that
+# follows it. A clear landing there is invisible to the guard AND unblocked by it, so the
+# endpoint answers `cleared` while the add lands afterwards. The fix is ordering: the intent
+# row is written BEFORE the guard's snapshot, so a concurrent clear can see it.
+# ---------------------------------------------------------------------------------
+
+
+class _FakeMem0ClearAndAdd(_FakeMem0Add):
+    """The write-back's `add` AND the clear endpoint's `delete_all`/`get_all` on one object,
+    so the race test can run the real `clear_memory` against the real `persist_trip_memory`
+    over one shared Supabase fake."""
+
+    def __init__(self):
+        super().__init__()
+        self.deleted: list = []
+
+    async def delete_all(self, *, user_id=None):
+        self.deleted.append(user_id)
+        return {"message": "Delete in progress. This may take some time."}
+
+    async def get_all(self, **_kwargs):
+        # A well-formed EMPTY envelope on purpose: the delete really did empty mem0, so the
+        # ONLY thing that can stop this clear from claiming success is the intent row.
+        return {"results": [], "count": 0}
+
+
+def test_the_intent_row_is_written_before_the_guard_reads():
+    # C11 test 1. ORDERING IS THE ENTIRE FIX — presence proves nothing. An intent written
+    # just before mem0.add() would also be "present", and Codex was explicit that it would
+    # still leave the race: the clear races the guard's SNAPSHOT, so the row must exist
+    # before that snapshot is taken.
+    client, mem = _FakeClient(), _FakeMem0Add()
+    _run_write_back(client, mem)
+    assert client.ops == ["insert:memory_events", "select:trips", "select:memory_events"]
+
+
+def test_intent_insert_failure_aborts_the_add():
+    # C11 test 2, and the one behaviour CHANGE here (C4-bis). Previously a successful add
+    # whose audit insert failed was permanently invisible to every later clear, so the
+    # endpoint could report `cleared` while that memory was live. No intent -> no add.
+    # Losing one learned memory on a DB blip is the fail-safe direction (D7).
+    client = _FakeClient(insert_raises={"memory_events"})
+    mem = _FakeMem0Add()
+    learned = _run_write_back(client, mem)
+    assert learned == ["loves ramen"]   # caller contract unchanged; best-effort, never raises
+    assert mem.added == []              # NOTHING was sent to mem0
+    assert client.events == []
+    assert client.ops == ["insert:memory_events"]   # short-circuit: the guard never ran
+
+
+def test_intent_insert_returning_no_row_aborts_the_add():
+    # A distinct shape from a raising insert: postgrest can answer `data == []`, and the
+    # `or [{}]` fallback must yield "no intent" rather than an IndexError.
+    client = _FakeClient(insert_returns_no_row={"memory_events"})
+    mem = _FakeMem0Add()
+    assert _run_write_back(client, mem) == ["loves ramen"]
+    assert mem.added == []
+    assert client.ops == ["insert:memory_events"]
+
+
+def test_guard_firing_retracts_the_intent_row_and_skips_the_add():
+    # C11 test 3. ABSENCE, not present-and-ignored: nothing was sent, so there is no audit
+    # event to keep, and a lingering 'learned' row would match the clear's in-flight check
+    # and make the NEXT clear answer `unknown` for 15s.
+    client = _FakeClient(memory_events=[_cleared_row()])
+    mem = _FakeMem0Add()
+    _run_write_back(client, mem)
+    assert mem.added == []
+    assert [r["event_type"] for r in client.events] == ["cleared"]
+    assert client.ops == ["insert:memory_events", "select:trips", "select:memory_events",
+                          "delete:memory_events"]
+
+
+def test_a_successful_add_leaves_exactly_one_learned_row_carrying_the_trip_id():
+    # C11 test 4. EXACTLY one: a second audit insert after the add would double-count, and
+    # trip_id must be set or `_add_possibly_in_flight`'s `trip_id IS NOT NULL` filter would
+    # never see this row.
+    client, mem = _FakeClient(), _FakeMem0Add()
+    _run_write_back(client, mem)
+    assert [(r["event_type"], r["trip_id"]) for r in client.events] == [("learned", "t1")]
+    assert len(mem.added) == 1
+    assert "delete:memory_events" not in client.ops
+    assert "update:memory_events" not in client.ops
+
+
+def test_a_failed_add_flips_the_intent_to_failed_and_never_deletes_it():
+    # C11 test 5. 'failed' means "issued, outcome unconfirmed" — precisely what the clear's
+    # in-flight check must treat as may-still-land, so this row must survive.
+    client, mem = _FakeClient(), _FakeMem0Add(add_raises=True)
+    _run_write_back(client, mem)
+    assert [r["event_type"] for r in client.events] == ["failed"]
+    assert "delete:memory_events" not in client.ops
+
+
+def test_a_timed_out_add_flips_the_intent_to_failed(monkeypatch):
+    # The other half of C11 test 5, and the case MOST likely to still land server-side.
+    from pipeline import preferences as prefs_mod
+
+    seen = {}
+
+    async def _timing_out_wait_for(coro, timeout):
+        coro.close()                 # avoid "coroutine was never awaited"
+        seen["timeout"] = timeout    # RECORD here, assert OUTSIDE
+        raise TimeoutError
+
+    monkeypatch.setattr(prefs_mod.asyncio, "wait_for", _timing_out_wait_for)
+    client, mem = _FakeClient(), _FakeMem0Add()
+    _run_write_back(client, mem)
+    assert mem.added == []
+    assert [r["event_type"] for r in client.events] == ["failed"]
+    # Asserted OUT here: persist_trip_memory's blanket `except` would swallow an
+    # AssertionError raised inside the fake and the pin could never fail.
+    assert seen["timeout"] == 5
+
+
+def test_a_failing_retraction_is_swallowed_and_never_escapes():
+    # C11 test 6 (guardrail #3): the write-back is past the point of no return — the trip is
+    # already saved and the terminal `result` already streamed — so nothing here may raise.
+    client = _FakeClient(memory_events=[_cleared_row()], delete_raises={"memory_events"})
+    mem = _FakeMem0Add()
+    learned = _run_write_back(client, mem)
+    assert learned == ["loves ramen"]
+    assert mem.added == []
+    # State assertion, NOT a guard proof: the stale intent lingers, which over-suppresses the
+    # next clear (`unknown` for 15s) rather than resurrecting cleared data.
+    assert [r["event_type"] for r in client.events] == ["cleared", "learned"]
+
+
+def test_a_failing_mark_failed_is_swallowed_and_never_escapes():
+    # The third helper's own try/except — proving one says nothing about the others.
+    client = _FakeClient(update_raises={"memory_events"})
+    mem = _FakeMem0Add(add_raises=True)
+    assert _run_write_back(client, mem) == ["loves ramen"]
+    # Still 'learned', so still matched by the clear's in-flight check: the conservative
+    # direction holds even when the flip fails.
+    assert [r["event_type"] for r in client.events] == ["learned"]
+
+
+def _other_trips_audit_row():
+    return {"id": "evt-other-trip", "user_id": "u1", "trip_id": "t0",
+            "event_type": "learned", "created_at": _BEFORE_START}
+
+
+def test_marking_the_intent_failed_touches_only_its_own_row():
+    # C11 test 7. TWO rows on purpose: with one, dropping `.eq("id", intent_id)` would flip
+    # EVERY audit row this user has and the test would still pass.
+    client = _FakeClient(memory_events=[_other_trips_audit_row()])
+    mem = _FakeMem0Add(add_raises=True)
+    _run_write_back(client, mem)
+    by_id = {r["id"]: r["event_type"] for r in client.events}
+    assert by_id["evt-other-trip"] == "learned"      # a previous trip's receipt, untouched
+    assert [t for i, t in by_id.items() if i != "evt-other-trip"] == ["failed"]
+
+
+def test_retracting_the_intent_deletes_only_its_own_row():
+    # The mirror for the DELETE. Unscoped, it would empty memory_events — including the
+    # 'cleared' marker that keeps the guard armed for the rest of this generation.
+    client = _FakeClient(memory_events=[_other_trips_audit_row(), _cleared_row()])
+    mem = _FakeMem0Add()
+    _run_write_back(client, mem)
+    assert mem.added == []
+    # The delete must actually have RUN — the surviving-rows assertion alone is satisfied by
+    # a write-back that never wrote an intent at all (trap #2, the fixture's natural state).
+    assert "delete:memory_events" in client.ops
+    assert {r["id"] for r in client.events} == {"evt-other-trip", "evt-clear"}
+
+
+async def test_a_clear_between_the_guard_read_and_the_add_reports_unknown():
+    """C11 test 8 — THE RACE ITSELF, which no other test in this repo can reproduce.
+
+    Two concurrent coroutines over ONE Supabase fake: the write-back suspends at the exact
+    instant its guard's snapshot has been taken but before `mem0.add`, a clear runs to
+    completion inside that window, then the write-back resumes and its add lands. The clear
+    must NOT claim `cleared` — the intent row written before the guard read is what it sees.
+
+    This reddens for the patch Codex called insufficient (an intent written immediately
+    before `mem0.add`): at the hook point no row would exist yet, so the clear would answer
+    `cleared` while an add was already committed behind it.
+    """
+    from pipeline.memory_clear import clear_memory
+    from pipeline.preferences import persist_trip_memory
+
+    client, mem = _FakeClient(), _FakeMem0ClearAndAdd()
+    guard_read = asyncio.Event()
+    clear_finished = asyncio.Event()
+
+    async def _suspend_until_the_clear_has_run():
+        guard_read.set()
+        await clear_finished.wait()
+
+    client.after_guard_read = _suspend_until_the_clear_has_run
+
+    async def _clear_landing_mid_generation():
+        await guard_read.wait()
+        try:
+            return await clear_memory(client, mem, user_id="u1")
+        finally:
+            clear_finished.set()   # never strand the write-back, even on a failure
+
+    # Watchdog, not a timing dependency: the normal path never waits on the clock. It only
+    # converts "the hook was never reached" (a faulted guard) into a red test instead of a
+    # hung suite.
+    _, verdict = await asyncio.wait_for(asyncio.gather(
+        persist_trip_memory(client, mem, user_id="u1", trip_id="t1", ctx=_explicit_ctx()),
+        _clear_landing_mid_generation(),
+    ), timeout=5)
+
+    assert verdict == "unknown"        # exact — 'unavailable' comes from a different guard
+    assert mem.deleted == ["u1"]       # the clear really did run its delete
+    # ...and the add really did land after the clear returned, which is WHY `unknown` is the
+    # only honest answer: `cleared` would have been a lie by the time the user read it.
+    assert mem.added and mem.added[0][1] == "u1"
 
 
 @pytest.mark.live

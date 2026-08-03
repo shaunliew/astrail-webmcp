@@ -933,7 +933,10 @@ resumes. This is the drill we'd actually run in an incident, so rehearse it once
 ## Deploy order + rollback
 
 **DB-first is REQUIRED.** Sequence:
-1. Apply migration; then **probe via service role** (before deploying code — Fix 8):
+1. Apply BOTH migrations — `20260803120000_entitlement_free_trial.sql` (users/jobs columns, partial
+   index, `reserve_and_enqueue_trip_job` + extended `complete_trip_run`) then
+   `20260803130000_request_seat.sql` (`request_seat`); then **probe via service role** (before
+   deploying code — Fix 8):
    - `users.plan`, `users.lifetime_trip_count`, `users.seat_requested_at` selectable, with the
      expected defaults + check constraints (`plan default 'trial' in ('trial','beta')`,
      `lifetime_trip_count >= 0`);
@@ -942,8 +945,9 @@ resumes. This is the drill we'd actually run in an incident, so rehearse it once
      exists, **is unique**, and its predicate is **exactly `charge_refunded_at IS NULL`** (read
      `pg_index.indpred` / `pg_get_indexdef`) — merely finding the index name does not prove the
      unconditional uniqueness was removed;
-   - both RPCs present with the expected signatures, **EXECUTE granted to `service_role` and revoked
-     from `PUBLIC`, `anon`, AND `authenticated`** (check all three, not just the two roles);
+   - all three RPCs (`reserve_and_enqueue_trip_job`, the extended `complete_trip_run`, and
+     `request_seat`) present with the expected signatures, **EXECUTE granted to `service_role` and
+     revoked from `PUBLIC`, `anon`, AND `authenticated`** (check all three, not just the two roles);
    - a **zero-provider-cost transactional canary** (Rev 6 Fix 4 — valid SQL): in one
      `BEGIN … ROLLBACK`, declare one lease UUID and reuse it positionally (the r5 call mixed a named
      arg before a positional one and named a non-parameter — invalid):
@@ -967,9 +971,10 @@ resumes. This is the drill we'd actually run in an incident, so rehearse it once
      `claim_trip_job` is at `supabase/migrations/20260720170000_db_clock_job_leases.sql:48`. **Fix 5
      (Rev 5) reason it's needed:** a freshly reserved job is `pending`/no-lease, so without the claim
      the `complete_trip_run` CAS (`status='running'`) no-ops and the counter never refunds.
-2. Deploy backend.
+2. Deploy backend. The entitlement env defaults are already correct (`ENTITLEMENTS_ENABLED=true`,
+   `TRIAL_LIFETIME_LIMIT=1`); set them explicitly on the service to pin the values.
 3. Run the founders/demo beta-grant SQL.
-4. Set `DAILY_TRIP_QUOTA=10`.
+4. Set `DAILY_TRIP_QUOTA=10` (beta seats ride the daily quota — up from the pre-arc `5`).
 5. Only then flip the `zh` landing CTA.
 
 Backend-first is NOT safe — with `ENTITLEMENTS_ENABLED=true` (default) every generation path calls

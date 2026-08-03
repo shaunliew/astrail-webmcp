@@ -34,11 +34,36 @@ PLACE_LATLNG_DISTANCE_M=500
 MAX_PLACES_PER_TRIP=8
 MAX_REELS_PER_REQUEST=5
 REEL_CACHE_TTL_DAYS=30
-DAILY_TRIP_QUOTA=5               # live per-user daily trip cap (rate_limit.py) — the durable free-tier hard cap
+DAILY_TRIP_QUOTA=5               # live per-user daily trip cap (rate_limit.py) — the durable free-tier hard cap. RETUNE 5→10 at the entitlement-arc deploy: beta seats ride the daily quota (see "Entitlement arc" below)
+TRIAL_LIFETIME_LIMIT=1           # free-trial LIFETIME generation cap (rate_limit.py) — 1 real trip per trial account; enforced by the reserve_and_enqueue_trip_job RPC, NOT this constant alone
+ENTITLEMENTS_ENABLED=true        # rollback switch (rate_limit.py): true = atomic-RPC entitlement path; false = legacy daily-quota path (_generate_trip_legacy, no lifetime enforcement)
 BURST_LIMIT=3/minute             # per-user burst throttle on POST /generate-trip (slowapi, in-memory)
 ALLOWED_ORIGINS=https://astrail.xyz,https://www.astrail.xyz   # CORS allowlist (comma-separated); add Vercel preview origins at deploy
 # MAX_TRIPS_PER_USER_PER_DAY — SUPERSEDED / never wired; the live cap is DAILY_TRIP_QUOTA above
 ```
+
+### Entitlement arc (free trial + beta seats)
+
+`TRIAL_LIFETIME_LIMIT` and `ENTITLEMENTS_ENABLED` were added for the free-trial + beta-seat arc
+(`rate_limit.py:34,37`). Both have safe defaults, so a deploy that sets neither runs the new
+entitlement path with a 1-trip lifetime trial. See `.claude/docs/ARCHITECTURE.md` → **Entitlement
+ledger** for the two-RPC design, and the arc plan's `## Deploy order + rollback` for the full ordered
+sequence.
+
+**Rollback recipe (no image swap, no DB reversal).** `ENTITLEMENTS_ENABLED` is the incident lever:
+set `ENTITLEMENTS_ENABLED=false` on the running backend and **restart** → generation works via the
+retained legacy daily-quota path (`_generate_trip_legacy`) with **no lifetime enforcement**; flip
+back to `true` + restart to resume the entitlement path. The migration is additive (columns + a
+partial unique index) and **stays applied** — nothing to revert on the DB side. (The fuller ordered
+rollback also flips the `zh` landing CTA back and restores `DAILY_TRIP_QUOTA=5`; that ordering lives
+in the plan's deploy section.)
+
+**FE sync caveat (Task-8 review).** The frontend hardcodes its own `TRIAL_LIFETIME_LIMIT = 1` in
+`frontend/lib/entitlement.ts:16` as an **advisory pre-emptive gate** (it renders the trial-exhausted
+card before POSTing). The backend RPC is the real enforcer. If `TRIAL_LIFETIME_LIMIT` is ever changed
+via env, that FE constant must be **manually synced** or the pre-emptive gate mistimes — this does
+**not** affect correctness (the backend still enforces the true limit), only when the FE shows the
+card versus letting the POST bounce with `403 trial_exhausted`.
 
 ## Worker-only (`astrail-telegram-ingest`)
 

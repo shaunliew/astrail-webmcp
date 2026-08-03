@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import math
 
 import pytest
 
@@ -56,7 +57,7 @@ class _Result:
 class _Table:
     def __init__(self, name, db):
         self.name, self.db = name, db
-        self._op = None; self._f = {}; self._range = {}; self._in = {}
+        self._op = None; self._f = {}; self._range = {}; self._in = {}; self._null = set()
         self._on_conflict = None; self._single = False; self._columns = None
 
     def insert(self, row): self._op = ("insert", row); return self
@@ -74,10 +75,29 @@ class _Table:
         self._columns = None if (not cols or "*" in cols) else cols
         return self
 
-    def eq(self, c, v): self._f[c] = v; return self
+    def eq(self, c, v):
+        # `eq.None` is not a PostgREST NULL predicate — it matches nothing. Raising here turns a
+        # CAS mistakenly written `.eq(col, None)` from a silent production no-op (matching zero
+        # rows while this fake's matcher, which reads a missing key as None, matched everything)
+        # into an immediate red. The only NULL filter is `.is_(col, "null")`.
+        if v is None:
+            raise ValueError(f"eq({c!r}, None) is not a PostgREST filter — use is_({c!r}, 'null')")
+        self._f[c] = v
+        return self
+
     def gte(self, c, v): self._range[(c, "gte")] = v; return self
     def lte(self, c, v): self._range[(c, "lte")] = v; return self
     def in_(self, c, values): self._in[c] = list(values); return self
+
+    def is_(self, c, v):
+        # Real NULL semantics, deliberately: a fake that accepted `.is_()` and ignored it would
+        # make every compare-and-swap assertion in this file vacuous. Only the NULL predicate is
+        # implemented, because it is the only one this codebase uses.
+        if v not in ("null", None):
+            raise ValueError(f"fake is_ implements only NULL matching, got {v!r}")
+        self._null.add(c)
+        return self
+
     def maybe_single(self): self._single = True; return self
 
     def _project(self, r):
@@ -89,6 +109,10 @@ class _Table:
 
     def _match(self, r):
         if not all(r.get(k) == v for k, v in self._f.items()):
+            return False
+        # `is.null` — a column absent from the stored dict is a NULL column, same as one stored
+        # as None. Every non-NULL value fails, including a racer's freshly written country.
+        if not all(r.get(c) is None for c in self._null):
             return False
         if not all(r.get(k) in vs for k, vs in self._in.items()):
             return False
@@ -131,12 +155,21 @@ class _Table:
             keep = [r for r in rows if not self._match(r)]
             self.db[self.name] = keep; return _Result([])
         matched = [self._project(r) for r in rows if self._match(r)]
-        # `.maybe_single()` yields the ROW (not a list), and `None` on zero rows — the shape
+        # `.maybe_single()` yields the ROW (not a list) — the shape
         # `grounding._lookup_cached_country` reads. Without it that call raised AttributeError,
         # which its blanket `except` logged as a cache MISS, so the whole write-through cache
         # was invisible to this file's fakes.
         if self._single:
-            return _Result(matched[0] if matched else None)
+            if len(matched) > 1:
+                # Real PostgREST raises here. A fake that quietly returned the first row would
+                # keep a re-read that forgot its `.eq("id", …)` filter green, while in
+                # production that read sees every global row and raises.
+                raise ValueError(
+                    f"maybe_single matched {len(matched)} rows on {self.name!r}")
+            # ZERO rows is a BARE `None`, not a result object whose `.data` is None — that is
+            # what `postgrest` returns, what `live_run.py` and `_lookup_cached_country` handle,
+            # and the shape that makes an unguarded `response.data` an AttributeError.
+            return _Result(matched[0]) if matched else None
         return _Result(matched)
 
 
@@ -195,6 +228,73 @@ async def test_the_fake_select_returns_only_the_projected_columns():
     rows = (await c.table("places").select("id").execute()).data
 
     assert rows == [{"id": "p1"}]
+
+
+@pytest.mark.asyncio
+async def test_the_fake_is_null_matches_only_null_rows_and_returns_only_matches():
+    """Case 12 — the fake's `.is_()` contract, pinned directly.
+
+    A fake that ACCEPTS `.is_(col, "null")` and ignores it makes every compare-and-swap test
+    below vacuous: the CAS would match rows it must never touch, and would report a match when
+    a racer had already filled the column. Both halves are asserted — which rows change, and
+    which rows come back — because the CAS reads the returned rows to decide whether it won.
+    """
+    c = _Client({"places": [{"id": "null-row", "country_code": None},
+                            {"id": "filled-row", "country_code": "SG"},
+                            {"id": "absent-row"}]})
+
+    matched = (await c.table("places").update({"country_code": "MY"})
+               .is_("country_code", "null").execute()).data
+
+    # An ABSENT key is a NULL column in PostgREST, so both null-row and absent-row match.
+    assert {r["id"] for r in matched} == {"null-row", "absent-row"}
+    assert {r["id"]: r.get("country_code") for r in c.db["places"]} == {
+        "null-row": "MY", "absent-row": "MY", "filled-row": "SG"}
+
+
+@pytest.mark.asyncio
+async def test_the_fake_maybe_single_returns_a_bare_none_on_zero_rows():
+    """Case 16 — the shape this repo has already been bitten by.
+
+    Real PostgREST's `maybe_single()` returns a BARE `None` on zero rows, not a result object
+    whose `.data` is None (`postgrest/_async/request_builder.py`). `live_run.py` and
+    `grounding._lookup_cached_country` both encode that. A fake returning `_Result(None)` lets
+    `response.data` ship — an AttributeError in production, and green here.
+    """
+    c = _Client({"places": [{"id": "p1"}]})
+
+    result = await c.table("places").select("id").eq("id", "nope").maybe_single().execute()
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_the_fake_eq_none_raises_because_postgrest_has_no_such_filter():
+    """Case 17 — `.eq(col, None)` is never a valid PostgREST filter.
+
+    PostgREST serializes it as `eq.None`, which matches ZERO null rows; the only NULL predicate
+    is `is.null`. A CAS written `.eq("country_code", None)` would therefore be a silent no-op in
+    production while a permissive fake (whose matcher reads a missing key as `None`) matched
+    everything and stayed green. Raising converts that into an immediate red.
+    """
+    c = _Client({"places": [{"id": "p1", "country_code": None}]})
+
+    with pytest.raises(ValueError):
+        c.table("places").update({"country_code": "MY"}).eq("country_code", None)
+
+
+@pytest.mark.asyncio
+async def test_the_fake_maybe_single_raises_on_multiple_rows():
+    """Case 18 — real PostgREST raises when `maybe_single()` matches more than one row.
+
+    Without this a re-read that forgot its `.eq("id", …)` filter stays green, because the
+    fixtures happen to hold one relevant row; in production it would see every global row,
+    raise, and be swallowed by the reconciliation catch.
+    """
+    c = _Client({"places": [{"id": "p1"}, {"id": "p2"}]})
+
+    with pytest.raises(Exception):
+        await c.table("places").select("id").maybe_single().execute()
 
 
 @pytest.mark.asyncio
@@ -978,8 +1078,11 @@ async def test_persist_reuses_a_candidate_matching_on_the_code_not_the_country_n
 @pytest.mark.asyncio
 async def test_persist_reuses_a_null_country_candidate_without_repairing_it(monkeypatch):
     """A NULL country is an ABSENT claim, not a conflicting one — 87% of the corpus is NULL, so
-    rejecting those would fork a duplicate for nearly every venue we already hold. Repairing the
-    reused row is R3: deferred, not gated, and deliberately not what happens here."""
+    rejecting those would fork a duplicate for nearly every venue we already hold.
+
+    The candidate sits ~28m away, a DIFFERENT coordinate, so F (below) does not fire and the row
+    stays NULL: our receipt describes our coordinate, not this row's. Repairing a merely NEARBY
+    row is R3 — deferred, not gated, and deliberately not what happens here."""
     monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
     c = _Client({"places": [_place_row("null-row", _JB_NEAR, country_code=None)]})
     place = _gp(_VENUE, *_JB, country_code="MY", country_name="Malaysia")
@@ -988,6 +1091,473 @@ async def test_persist_reuses_a_null_country_candidate_without_repairing_it(monk
 
     assert place_id == "null-row"
     assert len(c.db["places"]) == 1
+    assert _country_triple(_row_by_id(c, "null-row")) == (None, None, None)
+
+
+# --- F: repair a NULL country when the reused row IS the coordinate we just verified ----------
+# Measured on live traffic: a re-run reel replays byte-identical coordinates from the extraction
+# cache, so all four of a trip's places deduped onto pre-existing NULL rows created from the SAME
+# coordinate — four real Mapbox verifications, all four discarded. When the candidate's stored
+# lat/lng is the same binary64 coordinate (modulo signed zero) as the incoming place's, the
+# verified answer describes THAT row (guardrail #1), so it is filled in via a compare-and-swap.
+#
+# Equal coordinates do not prove the same VENUE (two venues can share a building centroid). They
+# prove the same coordinate-level country fact, and F writes only country fields.
+_POISONED_CLAIM = "Poisonia"     # an LLM country_name the verifier never returns
+
+
+def _repairable(c=None):
+    """The canonical F fixture: one NULL-country row at EXACTLY the incoming coordinate.
+
+    The place's claimed `country_name` is poisoned so a write derived from the LLM claim rather
+    than from the provider receipt is visible in the persisted triple.
+    """
+    c = c if c is not None else _Client(
+        {"places": [_place_row("null-row", _JB, country_code=None)]})
+    place = _gp(_VENUE, *_JB, country_code="MY", country_name=_POISONED_CLAIM)
+    return c, place
+
+
+@pytest.mark.asyncio
+async def test_persist_repairs_a_null_country_row_at_the_exact_same_coordinate(monkeypatch):
+    """Case 1 — the whole point: the reused row IS the coordinate we just verified, so fill it.
+
+    All three fields come from the PROVIDER receipt, never the LLM's claim: the claim's name is
+    `Poisonia` here, so an implementation that writes `place.country_name` instead of
+    `grounded["country_name"]` persists a value no geocoder ever returned (guardrail #1).
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c, place = _repairable()
+
+    place_id = await _link_one(c, place, _Verifier(_MY_RESULT))
+
+    assert place_id == "null-row"
+    assert len(c.db["places"]) == 1          # reuse, never a fork
+    assert _country_triple(_row_by_id(c, "null-row")) == ("Malaysia", "MY", "Malaysia")
+
+
+class _RecordingTable(_Table):
+    """A `_Table` that appends `(op, matched_count)` to a shared log on every execute."""
+
+    def __init__(self, name, db, log):
+        super().__init__(name, db)
+        self._log = log
+
+    async def execute(self):
+        result = await super().execute()
+        rows = result.data if result is not None else None
+        self._log.append((self._op[0], len(rows) if isinstance(rows, list) else None))
+        return result
+
+
+class _RecordingClient(_Client):
+    """Records every `places` operation so a test can assert HOW MANY writes happened.
+
+    "Returns the same id" cannot separate a correct second run from an idempotent rewrite: both
+    end with the same row and the same triple. Only the absence of the second UPDATE can.
+    """
+
+    def __init__(self, db=None):
+        super().__init__(db)
+        self.places_ops: list[tuple[str, int | None]] = []
+
+    def table(self, name):
+        if name == "places":
+            return _RecordingTable(name, self.db, self.places_ops)
+        return super().table(name)
+
+
+def _place_updates(c) -> list[tuple[str, int | None]]:
+    return [op for op in c.places_ops if op[0] == "update"]
+
+
+@pytest.mark.asyncio
+async def test_persist_does_not_rewrite_an_already_repaired_row_on_a_second_run(monkeypatch):
+    """Case 2 — the fixed point. A second identical run returns the same id and issues NO second
+    update: R1 already accepts the now-compatible row, and F's NULL gate no longer fires.
+
+    An implementation that rewrites compatible rows unconditionally passes every id assertion in
+    this file — the row is already correct — so the WRITE COUNT is the only observable. It is
+    also the live acceptance's observable (`updated_at` unchanged on the second run)."""
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c, place = _repairable(_RecordingClient(
+        {"places": [_place_row("null-row", _JB, country_code=None)]}))
+
+    first = await _link_one(c, place, _Verifier(_MY_RESULT))
+    assert _place_updates(c) == [("update", 1)]      # the repair, matching its one row
+
+    _, place2 = _repairable(c)
+    second = await _link_one(c, place2, _Verifier(_MY_RESULT))
+
+    assert second == first == "null-row"
+    assert _place_updates(c) == [("update", 1)]      # still ONE — the rerun wrote nothing
+    assert _country_triple(_row_by_id(c, "null-row")) == ("Malaysia", "MY", "Malaysia")
+
+
+@pytest.mark.parametrize("axis", ["lat", "lng"])
+@pytest.mark.asyncio
+async def test_persist_leaves_a_one_ulp_neighbour_unrepaired(monkeypatch, axis):
+    """Cases 3a/3b — the smallest representable difference is still a DIFFERENT coordinate.
+
+    `math.nextafter` moves one axis by a single ULP: ~1e-11 degrees, far inside any proximity,
+    rounding or bucketed-cell comparison, and utterly invisible to `haversine_m`. The candidate
+    is still reused (name + <500m), but it must stay NULL — nothing verified THAT point.
+
+    Both axes are required: round 2 found that a comparator checking only latitude passes the
+    latitude fixture and every other case in this file.
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    lat, lng = _JB
+    coord = (math.nextafter(lat, math.inf), lng) if axis == "lat" \
+        else (lat, math.nextafter(lng, math.inf))
+    assert coord != _JB
+    c, place = _repairable(_Client({"places": [_place_row("ulp-row", coord, country_code=None)]}))
+
+    place_id = await _link_one(c, place, _Verifier(_MY_RESULT))
+
+    assert place_id == "ulp-row"                     # reused: the dedup gates do not move
+    assert len(c.db["places"]) == 1
+    assert _country_triple(_row_by_id(c, "ulp-row")) == (None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_persist_does_not_repair_from_the_cache_when_grounding_returned_none(monkeypatch):
+    """Case 4 — a POPULATED cache for this exact coordinate, and `grounded is None`.
+
+    The cache holds MY for this point, but the place claims JP, so `_ground_place`'s fail-closed
+    comparison returns None and there is no receipt. An implementation that reaches for the
+    cached answer instead of the in-memory receipt would repair the row to a country this place
+    never agreed with — exactly the unverified fill guardrail #1 forbids.
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c = _Client({"places": [_place_row("null-row", _JB, country_code=None)]})
+    verifier = _Verifier(_MY_RESULT)
+    # Seed the cache by grounding a place that DOES agree, then bring in the disagreeing one.
+    await _link_one(c, _gp(_VENUE, *_JB, country_code="MY", country_name="Malaysia"), verifier)
+    _row_by_id(c, "null-row").update({"country": None, "country_code": None,
+                                      "country_name": None})
+    assert len(c.db["geocode_country_cache"]) == 1
+    c.db["trip_places"] = []
+
+    place_id = await _link_one(c, _gp(_VENUE, *_JB, country_code="JP", country_name="Japan"),
+                               verifier)
+
+    assert verifier.calls == 1                       # the second place hit the cache
+    assert place_id == "null-row"
+    assert _country_triple(_row_by_id(c, "null-row")) == (None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_persist_never_repairs_an_exact_coordinate_row_with_another_name(monkeypatch):
+    """Case 5 — F runs AFTER the name/distance gates.
+
+    The exact-coordinate row is a different venue that happens to share the point; the real
+    candidate is the same-name row 28m away. An implementation that repaired on coordinate
+    equality before matching names would both write a receipt onto a venue nobody verified and
+    return its id — the wrong pin AND the wrong country.
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c, place = _repairable(_Client({"places": [
+        _place_row("other-venue", _JB, country_code=None, name="Nasi Lemak Stall"),
+        _place_row("same-name", _JB_NEAR, country_code=None)]}))
+
+    place_id = await _link_one(c, place, _Verifier(_MY_RESULT))
+
+    assert place_id == "same-name"
+    assert len(c.db["places"]) == 2
+    assert _country_triple(_row_by_id(c, "other-venue")) == (None, None, None)
+    assert _country_triple(_row_by_id(c, "same-name")) == (None, None, None)   # ~28m: not F's
+
+
+@pytest.mark.asyncio
+async def test_persist_never_repairs_an_exact_coordinate_row_that_conflicts(monkeypatch):
+    """Case 6 — the conflicting row sits at the EXACT coordinate, and must still be rejected.
+
+    THREE independent guards each defeat this on their own, which is why only the FULL wrong
+    implementation reddens it: F hoisted above R1, AND without the `country_code IS NULL` gate,
+    AND writing with a plain update instead of the compare-and-swap. Weaken any one and the
+    other two still reject the row — R1 `continue`s first, or F declines a non-NULL row, or the
+    CAS's `is.null` predicate matches nothing and the re-read sees the conflict.
+
+    What that implementation does is overwrite a VERIFIED receipt with a different country and
+    then link to it: the wrong pin, the wrong country, and arc 2 silently undone.
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c, place = _repairable(_Client({"places": [
+        _place_row("sg-row", _JB, country_code="SG"),
+        _place_row("my-row", _JB_NEAR2, country_code="MY")]}))
+
+    place_id = await _link_one(c, place, _Verifier(_MY_RESULT))
+
+    assert place_id == "my-row"
+    assert len(c.db["places"]) == 2
+    assert _country_triple(_row_by_id(c, "sg-row")) == ("Singapore", "SG", "Singapore")
+
+
+# An unrelated global row, far outside the candidate bbox. It exists so a reconciliation re-read
+# that forgot its `.eq("id", …)` filter matches more than one row and RAISES (as real PostgREST
+# does) instead of returning the right row by luck.
+_FAR_AWAY = (48.8584, 2.2945)
+
+
+@pytest.mark.asyncio
+async def test_persist_two_racers_land_exactly_one_repair_and_the_same_id(monkeypatch):
+    """Case 7 — two pipeline workers sharing one exact-coordinate receipt.
+
+    The fake suspends on every execute, so the two runs genuinely interleave: both select the
+    NULL row, one CAS matches it, the other matches ZERO rows and must reconcile. They wrote the
+    same value, so the loser's re-read finds a compatible row and links to it. Exactly one
+    update may match — an implementation without the CAS (or with a `.is_()` the fake ignored)
+    writes twice, and one whose re-read dropped its id filter raises against the far-away row,
+    falls through, and forks a duplicate.
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c = _RecordingClient({"places": [_place_row("null-row", _JB, country_code=None),
+                                     _place_row("paris-row", _FAR_AWAY, country_code=None)]})
+    places = [_gp(_VENUE, *_JB, country_code="MY", country_name=_POISONED_CLAIM)
+              for _ in range(2)]
+    verifier = _Verifier(_MY_RESULT)
+
+    ids = await asyncio.gather(*[
+        persist.persist_itinerary(c, f"trip-{i}", [p], ["2026-08-01"],
+                                  job_id=None, lease_token=None, verify_country=verifier)
+        for i, p in enumerate(places)])
+
+    assert ids == [0, 0]                                    # nothing dropped
+    linked = {tp["place_id"] for tp in c.db["trip_places"]}
+    assert linked == {"null-row"}                           # both resolved the same row
+    assert len(c.db["places"]) == 2                         # no fork
+    assert [n for _op, n in _place_updates(c)] == [1, 0]    # exactly one CAS matched
+    assert _country_triple(_row_by_id(c, "null-row")) == ("Malaysia", "MY", "Malaysia")
+
+
+class _WriterBeforeUpdateTable(_RecordingTable):
+    """Runs `hook(db)` immediately before the FIRST `update` executes — a racer committing
+    between the candidate SELECT and the compare-and-swap, deterministically."""
+
+    def __init__(self, name, db, log, hook, fired):
+        super().__init__(name, db, log)
+        self._hook, self._fired = hook, fired
+
+    async def execute(self):
+        if self._op[0] == "update" and not self._fired:
+            self._fired.append(True)
+            self._hook(self.db)
+        return await super().execute()
+
+
+class _RacingWriterClient(_RecordingClient):
+    def __init__(self, db, hook):
+        super().__init__(db)
+        self._hook, self._fired = hook, []
+
+    def table(self, name):
+        if name == "places":
+            return _WriterBeforeUpdateTable(name, self.db, self.places_ops,
+                                            self._hook, self._fired)
+        return _Client.table(self, name)
+
+
+@pytest.mark.asyncio
+async def test_persist_cas_loser_rejects_a_row_a_racer_made_conflicting(monkeypatch):
+    """Case 8 — F as the CAS LOSER, against an RPC-shaped writer (NOT another pipeline worker:
+    two workers share one receipt and write the same value, so neither can ever see a conflict).
+
+    The pipeline selects candidate A as NULL, an RPC commits a CONTRADICTING country onto it
+    before the CAS lands, the CAS matches zero rows — and the re-read must reject A rather than
+    link to a row that is now a different venue. "CAS then always return the id" passes every
+    other case here and hands back the Singapore row.
+
+    This asserts F behaves correctly as the loser. It deliberately does NOT assert the reverse
+    interleaving is safe: an RPC that already selected the row and later overwrites it
+    unconditionally is an accepted residual risk, and closing it needs a migration.
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+
+    def rpc_writes_singapore(db):
+        next(r for r in db["places"] if r["id"] == "null-row").update(
+            {"country": "Singapore", "country_code": "SG", "country_name": "Singapore"})
+
+    c, place = _repairable(_RacingWriterClient(
+        {"places": [_place_row("null-row", _JB, country_code=None),
+                    _place_row("my-row", _JB_NEAR2, country_code="MY")]},
+        rpc_writes_singapore))
+
+    place_id = await _link_one(c, place, _Verifier(_MY_RESULT))
+
+    assert place_id == "my-row"                             # A rejected, B wins
+    assert len(c.db["places"]) == 2                         # no fork either
+    assert _place_updates(c) == [("update", 0)]             # the CAS matched nothing
+    assert _country_triple(_row_by_id(c, "null-row")) == ("Singapore", "SG", "Singapore")
+
+
+class _PlacesOpFailsClient(_Client):
+    """`places` raises on the named ops — and, optionally, only on the `maybe_single()` read, so
+    the candidate SELECT still works while the reconciliation re-read does not."""
+
+    def __init__(self, db=None, *, ops=(), exc=RuntimeError, single_only=False,
+                 update_returns_zero=False):
+        super().__init__(db)
+        self._ops, self._exc = set(ops), exc
+        self._single_only, self._update_returns_zero = single_only, update_returns_zero
+
+    def table(self, name):
+        if name != "places":
+            return super().table(name)
+        client = self
+
+        class _T(_Table):
+            async def execute(self):
+                if self._op[0] in client._ops and (not client._single_only or self._single):
+                    raise client._exc("places op failed")
+                if client._update_returns_zero and self._op[0] == "update":
+                    await asyncio.sleep(0)
+                    return _Result([])      # the CAS lost, without anyone winning
+                return await super().execute()
+
+        return _T(name, self.db)
+
+
+@pytest.mark.asyncio
+async def test_persist_links_the_place_when_the_repair_request_raises(monkeypatch):
+    """Case 9 — the repair is BEST-EFFORT (guardrail #3). A Supabase blip on the CAS must not
+    fail the trip: the row stays NULL exactly as it does today, the place still links, and the
+    itinerary still persists. An unwrapped repair call turns one failed update into a failed
+    trip."""
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c, place = _repairable(_PlacesOpFailsClient(
+        {"places": [_place_row("null-row", _JB, country_code=None)]}, ops={"update"}))
+
+    place_id = await _link_one(c, place, _Verifier(_MY_RESULT))
+
+    assert place_id == "null-row"
+    assert len(c.db["places"]) == 1
+    assert _country_triple(_row_by_id(c, "null-row")) == (None, None, None)
+    assert len(c.db["trip_places"]) == 1              # the trip completed
+
+
+@pytest.mark.asyncio
+async def test_persist_propagates_a_cancelled_error_raised_during_the_repair(monkeypatch):
+    """Case 10 — a lost lease cancels the task mid-repair.
+
+    `CancelledError` is a `BaseException`, and it must keep propagating: an `except
+    BaseException` around the repair would swallow the cancellation, let the superseded worker
+    walk on, and hand it the replacement's trip to rewrite. Nothing is persisted.
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c, place = _repairable(_PlacesOpFailsClient(
+        {"places": [_place_row("null-row", _JB, country_code=None)]},
+        ops={"update"}, exc=asyncio.CancelledError))
+
+    with pytest.raises(asyncio.CancelledError):
+        await _link_one(c, place, _Verifier(_MY_RESULT))
+
+    assert c.db.get("trip_places", []) == []          # no stale rewrite
+    assert _country_triple(_row_by_id(c, "null-row")) == (None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_persist_keeps_a_landed_repair_when_the_lease_is_lost_afterwards(monkeypatch):
+    """Case 11 — the repair is a GLOBAL write and lands before the fence.
+
+    A superseded worker still repairs `places` (a valid, idempotent receipt for a coordinate
+    that really was verified — the same shape as the pre-fence cache and insert effects) while
+    `replace_trip_itinerary` refuses its trip rewrite. Assuming the trip fence rolls the global
+    write back is wrong in both directions: the repair survives, and the prior itinerary is
+    untouched.
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    from organizer import LeaseLost
+
+    c, place = _repairable(_Client({
+        "places": [_place_row("null-row", _JB, country_code=None)],
+        "jobs": [{"id": "job-1", "trip_id": "trip-1", "lease_token": "winner",
+                  "status": "running"}],
+        "trip_places": [{"id": "tp-prior", "trip_id": "trip-1", "place_id": "null-row",
+                         "day_number": 1, "sort_order": 0}],
+    }))
+
+    with pytest.raises(LeaseLost):
+        await persist.persist_itinerary(c, "trip-1", [place], ["2026-08-01"],
+                                        job_id="job-1", lease_token="superseded",
+                                        verify_country=_Verifier(_MY_RESULT))
+
+    assert _country_triple(_row_by_id(c, "null-row")) == ("Malaysia", "MY", "Malaysia")
+    assert [tp["id"] for tp in c.db["trip_places"]] == ["tp-prior"]
+
+
+@pytest.mark.parametrize("target", ["_place_matches", "haversine_m"])
+@pytest.mark.asyncio
+async def test_persist_propagates_a_failure_inside_the_candidate_match_logic(monkeypatch, target):
+    """Case 13 — the isolation boundary, pinned where it can actually be seen.
+
+    A programming error inside the match logic must propagate and degrade the trip as it does
+    today, not be swallowed. The failure is raised AFTER candidate selection and INSIDE the
+    per-candidate loop deliberately: round 3 found that raising in the candidate SELECT only
+    kills a whole-FUNCTION catch, because a broad per-candidate `try` — one wrapping matching,
+    the CAS and the re-read together — sits after the select and never sees it. This placement
+    is what makes that broad wrap red.
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("match logic exploded")
+
+    monkeypatch.setattr(persist, target, boom)
+    c, place = _repairable()
+
+    with pytest.raises(RuntimeError, match="match logic exploded"):
+        await _link_one(c, place, _Verifier(_MY_RESULT))
+
+
+class _DeletesRowBeforeUpdateClient(_RacingWriterClient):
+    """A racer that DELETES the candidate between the select and the CAS."""
+
+
+@pytest.mark.asyncio
+async def test_persist_falls_through_when_the_candidate_was_deleted(monkeypatch):
+    """Case 14 — the row vanished between the candidate select and the re-read.
+
+    Returning a missing row's id is an FK failure waiting on `trip_places`, so an absent re-read
+    must fall through. It is also the case that only reddens against the REAL PostgREST shape:
+    `maybe_single()` gives back a bare `None` on zero rows, so an implementation unwrapping
+    `.data` outside its `try` raises AttributeError here and fails the whole trip — while a fake
+    returning `_Result(None)` would have kept it green.
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+
+    def racer_deletes_the_row(db):
+        db["places"] = [r for r in db["places"] if r["id"] != "null-row"]
+
+    c, place = _repairable(_DeletesRowBeforeUpdateClient(
+        {"places": [_place_row("null-row", _JB, country_code=None)]}, racer_deletes_the_row))
+
+    place_id = await _link_one(c, place, _Verifier(_MY_RESULT))
+
+    assert place_id != "null-row"
+    assert [r["id"] for r in c.db["places"]] == [place_id]     # inserted correctly
+    assert _country_triple(_row_by_id(c, place_id)) == ("Malaysia", "MY", "Malaysia")
+
+
+@pytest.mark.asyncio
+async def test_persist_falls_through_when_the_reconciliation_read_raises(monkeypatch):
+    """Case 15 — the CAS matched zero rows and the re-read then RAISES.
+
+    A failed reconciliation knows nothing: the row may have been filled compatibly, or made
+    conflicting, or deleted. Fail closed — candidate A is never returned. Case 9 cannot prove
+    this: there the repair REQUEST failed and linking is deliberately still allowed, which is
+    the opposite branch.
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c, place = _repairable(_PlacesOpFailsClient(
+        {"places": [_place_row("null-row", _JB, country_code=None),
+                    _place_row("my-row", _JB_NEAR2, country_code="MY")]},
+        ops={"select"}, single_only=True, update_returns_zero=True))
+
+    place_id = await _link_one(c, place, _Verifier(_MY_RESULT))
+
+    assert place_id == "my-row"                                # A rejected, B wins
+    assert len(c.db["places"]) == 2
     assert _country_triple(_row_by_id(c, "null-row")) == (None, None, None)
 
 

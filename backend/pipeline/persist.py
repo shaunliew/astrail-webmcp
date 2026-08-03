@@ -22,7 +22,7 @@ from collections import defaultdict
 
 from genagents.place_extractor import is_placeholder_url   # keyless import (no network at module scope)
 from genagents.transport import VALID_PROFILES, profile_to_mode   # keyless import (no network at module scope)
-from grounding import _ground_place
+from grounding import _coord_cache_key, _ground_place
 from models.enrichment import WeatherReport
 from models.evidence import TripPlaceEvidence
 from models.place import CanonicalPlace
@@ -208,6 +208,60 @@ async def _ground_all(client, canonical: list[CanonicalPlace], *,
     return grounded_by_id
 
 
+async def _repair_null_country(client, row: dict, grounded: dict) -> bool:
+    """Fill a reused row's NULL country from the verified receipt for THIS coordinate.
+
+    Returns whether the caller may still link to `row` — True to return its id, False to fall
+    through to the next candidate. It NEVER repairs and then falls through: a repair that landed
+    is a repair of the row we are about to use.
+
+    The write is a compare-and-swap (`.is_("country_code", "null")`) rather than a plain update,
+    because between the candidate SELECT and this statement a racer — another pipeline worker,
+    or `find_or_create_place` on the organize path — can fill the same row. `.eq(col, None)` is
+    NOT the same predicate: PostgREST serializes it as `eq.None`, which matches zero NULL rows,
+    so the CAS would silently touch nothing in production.
+
+    Zero matched rows means exactly that race, and the reconciliation re-read is what keeps R1
+    intact: a racer that wrote a CONTRADICTING country turns this candidate into the wrong venue,
+    so it must be rejected rather than linked. Every UNCERTAIN outcome falls through too — a row
+    deleted between the select and the re-read would hand back an id that no longer exists (an FK
+    failure on trip_places), and a re-read that raises knows nothing at all.
+
+    Best-effort, narrowly scoped (guardrail #3): only the two round trips are wrapped, and the
+    response unwrapping sits INSIDE the `try` with them — `maybe_single()` returns a BARE `None`
+    on zero rows, so reading `.data` outside the catch is an AttributeError that would fail the
+    whole trip. `Exception`, never `BaseException`: a lost job lease's `CancelledError` must keep
+    propagating instead of being absorbed into a silent no-repair.
+    """
+    patch = {
+        # ALL THREE, from the PROVIDER receipt and never the LLM's claim (guardrail #1) —
+        # `country` carries the country NAME, matching `find_or_create_place`'s `p_country`.
+        "country": grounded["country_name"],
+        "country_code": grounded["country_code"],
+        "country_name": grounded["country_name"],
+    }
+    try:
+        repaired = (await client.table("places").update(patch)
+                    .eq("id", row["id"]).is_("country_code", "null").execute()).data
+    except Exception as exc:
+        # Type only, never the message — a Supabase error can carry connection details.
+        logger.warning("place_country_repair_failed error=%s", type(exc).__name__)
+        return True     # no repair; the place still links and the trip still saves
+    if repaired:
+        return True
+    try:
+        result = await (client.table("places").select("id,country_code")
+                        .eq("id", row["id"]).maybe_single().execute())
+        current = result.data if result is not None else None
+    except Exception as exc:
+        logger.warning("place_country_reread_failed error=%s", type(exc).__name__)
+        return False    # fail closed: we cannot say this row is still the right one
+    if current is None:
+        return False    # deleted between the select and now — never hand back a dead id
+    code = current.get("country_code")
+    return not (code and code != grounded["country_code"])
+
+
 async def _find_or_create_place(client, place: CanonicalPlace, *, grounded: dict | None) -> str:
     """Dedup-on-write: reuse a global places row matching by name/alias AND <500m — and, when we
     hold a verified country, whose own non-NULL `country_code` does not contradict it — else insert.
@@ -218,7 +272,11 @@ async def _find_or_create_place(client, place: CanonicalPlace, *, grounded: dict
 
     `grounded` is `_ground_place`'s verified result or None, and it is a REQUIRED keyword with
     no default: a defaulted None is exactly the bypass a forgetful call site would take, and it
-    would be silent — the row would just come back country-less again."""
+    would be silent — the row would just come back country-less again.
+
+    Reuse can also WRITE: a reused row whose country is NULL and whose stored coordinate is the
+    same one we just verified gets that receipt filled in (`_repair_null_country`). Otherwise
+    this function only ever reads or inserts."""
     lat_d, lng_d = _bbox_deltas(place.lat)
     candidates = (await client.table("places").select("id,name,aliases,lat,lng,country_code")
                   .gte("lat", place.lat - lat_d).lte("lat", place.lat + lat_d)
@@ -240,6 +298,17 @@ async def _find_or_create_place(client, place: CanonicalPlace, *, grounded: dict
             if grounded is not None and row.get("country_code") \
                     and row["country_code"] != grounded["country_code"]:
                 continue
+            # F, and it runs HERE — after both gates and after R1's conflict check, never
+            # before. A NULL-country candidate stored at the same binary64 coordinate as the
+            # place we just verified is a row our receipt literally describes, so fill it in
+            # rather than discard the answer (the measured case: 4/4 of a re-run trip's places
+            # dedup onto NULL rows created from the same cached coordinate). A DIFFERENT
+            # coordinate — even one metre away — stays unrepaired: that is R3, deferred.
+            if grounded is not None and row.get("country_code") is None \
+                    and _coord_cache_key(place.lat, place.lng) == \
+                    _coord_cache_key(row["lat"], row["lng"]):
+                if not await _repair_null_country(client, row, grounded):
+                    continue
             return row["id"]
     new_row = {
         "name": place.name,

@@ -138,6 +138,21 @@ the unit gate that claims to be load-bearing would not.
 PostgREST filter — turning it into a loud test failure converts a silent production no-op into an
 immediate red. Add **case 17** proving `.eq(None)` cannot substitute for `.is_(col, "null")`.
 
+**(d) `maybe_single()` must RAISE on multiple rows** — round 6's blocker, the last of this class.
+Real PostgREST raises when `maybe_single()` matches more than one row; the fake does not. So a
+re-read that forgets its filter stays green:
+
+```python
+.select("id,country_code").maybe_single()      # WRONG: missing .eq("id", row["id"])
+```
+
+Cases 7, 8, 14 and 15 all happen to seed at most one relevant row, so the unfiltered fake re-read
+returns the right thing by luck. In production it sees every global row, real `maybe_single()`
+raises, the catch swallows it, and a racer inserts a duplicate instead of resolving the row.
+
+So: make the fake raise on multi-row `maybe_single()` (**case 18** pins it), **and seed case 7
+with an unrelated out-of-bbox row** so omitting `.eq("id", row["id"])` reddens.
+
 ### T2 — Candidate projection
 `_find_or_create_place`'s select already fetches `country_code` (arc 2). Add `country`,
 `country_name` **only if** the implementation needs them to decide; it should not — the decision
@@ -183,6 +198,7 @@ Every case must be proven to redden by deleting its own guard.
 | 14 | candidate **deleted** between select and re-read — the fake MUST return a bare `None`, not `_Result(None)` | `continue`; never returns the dead id | returning a missing row's id → FK failure; **and** unwrapping `.data` outside the `try`, which only reddens against the real bare-`None` shape |
 | 16 | fake contract: zero-row `maybe_single()` | returns a **bare `None`**, not a result object | a fake whose shape production does not share — the round-4 blocker |
 | 17 | fake contract: `.eq(col, None)` | **raises** — it is never a valid PostgREST filter | a CAS written as `.eq("country_code", None)`, which passes all 16 other cases and the `.is_()` contract test while matching zero rows in production — the round-5 blocker |
+| 18 | fake contract: multi-row `maybe_single()` | **raises**, as real PostgREST does | a re-read missing `.eq("id", row["id"])` — the round-6 blocker. Case 7 must also seed an unrelated out-of-bbox row, or the unfiltered re-read returns the right row by luck |
 
 **Case 8 is reachable, but not between two pipeline workers** (round 2): two pipeline workers
 sharing the same exact-coordinate receipt write the same value, so the loser never sees a

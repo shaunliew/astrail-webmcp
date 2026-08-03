@@ -1,0 +1,46 @@
+name: Backend Tests
+
+# WHY THIS EXISTS. render.yaml sets `autoDeployTrigger: checksPass` on both services, so THE
+# MERGE IS THE DEPLOY and "checks" is the last thing standing between a push and production.
+# Until this file, the only workflow was rls-tests.yml — `supabase test db`, pgTAP RLS policies
+# — so the 1252 backend tests gated nothing at all. That included the 22 guarding
+# scripts/assert_schema.py, the pre-deploy schema gate itself.
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+jobs:
+  backend-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # PYTHON PINNED TO THE DOCKERFILE'S. Both stages of ./Dockerfile are `python:3.14-slim`;
+      # a suite that passes on a different interpreter than production runs is a false signal.
+      # Bump this and the Dockerfile together.
+      - name: Setup uv
+        # Pin the FULL version, not a floating major: astral-sh/setup-uv publishes
+        # v9.0.0 but no `v9` tag (it shipped v7.6 alongside v7.6.0, then stopped at v8).
+        # `@v9` resolves to nothing and the job dies in the setup step.
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          python-version: "3.14"
+          working-directory: backend
+
+      # NO `env:` AND NO `secrets` ANYWHERE IN THIS FILE, deliberately. The suite is
+      # credential-free by design — backend/conftest.py loads .env only under `--run-live`, and
+      # tests assert modules stay importable with no key. A secret added here would let a test
+      # start depending on one without anyone noticing, and this workflow's job is to prove the
+      # opposite. If a test ever needs a credential, that test is the bug.
+      - name: Run backend test suite
+        run: uv run pytest -q
+        working-directory: backend
+
+      # Redundant by collection (`pytest -q` already picks evals/ up: 1203 + 49 = 1252) and kept
+      # anyway, because guardrail #16's offline eval failing is a different verdict from "the
+      # suite is red" and deserves its own line in the checks list.
+      - name: Run offline eval suite
+        run: uv run pytest evals/ -q
+        working-directory: backend

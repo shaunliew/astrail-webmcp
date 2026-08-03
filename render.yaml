@@ -6,35 +6,62 @@ services:
     repo: https://github.com/MalaysiaKaki/astrail
     # Pins what the Render dashboard already says, so it is a no-op against the running
     # service. Without it, a Blueprint CONFIGURATION SYNC — which applies to every service
-    # the Blueprint names and is not governed by `autoDeploy: false` — falls back to the
+    # the Blueprint names and is not governed by `autoDeployTrigger` — falls back to the
     # repository default (main) and silently retargets this service.
     branch: dev
     region: singapore
     plan: starter
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
-    # DISABLED DELIBERATELY — do not flip back without reading the trigger below.
+    # AUTO-DEPLOY IS ON, AND GATED. With it on, THE MERGE IS THE DEPLOY — there is no gap in
+    # which a human confirms the shipping code still works against the live schema. The
+    # `preDeployCommand` below is what replaced that gap.
     #
-    # There is no pre-deploy migration hook anywhere (no `preDeployCommand`, nothing in the
-    # Dockerfile), so schema is applied by hand while code ships on merge. With autoDeploy on,
-    # THE MERGE IS THE DEPLOY — which makes the standard protocol ("apply migrations → confirm
-    # the currently-deployed code still works → then merge") impossible to execute, because
-    # there is no gap between the last two steps to verify in.
+    # WHAT THE GATE DOES. `backend/scripts/assert_schema.py` holds a manifest of the columns
+    # this code version requires and probes each one through PostgREST
+    # (`select(cols).limit(0)` — reads no rows). A column production does not have exits 1,
+    # Render aborts the rollout, and the OLD code keeps serving. It probes rather than migrates
+    # because the image is `python:3.14-slim` + uv deps + `backend/` — no Supabase CLI, no psql
+    # — and the environment carries only `SUPABASE_URL` (the REST endpoint), never a postgres
+    # DSN, so `preDeployCommand: supabase migration up` is not available to us.
     #
-    # That is not theoretical. `20260720100000_reel_place_mentions_user_scope` drops the
+    # THIS GATE IS THE ONLY DRIFT DETECTION. `/health` still performs no schema check, so a
+    # code-first deploy against an old schema stays GREEN while jobs silently fail to start.
+    #
+    # IT SEES COLUMNS ONLY. A changed RPC signature, a dropped conflict key or a changed
+    # SQLSTATE are all invisible to it — and both migrations that motivated the old manual-only
+    # protocol are exactly that kind. `20260720100000_reel_place_mentions_user_scope` drops the
     # `(reel_cache_id, place_id)` conflict key that the deployed `_persist_mention` upsert
     # targets, so old and new code cannot both work against either schema — the migration says
-    # so itself. And `20260720130000_organize_job_error_codes` changes the raised SQLSTATE from
-    # P0001 to AS4xx, so BOTH orderings return 500 for the length of the window.
+    # so itself. `20260720130000_organize_job_error_codes` changes the raised SQLSTATE from
+    # P0001 to AS4xx, so BOTH orderings return 500 for the length of the window. For that class,
+    # set the trigger to `off`, deploy by hand, and follow
+    # docs/superpowers/plans/2026-07-20-saved-reels-release-runbook.md.
     #
-    # `/health` performs no schema check, so a code-first deploy against the old schema stays
-    # GREEN while jobs silently fail to start.
+    # EXTEND THE MANIFEST IN THE SAME PR AS THE MIGRATION that introduces the requirement. A
+    # writer that ships ahead of its manifest entry ships unguarded, which is the whole failure
+    # this gate exists to prevent.
     #
-    # TO RE-ENABLE: land a real pre-deploy migration gate (a Render `preDeployCommand` running
-    # `supabase migration up`, or a startup check that fails the health check on schema drift).
-    # Until one of those exists, deploys stay manual. Release sequence:
-    # docs/superpowers/plans/2026-07-20-saved-reels-release-runbook.md
-    autoDeploy: false
+    # IF A DEPLOY ABORTS: the pre-deploy log names the table and column. Apply the pending
+    # migration to production and redeploy; if the manifest is what is stale, fix it in the same
+    # PR as the migration. Nothing is left half-applied — pre-deploy runs on a separate instance
+    # and its filesystem changes are discarded.
+    #
+    # `checksPass`, NOT `commit`. Two workflows gate every push to dev, and BOTH must pass:
+    #   rls-tests.yml     applies every migration to a local Supabase + runs the pgTAP RLS tests,
+    #                     so an invalid migration fails CI and the deploy never fires.
+    #   backend-tests.yml runs the backend pytest suite + the frozen #16 eval. This one also
+    #                     covers `scripts/assert_schema.py`'s OWN tests — without it the gate below
+    #                     could be narrowed to a no-op by a PR that never touches SQL, and
+    #                     `checksPass` would happily fire. The gate needs a gate.
+    # `autoDeploy` is the deprecated spelling of this field.
+    autoDeployTrigger: checksPass
+    # ABSOLUTE PATH AND NO SHELL SYNTAX, for the same reason the worker's `dockerCommand` note
+    # below gives: Render does not document whether pre-deploy is shell-wrapped on a Docker
+    # service, nor what the working directory is. The script is self-contained — it builds its
+    # own Supabase client and imports nothing from `backend/` — so this form needs neither a
+    # `cd` nor PYTHONPATH and behaves identically either way.
+    preDeployCommand: python /app/backend/scripts/assert_schema.py
     envVars:
       - key: OPENAI_API_KEY
         sync: false
@@ -101,7 +128,12 @@ services:
     # It does not today (python is PID 1), and the degradation is bounded either way: an
     # in-flight job holds a lease that expires in <=300s and the web reaper reclaims it.
     dockerCommand: python -m telegram_ingest.worker
-    autoDeploy: false           # same reason as astrail-backend
+    # Same gate, same reasoning as astrail-backend above — read that block, it is the canonical
+    # one. This service needs its own copy because a Blueprint field is per-service: the worker
+    # runs the SAME organize path against the SAME schema, so a rollout here against a drifted
+    # database fails exactly as silently. Pre-deploy is supported on paid background workers.
+    autoDeployTrigger: checksPass
+    preDeployCommand: python /app/backend/scripts/assert_schema.py
     maxShutdownDelaySeconds: 120
     # PYTHONPATH is DECLARED HERE with a literal value, not left to the dashboard. This
     # service is Blueprint-managed, so a sync re-applies this file and overwrites anything

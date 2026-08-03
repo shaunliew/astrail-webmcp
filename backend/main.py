@@ -281,6 +281,39 @@ _CLEAR_FAILURE_MESSAGE = {
                "see the current state; do not retry blindly.",
 }
 
+# ---------------------------------------------------------------------------------------
+# THE CLEAR ROUTE IS DELIBERATELY GATED OFF. Do not flip this without reading why.
+#
+# Codex's cross-model code review returned DO-NOT-MERGE on this endpoint, and it was right.
+# `cleared: true` promises a postcondition ("your memory is now empty") that we cannot yet
+# keep, because TWO unbounded delays sit between us and mem0, both MEASURED on 2026-08-03:
+#   1. mem0's own add queue — an add sat PENDING for 17 minutes, 33x the 30s visibility
+#      window. Our own live smoke reproduced the failure: it added, the clear answered
+#      `cleared`, and the adds were still queued afterwards.
+#   2. our own event loop — `asyncio.wait_for` bounds each await's DURATION, not the gaps
+#      between them, so a stall ages an in-flight add out of view with mem0 perfectly
+#      healthy.
+# No finite window closes either. A route that can emit a `cleared` it cannot stand behind
+# is precisely the lie this whole arc exists to delete, so it stays shut.
+#
+# WHAT DOES SHIP: the engine (pipeline/memory_clear.py) and the write-back interlock
+# (pipeline/preferences.py) are complete, reviewed and fully exercised by the suite — the
+# interlock is a real improvement to every generation and runs in production from day one.
+#
+# TO ENABLE: land durable reconciliation of mem0's returned event ids (its V3 add response
+# carries `event_id`; the completion mechanism is the events endpoint, which the installed
+# Python SDK does not expose — so it needs a small raw-HTTP adapter plus a reconciler that
+# is SEPARATE from trip-job terminal state, because the write-back runs after the job is
+# terminal). Then flip this to True IN THE SAME PR, and re-run
+# scripts/smoke_memory_clear.py — which itself must first be taught to reconcile accepted
+# event ids, or it will keep leaving provider-side data for a deleted test entity.
+_CLEAR_RECONCILIATION_READY = False
+
+_CLEAR_GATED_MESSAGE = (
+    "Clearing saved memory is temporarily unavailable while we make deletion verifiable. "
+    "Nothing was deleted."
+)
+
 
 @app.post("/settings/memory/clear", response_model=MemoryClearResponse)
 @limiter.limit(BURST_LIMIT)
@@ -293,6 +326,14 @@ async def clear_settings_memory(
     which degrades (guardrail #3). Never reports a clear it did not verify."""
     from mem0_client import get_mem0_client
     from pipeline.memory_clear import clear_memory        # NOT pipeline.preferences (A17)
+
+    if not _CLEAR_RECONCILIATION_READY:
+        # `memory_unavailable`, NOT `memory_clear_unknown`: that code means "CONFIRMED
+        # nothing was deleted", which is exactly and provably true when we do not attempt.
+        # Reporting `unknown` would claim an uncertainty we do not actually have — a small
+        # lie in the opposite direction, and this endpoint exists to stop lying.
+        # Returns BEFORE touching Supabase or mem0: nothing is attempted, nothing is spent.
+        return build_error_response(503, _CLEAR_GATED_MESSAGE, code="memory_unavailable")
 
     try:
         client = await get_supabase_client()

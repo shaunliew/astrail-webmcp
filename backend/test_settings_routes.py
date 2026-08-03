@@ -181,10 +181,20 @@ def _install_clear(monkeypatch, spy, *, supabase_fails=False):
     `from pipeline.memory_clear import clear_memory` runs INSIDE the handler, so the
     module attribute is what each request resolves -- patching it here is what the route
     actually calls.
+
+    ALSO enables `_CLEAR_RECONCILIATION_READY`, because the route is gated OFF in
+    production (see main.py). Every test using this helper is asserting what the endpoint
+    does WHEN ENABLED, so it must opt in explicitly. Note the gate returns the same
+    `503 memory_unavailable` as the A7 Supabase-failure path -- without this opt-in
+    `test_clear_memory_reports_unavailable_when_supabase_client_fails` would pass while
+    exercising the gate instead of the path it names (BUILD-LOOP trap: a green test that
+    no longer tests its subject). `test_the_clear_route_is_gated_off_by_default` is the
+    one test that deliberately does NOT enable it.
     """
     import main
     import pipeline.memory_clear as memory_clear
 
+    monkeypatch.setattr(main, "_CLEAR_RECONCILIATION_READY", True)
     monkeypatch.setattr(memory_clear, "clear_memory", spy)
 
     async def _sb():
@@ -282,3 +292,56 @@ async def test_clear_burst_limit_is_per_user_not_shared(monkeypatch):
     assert a[3] == 429                  # A exhausted 3/minute
     assert b == 200                     # B unaffected -> keyed on user, not IP
     assert spy.uids == ["user-A"] * 3 + ["user-B"]   # the 429 never reached the engine
+
+
+async def test_the_clear_route_is_gated_off_by_default(monkeypatch):
+    """The SHIPPING behaviour: the route is gated OFF and must not attempt anything.
+
+    Deliberately does NOT call `_install_clear` -- that helper enables the gate. This is
+    the one test asserting production's real posture.
+
+    `memory_unavailable`, not `memory_clear_unknown`: that code means "CONFIRMED nothing
+    was deleted", which is provably true when we never attempt. `unknown` would claim an
+    uncertainty we do not have.
+    """
+    import main
+    import pipeline.memory_clear as memory_clear
+
+    spy = _ClearSpy("cleared")            # answers 200 if the gate ever lets it through
+    monkeypatch.setattr(memory_clear, "clear_memory", spy)
+
+    # A HEALTHY Supabase stub, deliberately. An earlier draft made this RAISE to "prove"
+    # the DB is never touched -- and the test passed with the gate flipped ON, because the
+    # route's A7 handler catches every exception from get_supabase_client and returns the
+    # SAME 503 memory_unavailable the gate returns. Both assertions then held for the wrong
+    # reason (clear_memory is unreachable when the client fails, so `spy.calls == []` too).
+    # Found by fault injection, not by reading. The outcome must be one ONLY the gate can
+    # produce: with a healthy client and a "cleared" spy, an ungated route answers 200.
+    sb_calls: list = []
+
+    async def _sb():
+        sb_calls.append(1)
+        return object()
+
+    monkeypatch.setattr(main, "get_supabase_client", _sb)
+
+    async with _client(monkeypatch, mem0=_Mem0(rows=[]), uid_box={"uid": "u1"}) as c:
+        r = await c.post("/settings/memory/clear")
+    body = r.json()
+    assert r.status_code == 503           # ungated + healthy client + "cleared" spy => 200
+    assert body["error"]["code"] == "memory_unavailable"
+    assert set(body) == {"error"} and set(body["error"]) == {"code", "message"}
+    assert spy.calls == []                # nothing attempted
+    assert sb_calls == []                 # returned BEFORE spending a DB round-trip
+
+
+async def test_the_clear_gate_is_the_only_thing_disabling_the_route(monkeypatch):
+    """Flipping the flag restores the full contract -- so the gate is a deployment switch,
+    not a rewrite. Pins that the engine ships intact and re-enabling is one line."""
+    spy = _ClearSpy("cleared")
+    _install_clear(monkeypatch, spy)      # enables the flag
+    async with _client(monkeypatch, mem0=_Mem0(rows=[]), uid_box={"uid": "u1"}) as c:
+        r = await c.post("/settings/memory/clear")
+    assert r.status_code == 200
+    assert r.json() == {"cleared": True}
+    assert spy.uids == ["u1"]             # token-derived, and it really ran

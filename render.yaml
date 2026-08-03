@@ -6,7 +6,7 @@ services:
     repo: https://github.com/MalaysiaKaki/astrail
     # Pins what the Render dashboard already says, so it is a no-op against the running
     # service. Without it, a Blueprint CONFIGURATION SYNC — which applies to every service
-    # the Blueprint names and is not governed by `autoDeploy: false` — falls back to the
+    # the Blueprint names and is not governed by `autoDeployTrigger` — falls back to the
     # repository default (main) and silently retargets this service.
     branch: dev
     region: singapore

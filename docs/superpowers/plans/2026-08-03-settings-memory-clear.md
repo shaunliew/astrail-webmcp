@@ -1460,6 +1460,68 @@ instead; a green deletion is not evidence a guard is inert (it fired twice alrea
 - The write-back now performs **three** Supabase ops in the common path (intent insert + guard's two
   reads) instead of two. Update §8's cost note.
 
+## 8g. C12 — bound the write-back below the visibility window (closes Codex code-review R2's P1)
+
+> Codex R2 on the code: **FAIL 5.9, DO-NOT-MERGE.** C11 narrowed the race but did not close it, and
+> Codex **reproduced** the remainder against the real functions: `expired_intent_verdict='cleared'`,
+> `add_landed=True`.
+
+### The remaining defect
+
+`_add_possibly_in_flight` only looks back `_ADD_VISIBILITY_WINDOW_S` (15 s). The write-back's own
+Supabase calls are **unbounded** — they inherit the shared 30 s HTTP timeout (`supabase_client.py`).
+So:
+
+```
+T+0    intent row committed
+T+0..  guard's read starts and is SLOW (up to 30s, unbounded)
+T+16   user clears -> cutoff is T+1 -> the intent at T is TOO OLD to see -> "cleared"
+T+17   guard's stale pre-clear snapshot returns "no clear" -> add proceeds -> lands
+```
+
+The former P3 *"guard reads have no operation-level timeout"* was therefore never latency hygiene —
+**it is the load-bearing half of this P1.**
+
+### The fix — two independent bounds, so an intent can never age out while its own add is still pending
+
+1. **Bound every write-back Supabase call** with `asyncio.wait_for`, so the worst-case time from
+   intent-commit to add-issued is far below the visibility window:
+   `_ADD_INTENT_TIMEOUT_S = 4` (intent insert) and `_GUARD_TIMEOUT_S = 4` **per guard read** (two of
+   them) ⇒ **≤ 12 s** worst case, and a timeout takes the existing fail-safe path (skip the write /
+   treat as "cleared present"), never a raise (guardrail #3).
+2. **Widen `_ADD_VISIBILITY_WINDOW_S` from 15 → 30 s.** The window must cover the whole interval in
+   which an add can still land, not just the measured materialization: pre-add budget (≤12 s) + the
+   add call itself (≤5 s) + PENDING→readable (~4-8 s) ≈ **25 s**. 30 s leaves margin.
+
+Cost: a clear within 30 s of a preference-bearing generation now reports `unknown` instead of
+`cleared`. That is the conservative direction and clears are rare; `unknown` tells the user to
+refresh, and the read endpoint will show the true state.
+
+3. **`assert_schema.py`** — add `id` and `created_at` to the `memory_events` column tuple (line ~99).
+   C11/C12 depend on both (`id` for the id-scoped retract/mark helpers, `created_at` for the guard's
+   `.gt()` and the in-flight cutoff), but the pre-deploy gate does not check them. Drift removing
+   either would pass the gate and then make clears fail closed and write-back abort learning.
+   Production has both today, so this is a hazard guard, not a migration-order blocker.
+
+### Tests
+
+- **The aged-intent barrier** (Codex asks for it explicitly): an intent OLDER than the cutoff while the
+  guard holds a pre-clear snapshot. Must yield `unknown`, and must **redden** if the window is narrowed
+  back to 15 s or the guard bound is removed. This is the regression test for this exact P1.
+- Each timeout is pinned by a test that asserts the **exact** value (fake `asyncio.wait_for`, record
+  and assert OUTSIDE the fake — a blanket `except` in the caller would swallow an AssertionError raised
+  inside it; `test_build_context_timeout_degrades_to_default` in this repo already documents that trap).
+- Timeout on each of the three calls ⇒ the documented fail-safe outcome, never a raise.
+- `assert_schema` gate test covers the two added columns if the file has a test seam.
+
+### What this does NOT claim
+
+Codex is right that this is still **expiry based on measured timing**, not a durable guarantee. An
+absolute contract needs pending/reconciled state on the row (the `memory_events` CHECK already permits
+`'updated'`/`'reconciled'`, both currently unused) or per-user serialization. **Deferred with a
+trigger:** implement durable pending state if a `cleared` is ever observed followed by a resurrected
+fact, or if mem0's PENDING→readable latency is measured above ~20 s.
+
 ## 9. Definition of done
 
 - [ ] `uv run pytest -q` → **1310 + new** passed, 8 skipped (baseline measured this session: 1310/8)

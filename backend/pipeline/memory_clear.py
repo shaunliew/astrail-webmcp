@@ -61,7 +61,15 @@ async def _mark_marker_failed(client, marker_id: str) -> None:
     the attempt from the audit trail entirely, and retraction-fails leaves a stale marker
     that keeps suppressing. A single UPDATE either records the truth or leaves the
     conservative 'cleared' marker, which over-suppresses in a bounded way rather than
-    resurrecting cleared data. It also never destroys an audit record (spec §10).
+    resurrecting cleared data.
+
+    UPDATE rather than DELETE on purpose: the marker records a real user action (they
+    clicked Clear) which happened regardless of how the delete then turned out, so the row
+    is worth keeping with a truthful event_type. Contrast persist_trip_memory's add-intent,
+    which IS deleted when the guard fires — that row represents a plan cancelled before any
+    external side effect, so there is no action to preserve, and keeping it would keep
+    matching _add_possibly_in_flight for a whole _ADD_VISIBILITY_WINDOW_S, causing a false
+    `unknown` on the next clear.
     """
     try:
         await client.table("memory_events").update({"event_type": "failed"}) \

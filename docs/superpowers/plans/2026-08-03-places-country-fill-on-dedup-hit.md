@@ -120,12 +120,28 @@ state what makes each red when its guard is removed, then delete the guard and p
 - `uv run pytest -q` and `uv run pytest evals/ -q` green, anchor intact.
 - **Live smoke: a conflicting-country dedup** (not the NULL-repair smoke — that belongs to R3).
 
+## 5b. Review record
+
+| Gate | Result |
+|---|---|
+| Plan — Codex ×3 | 4.7 (full R1–R4) → 6.2 → **8.1 PASS** (re-scoped to R1 alone on the reviewer's own sequencing advice) |
+| Code — `astrail-reviewer` per-task | **APPROVED** — all 6 fault injections independently reproduced |
+| Code — Codex final, combined branch | **MERGE** — 18 mutations reddened their intended tests; no vacuous test; R2/R3/R4 confirmed absent |
+
+The first draft's error is preserved in §2 because it is easy to repeat: suppressing the write
+on a conflicting row still returns that row's id.
+
 ## 6. DEFERRED to after beta — R2, R3, R4, with their open problems
 
 Specified here so the reasoning is not lost. **Do not implement these without re-gating.**
 
 - **R2 — prefer a compatible verified candidate over a NULL one**, so repeated generations
-  converge instead of oscillating with the first-match loop. *Open problem:* a row can legally be
+  converge instead of oscillating with the first-match loop. **The concrete ordering R1 leaves
+  uncovered** (named by the final gate, and deliberate): candidates ordered
+  *conflicting-SG → NULL-country → compatible-MY*. R1 skips SG, reuses the NULL row, and never
+  reaches MY. That leaves the country honestly NULL rather than wrong, repairs nothing and
+  duplicates nothing — but it means an existing NULL row can still absorb a verified place.
+  This is the case R2 exists to fix. *Open problem:* a row can legally be
   `(country=NULL, code=JP, name=Japan)` (`places_country_fields_pair_check` pairs only code and
   name; `country` is unconstrained), and a legacy row can carry a poisoned `country`/`country_name`
   beside a correct code (`20260720190000:98`). R2 as drafted would call such a row "verified" and

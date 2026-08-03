@@ -91,11 +91,34 @@ Three hard rules:
 
 ## 4. Tasks
 
-### T1 — `.is_()` on the test fake (prerequisite)
-`test_persist.py::_Table` has no `.is_()` (`test_persist.py:56`). Implement it with real NULL
-semantics: `.is_("country_code", "null")` must match **only** rows whose value is None, and the
-update must return only the rows it actually matched. A fake that accepts `.is_()` and ignores it
-makes every CAS test vacuous. Pin it with a direct fake-contract test.
+### T1 — Two test-fake fixes (both prerequisites)
+
+**(a) `.is_()`** — `test_persist.py::_Table` has no `.is_()` (`test_persist.py:56`). Implement it
+with real NULL semantics: `.is_("country_code", "null")` must match **only** rows whose value is
+None, and the update must return only the rows it actually matched. A fake that accepts `.is_()`
+and ignores it makes every CAS test vacuous. Pin it with a direct fake-contract test.
+
+**(b) `maybe_single()` must return a BARE `None` on zero rows** — round 4's blocker, and a shape
+this repo has already been bitten by. The fake returns `_Result(None)` (`test_persist.py:134`);
+**real PostgREST returns a bare `None`** (`postgrest/_async/request_builder.py:162`). The repo
+already knows this — `live_run.py:51` carries the comment, `_lookup_cached_country` handles it
+correctly (`result.data if result is not None else None`), and `test_main.py:940` is a regression
+test for it from an earlier review.
+
+With the current fake, this implementation passes **all sixteen** cases and breaks in production:
+
+```python
+try:
+    response = await reread.execute()
+except Exception:
+    continue
+if response.data is None:      # WRONG: `response` is bare None in production
+    continue                   #        -> AttributeError, OUTSIDE the catch
+```
+
+So: make the fake return bare `None`, add a direct fake-contract test for that shape, and
+**require both the `execute()` AND the response unwrapping to sit inside the reconciliation
+`try`.**
 
 ### T2 — Candidate projection
 `_find_or_create_place`'s select already fetches `country_code` (arc 2). Add `country`,
@@ -139,7 +162,8 @@ Every case must be proven to redden by deleting its own guard.
 | 12 | fake contract | `.is_()` changes only NULL rows and returns only matches | a fake that accepts but ignores `.is_()` |
 | 13 | **a failure raised AFTER candidate selection, inside the match logic** — monkeypatch `_place_matches` or `haversine_m` to raise | it **propagates**; the trip degrades as it does today, not silently | a broad **per-candidate** `try` around matching + CAS + re-read. Round 3 found the earlier version of this case (candidate *select* raises) only killed a whole-*function* catch, because a per-candidate wrap sits after the select and never sees it. This placement is the one that pins the boundary. |
 | 15 | CAS returns zero rows, then the **re-read RAISES** | candidate A is **never returned**; resolution picks a seeded compatible B or inserts correctly | treating a failed reconciliation read as "good enough, return A". Round 3: case 9 (the CAS *request* raising, which deliberately permits linking) cannot also prove this — they are different branches. |
-| 14 | candidate **deleted** between select and re-read | `continue`; never returns the dead id | returning a missing row's id → FK failure |
+| 14 | candidate **deleted** between select and re-read — the fake MUST return a bare `None`, not `_Result(None)` | `continue`; never returns the dead id | returning a missing row's id → FK failure; **and** unwrapping `.data` outside the `try`, which only reddens against the real bare-`None` shape |
+| 16 | fake contract: zero-row `maybe_single()` | returns a **bare `None`**, not a result object | a fake whose shape production does not share — the round-4 blocker |
 
 **Case 8 is reachable, but not between two pipeline workers** (round 2): two pipeline workers
 sharing the same exact-coordinate receipt write the same value, so the loser never sees a
@@ -181,7 +205,9 @@ worker may leave a valid repair behind while the itinerary fence still blocks it
   place inspection omits `updated_at`).
   1. Add `updated_at` to `live_run.py`'s place select.
   2. Run reel `DXwcVVliX3B` with a **fresh date window** (new idempotency key). Snapshot: the four
-     row ids, total `places` count, the three country fields per row, and `updated_at`.
+     row ids, the three country fields per row, and `updated_at`. (No global `places` count —
+     round 4 polish: the per-row `[REUSED]` observable already establishes that global growth is
+     irrelevant.)
   3. Require **4/4 rows `[REUSED]` and repaired**.
      **"Zero new rows" means zero new rows from `_find_or_create_place`, NOT a global count**
      (round 3 asked for this): the restaurant writer legitimately inserts `places` rows on every

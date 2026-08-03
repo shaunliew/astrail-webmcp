@@ -136,6 +136,12 @@ class SettingsPreferencesResponse(BaseModel):
     facts: list[MemoryFact] = Field(default_factory=list)
 
 
+class MemoryClearResponse(BaseModel):
+    """POST /settings/memory/clear — success only. Failures use the standard error
+    envelope with code `memory_unavailable` or `memory_clear_unknown`."""
+    cleared: Literal[True] = True
+
+
 class TripFeedbackRequest(BaseModel):
     """POST /trips/{trip_id}/feedback body -- trip-level feedback only.
 

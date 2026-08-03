@@ -278,6 +278,12 @@ export type MemoryStatus = 'ok' | 'disabled' | 'unavailable'
 export type MemoryFact = { id: string; memory: string; created_at: string; source: 'mem0' }
 export type SettingsPreferencesResponse = { status: MemoryStatus; facts: MemoryFact[] }
 
+// POST /settings/memory/clear — success only; failures use ErrorResponse above with
+// one of these codes. `unavailable` means nothing was deleted (safe to retry);
+// `unknown` means the outcome could not be verified (do not retry blindly).
+export type MemoryClearResponse = { cleared: true }
+export type MemoryClearErrorCode = 'memory_unavailable' | 'memory_clear_unknown'
+
 // POST /trips/:tripId/feedback — mirrors backend/api/schemas.py TripFeedback*.
 // Trip-level only; artifact_type is always 'trip' in v1. The backend does NOT accept
 // artifact_type/artifact_id from the client, so they are absent from the request type.

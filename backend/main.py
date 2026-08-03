@@ -33,6 +33,7 @@ from api.schemas import (
     CaptureSavedReelResponse,
     GenerateTripRequest,
     GenerateTripResponse,
+    MemoryClearResponse,
     MemoryFact,
     OrganizeJobStatus,
     OrganizeSavedReelsRequest,
@@ -268,6 +269,43 @@ async def get_settings_preferences(
         status = "unavailable"
     return SettingsPreferencesResponse(
         status=status, facts=[MemoryFact(**f) for f in facts])
+
+
+_CLEAR_FAILURE_MESSAGE = {
+    "unavailable": "Memory could not be cleared. Nothing was deleted — please try again.",
+    "unknown": "We could not confirm whether your memory was cleared. Refresh this page to "
+               "see the current state; do not retry blindly.",
+}
+
+
+@app.post("/settings/memory/clear", response_model=MemoryClearResponse)
+@limiter.limit(BURST_LIMIT)
+async def clear_settings_memory(
+    request: Request,                                     # required by slowapi; must be named `request`
+    response: Response,                                   # REQUIRED with headers_enabled=True
+    user_id: str = Depends(get_current_user_id_stashed),  # token-derived: guardrails #5 + #6
+):
+    """PRD §824. STRICT by design — the deliberate inverse of GET /settings/preferences,
+    which degrades (guardrail #3). Never reports a clear it did not verify."""
+    from mem0_client import get_mem0_client
+    from pipeline.memory_clear import clear_memory        # NOT pipeline.preferences (A17)
+
+    try:
+        client = await get_supabase_client()
+    except Exception:                                     # noqa: BLE001 — A7
+        # Without a client we cannot arm the guard, so nothing is deleted. Truthful AND
+        # inside the documented contract; the global handler's 500 would be neither.
+        return build_error_response(
+            503, _CLEAR_FAILURE_MESSAGE["unavailable"], code="memory_unavailable")
+
+    outcome = await clear_memory(client, await get_mem0_client(), user_id=user_id)
+    if outcome == "cleared":
+        return MemoryClearResponse()
+    # Returned, not raised: _STATUS_CODE_SLUG (api/errors.py) has no 503 entry, so
+    # HTTPException(503) would emit code "error" and collapse the two failure codes into
+    # one. Precedent: the rate-limit handler above does exactly this for 429.
+    code = "memory_unavailable" if outcome == "unavailable" else "memory_clear_unknown"
+    return build_error_response(503, _CLEAR_FAILURE_MESSAGE[outcome], code=code)
 
 
 @app.post("/saved-reels", response_model=CaptureSavedReelResponse)

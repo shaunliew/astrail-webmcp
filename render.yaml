@@ -47,9 +47,14 @@ services:
     # PR as the migration. Nothing is left half-applied — pre-deploy runs on a separate instance
     # and its filesystem changes are discarded.
     #
-    # `checksPass`, NOT `commit`: .github/workflows/rls-tests.yml applies every migration to a
-    # local Supabase and runs the pgTAP RLS tests on each push to dev, so an invalid migration
-    # fails CI and the deploy never fires. `autoDeploy` is the deprecated spelling of this field.
+    # `checksPass`, NOT `commit`. Two workflows gate every push to dev, and BOTH must pass:
+    #   rls-tests.yml     applies every migration to a local Supabase + runs the pgTAP RLS tests,
+    #                     so an invalid migration fails CI and the deploy never fires.
+    #   backend-tests.yml runs the backend pytest suite + the frozen #16 eval. This one also
+    #                     covers `scripts/assert_schema.py`'s OWN tests — without it the gate below
+    #                     could be narrowed to a no-op by a PR that never touches SQL, and
+    #                     `checksPass` would happily fire. The gate needs a gate.
+    # `autoDeploy` is the deprecated spelling of this field.
     autoDeployTrigger: checksPass
     # ABSOLUTE PATH AND NO SHELL SYNTAX, for the same reason the worker's `dockerCommand` note
     # below gives: Render does not document whether pre-deploy is shell-wrapped on a Docker

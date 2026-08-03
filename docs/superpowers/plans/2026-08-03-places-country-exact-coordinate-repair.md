@@ -278,3 +278,54 @@ worker may leave a valid repair behind while the itinerary fence still blocks it
      printed for the comparison to be possible at all.
 - **Rollback:** reverting F stops future repairs; rows already repaired remain valid receipts.
   Schema-safe, no migration to unwind.
+
+
+---
+
+## 7. FINAL RECORD — all gates green, MERGE-READY (2026-08-03)
+
+| Gate | Result |
+|---|---|
+| Plan — Codex ×6 | 5.4 → 6.5 → 6.8 → 6.9 → 6.9 → closed on the reviewer's own advice that further plan rounds were the wrong instrument |
+| Code — `astrail-reviewer` per-task | **APPROVE WITH MINORS** (both minors closed or recorded) |
+| Code — `astrail-reviewer` whole-branch, all 3 arcs (fable) | **MERGE** — 12 fault injections, each killed by exactly its intended test |
+| Code — Codex final cross-model | **DO-NOT-MERGE → MERGE** after two P1s |
+
+**Every one of the six plan-gate findings was a test-harness fidelity gap** — the fake diverging
+from the real postgrest client — not a defect in F's design, which was stable from round 2. The
+four fixes (`.is_()` NULL semantics, bare-`None` `maybe_single`, raising `.eq(col, None)`, raising
+multi-row `maybe_single`) are the durable value here: they close a class of false-green for every
+future test in this file.
+
+### The two P1s the final cross-model gate caught
+
+1. **Credential leak (SECURITY).** `live_run.py`'s `_configure_logging` set the ROOT logger to
+   INFO, so `httpx` logged full Mapbox URLs **including `access_token=sk...`**. Real secrets were
+   printed during this branch's live smokes. Fixed with an explicit allow-list
+   (`_VERBOSE_LOGGERS`) plus pinned `_NOISY_TRANSPORT_LOGGERS`, following
+   `telegram_ingest/worker.py`'s existing pattern, with a canary regression test. The
+   implementer found a **second** channel nobody had named: `realtime` logs
+   `wss://…?apikey=<SERVICE_ROLE_KEY>` at DEBUG. **`MAPBOX_SECRET_TOKEN` must be rotated.**
+2. **`_ground_all` swallowed a child-origin `CancelledError`.** `gather(return_exceptions=True)`
+   captured it and the `isinstance(r, BaseException)` filter discarded it, so a lost lease's abort
+   became a group of silent NULLs and the superseded worker walked on into the destructive
+   rewrite. **The fable whole-branch review had called this "unreachable defensive code,
+   cosmetic".** Codex reproduced it. Fixed by re-raising `BaseException` explicitly while keeping
+   `return_exceptions=True` for its real property — draining siblings rather than leaving them
+   detached mid-cache-write.
+
+That second one is the clearest single justification for running both final gates: one model
+called it cosmetic, the other reproduced it as a P1.
+
+### Required before the Render deploy — NOT before merge
+
+1. **Rotate `MAPBOX_SECRET_TOKEN`** — install the replacement, verify, then revoke the exposed one.
+2. Arc 3's two-run live acceptance (§6), two different fresh date windows.
+3. Confirm the smoke output contains **no** `access_token=` and no service-role credential.
+4. Wall-clock against the 180 s target; terminal `result` then `[DONE]`.
+5. Deploy the exact merged `dev` SHA manually (`autoDeploy:false`); all three arcs together,
+   since R1 and F depend on arc 1's grounded dict.
+6. Post-deploy: `/health`, one authenticated `/generate-trip`, persisted receipts, clean logs.
+
+**Waived with reason:** arc 2's conflicting-country live smoke would require manufacturing
+contradictory production data. Recorded as a waiver rather than seeding bad rows.

@@ -1468,8 +1468,9 @@ async def test_request_seat_missing_row_returns_503_identity_unavailable(rpc_ctx
 
 async def test_request_seat_pgrst202_fails_closed_503(rpc_ctx, monkeypatch):
     # RPC absent from the live DB (a migration that lagged the code deploy) -> PGRST202 ->
-    # fail CLOSED with a distinct 503 generation_unavailable, mirroring the reserve/quota
-    # wrappers (test_rate_limit.py:78). Any other APIError would propagate as a 500.
+    # fail CLOSED with a distinct 503 seat_request_unavailable (its OWN code/message — the
+    # seat endpoint must not reuse the generate wrapper's "generation_unavailable" copy).
+    # Any other APIError would propagate as a 500.
     from postgrest.exceptions import APIError
 
     ac, _db, _calls, client = rpc_ctx
@@ -1485,4 +1486,4 @@ async def test_request_seat_pgrst202_fails_closed_503(rpc_ctx, monkeypatch):
     monkeypatch.setattr(client, "rpc", _rpc)
     r = await ac.post("/request-seat")
     assert r.status_code == 503
-    assert r.json()["error"]["code"] == "generation_unavailable"
+    assert r.json()["error"]["code"] == "seat_request_unavailable"

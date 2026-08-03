@@ -119,6 +119,14 @@ async def mark_job_done(client, job_id: str, *, status: str, lease_token: str) -
     overwrite the replacement's terminal state. The token is REQUIRED: an optional-token
     form is a fencing bypass, and a caller with no token never owned the job.
 
+    NOT the terminal writer for trip jobs (entitlement arc): `complete_trip_run` is now the
+    SOLE terminal write for trip generation — it also refunds the charge and fences
+    trips.status in the same transaction. This helper has ZERO trip-job callers left; calling
+    it with status='failed' on a CHARGED job would mark the job failed WITHOUT refunding the
+    charge or freeing the idempotency key (no charge_refunded_at). Do NOT use it for a trip
+    terminal write — use `complete_trip_run` (via runner._complete_trip_run). Retained only
+    for any non-trip/lease-fence use + its unit tests.
+
     RETURNS bool — True iff we still held the lease and the write landed. Callers MUST check
     it: `False` means we were superseded, and the caller must then suppress its terminal
     `generation_events` result too. Returning None would make the fence unobservable to the

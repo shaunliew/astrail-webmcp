@@ -36,7 +36,7 @@ MAX_REELS_PER_REQUEST=5
 REEL_CACHE_TTL_DAYS=30
 DAILY_TRIP_QUOTA=5               # live per-user daily trip cap (rate_limit.py) — the durable free-tier hard cap. RETUNE 5→10 at the entitlement-arc deploy: beta seats ride the daily quota (see "Entitlement arc" below)
 TRIAL_LIFETIME_LIMIT=1           # free-trial LIFETIME generation cap (rate_limit.py) — 1 real trip per trial account; enforced by the reserve_and_enqueue_trip_job RPC, NOT this constant alone
-ENTITLEMENTS_ENABLED=true        # rollback switch (rate_limit.py): true = atomic-RPC entitlement path; false = legacy daily-quota path (_generate_trip_legacy, no lifetime enforcement)
+ENTITLEMENTS_ENABLED=true        # rollback switch (rate_limit.py): ENABLED unless set to an explicit falsy token (false/0/no/off) → legacy daily-quota path (_generate_trip_legacy, no lifetime enforcement). A bare "1"/"yes"/typo stays ENABLED (fail-safe: never silently drops enforcement)
 BURST_LIMIT=3/minute             # per-user burst throttle on POST /generate-trip (slowapi, in-memory)
 ALLOWED_ORIGINS=https://astrail.xyz,https://www.astrail.xyz   # CORS allowlist (comma-separated); add Vercel preview origins at deploy
 # MAX_TRIPS_PER_USER_PER_DAY — SUPERSEDED / never wired; the live cap is DAILY_TRIP_QUOTA above
@@ -61,9 +61,12 @@ in the plan's deploy section.)
 **FE sync caveat (Task-8 review).** The frontend hardcodes its own `TRIAL_LIFETIME_LIMIT = 1` in
 `frontend/lib/entitlement.ts:16` as an **advisory pre-emptive gate** (it renders the trial-exhausted
 card before POSTing). The backend RPC is the real enforcer. If `TRIAL_LIFETIME_LIMIT` is ever changed
-via env, that FE constant must be **manually synced** or the pre-emptive gate mistimes — this does
-**not** affect correctness (the backend still enforces the true limit), only when the FE shows the
-card versus letting the POST bounce with `403 trial_exhausted`.
+via env, that FE constant must be **manually synced**. It does **not** affect correctness (the
+backend still enforces the true limit), but the failure mode is worse than "mistimed card": if
+`TRIAL_LIFETIME_LIMIT` is **raised** (e.g. to 2) without syncing the FE, `CreateTripFlow` still
+REPLACES its whole compose UI with the exhausted card at 1 trip — the user cannot POST at all (an
+**availability block**), not merely a card shown early. Sync `frontend/lib/entitlement.ts:16`
+whenever the env value changes.
 
 ## Worker-only (`astrail-telegram-ingest`)
 

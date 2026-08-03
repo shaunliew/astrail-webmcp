@@ -32,9 +32,14 @@ from auth import get_current_user_id
 BURST_LIMIT: str = os.environ.get("BURST_LIMIT", "3/minute")
 DAILY_TRIP_QUOTA: int = int(os.environ.get("DAILY_TRIP_QUOTA", "5"))
 TRIAL_LIFETIME_LIMIT: int = int(os.environ.get("TRIAL_LIFETIME_LIMIT", "1"))
-# Rollback switch (default on): true = new atomic-RPC path (reserve_and_enqueue_trip_job);
-# false = legacy daily-quota path (check_and_increment_daily_quota / refund_daily_quota).
-ENTITLEMENTS_ENABLED: bool = os.environ.get("ENTITLEMENTS_ENABLED", "true").lower() == "true"
+# Rollback switch (default on): enabled = new atomic-RPC path (reserve_and_enqueue_trip_job);
+# disabled = legacy daily-quota path (check_and_increment_daily_quota / refund_daily_quota).
+# Fail-SAFE parse: ENABLED unless the value is an explicit recognized falsy token, so a bare
+# "1"/"yes"/"on" (or a typo) keeps lifetime enforcement ON rather than silently dropping to the
+# legacy path (the old `== "true"` check routed `=1` to legacy). Only false/0/no/off flip it off.
+ENTITLEMENTS_ENABLED: bool = (
+    os.environ.get("ENTITLEMENTS_ENABLED", "true").strip().lower() not in ("false", "0", "no", "off")
+)
 
 
 def rate_limit_key(request: Request) -> str:
@@ -72,8 +77,8 @@ async def check_and_increment_daily_quota(client, user_id: str, limit: int) -> b
     Returns True if allowed (and incremented), False if already at/over quota.
 
     Deploy-order safety net (Codex HIGH #4): if the RPC is missing from the live DB
-    (a migration that lagged the code deploy — autoDeploy:true), PostgREST returns
-    PGRST202. Fail CLOSED with a clean 503 (protects Apify/OpenAI spend — deliberately
+    (a migration that lagged a code deploy — deploys are manual, render.yaml autoDeploy:false),
+    PostgREST returns PGRST202. Fail CLOSED with a clean 503 (protects Apify/OpenAI spend — deliberately
     NOT fail-open) instead of an opaque 500. Any other APIError propagates (-> 500),
     matching jobs.py's RPC/DB error posture.
     """
@@ -141,8 +146,8 @@ async def reserve_and_enqueue_trip_job(
     ride as the list/dict they are (the client serializes to jsonb).
 
     Deploy-order safety net (mirrors check_and_increment_daily_quota): if the RPC is
-    missing from the live DB (a migration that lagged the code deploy — autoDeploy:true),
-    PostgREST returns PGRST202. Fail CLOSED with a distinct 503 (protects Apify/OpenAI
+    missing from the live DB (a migration that lagged a code deploy — deploys are manual,
+    render.yaml autoDeploy:false), PostgREST returns PGRST202. Fail CLOSED with a distinct 503 (protects Apify/OpenAI
     spend — deliberately NOT fail-open). Any other APIError propagates (-> 500).
     """
     from fastapi import HTTPException

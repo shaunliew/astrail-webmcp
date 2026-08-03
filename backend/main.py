@@ -563,8 +563,9 @@ async def request_seat(
 
     A missing users row makes the UPDATE match nothing, so the RPC returns NULL -> 503
     identity_unavailable (never a silent 200 with no stamp). If the RPC is absent from the
-    live DB (a migration that lagged an autoDeploy code push), PostgREST returns PGRST202;
-    fail CLOSED with a distinct 503, mirroring check_and_increment_daily_quota / the reserve
+    live DB (a migration that lagged a code deploy — deploys are manual, render.yaml
+    autoDeploy:false), PostgREST returns PGRST202; fail CLOSED with a distinct 503
+    (code seat_request_unavailable), mirroring check_and_increment_daily_quota / the reserve
     wrapper. Any other APIError propagates (-> 500).
     """
     from postgrest.exceptions import APIError
@@ -574,8 +575,8 @@ async def request_seat(
         resp = await client.rpc("request_seat", {"p_user_id": user_id}).execute()
     except APIError as exc:
         if getattr(exc, "code", None) == "PGRST202":
-            raise HTTPException(503, {"code": "generation_unavailable",
-                "message": "Trip generation temporarily unavailable"}) from None
+            raise HTTPException(503, {"code": "seat_request_unavailable",
+                "message": "Couldn't record your seat request right now. Please try again shortly."}) from None
         raise
     # request_seat RETURNS a scalar timestamptz, so resp.data IS the value (the repo's
     # scalar-RPC convention: check_and_increment_daily_quota reads increment_daily_trip_usage's

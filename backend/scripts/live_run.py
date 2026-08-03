@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as _dt
+import logging
 import os
 
 # Default reels: the repo's real Japan demo set (evals/fixtures/japan_demo_reels.json).
@@ -44,7 +45,7 @@ async def _inspect(client, trip_id: str) -> None:
     trip_result = (
         await client.table("trips")
         .select("id,status,destination_hint,start_date,end_date,title,summary,"
-                "preference_summary,preference_sources")
+                "preference_summary,preference_sources,created_at")
         .eq("id", trip_id).maybe_single().execute()
     )
     # maybe_single() returns a bare None on zero rows, so `.data` cannot be read inline --
@@ -53,6 +54,7 @@ async def _inspect(client, trip_id: str) -> None:
     if trip is None:
         print(f"no trip {trip_id}")
         return
+    trip_created = trip.get("created_at")
     tps = (
         await client.table("trip_places").select("place_id,day_number,sort_order,source_type")
         .eq("trip_id", trip_id).execute()
@@ -64,7 +66,7 @@ async def _inspect(client, trip_id: str) -> None:
     pids = [t["place_id"] for t in tps]
     places = (
         (await client.table("places")
-         .select("id,name,place_type,lat,lng,country,country_code,country_name")
+         .select("id,name,place_type,lat,lng,country,country_code,country_name,created_at")
          .in_("id", pids).execute()).data
         if pids else []
     )
@@ -102,11 +104,18 @@ async def _inspect(client, trip_id: str) -> None:
         country = p.get("country")
         cc, cn = p.get("country_code"), p.get("country_name")
         badge = f"{country} ({cc}/{cn})" if country else "country=NULL"
+        # NEW vs REUSED is the difference between "this run wrote the country" and "the row
+        # already had one". Without it a smoke that only ever dedups onto already-verified rows
+        # reads as a pass while proving nothing about the insert path.
+        origin = "NEW" if trip_created and (p.get("created_at") or "") >= trip_created else "REUSED"
         print(f"    day {tp['day_number']} #{tp['sort_order']}  {p.get('name', '?')} "
               f"[{p.get('place_type', '?')}] ({round(p.get('lat', 0), 4)},{round(p.get('lng', 0), 4)})"
-              f"  {badge}")
+              f"  {badge}  [{origin}]")
     verified = [p for p in places if p.get("country")]
-    print(f"=== grounding: {len(verified)}/{len(places)} places carry a VERIFIED country")
+    fresh = [p for p in places
+             if trip_created and (p.get("created_at") or "") >= trip_created]
+    print(f"=== grounding: {len(verified)}/{len(places)} places carry a VERIFIED country "
+          f"({len(fresh)} row(s) created by THIS run, {len(places) - len(fresh)} reused)")
     mismatched = [p for p in places
                   if p.get("country") and (p.get("country") != p.get("country_name"))]
     if mismatched:
@@ -226,6 +235,15 @@ async def _run(args: argparse.Namespace) -> None:
         print(f"\nTRIP_ID (view in Supabase): {trip_id}")
 
 
+def _configure_logging(quiet: bool) -> None:
+    """Surface backend INFO logs. `pipeline.persist` emits ONE `trip_place_grounding` line per
+    trip carrying grounded/ineligible/mismatched/failed counts — the only signal that separates
+    "every coordinate legitimately disagreed" from "the Mapbox credential is dead". Without this
+    the smoke silently discards it, since nothing else in this script configures logging."""
+    logging.basicConfig(level=logging.WARNING if quiet else logging.INFO,
+                        format="  [log] %(name)s %(message)s")
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="scripts.live_run",
@@ -243,8 +261,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--user", help="user_id (default: ASTRAIL_TEST_USER_ID env)")
     p.add_argument("--cleanup", action="store_true", help="delete the generated trip after (hermetic smoke)")
     p.add_argument("--inspect", metavar="TRIP_ID", help="re-print an existing trip and exit (no run, no cost)")
+    p.add_argument("--quiet", action="store_true", help="suppress backend INFO logs (hides the grounding counters)")
     return p.parse_args(argv)
 
 
 if __name__ == "__main__":
-    asyncio.run(_run(_parse_args()))
+    _args = _parse_args()
+    _configure_logging(_args.quiet)
+    asyncio.run(_run(_args))

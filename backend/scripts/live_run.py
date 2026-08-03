@@ -66,7 +66,7 @@ async def _inspect(client, trip_id: str) -> None:
     pids = [t["place_id"] for t in tps]
     places = (
         (await client.table("places")
-         .select("id,name,place_type,lat,lng,country,country_code,country_name,created_at")
+         .select("id,name,place_type,lat,lng,country,country_code,country_name,created_at,updated_at")
          .in_("id", pids).execute()).data
         if pids else []
     )
@@ -108,9 +108,11 @@ async def _inspect(client, trip_id: str) -> None:
         # already had one". Without it a smoke that only ever dedups onto already-verified rows
         # reads as a pass while proving nothing about the insert path.
         origin = "NEW" if trip_created and (p.get("created_at") or "") >= trip_created else "REUSED"
+        # `updated_at` is the ONLY field that distinguishes "this run issued no second write"
+        # from "it rewrote the same values" — the fixed-point check the repair plan requires.
         print(f"    day {tp['day_number']} #{tp['sort_order']}  {p.get('name', '?')} "
               f"[{p.get('place_type', '?')}] ({round(p.get('lat', 0), 4)},{round(p.get('lng', 0), 4)})"
-              f"  {badge}  [{origin}]")
+              f"  {badge}  [{origin}]  updated={p.get('updated_at')}")
     verified = [p for p in places if p.get("country")]
     fresh = [p for p in places
              if trip_created and (p.get("created_at") or "") >= trip_created]

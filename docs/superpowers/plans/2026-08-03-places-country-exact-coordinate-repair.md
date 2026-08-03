@@ -75,13 +75,19 @@ name + distance gates pass
   │         └─ zero rows → re-read the row:
   │                          compatible or still NULL → return this id
   │                          now conflicting          → continue        [preserves R1]
+  │                          row ABSENT (deleted)     → continue        [never return a dead id]
+  │                          re-read RAISES           → continue        [fail closed]
   └─ otherwise → return this id
 ```
 
-Two hard rules the gate called out:
+Three hard rules:
 
 - **F must never repair and then `continue`.** If it repairs, it returns that id.
 - **F runs only after the name/distance gates and after R1's conflict check** — never before.
+- **Every uncertain re-read outcome falls through, never returns.** Round 2 caught that the first
+  draft specified only compatible/NULL/conflicting: a candidate deleted between the select and
+  the re-read, or a re-read that raises, were undefined. Returning a missing row's id risks an FK
+  failure on `trip_places`. Fail closed — `continue` — in both cases.
 
 ## 4. Tasks
 
@@ -120,16 +126,27 @@ Every case must be proven to redden by deleting its own guard.
 |---|---|---|---|
 | 1 | exact NULL hit | same id, no insert, all three fields from the **provider-grounded** values | no-op; partial write; LLM-claim-derived write |
 | 2 | idempotent rerun | second run returns the same id and issues **no second update** | unconditional rewrite of compatible rows |
-| 3 | one-ULP neighbour (`math.nextafter`) | candidate reused but **stays NULL** | proximity / rounding / bucketed projection |
+| 3a | one-ULP neighbour on **latitude** (`math.nextafter`) | candidate reused but **stays NULL** | proximity / rounding / bucketed projection |
+| 3b | one-ULP neighbour on **longitude** | candidate reused but **stays NULL** | a comparator checking only the axis the other fixture perturbs — round 2 found 3a alone lets it pass all twelve |
 | 4 | cache populated but `grounded is None` | row stays NULL | repairing from the cache instead of the in-memory receipt |
 | 5 | exact-coordinate row with a **different name** | untouched; the real candidate wins | running F before the name/distance gates |
 | 6 | exact-coordinate row with a **conflicting** country | R1 skips it; it stays untouched | running F before R1 |
 | 7 | two pipeline racers | exactly **one** CAS matches; both resolve the same compatible id | missing CAS; a fake `.is_()` no-op |
-| 8 | CAS loser finds it now conflicting | loser re-reads, rejects that id, falls through | "CAS then always return id" |
+| 8 | CAS loser finds it now conflicting | loser re-reads, rejects that id, falls through to a compatible candidate or a correct insert | "CAS then always return id" |
 | 9 | repair request raises | row still links; fenced replacement completes | unwrapped repair exception |
 | 10 | lease lost during repair | `CancelledError` propagates; no stale trip rewrite | `except BaseException`; misplaced isolation |
 | 11 | lease lost **after** a successful repair | the global repair remains; prior itinerary unchanged; `LeaseLost` surfaces | assuming the trip fence rolls global writes back |
 | 12 | fake contract | `.is_()` changes only NULL rows and returns only matches | a fake that accepts but ignores `.is_()` |
+| 13 | a **non-repair** DB failure inside the candidate loop (e.g. the candidate select raises) | it **propagates** — the trip degrades as it does today, not silently | wrapping the WHOLE candidate block in `except Exception`. Round 2: cases 9–10 do NOT prove the catch is narrow — case 9 passes under a broad wrap, and `CancelledError` escapes in case 10 anyway because it is a `BaseException`. Only this case pins the boundary. |
+| 14 | candidate **deleted** between select and re-read | `continue`; never returns the dead id | returning a missing row's id → FK failure |
+
+**Case 8 is reachable, but not between two pipeline workers** (round 2): two pipeline workers
+sharing the same exact-coordinate receipt write the same value, so the loser never sees a
+conflict. Construct it as pipeline-vs-RPC: (1) the pipeline reads exact candidate A as NULL,
+(2) pause before its CAS, (3) an RPC-shaped writer commits a *conflicting* country derived from a
+nearby coordinate, (4) resume the CAS — it matches zero rows, (5) assert the re-read rejects A and
+selects a seeded compatible candidate B, or inserts correctly. This tests **F as the CAS loser**.
+It does **not** assert the reverse, corrupting interleaving is safe.
 
 **Do not** write a green test asserting the RPC race is safe (§5).
 
@@ -158,8 +175,15 @@ worker may leave a valid repair behind while the itinerary fence still blocks it
 - Frozen `#16` anchor `6229.0` — F writes to `places`, never to which places survive. Run
   `uv run pytest evals/ -q` regardless.
 - Guardrails #1 (only ever write a receipt that describes *that* row's coordinate), #3, #7.
-- **Live acceptance:** rerun the measured reel (`DXwcVVliX3B`, trip `752435ea`) and require
-  **4/4 reused rows repaired, zero new `places` rows**; then rerun once more to prove the fixed
-  point (no further updates).
+- **Live acceptance — an observable procedure, not a vibe** (round 2 found the first wording
+  unobservable: identical `live_run` inputs only re-inspect the idempotent prior trip, and the
+  place inspection omits `updated_at`).
+  1. Add `updated_at` to `live_run.py`'s place select.
+  2. Run reel `DXwcVVliX3B` with a **fresh date window** (new idempotency key). Snapshot: the four
+     row ids, total `places` count, the three country fields per row, and `updated_at`.
+  3. Require **4/4 reused rows repaired, zero new `places` rows**.
+  4. Run again with a **second fresh window**. Require count, ids, country triples **and
+     `updated_at` all unchanged** — that is the fixed point, and `updated_at` is the only field
+     that can distinguish "no second write" from "an idempotent rewrite".
 - **Rollback:** reverting F stops future repairs; rows already repaired remain valid receipts.
   Schema-safe, no migration to unwind.

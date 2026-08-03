@@ -1406,3 +1406,83 @@ async def test_feedback_insert_returning_no_rows_is_a_500(ctx):
     assert response.status_code == 500
     assert response.json()["error"]["message"] == "Failed to store feedback"
     assert db.get("feedback", []) == []
+
+
+# ---------------------------------------------------------------------------
+# POST /request-seat (Task 6): idempotent beta-seat stamp via the request_seat RPC.
+# request_seat RETURNS a scalar timestamptz, so the fake client hands it back as resp.data
+# directly (the repo's scalar-RPC convention — check_and_increment_daily_quota reads
+# increment_daily_trip_usage's `returns int` the same way). Reuses `rpc_ctx`: a fake
+# supabase client (rpc_results drives the RPC's answer) + a stashed authenticated user +
+# raise_app_exceptions=False so the enveloped 5xx surfaces as a response.
+# ---------------------------------------------------------------------------
+
+_REQUEST_SEAT = "request_seat"
+_SEAT_STAMP = "2026-08-03T13:00:00+00:00"
+
+
+async def test_request_seat_requires_auth():
+    # No override: the real auth dependency runs, so no Authorization header -> 401
+    # (mirrors test_generate_trip_requires_auth).
+    main.app.dependency_overrides.clear()
+    async with _async_client() as ac:
+        r = await ac.post("/request-seat")
+    assert r.status_code == 401
+
+
+async def test_request_seat_returns_stamp(rpc_ctx):
+    from datetime import datetime
+
+    ac, _db, _calls, client = rpc_ctx
+    client.rpc_results[_REQUEST_SEAT] = _SEAT_STAMP
+    r = await ac.post("/request-seat")
+    assert r.status_code == 200
+    # Response envelope is exactly {"requested_at": <stamp>}; the value round-trips to the
+    # stamp the RPC returned (format-agnostic compare — Pydantic may emit 'Z' or '+00:00').
+    assert list(r.json().keys()) == ["requested_at"]
+    assert datetime.fromisoformat(r.json()["requested_at"]) == datetime.fromisoformat(_SEAT_STAMP)
+    # The RPC is called once, keyed on the token-derived user id (never a body value).
+    assert client.rpc_calls == [(_REQUEST_SEAT, {"p_user_id": "user-1"})]
+
+
+async def test_request_seat_is_idempotent(rpc_ctx):
+    # coalesce(seat_requested_at, now()) means repeat clicks return the ORIGINAL stamp: the RPC
+    # hands back the same value each call, so two POSTs return an identical requested_at.
+    ac, _db, _calls, client = rpc_ctx
+    client.rpc_results[_REQUEST_SEAT] = _SEAT_STAMP
+    first = await ac.post("/request-seat")
+    second = await ac.post("/request-seat")
+    assert first.status_code == 200 and second.status_code == 200
+    assert first.json()["requested_at"] == second.json()["requested_at"]
+
+
+async def test_request_seat_missing_row_returns_503_identity_unavailable(rpc_ctx):
+    # No users row -> the RPC's UPDATE matches nothing -> returns NULL -> resp.data is None.
+    # The endpoint maps that to 503 identity_unavailable (never a silent 200 with no stamp).
+    ac, _db, _calls, client = rpc_ctx
+    client.rpc_results[_REQUEST_SEAT] = None
+    r = await ac.post("/request-seat")
+    assert r.status_code == 503
+    assert r.json()["error"]["code"] == "identity_unavailable"
+
+
+async def test_request_seat_pgrst202_fails_closed_503(rpc_ctx, monkeypatch):
+    # RPC absent from the live DB (a migration that lagged the code deploy) -> PGRST202 ->
+    # fail CLOSED with a distinct 503 generation_unavailable, mirroring the reserve/quota
+    # wrappers (test_rate_limit.py:78). Any other APIError would propagate as a 500.
+    from postgrest.exceptions import APIError
+
+    ac, _db, _calls, client = rpc_ctx
+
+    class _RaisingRpc:
+        async def execute(self):
+            raise APIError({"code": "PGRST202", "message": "function not found"})
+
+    def _rpc(name, params):
+        client.rpc_calls.append((name, params))
+        return _RaisingRpc()
+
+    monkeypatch.setattr(client, "rpc", _rpc)
+    r = await ac.post("/request-seat")
+    assert r.status_code == 503
+    assert r.json()["error"]["code"] == "generation_unavailable"

@@ -37,6 +37,7 @@ from api.schemas import (
     OrganizeJobStatus,
     OrganizeSavedReelsRequest,
     OrganizeSavedReelsResponse,
+    RequestSeatResponse,
     SettingsPreferencesResponse,
     TripFeedback,
     TripFeedbackRequest,
@@ -543,6 +544,47 @@ async def _generate_trip_legacy(client, req, user_id: str, idem: str,
         place_ids=place_ids,
     )
     return GenerateTripResponse(trip_id=trip_id)
+
+
+@app.post("/request-seat", response_model=RequestSeatResponse)
+@limiter.limit(BURST_LIMIT)
+async def request_seat(
+    request: Request,                                     # required by slowapi; must be named `request`
+    response: Response,                                   # REQUIRED with headers_enabled=True (see generate_trip)
+    user_id: str = Depends(get_current_user_id_stashed),  # token-derived: guardrails #5 + #6
+) -> RequestSeatResponse:
+    """Record this user's beta-seat request time, idempotently.
+
+    The stamp is a security-definer RPC that sets seat_requested_at = coalesce(
+    seat_requested_at, now()): the FIRST click records now(); repeat clicks return the
+    ORIGINAL time (no overwrite). It's an RPC — not a PostgREST .update() — because `users`
+    has no authenticated UPDATE RLS policy and the coalesce is a SQL expression, matching the
+    arc's other atomic mutations (reserve_and_enqueue_trip_job / increment_daily_trip_usage).
+
+    A missing users row makes the UPDATE match nothing, so the RPC returns NULL -> 503
+    identity_unavailable (never a silent 200 with no stamp). If the RPC is absent from the
+    live DB (a migration that lagged an autoDeploy code push), PostgREST returns PGRST202;
+    fail CLOSED with a distinct 503, mirroring check_and_increment_daily_quota / the reserve
+    wrapper. Any other APIError propagates (-> 500).
+    """
+    from postgrest.exceptions import APIError
+
+    client = await get_supabase_client()
+    try:
+        resp = await client.rpc("request_seat", {"p_user_id": user_id}).execute()
+    except APIError as exc:
+        if getattr(exc, "code", None) == "PGRST202":
+            raise HTTPException(503, {"code": "generation_unavailable",
+                "message": "Trip generation temporarily unavailable"}) from None
+        raise
+    # request_seat RETURNS a scalar timestamptz, so resp.data IS the value (the repo's
+    # scalar-RPC convention: check_and_increment_daily_quota reads increment_daily_trip_usage's
+    # `returns int` the same way). No matching row -> the RPC returns NULL -> resp.data is None.
+    stamp = resp.data
+    if not stamp:
+        raise HTTPException(503, {"code": "identity_unavailable",
+            "message": "We couldn't verify your account. Please sign in again."})
+    return RequestSeatResponse(requested_at=stamp)
 
 
 class _OrganizeSavedReelsRequest(OrganizeSavedReelsRequest):

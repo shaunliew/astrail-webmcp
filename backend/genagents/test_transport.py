@@ -102,6 +102,15 @@ async def test_fetch_legs_sanitizes_network_error():
 # rejects anyway — the test would stay green and prove nothing.
 
 
+def test_is_drawable_linestring_accepts_valid_linestring():
+    # POSITIVE CONTROL. Every other direct test on this predicate asserts `is False`, and every
+    # planned consumer spy (Tasks 2, 3, 4) forces False to prove its call site obeys the verdict —
+    # so nothing else asserts the ACCEPT path of a predicate that four consumers depend on.
+    # Verified: stub the body to `return False` and this is the only direct test that reddens.
+    geom = {"type": "LineString", "coordinates": [[139.7, 35.0], [139.8, 35.7]]}
+    assert is_drawable_linestring(geom) is True
+
+
 def test_is_drawable_linestring_rejects_wrong_type():
     # Two valid DISTINCT coords are load-bearing: with a degenerate fixture the distinctness
     # guard rejects it anyway and deleting the type check would change nothing.
@@ -228,6 +237,13 @@ def test_leg_geometry_none_for_non_list_steps():
     # raises TypeError, which persist_transport's per-day except converts into losing the whole
     # day's duration/distance.
     assert _leg_geometry({"steps": 1}) is None
+
+
+def test_leg_geometry_none_for_empty_steps_list():
+    # Pins the ZERO-ITERATION path; attributes NO guard. There is deliberately no `not steps`
+    # check — the loop runs zero times and the final predicate rejects the empty result anyway,
+    # so such a guard would be unprovable. Do not "fix" this by adding one.
+    assert _leg_geometry({"steps": []}) is None
 
 
 def test_leg_geometry_none_for_non_list_coordinates():

@@ -20,6 +20,16 @@ _VERIFY_TIMEOUT_S = 4            # matches list_memory_facts' existing read time
 # narrowing those bounds reopens the race.
 _ADD_VISIBILITY_WINDOW_S = 30
 
+# mem0's measured HEALTHY-CASE PENDING -> readable upper bound. Named, not inlined in a
+# comment, because the budget test asserts on it: without it the pin caught only a window
+# narrowed below the local bounds (17s) and stayed green at 21s, where the documented
+# 17 + 8 = 25s budget no longer fits (Codex code-review R3).
+#
+# THIS IS A HEALTHY-CASE FIGURE, NOT A GUARANTEE. Measured 4-8s early on 2026-08-03 and
+# then >17 MINUTES the same evening while mem0's queue backed up. No finite window can
+# cover an unbounded provider queue — see §8g's deferral and the ledger's open decision.
+_MEM0_MATERIALIZATION_ALLOWANCE_S = 8
+
 
 def _minus_seconds(ts: str, seconds: int) -> str | None:
     """Subtract from a POSTGRES-sourced ISO timestamp. None when unparseable — callers

@@ -958,7 +958,8 @@ def test_every_write_back_call_is_bounded_and_the_budget_fits_the_visibility_win
     # module constants: `assert seen == [_ADD_INTENT_TIMEOUT_S, ...]` would follow the
     # constants anywhere and a bound inflated to 300 would keep this green.
     from pipeline import preferences as prefs_mod
-    from pipeline.memory_clear import _ADD_VISIBILITY_WINDOW_S
+    from pipeline.memory_clear import (_ADD_VISIBILITY_WINDOW_S,
+                                       _MEM0_MATERIALIZATION_ALLOWANCE_S)
 
     seen: list = []
     monkeypatch.setattr(prefs_mod.asyncio, "wait_for", _wait_for_recorder(seen))
@@ -969,11 +970,15 @@ def test_every_write_back_call_is_bounded_and_the_budget_fits_the_visibility_win
     # intent insert, the guard's trips read, the guard's cleared read, mem0.add
     assert seen == [4, 4, 4, 5]
     # ...and the arithmetic C12 turns on. Everything between committing the intent row and
-    # the add returning must fit inside the window the clear looks back over, or an intent
-    # can age out of view while its own add is still pending — Codex's `cleared` +
-    # `add_landed`. 4+4+4+5 = 17s here, plus mem0's measured 4-8s PENDING->readable, still
-    # under 30s. Derived from the RECORDED bounds so a widened timeout cannot slip past it.
-    assert sum(seen) < _ADD_VISIBILITY_WINDOW_S
+    # the memory becoming READABLE must fit inside the window the clear looks back over, or
+    # an intent can age out of view while its own add is still pending — Codex's `cleared` +
+    # `add_landed`. 4+4+4+5 = 17s of local bounds, PLUS mem0's materialization.
+    #
+    # The allowance is part of the ASSERTION, not just the comment: pinning only
+    # `sum(seen) < window` caught a window narrowed to <=17s but stayed GREEN at 21s, where
+    # the documented 17+8=25s budget no longer fits (Codex R3 injected exactly that).
+    # Derived from the RECORDED bounds, so a widened timeout cannot slip past it either.
+    assert sum(seen) + _MEM0_MATERIALIZATION_ALLOWANCE_S <= _ADD_VISIBILITY_WINDOW_S
 
 
 def test_an_intent_insert_that_overruns_its_bound_skips_the_add(monkeypatch):

@@ -120,6 +120,24 @@ So: make the fake return bare `None`, add a direct fake-contract test for that s
 **require both the `execute()` AND the response unwrapping to sit inside the reconciliation
 `try`.**
 
+**(c) `.eq(column, None)` must FAIL FAST in the fake** — round 5's blocker, and the same class
+again. The fake's `.eq()` stores Python `None` (`test_persist.py:77`) and its matcher treats a
+missing/NULL value as equal to `None` (`test_persist.py:90`). So this CAS passes **all 16 cases
+AND the standalone `.is_()` contract test**, while being a silent no-op in production:
+
+```python
+.update(patch).eq("id", row["id"]).eq("country_code", None)   # WRONG: must be .is_(…, "null")
+```
+
+Real PostgREST serializes `eq(None)` as `eq.None` — it matches **zero** NULL rows. The CAS
+touches nothing, reconciliation sees the row still NULL, returns its id unrepaired, and
+production stays 0/4 while the whole offline suite is green. §6's live acceptance would catch it;
+the unit gate that claims to be load-bearing would not.
+
+**Make `_Table.eq(col, None)` RAISE** rather than merely not-match. `eq(None)` is never a valid
+PostgREST filter — turning it into a loud test failure converts a silent production no-op into an
+immediate red. Add **case 17** proving `.eq(None)` cannot substitute for `.is_(col, "null")`.
+
 ### T2 — Candidate projection
 `_find_or_create_place`'s select already fetches `country_code` (arc 2). Add `country`,
 `country_name` **only if** the implementation needs them to decide; it should not — the decision
@@ -164,6 +182,7 @@ Every case must be proven to redden by deleting its own guard.
 | 15 | CAS returns zero rows, then the **re-read RAISES** | candidate A is **never returned**; resolution picks a seeded compatible B or inserts correctly | treating a failed reconciliation read as "good enough, return A". Round 3: case 9 (the CAS *request* raising, which deliberately permits linking) cannot also prove this — they are different branches. |
 | 14 | candidate **deleted** between select and re-read — the fake MUST return a bare `None`, not `_Result(None)` | `continue`; never returns the dead id | returning a missing row's id → FK failure; **and** unwrapping `.data` outside the `try`, which only reddens against the real bare-`None` shape |
 | 16 | fake contract: zero-row `maybe_single()` | returns a **bare `None`**, not a result object | a fake whose shape production does not share — the round-4 blocker |
+| 17 | fake contract: `.eq(col, None)` | **raises** — it is never a valid PostgREST filter | a CAS written as `.eq("country_code", None)`, which passes all 16 other cases and the `.is_()` contract test while matching zero rows in production — the round-5 blocker |
 
 **Case 8 is reachable, but not between two pipeline workers** (round 2): two pipeline workers
 sharing the same exact-coordinate receipt write the same value, so the loser never sees a

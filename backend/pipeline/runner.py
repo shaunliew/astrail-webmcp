@@ -124,35 +124,55 @@ async def _set_status(client, trip_id, user_id, status) -> None:
 
 async def _fail(client, trip_id, user_id, job_id, stage, message, *, lease_token=None,
                 lease_lost=None) -> dict:
-    """Best-effort terminal failure write: each write is independent so one Supabase
-    error (e.g. the original failure was connectivity) doesn't block the others — the
-    terminal `result` event and the job-failed mark are the load-bearing ones.
+    """Terminal failure write, structured around WHO owns the fencing.
 
-    A run that died BEFORE `mark_job_running` returned holds no token, and a run that never
-    owned the job MUST NOT write the job's terminal state: it would stamp `failed` over a
-    replacement's live run. Such a row is left to the reaper, which is the component that
-    owns it. That is safer than an unfenced write and less code than threading an optional
-    token down into `mark_job_done`, where it would be a standing fencing bypass.
+    On a leased failure the CAS (`complete_trip_run`) is the SOLE terminal writer — it sets
+    `jobs.status='failed'`, `trips.status='failed'`, `charge_refunded_at` + the counter refund,
+    and the terminal `result` event, all in ONE fenced transaction (Fix 5, RPC B). So we call it
+    REGARDLESS of `lease_lost` and let the CAS arbitrate: a worker superseded by a replacement
+    loses the CAS and writes nothing (there is no unfenced `error` event or `_set_status` left to
+    leak); a worker that lost its lease to a transient partition but STILL owns the row wins the
+    CAS and delivers the terminal result promptly (no silent spinner — the launch-audit P1). This
+    is why `lease_lost` no longer gates anything here: the heartbeat sets it in two cases it cannot
+    tell apart — a replacement truly claimed the job, OR the row is merely unreachable past the TTL
+    while THIS worker still owns it — and short-circuiting on it would drop the terminal result in
+    the second case. The CAS's own predicate (id + lease_token + status='running' + trip_id) makes
+    that distinction authoritatively.
 
-    `lease_lost` gates the UNFENCED writes. `trips.status` has no CAS to reject a stale
-    write, so a superseded worker reaching here would stamp `failed` over a replacement's
-    `complete` — and unlike the job row and the event stream, nothing ever corrects it.
-    Bounding the window is not enough: a worker parked in a call with no timeout (extraction's
-    agent loop over `web_search` — the reason the heartbeat exists) can finish aborting AFTER
-    the replacement has finished, so the stale write lands last. The job row is safe either way
-    (`complete_trip_run`'s CAS rejects it) and the stray `error` event is unreachable
-    (`api/streaming.py` returns on the first `result`), so `trips.status` was the only leak.
+    Unfenced best-effort writes remain ONLY for the no-lease fallbacks. A no-lease worker is never
+    superseded — the heartbeat that sets `lease_lost` runs only for a leased worker — so no gate is
+    needed there. Each is independent so one Supabase error (e.g. the original failure was
+    connectivity) doesn't block the others; the terminal `result` event is the load-bearing one,
+    because the SSE stream ends on it. A run that never owned the job MUST NOT write the job's
+    terminal state (that is the reaper's row), which is why the no-`job_id` branch emits the result
+    event directly while the has-`job_id`-but-no-token branch leaves it to the reaper.
+
+    `lease_lost` is retained in the signature for caller compatibility but no longer gates any
+    write — the CAS does the fencing now.
     """
-    superseded = lease_lost is not None and lease_lost.is_set()
-    if not superseded:
+    if job_id is not None and lease_token is not None:
         try:
-            await record_event(client, trip_id, event_type="error", stage=stage, message=message)
+            ok = await _complete_trip_run(client, job_id, trip_id, lease_token, status="failed",
+                                          stage=stage, message="Astrail couldn't finish this trip",
+                                          payload={"error": message})
+            logger.info("trip_fail_fenced job_id=%s won=%s", job_id, ok)
         except Exception:
-            pass
-        try:
-            await _set_status(client, trip_id, user_id, "failed")
-        except Exception:
-            pass
+            # This CAS is now the SOLE terminal writer AND the refund site (Fix 5), so a silent
+            # miss here means no result event, no refund, and no trace. Still swallow (a terminal
+            # failure must not cascade), but log the traceback — the call is Supabase-only, so the
+            # text carries DB error detail, not a credential (same posture as the reap loop).
+            logger.warning("trip_fail_fenced_error job_id=%s", job_id, exc_info=True)
+        return {"error": message}
+
+    # Unfenced fallbacks — no lease to fence with; best-effort writes are all we have.
+    try:
+        await record_event(client, trip_id, event_type="error", stage=stage, message=message)
+    except Exception:
+        pass
+    try:
+        await _set_status(client, trip_id, user_id, "failed")
+    except Exception:
+        pass
     if job_id is None:
         # No durable job to fence against — the terminal result is still REQUIRED, because
         # the SSE stream ends on it.
@@ -161,15 +181,7 @@ async def _fail(client, trip_id, user_id, job_id, stage, message, *, lease_token
                                 message="Astrail couldn't finish this trip", payload={"error": message})
         except Exception:
             pass
-        return {"error": message}
-    if lease_token is None:
-        return {"error": message}     # never owned the job; the reaper owns this row
-    try:
-        await _complete_trip_run(client, job_id, trip_id, lease_token, status="failed",
-                                 stage=stage, message="Astrail couldn't finish this trip",
-                                 payload={"error": message})
-    except Exception:
-        pass
+    # else job present but never leased → the reaper owns the terminal result — unchanged.
     return {"error": message}
 
 

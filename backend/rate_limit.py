@@ -21,6 +21,7 @@ Render Key Value only when scaling past one instance.
 from __future__ import annotations
 
 import os
+from typing import NamedTuple
 
 from fastapi import Header, Request
 from slowapi import Limiter
@@ -30,6 +31,15 @@ from auth import get_current_user_id
 
 BURST_LIMIT: str = os.environ.get("BURST_LIMIT", "3/minute")
 DAILY_TRIP_QUOTA: int = int(os.environ.get("DAILY_TRIP_QUOTA", "5"))
+TRIAL_LIFETIME_LIMIT: int = int(os.environ.get("TRIAL_LIFETIME_LIMIT", "1"))
+# Rollback switch (default on): enabled = new atomic-RPC path (reserve_and_enqueue_trip_job);
+# disabled = legacy daily-quota path (check_and_increment_daily_quota / refund_daily_quota).
+# Fail-SAFE parse: ENABLED unless the value is an explicit recognized falsy token, so a bare
+# "1"/"yes"/"on" (or a typo) keeps lifetime enforcement ON rather than silently dropping to the
+# legacy path (the old `== "true"` check routed `=1` to legacy). Only false/0/no/off flip it off.
+ENTITLEMENTS_ENABLED: bool = (
+    os.environ.get("ENTITLEMENTS_ENABLED", "true").strip().lower() not in ("false", "0", "no", "off")
+)
 
 
 def rate_limit_key(request: Request) -> str:
@@ -67,8 +77,8 @@ async def check_and_increment_daily_quota(client, user_id: str, limit: int) -> b
     Returns True if allowed (and incremented), False if already at/over quota.
 
     Deploy-order safety net (Codex HIGH #4): if the RPC is missing from the live DB
-    (a migration that lagged the code deploy — autoDeploy:true), PostgREST returns
-    PGRST202. Fail CLOSED with a clean 503 (protects Apify/OpenAI spend — deliberately
+    (a migration that lagged a code deploy — deploys are manual, render.yaml autoDeploy:false),
+    PostgREST returns PGRST202. Fail CLOSED with a clean 503 (protects Apify/OpenAI spend — deliberately
     NOT fail-open) instead of an opaque 500. Any other APIError propagates (-> 500),
     matching jobs.py's RPC/DB error posture.
     """
@@ -95,3 +105,83 @@ async def refund_daily_quota(client, user_id: str) -> None:
     """Decrement today's count (floored at 0). Used when a counted request did not
     result in a new generation (enqueue failure, or lost idempotency-key race)."""
     await client.rpc("decrement_daily_trip_usage", {"p_user_id": user_id}).execute()
+
+
+class ReserveResult(NamedTuple):
+    """One row from the reserve_and_enqueue_trip_job RPC, passed through verbatim.
+
+    outcome is one of: 'created', 'replay', 'trial_exhausted', 'daily_exhausted',
+    'identity_unavailable', 'conflict_retry'. The wrapper does NOT branch on it —
+    mapping each outcome to an HTTP response is the caller's job (main.py, Task 4).
+    trip_id/job_id carry whatever nulls the RPC returned for that outcome.
+    """
+
+    outcome: str
+    trip_id: str | None
+    job_id: str | None
+
+
+async def reserve_and_enqueue_trip_job(
+    client,
+    *,
+    user_id: str,
+    idempotency_key: str,
+    destination_hint: str | None,
+    start_date: str,
+    end_date: str,
+    budget_level: str | None,
+    origin_city: str | None,
+    preference_summary: str,
+    preference_sources: list,
+    event_payload: dict,
+    trial_limit: int,
+    daily_limit: int,
+) -> ReserveResult:
+    """Atomic reserve = enqueue via the reserve_and_enqueue_trip_job Postgres RPC.
+
+    Returns EVERY outcome verbatim as a ReserveResult (created / replay /
+    trial_exhausted / daily_exhausted / identity_unavailable / conflict_retry) —
+    it deliberately does NOT branch on outcome; that mapping is the caller's job
+    (main.py, Task 4). Dates ride as-is (ISO strings); preference_sources/event_payload
+    ride as the list/dict they are (the client serializes to jsonb).
+
+    Deploy-order safety net (mirrors check_and_increment_daily_quota): if the RPC is
+    missing from the live DB (a migration that lagged a code deploy — deploys are manual,
+    render.yaml autoDeploy:false), PostgREST returns PGRST202. Fail CLOSED with a distinct 503 (protects Apify/OpenAI
+    spend — deliberately NOT fail-open). Any other APIError propagates (-> 500).
+    """
+    from fastapi import HTTPException
+    from postgrest.exceptions import APIError
+
+    try:
+        resp = await client.rpc(
+            "reserve_and_enqueue_trip_job",
+            {
+                "p_user_id": user_id,
+                "p_idempotency_key": idempotency_key,
+                "p_destination_hint": destination_hint,
+                "p_start_date": start_date,
+                "p_end_date": end_date,
+                "p_budget_level": budget_level,
+                "p_origin_city": origin_city,
+                "p_preference_summary": preference_summary,
+                "p_preference_sources": preference_sources,
+                "p_event_payload": event_payload,
+                "p_trial_limit": trial_limit,
+                "p_daily_limit": daily_limit,
+            },
+        ).execute()
+    except APIError as exc:
+        if getattr(exc, "code", None) == "PGRST202":
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "generation_unavailable",
+                    "message": "Trip generation temporarily unavailable",
+                },
+            ) from None
+        raise
+    row = resp.data[0]
+    return ReserveResult(
+        outcome=row["outcome"], trip_id=row["trip_id"], job_id=row["job_id"]
+    )

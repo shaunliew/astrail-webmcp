@@ -13,6 +13,7 @@ export type TransportStatus = 'pending' | 'ok' | 'no_route' | 'failed' | 'skippe
 export type RoutingProfile = 'walking' | 'driving' | 'driving-traffic' | 'cycling'
 export type TransportMode = 'walk' | 'drive' | 'cycle' | 'transit_hint' | 'unknown'
 export type PreferenceSource = 'explicit' | 'memory' | 'inferred_default'
+export type UserPlan = 'trial' | 'beta'   // users.plan CHECK constraint (free trial vs beta seat)
 export type InspirationItemType = 'reel_url' | 'requested_place'
 export type InspirationSource = 'manual_paste' | 'clipboard' | 'web_share_target' | 'manual_input'
 export type InspirationStatus =
@@ -304,3 +305,19 @@ export type TripFeedback = {
 }
 
 export type TripFeedbackResponse = { feedback: TripFeedback }
+
+// --- Entitlements: free trial + beta seats (mirrors backend main.py / api/schemas.py) ---
+// Error `code` values carried by the {"error":{"code","message"}} envelope (api.ts ApiError).
+// Values MUST match the backend HTTPException details verbatim — they are the branch keys the
+// UI classifies on (e.g. classifyGenerateError → TrialExhaustedCard).
+export const ERROR_CODE_TRIAL_EXHAUSTED = 'trial_exhausted' as const       // 403 — free trip already spent
+export const ERROR_CODE_IDENTITY_UNAVAILABLE = 'identity_unavailable' as const  // 503 — missing users row
+export const ERROR_CODE_RATE_LIMITED = 'rate_limited' as const             // 429 — daily/burst limit
+export const ERROR_CODE_CONFLICT_RETRY = 'conflict_retry' as const         // 409 — reservation raced, retry
+
+// Mirror of backend RequestSeatResponse (Pydantic: requested_at: datetime → ISO string on the wire).
+// POST /request-seat returns {"requested_at": "<iso>"}; idempotent (repeat clicks return the original stamp).
+export type RequestSeatResponse = { requested_at: string }
+
+// The `jobs` charge columns (charge_kind / charge_date / charge_refunded_at) are backend-only
+// entitlement bookkeeping (plan L813) — no frontend row mirror.

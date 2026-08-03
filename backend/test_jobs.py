@@ -16,22 +16,40 @@ def test_idempotency_key_is_request_derived_and_stable():
     assert "trip" not in a  # never derived from a trip id
 
 
-def test_idempotency_key_changes_with_preferences_pace_or_destination_hint():
-    # A4: same reels+dates but CHANGED preferences/pace/destination_hint must NOT replay
-    # the old trip — otherwise "explicit input wins" silently fails on a re-submit.
+def test_idempotency_key_changes_with_output_affecting_fields():
+    # A4 + Fix 9: same reels+dates but a CHANGED output-affecting field must NOT replay the old
+    # trip — otherwise "explicit input wins" silently fails on a re-submit. Covers preferences/
+    # pace/destination_hint (A4) AND budget_level/origin_city/requested_places (Fix 9): two
+    # genuinely different requests must not collide into one another's idempotent replay.
     base = jobs.compute_idempotency_key("u1", ["https://ig/a"], "2026-08-01", "2026-08-02")
     same = jobs.compute_idempotency_key("u1", ["https://ig/a"], "2026-08-01", "2026-08-02",
-                                        preferences=None, pace="balanced", destination_hint=None)
+                                        preferences=None, pace="balanced", destination_hint=None,
+                                        budget_level=None, origin_city=None, requested_places=None)
     diff_prefs = jobs.compute_idempotency_key("u1", ["https://ig/a"], "2026-08-01", "2026-08-02",
                                               preferences="ramen")
     diff_pace = jobs.compute_idempotency_key("u1", ["https://ig/a"], "2026-08-01", "2026-08-02",
                                              pace="relaxed")
     diff_dest = jobs.compute_idempotency_key("u1", ["https://ig/a"], "2026-08-01", "2026-08-02",
                                              destination_hint="Tokyo")
+    diff_budget = jobs.compute_idempotency_key("u1", ["https://ig/a"], "2026-08-01", "2026-08-02",
+                                               budget_level="luxury")           # Fix 9
+    diff_origin = jobs.compute_idempotency_key("u1", ["https://ig/a"], "2026-08-01", "2026-08-02",
+                                               origin_city="SFO")               # Fix 9
+    diff_places = jobs.compute_idempotency_key("u1", ["https://ig/a"], "2026-08-01", "2026-08-02",
+                                               requested_places=["Tokyo Tower"])  # Fix 9
     assert base == same          # explicit defaults are stable/backward-compatible
     assert base != diff_prefs
     assert base != diff_pace
     assert base != diff_dest
+    assert base != diff_budget   # Fix 9 — a different budget must not replay the old trip
+    assert base != diff_origin   # Fix 9 — a different origin must not replay
+    assert base != diff_places   # Fix 9 — a different requested place must not replay
+    # requested_places is order-independent (sorted into the material), like reel_urls.
+    ab = jobs.compute_idempotency_key("u1", ["https://ig/a"], "2026-08-01", "2026-08-02",
+                                      requested_places=["Tokyo Tower", "Shibuya"])
+    ba = jobs.compute_idempotency_key("u1", ["https://ig/a"], "2026-08-01", "2026-08-02",
+                                      requested_places=["Shibuya", "Tokyo Tower"])
+    assert ab == ba
 
 
 def test_idempotency_key_no_collision_across_field_boundary():
@@ -71,6 +89,7 @@ class _Table:
         self._op = None
         self._filters: dict = {}
         self._in_filters: dict = {}
+        self._is_filters: dict = {}
         self._single = False
 
     def insert(self, row):
@@ -93,6 +112,14 @@ class _Table:
         self._in_filters[col] = values
         return self
 
+    def is_(self, col, val):
+        # IS NULL filter (charge_refunded_at IS NULL): `.is_(col, "null")` matches rows
+        # where row.get(col) is None. Only "null" is modeled; anything else fails loudly.
+        if val != "null":
+            raise ValueError(f"fake .is_() models only the IS NULL form, got .is_({col!r}, {val!r})")
+        self._is_filters[col] = val
+        return self
+
     def maybe_single(self):
         self._single = True
         return self
@@ -100,7 +127,9 @@ class _Table:
     def _matches(self, row):
         if not all(row.get(k) == v for k, v in self._filters.items()):
             return False
-        return all(row.get(k) in v for k, v in self._in_filters.items())
+        if not all(row.get(k) in v for k, v in self._in_filters.items()):
+            return False
+        return all(row.get(col) is None for col in self._is_filters)
 
     async def execute(self):
         op, arg = self._op
@@ -165,6 +194,46 @@ async def test_enqueue_duplicate_key_returns_existing_job_and_trip():
     first = await jobs.enqueue_job("trip-1", "user-1", "idem-1", client=c)
     second = await jobs.enqueue_job("trip-2", "user-1", "idem-1", client=c)  # racing dup POST
     assert first == second == ("job-1", "trip-1")
+
+
+@pytest.mark.asyncio
+async def test_enqueue_dup_reread_returns_active_row_not_refunded():
+    """Fix 2/Fix 4: the partial unique index lets a key have one ACTIVE row + N refunded
+    rows. On 23505 the re-read is `.is_("charge_refunded_at","null")`-filtered so it returns
+    the SINGLE ACTIVE row's (id, trip_id) — an unfiltered maybe_single would match >1 and
+    500. Two rows share one key here; the insert collides, and only the active row comes back."""
+    rows = [
+        {"id": "job-refunded", "trip_id": "trip-refunded", "idempotency_key": "idem-1",
+         "status": "failed", "charge_refunded_at": "2026-08-01T00:00:00+00:00"},
+        {"id": "job-active", "trip_id": "trip-active", "idempotency_key": "idem-1",
+         "status": "pending", "charge_refunded_at": None},
+    ]
+
+    class _DupTable(_Table):
+        """store is a LIST (two rows share the key); every insert collides -> 23505."""
+
+        def __init__(self, seeded):
+            super().__init__(store=None)
+            self._rows = seeded
+
+        async def execute(self):
+            if self._op[0] == "insert":
+                raise APIError({"code": "23505", "message": "duplicate key value violates unique constraint"})
+            matched = [r for r in self._rows if self._matches(r)]
+            if self._single:
+                return _Result(matched[0] if matched else None)
+            return _Result(matched)
+
+    class _DupClient:
+        def __init__(self, seeded):
+            self._rows = seeded
+
+        def table(self, name):
+            return _DupTable(self._rows)
+
+    c = _DupClient(rows)
+    job_id, trip_id = await jobs.enqueue_job("trip-new", "user-1", "idem-1", client=c)
+    assert (job_id, trip_id) == ("job-active", "trip-active")
 
 
 @pytest.mark.asyncio

@@ -46,6 +46,7 @@ class _Table:
         self.db = db
         self._op = None
         self._filters: dict = {}
+        self._is_filters: dict = {}
         self._order_keys: list = []
         self._single = False
         self._fail_ops = fail_ops if fail_ops is not None else set()
@@ -69,6 +70,16 @@ class _Table:
 
     def eq(self, col, val):
         self._filters[col] = val
+        return self
+
+    def is_(self, col, val):
+        # IS NULL filter: `.is_(col, "null")` matches rows where row.get(col) is None (the
+        # repo's `charge_refunded_at IS NULL` form, used by the partial-index-safe replay
+        # lookups). Only "null" is modeled; anything else fails loudly, matching the .order
+        # fake's philosophy — a silent no-op here would let a broken filter look honoured.
+        if val != "null":
+            raise ValueError(f"fake .is_() models only the IS NULL form, got .is_({col!r}, {val!r})")
+        self._is_filters[col] = val
         return self
 
     def maybe_single(self):
@@ -106,7 +117,9 @@ class _Table:
         return ordered
 
     def _matches(self, row):
-        return all(row.get(k) == v for k, v in self._filters.items())
+        if not all(row.get(k) == v for k, v in self._filters.items()):
+            return False
+        return all(row.get(col) is None for col in self._is_filters)
 
     async def execute(self):
         op, arg = self._op
@@ -181,6 +194,12 @@ async def ctx(monkeypatch):
     db: dict = {}
     client = _Client(db)
 
+    # LEGACY/RPC split (Task 4): ENTITLEMENTS_ENABLED=False routes every /generate-trip test
+    # that uses `ctx` through _generate_trip_legacy — the pre-arc Python orchestration these
+    # tests were written against (behaviour-identical to today bar the one `.is_()` replay
+    # filter). The new atomic-RPC path gets its own coverage via `rpc_ctx` below.
+    monkeypatch.setattr(main, "ENTITLEMENTS_ENABLED", False)
+
     async def _get_client():
         return client
 
@@ -215,6 +234,46 @@ async def ctx(monkeypatch):
 
     main.app.dependency_overrides[get_current_user_id_stashed] = _stashed
     async with _async_client() as ac:
+        yield ac, db, calls, client
+    main.app.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def rpc_ctx(monkeypatch):
+    """RPC-path counterpart to `ctx` (Task 4): ENTITLEMENTS_ENABLED=True routes /generate-trip
+    through reserve_and_enqueue_trip_job. Drive each outcome by setting
+    client.rpc_results["reserve_and_enqueue_trip_job"] = [{"outcome": ..., "trip_id": ...,
+    "job_id": ...}] — a ONE-element list, since the wrapper reads resp.data[0].
+    compute_idempotency_key runs for real (not mocked). The httpx client uses
+    raise_app_exceptions=False so the enveloped 4xx/5xx outcomes surface as responses
+    (matching production) instead of re-raising into the test. The RPC path never touches
+    enqueue_job, so it is deliberately not overridden here."""
+    db: dict = {}
+    client = _Client(db)
+    monkeypatch.setattr(main, "ENTITLEMENTS_ENABLED", True)
+
+    async def _get_client():
+        return client
+
+    monkeypatch.setattr(main, "get_supabase_client", _get_client)
+
+    calls: list = []
+
+    async def _run_generation(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"itinerary": {"days": []}}
+
+    monkeypatch.setattr(main, "run_generation", _run_generation)
+
+    async def _stashed(request: Request):
+        request.state.user_id = "user-1"
+        return "user-1"
+
+    main.app.dependency_overrides[get_current_user_id_stashed] = _stashed
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main.app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as ac:
         yield ac, db, calls, client
     main.app.dependency_overrides.clear()
 
@@ -550,6 +609,7 @@ async def test_burst_limit_is_per_user_not_shared(monkeypatch):
     async def _run_generation(*_args, **_kwargs):
         return {"itinerary": {"days": []}}
 
+    monkeypatch.setattr(main, "ENTITLEMENTS_ENABLED", False)   # exercises the legacy path (as before Task 4)
     monkeypatch.setattr(main, "get_supabase_client", _get_client)
     monkeypatch.setattr(main, "enqueue_job", _enqueue)
     monkeypatch.setattr(main, "run_generation", _run_generation)
@@ -768,6 +828,131 @@ async def test_generate_trip_swallowed_fail_mark_and_refund_failures_are_logged(
     assert r.status_code == 500
     assert "generate_trip_fail_mark_failed" in caplog.text
     assert "generate_trip_quota_refund_failed" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# ENTITLEMENTS_ENABLED=True: the atomic-RPC entitlement path (Task 4). `ctx` above pins the
+# flag False so the legacy tests keep validating _generate_trip_legacy unchanged; these use
+# `rpc_ctx` (flag True) and drive reserve_and_enqueue_trip_job's six outcomes. One extra
+# legacy test below (flag OFF) proves the rollback path is partial-index-safe.
+# ---------------------------------------------------------------------------
+
+_RESERVE = "reserve_and_enqueue_trip_job"
+
+
+async def test_generate_trip_rpc_created_dispatches_once(rpc_ctx):
+    ac, _db, calls, client = rpc_ctx
+    client.rpc_results[_RESERVE] = [{"outcome": "created", "trip_id": "trip-9", "job_id": "job-9"}]
+    r = await ac.post("/generate-trip", json=_PAYLOAD)
+    assert r.status_code == 200
+    assert r.json()["trip_id"] == "trip-9"
+    assert len(calls) == 1                        # dispatched exactly once
+    assert calls[0][0][0] == "trip-9"             # run_generation(res.trip_id, ...)
+    assert calls[0][1]["job_id"] == "job-9"       # threaded res.job_id
+    assert [c[0] for c in client.rpc_calls] == [_RESERVE]   # the RPC is the only DB write
+
+
+async def test_generate_trip_rpc_replay_returns_trip_without_dispatch(rpc_ctx):
+    ac, _db, calls, client = rpc_ctx
+    client.rpc_results[_RESERVE] = [{"outcome": "replay", "trip_id": "trip-existing", "job_id": None}]
+    r = await ac.post("/generate-trip", json=_PAYLOAD)
+    assert r.status_code == 200
+    assert r.json()["trip_id"] == "trip-existing"
+    assert calls == []                            # replay charges nothing and creates no job
+
+
+async def test_generate_trip_rpc_trial_exhausted_returns_403_envelope(rpc_ctx):
+    ac, _db, calls, client = rpc_ctx
+    client.rpc_results[_RESERVE] = [{"outcome": "trial_exhausted", "trip_id": None, "job_id": None}]
+    r = await ac.post("/generate-trip", json=_PAYLOAD)
+    assert r.status_code == 403
+    body = r.json()["error"]
+    assert body["code"] == "trial_exhausted"
+    assert "only 25 exist" in body["message"]     # the user-facing beta-seat copy
+    assert calls == []
+
+
+async def test_generate_trip_rpc_daily_exhausted_returns_429(rpc_ctx):
+    ac, _db, calls, client = rpc_ctx
+    client.rpc_results[_RESERVE] = [{"outcome": "daily_exhausted", "trip_id": None, "job_id": None}]
+    r = await ac.post("/generate-trip", json=_PAYLOAD)
+    assert r.status_code == 429
+    assert r.json()["error"]["code"] == "rate_limited"
+    assert calls == []
+
+
+async def test_generate_trip_rpc_conflict_retry_returns_409(rpc_ctx):
+    ac, _db, calls, client = rpc_ctx
+    client.rpc_results[_RESERVE] = [{"outcome": "conflict_retry", "trip_id": None, "job_id": None}]
+    r = await ac.post("/generate-trip", json=_PAYLOAD)
+    assert r.status_code == 409
+    assert r.json()["error"]["code"] == "conflict_retry"
+    assert calls == []
+
+
+async def test_generate_trip_rpc_identity_unavailable_returns_503(rpc_ctx):
+    ac, _db, calls, client = rpc_ctx
+    client.rpc_results[_RESERVE] = [{"outcome": "identity_unavailable", "trip_id": None, "job_id": None}]
+    r = await ac.post("/generate-trip", json=_PAYLOAD)
+    assert r.status_code == 503
+    assert r.json()["error"]["code"] == "identity_unavailable"
+    assert calls == []
+
+
+async def test_generate_trip_rpc_budget_level_change_is_not_a_replay(rpc_ctx):
+    """Fix 9: two POSTs differing ONLY in budget_level must produce two DIFFERENT
+    p_idempotency_key values on the RPC (compute_idempotency_key runs for real here), so a
+    genuinely different request can never collide into the other's replay."""
+    ac, _db, _calls, client = rpc_ctx
+    client.rpc_results[_RESERVE] = [{"outcome": "created", "trip_id": "trip-x", "job_id": "job-x"}]
+    r1 = await ac.post("/generate-trip", json={**_PAYLOAD, "budget_level": "budget"})
+    r2 = await ac.post("/generate-trip", json={**_PAYLOAD, "budget_level": "luxury"})
+    assert r1.status_code == 200 and r2.status_code == 200
+    reserve_params = [params for name, params in client.rpc_calls if name == _RESERVE]
+    assert len(reserve_params) == 2
+    assert reserve_params[0]["p_idempotency_key"] != reserve_params[1]["p_idempotency_key"]
+
+
+async def test_generate_trip_rpc_created_after_refund_dispatches_again(rpc_ctx):
+    """Refunded-failure retry (endpoint level): once a refund frees the key (proven at the
+    DB layer by pgTAP/1a), a same-input re-POST that the RPC answers `created` again gets a
+    fresh dispatch — the endpoint must treat `created` as a new job, never as a replay."""
+    ac, _db, calls, client = rpc_ctx
+    client.rpc_results[_RESERVE] = [{"outcome": "created", "trip_id": "trip-a", "job_id": "job-a"}]
+    first = await ac.post("/generate-trip", json=_PAYLOAD)
+    second = await ac.post("/generate-trip", json=_PAYLOAD)   # same key; RPC issues a fresh job
+    assert first.status_code == 200 and second.status_code == 200
+    assert len(calls) == 2                        # dispatched twice, not deduped as a replay
+
+
+async def test_generate_trip_legacy_replay_returns_active_row_with_refunded_sibling(ctx):
+    """Migrated-DB rollback (flag OFF): the partial unique index permits one ACTIVE row + a
+    refunded sibling under one key. The legacy replay lookup is `.is_()`-filtered, so it
+    returns exactly the ACTIVE trip (never >1 -> no 500), consumes no quota, inserts no trip."""
+    from api.schemas import GenerateTripRequest
+    from jobs import compute_idempotency_key
+
+    ac, db, calls, client = ctx
+    req = GenerateTripRequest(**_PAYLOAD)
+    place_ids = [str(p) for p in req.place_ids]
+    idem = compute_idempotency_key(
+        "user-1", req.reel_urls, req.start_date, req.end_date,
+        preferences=req.preferences, pace=req.pace, destination_hint=req.destination_hint,
+        place_ids=place_ids, budget_level=req.budget_level, origin_city=req.origin_city,
+        requested_places=req.requested_places,
+    )
+    db["jobs"] = [
+        {"id": "job-refunded", "trip_id": "trip-refunded", "user_id": "user-1",
+         "idempotency_key": idem, "charge_refunded_at": "2026-08-01T00:00:00+00:00"},
+        {"id": "job-active", "trip_id": "trip-active", "user_id": "user-1",
+         "idempotency_key": idem, "charge_refunded_at": None},
+    ]
+    r = await ac.post("/generate-trip", json=_PAYLOAD)
+    assert r.status_code == 200
+    assert r.json()["trip_id"] == "trip-active"        # the .is_()-filtered lookup returns exactly one
+    assert db.get("trips", []) == []                   # no new trip inserted
+    assert "increment_daily_trip_usage" not in [c[0] for c in client.rpc_calls]   # quota untouched
+    assert calls == []                                 # never dispatched
 
 
 async def test_boot_time_recovery_failure_does_not_down_the_app(monkeypatch):

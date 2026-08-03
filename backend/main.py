@@ -52,10 +52,13 @@ from preferences import compose_preference_summary, fetch_traveler_profile
 from rate_limit import (
     BURST_LIMIT,
     DAILY_TRIP_QUOTA,
+    ENTITLEMENTS_ENABLED,
+    TRIAL_LIFETIME_LIMIT,
     check_and_increment_daily_quota,
     get_current_user_id_stashed,
     limiter,
     refund_daily_quota,
+    reserve_and_enqueue_trip_job,
 )
 from saved_reels import capture_saved_reel
 from organizer import (
@@ -368,12 +371,75 @@ async def generate_trip(
     place_ids = [str(place_id) for place_id in req.place_ids]
     idem = compute_idempotency_key(user_id, req.reel_urls, req.start_date, req.end_date,
                                    preferences=req.preferences, pace=req.pace,
-                                   destination_hint=req.destination_hint, place_ids=place_ids)
+                                   destination_hint=req.destination_hint, place_ids=place_ids,
+                                   budget_level=req.budget_level, origin_city=req.origin_city,   # Fix 9
+                                   requested_places=req.requested_places)
 
+    # ROLLBACK PATH (Fix 3): flag off -> the retained pre-arc legacy daily-quota flow
+    # (_generate_trip_legacy below). Flag on -> the new atomic-RPC entitlement path.
+    if not ENTITLEMENTS_ENABLED:
+        return await _generate_trip_legacy(client, req, user_id, idem, place_ids, background)
+
+    # Forward path: an atomic Postgres RPC reserves the entitlement (trial OR daily) AND
+    # enqueues the durable job in ONE transaction, so a charge can never precede a job.
+    # fetch_traveler_profile is a traveler_profiles READ that swallows read failures (a
+    # benign empty profile), so nothing here raises a charge into existence.
+    profile = await fetch_traveler_profile(client, user_id)
+    preference_summary, preference_sources = compose_preference_summary(profile, req.preferences)
+    origin_city = req.origin_city or (profile.get("origin_city") if profile else None)
+    event_payload = {
+        "reel_urls": req.reel_urls, "start_date": req.start_date, "end_date": req.end_date,
+        "pace": req.pace, "preferences": req.preferences,
+        "destination_hint": req.destination_hint,
+        "requested_places": req.requested_places, "place_ids": place_ids,
+    }
+
+    res = await reserve_and_enqueue_trip_job(
+        client, user_id=user_id, idempotency_key=idem,
+        destination_hint=req.destination_hint, start_date=req.start_date, end_date=req.end_date,
+        budget_level=req.budget_level, origin_city=origin_city,
+        preference_summary=preference_summary, preference_sources=preference_sources,
+        event_payload=event_payload, trial_limit=TRIAL_LIFETIME_LIMIT, daily_limit=DAILY_TRIP_QUOTA,
+    )
+
+    if res.outcome == "identity_unavailable":
+        raise HTTPException(503, {"code": "identity_unavailable",
+            "message": "We couldn't verify your account. Please sign in again."})
+    if res.outcome in ("replay",):
+        return GenerateTripResponse(trip_id=res.trip_id)
+    if res.outcome == "trial_exhausted":
+        raise HTTPException(403, {"code": "trial_exhausted",
+            "message": "Your free trip is planned. Beta seats unlock unlimited planning — only 25 exist."})
+    if res.outcome == "daily_exhausted":
+        raise HTTPException(429, {"code": "rate_limited",
+            "message": "Daily trip limit reached. Try again tomorrow."})
+    if res.outcome == "conflict_retry":                                           # Fix 1 — never NULL
+        raise HTTPException(409, {"code": "conflict_retry",
+            "message": "That request is already being processed — please retry."})
+    # created — the only remaining outcome. ReserveResult.outcome is a fixed 6-value contract
+    # from the pgTAP-tested RPC; every rejection/replay case returned or raised above, so here
+    # res.trip_id/res.job_id are guaranteed non-null.
+    background.add_task(
+        run_generation, res.trip_id, user_id, req.reel_urls, req.start_date, req.end_date,
+        job_id=res.job_id, pace=req.pace, preferences=req.preferences,
+        destination_hint=req.destination_hint, place_ids=place_ids,
+    )
+    return GenerateTripResponse(trip_id=res.trip_id)
+
+
+async def _generate_trip_legacy(client, req, user_id: str, idem: str,
+                                place_ids: list[str], background: BackgroundTasks) -> GenerateTripResponse:
+    """Pre-arc rollback path (Fix 1/Fix 3): the CURRENT generate_trip flow verbatim, with the
+    single change that its replay lookup filters `charge_refunded_at IS NULL` so it stays
+    partial-index-safe. Legacy jobs carry `charge_kind = NULL` (harmless). It enforces only
+    the durable DAILY quota (no lifetime trial) and is reached only when ENTITLEMENTS_ENABLED
+    is false. Reuses check_and_increment_daily_quota / refund_daily_quota / enqueue_job."""
     # Idempotent replay: a retried POST (same request-derived key) returns the
     # SAME trip instead of creating a duplicate — WITHOUT consuming daily quota.
+    # ACTIVE row only (Fix 1/Fix 4): `.is_(...,"null")` keeps this partial-index-safe.
     existing = await (
-        client.table("jobs").select("trip_id").eq("idempotency_key", idem).maybe_single().execute()
+        client.table("jobs").select("trip_id").eq("idempotency_key", idem)
+        .is_("charge_refunded_at", "null").maybe_single().execute()
     )
     if existing is not None and existing.data is not None:
         return GenerateTripResponse(trip_id=existing.data["trip_id"])

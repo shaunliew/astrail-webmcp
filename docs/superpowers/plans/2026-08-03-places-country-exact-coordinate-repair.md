@@ -210,6 +210,29 @@ It does **not** assert the reverse, corrupting interleaving is safe.
 
 **Do not** write a green test asserting the RPC race is safe (§5).
 
+## 4b. A rule that is real but UNFALSIFIABLE — recorded, not faked
+
+§3's second hard rule ("F runs only after R1's conflict check") **cannot be pinned by any test
+against the code as shipped**, and the implementer and the per-task reviewer established this
+independently:
+
+- R1 fires only when `row["country_code"]` is truthy **and** conflicts.
+- F fires only when `row["country_code"] is None`.
+
+The two predicates are **mutually exclusive on the same row**, so no row can reach both blocks
+and the ordering is behaviourally unobservable. Moving F above R1 leaves the entire suite green.
+Case 6 reddens only under the *full* wrong implementation — hoisted above R1 **and** the NULL
+guard dropped **and** a plain update instead of the CAS — because three independent guards each
+defeat it alone.
+
+**Keep the rule. Do not write a test that pretends to pin it.** The rule is defence-in-depth for
+a *future* loosening of either guard (e.g. NULL → "NULL or empty string"), at which point the
+predicates stop being disjoint and the ordering starts to matter. A test asserting it today would
+pass for reasons unrelated to what it claims — precisely the false-green this arc exists to
+eliminate. Case 6's docstring says so in the test file; this section says so in the plan.
+
+**Trigger to revisit:** any change that loosens F's NULL guard or R1's conflict guard.
+
 ## 5. The RPC race — an ACCEPTED RESIDUAL RISK, not benign
 
 **The §5c sketch claimed this race was benign. That claim was false and is retracted.**

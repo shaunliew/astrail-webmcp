@@ -6,6 +6,37 @@ import * as mockApi from '@/lib/trip/mock-api'
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000'
 
+// Thrown on any non-ok backend response. Carries the HTTP `status` and the backend error
+// `code` (from the {"error":{"code","message"}} envelope) so callers can branch on a stable
+// slug (e.g. classifyGenerateError → TrialExhaustedCard) instead of parsing message strings.
+export class ApiError extends Error {
+  readonly status: number
+  readonly code: string
+  constructor(status: number, code: string, message: string) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = code
+  }
+}
+
+// Build an ApiError from a non-ok Response: parse the {"error":{"code","message"}} envelope;
+// on a non-JSON body or a shape mismatch, fall back to (status, "unknown", statusText) so a
+// malformed error page never surfaces as a JSON parse error.
+async function apiErrorFrom(res: Response): Promise<ApiError> {
+  let parsed: unknown
+  try {
+    parsed = await res.json()
+  } catch {
+    return new ApiError(res.status, 'unknown', res.statusText)
+  }
+  const err = (parsed as { error?: { code?: unknown; message?: unknown } } | null)?.error
+  if (err && typeof err.code === 'string' && typeof err.message === 'string') {
+    return new ApiError(res.status, err.code, err.message)
+  }
+  return new ApiError(res.status, 'unknown', res.statusText)
+}
+
 export async function generateTrip(
   req: GenerateTripRequest,
   accessToken: string
@@ -21,8 +52,7 @@ export async function generateTrip(
   })
 
   if (!res.ok) {
-    const text = await res.text()
-    throw new Error(`generate-trip failed: ${res.status} ${text}`)
+    throw await apiErrorFrom(res)
   }
 
   return res.json()

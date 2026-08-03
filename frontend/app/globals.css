@@ -137,6 +137,84 @@
   --color-accent:        var(--accent);
 }
 
+/* ============================================================
+   TEXTURE LAYER (pilot 2026-07-28)
+   Adds craft to the flat paper/brass system: fine paper/film grain,
+   layered + tinted shadows, tactile surface gradients, and a 1px
+   top inset edge-highlight. Self-contained inline-SVG noise — no new
+   fonts or palette hues. Codify into tokens once the look is approved.
+   ============================================================ */
+:root {
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+}
+
+/* Paper card — warm top-light gradient + fine grain + layered warm shadow +
+   a 1px top inset highlight and a hairline inset ring (letterpress edge). */
+.paper-card {
+  position: relative;
+  background-color: var(--paper-0);
+  background-image: linear-gradient(180deg, #FFFFFF 0%, var(--paper-0) 32%, var(--paper-1) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    inset 0 0 0 1px rgba(184, 171, 144, 0.35),
+    0 1px 1px rgba(28, 23, 16, 0.04),
+    0 14px 30px -14px rgba(28, 23, 16, 0.20),
+    0 48px 74px -34px rgba(28, 23, 16, 0.24);
+}
+.paper-card::before {
+  content: '';
+  position: absolute; inset: 0; border-radius: inherit;
+  background-image: var(--grain);
+  background-size: 150px 150px;
+  opacity: 0.42;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+/* Keep real content above the grain layer. */
+.paper-card > * { position: relative; z-index: 1; }
+
+/* Space stage — the dark canvas as a grainy nebula: deep night-blue-black + a
+   warm brass light-arc + heavy film grain + a focusing vignette. Reference: the
+   grainy-gradient community textures. Stars/constellations are an SVG layer on top
+   (DoorChrome StarField). This is Astrail's space theme made tactile. */
+.space-stage {
+  background-color: #0A0D14;
+  background-image:
+    radial-gradient(135% 90% at 66% -16%, rgba(232, 182, 103, 0.55) 0%, rgba(201, 151, 78, 0.20) 22%, transparent 48%),
+    radial-gradient(85% 78% at 92% 22%, rgba(70, 92, 162, 0.42) 0%, transparent 56%),
+    radial-gradient(95% 88% at 16% 98%, rgba(138, 90, 24, 0.34) 0%, transparent 54%),
+    linear-gradient(180deg, #0C1019 0%, #090B12 60%, #0A0D14 100%);
+}
+.space-stage::before {
+  content: ''; position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  background-image: var(--grain);
+  background-size: 120px 120px;
+  opacity: 0.62;
+  mix-blend-mode: overlay;
+}
+.space-stage::after {
+  content: ''; position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  background: radial-gradient(ellipse 80% 70% at 56% 46%, transparent 26%, rgba(0, 0, 0, 0.52) 100%);
+}
+
+/* Brass control — vertical sheen + top inset highlight + brass-tinted shadow. */
+.btn-brass {
+  background-image: linear-gradient(180deg, #A8721F 0%, var(--brass-deep) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 236, 200, 0.42),
+    0 1px 2px rgba(60, 38, 8, 0.35),
+    0 8px 18px -8px rgba(138, 90, 24, 0.5);
+}
+
+/* Recessed well — inner shadow so inputs feel carved, not drawn. */
+.well {
+  box-shadow: inset 0 1px 2px rgba(28, 23, 16, 0.10), inset 0 0 0 1px rgba(184, 171, 144, 0.22);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .paper-card { transition: box-shadow 200ms ease-out; }
+}
+
 * {
   box-sizing: border-box;
 }

@@ -102,12 +102,12 @@ export const DoorGlobe = memo(function DoorGlobe() {
 })
 
 // The door screen shell. `caption` floats over the globe; `children` fill the paper card.
-// Border uses --paper-line-2 (not --line) so the card is correct even inside the /app
-// .app-shell scope, which remaps --line to a night value.
+// The card uses .paper-card (globals.css) — warm gradient, fine grain, layered shadow, and a
+// letterpress inset ring — so it reads correctly even inside the /app .app-shell scope.
 export function DoorStage({ caption, children }: { caption: string; children: ReactNode }) {
   return (
-    <div className="stage relative min-h-[100dvh] w-full overflow-hidden">
-      {/* Full-bleed night sky, behind the frame. Sits under the .stage::after vignette (z-auto),
+    <div className="space-stage relative min-h-[100dvh] w-full overflow-hidden">
+      {/* Full-bleed night sky over the .space-stage grain, under its focusing vignette,
           so edge stars fade and the globe stays the brightest thing in frame. */}
       <Starfield className="z-0" />
 
@@ -119,7 +119,9 @@ export function DoorStage({ caption, children }: { caption: string; children: Re
         <p className="pointer-events-none absolute inset-x-0 top-8 z-[1] text-center text-[13px] text-[color:var(--starlight-70)] md:bottom-[12%] md:top-auto">
           {caption}
         </p>
-        <main className="relative z-[4] flex max-h-[88dvh] w-full flex-col overflow-y-auto rounded-t-[24px] border border-b-0 border-[color:var(--paper-line-2)] bg-[color:var(--surface-1)] p-6 pb-8 text-[color:var(--text)] shadow-[0_1px_2px_rgba(28,23,16,0.08),0_16px_40px_rgba(28,23,16,0.14)] md:m-6 md:max-w-[420px] md:rounded-[16px] md:border-b md:p-8">
+        {/* .paper-card supplies the warm gradient, grain, layered shadow and letterpress inset
+            ring — it supersedes the flat border/bg/shadow utilities used before the texture pass. */}
+        <main className="paper-card relative z-[4] flex max-h-[88dvh] w-full flex-col overflow-y-auto rounded-t-[24px] p-6 pb-8 text-[color:var(--text)] md:m-6 md:max-w-[420px] md:rounded-[16px] md:p-8">
           {children}
         </main>
       </div>

@@ -131,6 +131,61 @@ state what makes each red when its guard is removed, then delete the guard and p
 The first draft's error is preserved in §2 because it is easy to repeat: suppressing the write
 on a conflicting row still returns that row's id.
 
+## 5c. MEASURED 2026-08-03 — Option F supersedes R3 for the observed case
+
+Live smoke `trip 752435ea` (4-venue reel, cold): `grounded=4`, and **0/4 rows carried a
+country** — all four deduped onto pre-existing NULL rows, so four verified answers were paid
+for and discarded. Then the decisive measurement:
+
+```
+NULL row 'CHERMSIDE SANDWICH Harajuku Takeshita Dori': exact-coord VERIFIED in cache
+NULL row 'SANDO LAB TOKYO':                            exact-coord VERIFIED in cache
+NULL row 'Pelican Cafe':                               exact-coord VERIFIED in cache
+NULL row 'Sandwich Senmon Ten Popo':                   exact-coord VERIFIED in cache
+=== exact-coordinate repair would reach 4/4 NULL row(s)
+```
+
+A hit on the row's own `_coord_cache_key` is **byte-identity, not proximity** — the key is a
+lossless `repr()` and deliberately un-bucketed (`grounding.py:35-48`). Cause: a re-run reel
+replays byte-identical coordinates from the extraction cache, so the row a place dedups onto was
+created from the *same* coordinate.
+
+### Option F — repair ONLY on a byte-identical coordinate
+
+On a dedup hit onto a row with NULL `country_code`, if the candidate's stored `lat`/`lng` is
+**exactly** the incoming place's, fill the three country fields from the `grounded` dict already
+in memory, via a CAS (`.eq("id", …).is_("country_code", "null")`). Otherwise do nothing —
+today's behaviour.
+
+Compare `_coord_cache_key(place.lat, place.lng) == _coord_cache_key(row["lat"], row["lng"])`
+rather than raw floats: it reuses the lossless-key helper and its `-0.0` normalization, and it
+is the same contract the cache itself is keyed on.
+
+**Why F beats R3 on every axis that matters:**
+
+| | R3 | **F** |
+|---|---|---|
+| Extra Mapbox call per repair | yes, one | **none** — reuses the in-memory result |
+| Coordinate projection risk | receipt for a ≤500 m neighbour | **none** — byte-identical |
+| Two-source agreement | only a *compatibility gate* (name+500 m can merge chain branches) | **full** — same coordinate, same claim, same comparison |
+| Fail-closed complexity | required (else a Malaysian input reuses a Singapore-coordinate row) | **N/A** — no new grounding to fail |
+| Coverage of the measured gap | broader in principle | **4/4 measured** |
+
+F does **not** subsume R3: a genuinely different coordinate within 500 m still goes unrepaired.
+But it captures the entire *measured* case at a fraction of the risk, and R3 can be layered on
+later if a measurement ever shows the non-identical case matters.
+
+**Still required for F, do not skip:** the CAS (two trips can race the same NULL row), and the
+honest note that the CAS closes pipeline-vs-pipeline only — the RPC can still lose it and
+overwrite unconditionally (`20260720180000:93`). Benign here, since both write a verified value
+for coordinates within 500 m, but say so rather than implying F closes it.
+
+**What F must NOT become:** a repair driven by a `geocode_country_cache` lookup instead of the
+in-memory `grounded` result. `_store_cached_country` runs at `grounding.py:131`, **before** the
+claim comparison at `:132` — so a cache entry means "Mapbox answered", never "the claim agreed",
+and a mismatching place seeds the cache before being rejected. Repairing from a cache hit alone
+would stamp the weaker meaning into the same column: §2's rejected option 1 by another road.
+
 ## 6. DEFERRED to after beta — R2, R3, R4, with their open problems
 
 Specified here so the reasoning is not lost. **Do not implement these without re-gating.**

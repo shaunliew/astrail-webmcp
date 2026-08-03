@@ -7,7 +7,13 @@ manually confirm a real generation after backend changes.
 
 SPENDS REAL CREDITS (Apify + OpenAI + Mapbox) and writes to the live DB. NOT a pytest
 test (pytest stays keyless/offline) — run it by hand. Import stays keyless: the app
-modules are imported inside the run body, never at module scope.
+modules are imported inside the run body, never at module scope — with ONE deliberate
+exception, `genagents.transport.is_drawable_linestring` below. It is safe because
+`transport.py` is itself import-keyless (MAPBOX_SECRET_TOKEN is read inside the request
+function, never at import time), and it MUST stay at module scope: `_geometry_acceptance`
+AND `_inspect`'s per-leg point count both call it, so a function-local import would bind
+the name inside one function only and raise NameError in the other. Do not "restore" the
+discipline here — that reintroduces the bug, it does not remove one.
 
 Requires backend/.env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, APIFY_TOKEN,
 OPENAI_API_KEY, MAPBOX_SECRET_TOKEN, ASTRAIL_TEST_USER_ID.
@@ -26,6 +32,9 @@ import asyncio
 import datetime as _dt
 import logging
 import os
+
+# The single module-scope app import — see the exception documented in the module docstring.
+from genagents.transport import is_drawable_linestring
 
 # The ONLY logger this tool lifts to INFO, and why it is a list of one rather than the root
 # logger: `pipeline.persist` emits the per-trip `trip_place_grounding` counters (see
@@ -57,6 +66,20 @@ def _default_dates() -> tuple[str, str]:
     """A near-term window (inside Open-Meteo's ~16-day forecast horizon so weather lands)."""
     today = _dt.date.today()
     return (today + _dt.timedelta(days=5)).isoformat(), (today + _dt.timedelta(days=7)).isoformat()
+
+
+def _geometry_acceptance(legs: list[dict]) -> tuple[bool, str]:
+    """#42's live acceptance. A bare with_geom/total ratio is the WRONG condition — a healthy trip
+    may legitimately contain no_route/failed legs, so N/N fails a correct run. Judges with
+    `is_drawable_linestring`, the same rule the writer enforces (R3 blocking #1: a second, weaker
+    validator here silently passed malformed geometry)."""
+    ok = [lg for lg in legs if lg.get("status") == "ok"]
+    ok_good = [lg for lg in ok if is_drawable_linestring(lg.get("route_geometry"))]
+    leaked = [lg for lg in legs if lg.get("status") != "ok" and lg.get("route_geometry") is not None]
+    passed = bool(ok) and len(ok_good) == len(ok) and not leaked
+    return passed, (f"    → geometry acceptance {'PASS' if passed else 'FAIL'}: "
+                    f"{len(ok_good)}/{len(ok)} ok-legs drawable; {len(leaked)} non-ok leaked; "
+                    f"{'routed legs present' if ok else 'NO ROUTED LEG AT ALL'}")
 
 
 async def _inspect(client, trip_id: str) -> None:
@@ -177,7 +200,8 @@ async def _inspect(client, trip_id: str) -> None:
               f"{d.get('title') or ''}")
     legs = (
         await client.table("transport_legs")
-        .select("from_place_id,to_place_id,leg_order,transport_mode,status,duration_seconds,distance_meters,warning")
+        .select("from_place_id,to_place_id,leg_order,transport_mode,status,duration_seconds,"
+                "distance_meters,warning,route_geometry")
         .eq("trip_id", trip_id).execute()
     ).data
     print(f"=== transport_legs: {len(legs)}")
@@ -189,8 +213,17 @@ async def _inspect(client, trip_id: str) -> None:
         mins = f"{round(dur / 60)}min" if dur else "-"
         dist_s = f"{dist}m" if dist is not None else "-"
         warn = f"  ⚠ {lg['warning']}" if lg.get("warning") else ""
+        # NULL-safe by construction, and judged by the SHARED predicate. The acceptance rule
+        # explicitly permits no_route/failed legs with route_geometry = NULL, so the obvious
+        # `len(lg["route_geometry"]["coordinates"])` would pass a healthy-only test and then CRASH
+        # on a legitimate partial trip. Malformed geometry prints no count rather than a plausible
+        # one, so this line can never disagree with the acceptance verdict printed below it.
+        g = lg.get("route_geometry")
+        pts = g["coordinates"] if is_drawable_linestring(g) else []
+        geo = f"  ▸{len(pts)}pts" if pts else "  ▸no-geom"
         print(f"    #{lg['leg_order']} {lg.get('transport_mode')}/{lg.get('status')}  "
-              f"{frm} -> {to}  {mins} {dist_s}{warn}")
+              f"{frm} -> {to}  {mins} {dist_s}{geo}{warn}")
+    print(_geometry_acceptance(legs)[1])
     rests = (
         await client.table("restaurant_suggestions")
         .select("trip_day_id,restaurant_place_id,near_place_id,cuisine,summary")

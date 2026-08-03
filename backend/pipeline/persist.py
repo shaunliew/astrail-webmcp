@@ -21,7 +21,9 @@ import math
 from collections import defaultdict
 
 from genagents.place_extractor import is_placeholder_url   # keyless import (no network at module scope)
-from genagents.transport import VALID_PROFILES, profile_to_mode   # keyless import (no network at module scope)
+from genagents.transport import (   # keyless import (no network at module scope)
+    VALID_PROFILES, is_drawable_linestring, profile_to_mode,
+)
 from grounding import _coord_cache_key, _ground_place
 from models.enrichment import WeatherReport
 from models.evidence import TripPlaceEvidence
@@ -503,7 +505,8 @@ def _leg_mode_and_warning(distance_m, base_mode: str) -> tuple[str, str | None]:
 async def _insert_leg(client, *, trip_id: str, trip_day_id, from_id: str, to_id: str, leg_order: int,
                        mode: str, profile: str, status: str,
                        duration: int | None = None, distance: int | None = None,
-                       warning: str | None = None) -> None:
+                       warning: str | None = None,
+                       route_geometry: dict | None = None) -> None:
     await client.table("transport_legs").insert({
         "trip_id": trip_id,
         "trip_day_id": trip_day_id,
@@ -517,6 +520,7 @@ async def _insert_leg(client, *, trip_id: str, trip_day_id, from_id: str, to_id:
         "duration_seconds": duration,
         "distance_meters": distance,
         "warning": warning,
+        "route_geometry": route_geometry,
     }).execute()
 
 
@@ -583,12 +587,19 @@ async def persist_transport(client, trip_id: str, *, profile: str = "walking", f
             # Per-leg mode: a long walking leg is re-tagged transit_hint (the per-leg-mode seam
             # that a future real transit provider will also use, rather than a day-level constant).
             leg_mode, warning = _leg_mode_and_warning(leg.get("distance_m"), mode)
+            # D1 (non-NULL route_geometry MEANS drawable) enforced AT THE STORAGE BOUNDARY, not
+            # merely assumed of the producer: `fetch_legs` is injectable (tests today, another
+            # provider later), so both the code gate and the shape gate belong here. D3 is
+            # unaffected — a transit_hint leg is a ROUTED leg (code == "Ok") and keeps its
+            # polyline; the gate keys on `code`, never on `transport_mode`.
+            geom = leg.get("geometry") if leg.get("code") == "Ok" else None
             await _insert_leg(client, trip_id=trip_id, trip_day_id=trip_day_id,
                                from_id=rows[i]["place_id"], to_id=rows[i + 1]["place_id"], leg_order=i,
                                mode=leg_mode, profile=profile,
                                status="ok" if leg.get("code") == "Ok" else "no_route",
                                duration=leg.get("duration_s"), distance=leg.get("distance_m"),
-                               warning=warning)
+                               warning=warning,
+                               route_geometry=geom if is_drawable_linestring(geom) else None)
             written += 1
     return written
 

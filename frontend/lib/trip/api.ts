@@ -1,4 +1,4 @@
-import type { GenerateTripRequest, GenerateTripResponse, StreamEvent } from './backend-types'
+import type { GenerateTripRequest, GenerateTripResponse, RequestSeatResponse, StreamEvent } from './backend-types'
 // Mock-auth shell: generation runs against the offline fixture replay with zero backend
 // (mirrors the MOCK_AUTH_ENABLED switches in middleware.ts and use-user.ts).
 import { MOCK_AUTH_ENABLED } from '@/lib/auth/mock-auth'
@@ -57,6 +57,29 @@ export async function generateTrip(
 
   return res.json()
 }
+
+// POST /request-seat — idempotent beta-seat request (mirrors generateTrip's authed-POST shape,
+// no body). The backend `coalesce`s repeat clicks to the original stamp, so this always resolves
+// to {"requested_at": "<iso>"}. Non-ok responses throw an ApiError via the shared envelope parser.
+export async function requestSeat(accessToken: string): Promise<RequestSeatResponse> {
+  if (MOCK_AUTH_ENABLED) return { requested_at: MOCK_SEAT_REQUESTED_AT }
+  const res = await fetch(`${BACKEND_URL}/request-seat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+
+  if (!res.ok) {
+    throw await apiErrorFrom(res)
+  }
+
+  return res.json()
+}
+
+// Fixed stamp for the mock-auth shell — no wall-clock, so the offline flow is deterministic.
+const MOCK_SEAT_REQUESTED_AT = '2026-01-01T00:00:00.000Z'
 
 export function streamTrip(tripId: string, accessToken: string): EventSource {
   const url = new URL(`${BACKEND_URL}/generate-trip/stream/${tripId}`)

@@ -32,6 +32,11 @@ dev-dependencies = [
     # Only consumer is test_lint_undefined_names.py, which runs `ruff check --select F821`
     # in-process. A dev dependency rather than a `uvx` call so the gate needs no network.
     "ruff>=0.14.0",
+    # Only consumer is test_reserve_enqueue_race.py, the two-session concurrency race test
+    # for reserve_and_enqueue_trip_job. Async driver (psycopg.AsyncConnection) so three direct,
+    # non-pooled connections can race under pytest-asyncio. Integration-only, keyless-offline-safe
+    # (the test is skipped unless RUN_DB_INTEGRATION=1). [binary] ships prebuilt libpq.
+    "psycopg[binary]>=3.2.0",
 ]
 
 [tool.pytest.ini_options]

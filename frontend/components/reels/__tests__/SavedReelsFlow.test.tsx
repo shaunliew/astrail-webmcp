@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
-const { push, getAccessToken, listSavedReelCards, startOrganize, streamOrganize, getOrganizeStatus, generateTrip, streamGeneration, mapInstance } = vi.hoisted(() => ({
+const { push, getAccessToken, listSavedReelCards, startOrganize, streamOrganize, getOrganizeStatus, generateTrip, streamGeneration, useEntitlement, requestSeat, mapInstance } = vi.hoisted(() => ({
   push: vi.fn(),
   getAccessToken: vi.fn(async () => 'token'),
   listSavedReelCards: vi.fn(),
@@ -10,6 +10,8 @@ const { push, getAccessToken, listSavedReelCards, startOrganize, streamOrganize,
   getOrganizeStatus: vi.fn(),
   generateTrip: vi.fn(async (_req: { place_ids: string[]; reel_urls: string[]; requested_places: unknown[] }, _token: string) => ({ trip_id: 'trip-1' })),
   streamGeneration: vi.fn(),
+  useEntitlement: vi.fn(),
+  requestSeat: vi.fn(async () => {}),
   mapInstance: (() => {
     const handler = () => ({ enable: vi.fn(), disable: vi.fn() })
     return {
@@ -26,7 +28,18 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ push }) }))
 vi.mock('next/link', () => ({ default: ({ children, ...props }: { children: React.ReactNode }) => <a {...props}>{children}</a> }))
 vi.mock('@/lib/supabase/session', () => ({ getAccessToken }))
 vi.mock('@/lib/reels/api', () => ({ listSavedReelCards, startOrganize, streamOrganize, getOrganizeStatus }))
-vi.mock('@/lib/trip/api', () => ({ generateTrip, streamGeneration }))
+// Keep the real ApiError (classifyGenerateError branches on `instanceof ApiError`); override
+// only the two network calls the flow makes.
+vi.mock('@/lib/trip/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/trip/api')>()),
+  generateTrip,
+  streamGeneration,
+}))
+// Drive the entitlement gate via controlled hook states; the real classifyGenerateError stays.
+vi.mock('@/lib/entitlement', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/entitlement')>()),
+  useEntitlement,
+}))
 // The inbox is now TraysScreen (paper). Its own UI (trays grid, Library banner,
 // capture, empty state) is covered by TraysScreen.test.tsx; here we mock it down to
 // the one thing the flow needs — a trigger that submits saved-1 for organization — so
@@ -58,7 +71,14 @@ vi.mock('mapbox-gl/dist/mapbox-gl.css', () => ({}))
 
 import SavedReelsFlow, { toReelBriefItem } from '@/components/reels/SavedReelsFlow'
 import MapProvider from '@/components/map/MapProvider'
+import { ApiError } from '@/lib/trip/api'
 import type { SavedReelCard, SavedReelPlaceProof } from '@/lib/reels/backend-types'
+
+const NOT_EXHAUSTED = {
+  loading: false, isTrialExhausted: false, seatRequested: false,
+  requestSeat, requesting: false, canonicalTripId: null, canonicalTripLoading: false,
+  refetch: vi.fn(),
+}
 
 const cards: SavedReelCard[] = [
   {
@@ -158,7 +178,22 @@ describe('SavedReelsFlow', () => {
       onEvent({ type: 'result', content: JSON.stringify({ trip_id: 'trip-1' }) })
       return { cancel: vi.fn() }
     })
+    useEntitlement.mockReset(); useEntitlement.mockReturnValue(NOT_EXHAUSTED)
+    NOT_EXHAUSTED.refetch.mockClear() // shared module-scope mock — clear call history between tests
+    requestSeat.mockReset(); requestSeat.mockResolvedValue(undefined)
   })
+
+  // Reach the PlanSheet (brief phase) via create-trail with one grounded place selected.
+  async function reachBrief() {
+    listSavedReelCards.mockResolvedValue([cardWithPlaces('r1', 'One-place reel', [placeProof({ place_id: 'p1', name: 'Place 1' })])])
+    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    await screen.findByText('One-place reel')
+    createTrail()
+    await screen.findByRole('heading', { name: 'Japan' })
+    fireEvent.click(screen.getByRole('checkbox', { name: /select Place 1/i }))
+    fireEvent.click(screen.getByRole('button', { name: /plan this trip/i }))
+    await screen.findByRole('heading', { name: /plan this trip/i })
+  }
 
   it('preserves Saved Reel attribution when a verified place enters the trip brief', () => {
     expect(toReelBriefItem(organizedCards[0].places[0])).toEqual({
@@ -259,6 +294,9 @@ describe('SavedReelsFlow', () => {
       fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
 
       await waitFor(() => expect(push).toHaveBeenCalledWith('/app/trip/trip-1'))
+      // The terminal 'result' handler must refetch the entitlement (keeps the gate in sync with a
+      // failure refund). Guards against silently dropping the call site.
+      expect(NOT_EXHAUSTED.refetch).toHaveBeenCalled()
       await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
       const load = mapInstance.on.mock.calls.find((c) => c[0] === 'load')
       act(() => { (load?.[1] as () => void)?.() })
@@ -635,5 +673,49 @@ describe('SavedReelsFlow', () => {
 
     // The organize→trays finish cleared the error, so the brief re-opens clean.
     expect(screen.queryByText(/generation service down/i)).not.toBeInTheDocument()
+  })
+
+  // --- Entitlement gate (Task 9) — the gate lives here in the flow; PlanSheet stays dumb. ---
+
+  it('renders the trial-exhausted card in place of Generate in the plan sheet when exhausted', async () => {
+    useEntitlement.mockReturnValue({ ...NOT_EXHAUSTED, isTrialExhausted: true })
+    await reachBrief()
+
+    expect(await screen.findByRole('button', { name: 'Request a seat' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /generate/i })).not.toBeInTheDocument()
+  })
+
+  it('shows the card after generateTrip rejects with a 403 trial_exhausted (post-hoc catch)', async () => {
+    generateTrip.mockRejectedValueOnce(new ApiError(403, 'trial_exhausted', 'Your free trip is already planned.'))
+    await reachBrief()
+    fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
+    fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
+    fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
+
+    expect(await screen.findByRole('button', { name: 'Request a seat' })).toBeInTheDocument()
+    expect(streamGeneration).not.toHaveBeenCalled()
+  })
+
+  it('surfaces a non-trial 409 message verbatim via ApiError and does NOT render the card', async () => {
+    const message = 'That request is already being processed — please retry.'
+    generateTrip.mockRejectedValueOnce(new ApiError(409, 'conflict_retry', message))
+    await reachBrief()
+    fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
+    fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
+    fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(message)
+    expect(screen.queryByRole('button', { name: /request a seat/i })).not.toBeInTheDocument()
+  })
+
+  it('catches a rejected requestSeat and surfaces it (no unhandled rejection)', async () => {
+    requestSeat.mockRejectedValueOnce(new Error('Seat service is down.'))
+    useEntitlement.mockReturnValue({ ...NOT_EXHAUSTED, isTrialExhausted: true })
+    await reachBrief()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Request a seat' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Seat service is down.')
+    expect(requestSeat).toHaveBeenCalledTimes(1)
   })
 })

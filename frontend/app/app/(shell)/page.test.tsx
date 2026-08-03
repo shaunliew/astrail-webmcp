@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, render, screen } from '@testing-library/react'
 
 process.env.NEXT_PUBLIC_MOCK_AUTH = 'true'
 
@@ -42,6 +42,10 @@ describe('/app mock-auth gate', () => {
     // object, and a statically imported one would not match what the page consumes.
     const { default: MapProvider } = await import('@/components/map/MapProvider')
     render(<MapProvider><AppHomePage /></MapProvider>)
+    // CreateTripFlow now mounts useEntitlement(), whose read effect resolves on a microtask
+    // (a mock-mode entitlement + listTrips, no network — asserted below). Flush it inside act()
+    // so its state update is wrapped, not a stray post-assertion "not wrapped in act(...)" warning.
+    await act(async () => {})
 
     expect(screen.getByRole('heading', { name: 'Plan a new trip' })).toBeInTheDocument()
     expect(screen.queryByTestId('saved-reels-flow')).not.toBeInTheDocument()

@@ -275,7 +275,8 @@ async def _run(args: argparse.Namespace) -> None:
                                    preferences=args.preferences, pace=args.pace,
                                    destination_hint=args.dest)
     existing = (
-        await client.table("jobs").select("trip_id").eq("idempotency_key", idem).maybe_single().execute()
+        await client.table("jobs").select("trip_id").eq("idempotency_key", idem)
+        .is_("charge_refunded_at", "null").maybe_single().execute()  # ACTIVE row only (Fix 4)
     )
     if existing is not None and existing.data is not None:
         trip_id = existing.data["trip_id"]

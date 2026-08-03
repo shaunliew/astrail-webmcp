@@ -45,20 +45,27 @@ def _now() -> str:
 def compute_idempotency_key(user_id: str, reel_urls: list[str], start_date: str, end_date: str,
                             *, preferences: str | None = None, pace: str = "balanced",
                             destination_hint: str | None = None,
-                            place_ids: list[str] | None = None) -> str:
+                            place_ids: list[str] | None = None,
+                            budget_level: str | None = None,
+                            origin_city: str | None = None,
+                            requested_places: list[str] | None = None) -> str:
     """Deterministic key from the REQUEST (not the trip id) so retries dedupe. Folds in
     every output-affecting field (A4): same reels+dates but CHANGED preferences/pace/
-    destination_hint must produce a NEW trip, not replay the old one.
+    destination_hint/budget_level/origin_city/requested_places must produce a NEW trip, not
+    replay the old one (Fix 9 -- two genuinely different requests must stop colliding into
+    one another's replay).
 
     JSON-encoded (not raw `|`/`,`-joined): free-text `preferences`/`destination_hint` can
     contain "|" and reel URLs can contain ",", so a naive delimiter-join lets two DIFFERENT
     requests produce the SAME material (a collision -- an idempotent replay would then
     return the WRONG trip). JSON's quoting/escaping makes each field boundary unambiguous.
     `preferences` is stripped to match the runtime's `merge_preferences`, so a
-    whitespace-only difference doesn't spawn a duplicate trip."""
+    whitespace-only difference doesn't spawn a duplicate trip. `reel_urls`/`place_ids`/
+    `requested_places` are sorted so field order does not change the key."""
     material = json.dumps(
         [user_id, sorted(reel_urls), sorted(place_ids or []), start_date, end_date,
-         (preferences or "").strip(), (pace or "balanced"), (destination_hint or "")],
+         (preferences or "").strip(), (pace or "balanced"), (destination_hint or ""),
+         (budget_level or ""), (origin_city or ""), sorted(requested_places or [])],
         separators=(",", ":"), ensure_ascii=True)
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
@@ -75,8 +82,12 @@ async def enqueue_job(trip_id: str, user_id: str, idempotency_key: str, *, clien
     except APIError as exc:
         if exc.code != _UNIQUE_VIOLATION:
             raise
+        # Fix 2/Fix 4: with the partial unique index a key can have one ACTIVE row + N
+        # refunded rows, so the re-read MUST filter `charge_refunded_at IS NULL` (via `.is_()`,
+        # NOT `.eq(..., None)` which builds the wrong `eq.None`) or it can match >1 row and 500.
         existing = await (client.table("jobs").select("id,trip_id")
-                          .eq("idempotency_key", idempotency_key).maybe_single().execute())
+                          .eq("idempotency_key", idempotency_key)
+                          .is_("charge_refunded_at", "null").maybe_single().execute())
         if existing is None or existing.data is None:
             raise                       # unique violation but no matching row → surface, don't mask
         return existing.data["id"], existing.data["trip_id"]
@@ -107,6 +118,14 @@ async def mark_job_done(client, job_id: str, *, status: str, lease_token: str) -
     """running -> succeeded|failed, fenced on our lease so a superseded worker cannot
     overwrite the replacement's terminal state. The token is REQUIRED: an optional-token
     form is a fencing bypass, and a caller with no token never owned the job.
+
+    NOT the terminal writer for trip jobs (entitlement arc): `complete_trip_run` is now the
+    SOLE terminal write for trip generation — it also refunds the charge and fences
+    trips.status in the same transaction. This helper has ZERO trip-job callers left; calling
+    it with status='failed' on a CHARGED job would mark the job failed WITHOUT refunding the
+    charge or freeing the idempotency key (no charge_refunded_at). Do NOT use it for a trip
+    terminal write — use `complete_trip_run` (via runner._complete_trip_run). Retained only
+    for any non-trip/lease-fence use + its unit tests.
 
     RETURNS bool — True iff we still held the lease and the write landed. Callers MUST check
     it: `False` means we were superseded, and the caller must then suppress its terminal

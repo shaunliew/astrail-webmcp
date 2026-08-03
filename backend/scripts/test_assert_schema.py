@@ -422,6 +422,24 @@ async def test_missing_anchor_table_aborts_and_names_which(monkeypatch, capsys, 
     assert f"anchor table '{anchor}' is absent" in "".join(capsys.readouterr())
 
 
+def test_the_memory_events_columns_the_clear_interlock_needs_are_pinned():
+    """`id` and `created_at` are load-bearing for POST /settings/memory/clear, and nothing
+    else in this file would notice them going missing.
+
+    `id` scopes the two id-only writes (`_retract_add_intent`, `_mark_intent_failed`) —
+    without it an unscoped UPDATE/DELETE hits every audit row the user has. `created_at` is
+    the ONE Postgres clock both sides compare against: the write-back guard's
+    `.gt("created_at", trips.created_at)` and the clear's in-flight cutoff. Drift dropping
+    either passes a manifest that never asked for it, and then clears fail closed while the
+    write-back aborts learning.
+
+    Same self-erasure shape as `test_the_anchor_set_is_pinned_to_a_literal`: the fake DB is
+    derived FROM the manifest (`schema_from_manifest`), so deleting a column also deletes the
+    probe that would have caught the deletion.
+    """
+    assert {"id", "created_at"} <= set(assert_schema.REQUIRED_SCHEMA["memory_events"])
+
+
 def test_the_shipped_manifest_passes_the_guard():
     """POSITIVE CONTROL. Without it, `return ["broken"]` unconditionally passes every negative
     test above — while aborting every deploy this gate is supposed to let through.

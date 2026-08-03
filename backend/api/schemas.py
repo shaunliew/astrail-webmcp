@@ -48,6 +48,15 @@ class GenerateTripResponse(BaseModel):
     trip_id: str
 
 
+class RequestSeatResponse(BaseModel):
+    """POST /request-seat 200 body — the beta-seat request timestamp.
+
+    Idempotent by construction: the RPC stamps coalesce(seat_requested_at, now()), so a
+    repeat request echoes back the ORIGINAL time, never a fresh one. Mirrored in
+    frontend/lib/trip/backend-types.ts (guardrail #4)."""
+    requested_at: datetime
+
+
 class CaptureSavedReelRequest(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
 
@@ -134,6 +143,12 @@ class SettingsPreferencesResponse(BaseModel):
     """
     status: Literal["ok", "disabled", "unavailable"]
     facts: list[MemoryFact] = Field(default_factory=list)
+
+
+class MemoryClearResponse(BaseModel):
+    """POST /settings/memory/clear — success only. Failures use the standard error
+    envelope with code `memory_unavailable` or `memory_clear_unknown`."""
+    cleared: Literal[True] = True
 
 
 class TripFeedbackRequest(BaseModel):

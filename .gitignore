@@ -68,3 +68,7 @@ graphify-out/
 
 # Machine-local Claude permissions and MCP toggles
 .claude/settings.local.json
+
+# Raw landing capture screenshots — working artifacts, may contain PII.
+# The app uses the clean webp finals in frontend/public/landing/screens/.
+docs/landing/screens-raw/

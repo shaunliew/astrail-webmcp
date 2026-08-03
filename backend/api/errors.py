@@ -45,7 +45,10 @@ def build_error_response(status_code: int, message: str, code: str | None = None
 
 
 async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
-    return build_error_response(exc.status_code, str(exc.detail))
+    detail = exc.detail
+    if isinstance(detail, dict) and "message" in detail:
+        return build_error_response(exc.status_code, detail["message"], code=detail.get("code"))
+    return build_error_response(exc.status_code, str(detail))   # string path unchanged
 
 
 async def validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:

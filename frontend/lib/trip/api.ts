@@ -1,10 +1,41 @@
-import type { GenerateTripRequest, GenerateTripResponse, StreamEvent } from './backend-types'
+import type { GenerateTripRequest, GenerateTripResponse, RequestSeatResponse, StreamEvent } from './backend-types'
 // Mock-auth shell: generation runs against the offline fixture replay with zero backend
 // (mirrors the MOCK_AUTH_ENABLED switches in middleware.ts and use-user.ts).
 import { MOCK_AUTH_ENABLED } from '@/lib/auth/mock-auth'
 import * as mockApi from '@/lib/trip/mock-api'
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000'
+
+// Thrown on any non-ok backend response. Carries the HTTP `status` and the backend error
+// `code` (from the {"error":{"code","message"}} envelope) so callers can branch on a stable
+// slug (e.g. classifyGenerateError → TrialExhaustedCard) instead of parsing message strings.
+export class ApiError extends Error {
+  readonly status: number
+  readonly code: string
+  constructor(status: number, code: string, message: string) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = code
+  }
+}
+
+// Build an ApiError from a non-ok Response: parse the {"error":{"code","message"}} envelope;
+// on a non-JSON body or a shape mismatch, fall back to (status, "unknown", statusText) so a
+// malformed error page never surfaces as a JSON parse error.
+async function apiErrorFrom(res: Response): Promise<ApiError> {
+  let parsed: unknown
+  try {
+    parsed = await res.json()
+  } catch {
+    return new ApiError(res.status, 'unknown', res.statusText)
+  }
+  const err = (parsed as { error?: { code?: unknown; message?: unknown } } | null)?.error
+  if (err && typeof err.code === 'string' && typeof err.message === 'string') {
+    return new ApiError(res.status, err.code, err.message)
+  }
+  return new ApiError(res.status, 'unknown', res.statusText)
+}
 
 export async function generateTrip(
   req: GenerateTripRequest,
@@ -21,12 +52,34 @@ export async function generateTrip(
   })
 
   if (!res.ok) {
-    const text = await res.text()
-    throw new Error(`generate-trip failed: ${res.status} ${text}`)
+    throw await apiErrorFrom(res)
   }
 
   return res.json()
 }
+
+// POST /request-seat — idempotent beta-seat request (mirrors generateTrip's authed-POST shape,
+// no body). The backend `coalesce`s repeat clicks to the original stamp, so this always resolves
+// to {"requested_at": "<iso>"}. Non-ok responses throw an ApiError via the shared envelope parser.
+export async function requestSeat(accessToken: string): Promise<RequestSeatResponse> {
+  if (MOCK_AUTH_ENABLED) return { requested_at: MOCK_SEAT_REQUESTED_AT }
+  const res = await fetch(`${BACKEND_URL}/request-seat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+
+  if (!res.ok) {
+    throw await apiErrorFrom(res)
+  }
+
+  return res.json()
+}
+
+// Fixed stamp for the mock-auth shell — no wall-clock, so the offline flow is deterministic.
+const MOCK_SEAT_REQUESTED_AT = '2026-01-01T00:00:00.000Z'
 
 export function streamTrip(tripId: string, accessToken: string): EventSource {
   const url = new URL(`${BACKEND_URL}/generate-trip/stream/${tripId}`)

@@ -10,6 +10,22 @@ explicitly scoped to that provisioned id — `delete_all()` / `delete_users()` w
 delete the ENTIRE mem0 account, so `_require_scoped_user_id` refuses any call whose id is
 blank or is not the one this run provisioned.
 
+BEFORE YOU RUN THIS — two things changed on 2026-08-04:
+
+1. **The route is GATED OFF** (`main.py`'s `_CLEAR_RECONCILIATION_READY = False`). Steps 2
+   and 4 will get `503 memory_unavailable` and the run will fail, correctly. Enable the
+   constant locally to exercise the endpoint, and only flip it in production in the PR
+   that lands durable reconciliation.
+
+2. **Cleanup CANNOT reconcile an already-accepted PENDING add.** This script deletes the
+   throwaway user's visible memories, reports success, then deletes the Supabase user —
+   but mem0 may still have queued adds for that id, and they materialize afterwards,
+   leaving provider-side data for an entity that no longer exists. Observed on 2026-08-03,
+   when mem0's queue ran >17 minutes behind. **Do not run this against a shared live
+   account again until it reconciles the `event_id`s its adds return** (or keeps the entity
+   for later cleanup). If you do run it, re-check `list_entities` afterwards and delete any
+   resurrected throwaway id by hand.
+
 What it proves, step by step:
   1. a seeded memory becomes readable through GET /settings/preferences
   2. POST /settings/memory/clear -> 200 {"cleared": true}

@@ -14,7 +14,7 @@ class GenerateTripRequest(BaseModel):
     start_date: str
     end_date: str
     destination_hint: str | None = None
-    # Flows into LLM prompts (preference_block) and the mem0 synopsis; bounded like
+    # Flows into LLM prompts (preference_block); bounded like
     # `preferences` (A5) -- max_length, not Literal, so an unrecognized pace value is
     # still accepted (no breaking 422 for the frontend), just capped in cost/injection surface.
     pace: str = Field(default="balanced", max_length=32)
@@ -108,3 +108,81 @@ class OrganizeJobStatus(BaseModel):
     location_not_found_items: int = 0
     failed_items: int = 0
     items: list[OrganizeJobItem] = Field(default_factory=list)
+
+
+class MemoryFact(BaseModel):
+    """One stored mem0 memory, verbatim.
+
+    Deliberately NOT UserPreferenceFact: that shape carries fact_key/fact_value/
+    confidence/status, none of which mem0 returns. Synthesising them to fit the type would
+    be fabricating data (guardrail #1) -- a made-up confidence number shown to a user -- so
+    the prose is passed through and the UI adapts. `source` is a constant, not an inference.
+    """
+    id: str
+    memory: str
+    created_at: str
+    source: Literal["mem0"] = "mem0"
+
+
+class SettingsPreferencesResponse(BaseModel):
+    """GET /settings/preferences -- the user's STORED mem0 memories (first page).
+
+    Not the same set as any generation's recall, which uses a semantic search with
+    top_k=10 and only when preferences are blank. `status` lets the UI tell 'you have no
+    saved preferences' (ok, []) apart from 'memory is broken' (unavailable, []) -- the
+    ambiguity that made the 2026-08-02 report undiagnosable.
+    """
+    status: Literal["ok", "disabled", "unavailable"]
+    facts: list[MemoryFact] = Field(default_factory=list)
+
+
+class TripFeedbackRequest(BaseModel):
+    """POST /trips/{trip_id}/feedback body -- trip-level feedback only.
+
+    `artifact_type`/`artifact_id` are deliberately NOT accepted from the client: the
+    route hardcodes ('trip', None). Accepting them would let a caller aim feedback at
+    another trip's artifact, and service_role bypasses the RLS policy that would
+    otherwise validate the artifact against its parent table (persist.py:515).
+
+    Literal[...] on feedback_type mirrors the DB CHECK feedback_feedback_type_check;
+    ge/le on rating mirrors feedback_rating_range. Keeping them in lockstep means a
+    bad payload is a clean 422 instead of a Postgres constraint violation surfacing
+    as a 500.
+    """
+    feedback_type: Literal["rating", "thumbs_up", "thumbs_down", "correction", "free_text"]
+    # strict=True (Codex MINOR): non-strict Pydantic coerces JSON `true` -> 1, `"4"` -> 4 and
+    # `5.0` -> 5. A boolean silently becoming a 1-star rating is analytics poison in the exact
+    # dataset this endpoint exists to produce.
+    rating: int | None = Field(default=None, ge=1, le=5, strict=True)
+    comment: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def check_rating_matches_feedback_type(self):
+        if self.feedback_type == "rating" and self.rating is None:
+            raise ValueError("rating is required when feedback_type is 'rating'")
+        if self.feedback_type != "rating" and self.rating is not None:
+            raise ValueError("rating is only valid when feedback_type is 'rating'")
+        # .strip() (Codex MINOR): a whitespace-only comment passes a bare truthiness check and
+        # stores a row with no information -- the same defect as an empty comment.
+        if self.feedback_type in ("free_text", "correction") and not (self.comment or "").strip():
+            raise ValueError(f"comment is required when feedback_type is '{self.feedback_type}'")
+        return self
+
+
+class TripFeedback(BaseModel):
+    """One stored feedback row, as echoed back to the client.
+
+    No created_at: the in-memory test fake does not apply Postgres column defaults, so
+    a default-populated field would be untestable (present in prod, absent in tests).
+    """
+    id: str
+    trip_id: str
+    artifact_type: Literal["trip"] = "trip"
+    feedback_type: Literal["rating", "thumbs_up", "thumbs_down", "correction", "free_text"]
+    rating: int | None = None
+    comment: str | None = None
+
+
+class TripFeedbackResponse(BaseModel):
+    """201 body. Wraps the row to match CaptureSavedReelResponse's shape."""
+    feedback: TripFeedback

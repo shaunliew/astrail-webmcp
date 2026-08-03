@@ -4,6 +4,11 @@ services:
     name: astrail-backend
     runtime: docker
     repo: https://github.com/MalaysiaKaki/astrail
+    # Pins what the Render dashboard already says, so it is a no-op against the running
+    # service. Without it, a Blueprint CONFIGURATION SYNC — which applies to every service
+    # the Blueprint names and is not governed by `autoDeploy: false` — falls back to the
+    # repository default (main) and silently retargets this service.
+    branch: dev
     region: singapore
     plan: starter
     dockerfilePath: ./Dockerfile
@@ -55,3 +60,84 @@ services:
         value: "5"
       - key: BURST_LIMIT
         value: 3/minute
+
+  # Telegram reel-ingestion worker. No inbound HTTP: it long-polls the Telegram Bot API
+  # (direct httpx, no python-telegram-bot — see .claude/docs/STACK.md) and runs the same
+  # organize job the web service does. ONE image serves both services; `dockerCommand`
+  # overrides the Dockerfile's CMD per service, so the Dockerfile is unchanged.
+  - type: worker
+    name: astrail-telegram-ingest
+    runtime: docker
+    repo: https://github.com/MalaysiaKaki/astrail
+    branch: dev                 # REQUIRED — an omitted branch defaults to the repo default
+                                # (main), whose image may lack telegram_ingest. The web
+                                # service's dev tracking lives in the dashboard, not here.
+    region: singapore
+    plan: starter
+    numInstances: 1             # two getUpdates consumers is a hard 409
+    dockerfilePath: ./Dockerfile
+    # NO SHELL SYNTAX HERE — Render passes dockerCommand as ARGV, not to a shell.
+    # Established by three failed deploys on 2026-08-02, in this order:
+    #   `sh -c "cd backend && exec python -m …"` -> sh: 1: <whole string>: not found
+    #   `cd backend && exec python -m …`         -> exit 128, NO output at all
+    #   `python -m telegram_ingest.worker`       -> boots clean
+    # The second one is the proof: no `sh:` error means no shell ran, so there is no `cd`
+    # to exec and the container dies before producing a line. `cd`, `&&`, `exec` and quotes
+    # are all unusable in this field.
+    #
+    # This is NOT the same field as the Dockerfile's
+    # `CMD ["sh","-c","cd backend && exec uvicorn …"]`. That is exec-form: a JSON array
+    # Docker passes as argv verbatim, so something must BE the shell and the `sh -c` is
+    # required. Same text, different parser. astrail-backend uses the Dockerfile CMD and
+    # leaves dockerCommand empty, so this field had no working precedent in this repo.
+    #
+    # PYTHONPATH below replaces what `cd backend` was doing: WORKDIR is /app and the app is
+    # copied to /app/backend, so the path makes both `telegram_ingest.worker` and the bare
+    # imports (`from organizer import …`) resolve without changing directory. Verified by
+    # running `PYTHONPATH=backend python -m telegram_ingest.worker` locally — it reaches
+    # config validation, which is proof every import resolved.
+    #
+    # Losing `exec` costs the drain-on-SIGTERM path IF Render ever wraps this in a shell.
+    # It does not today (python is PID 1), and the degradation is bounded either way: an
+    # in-flight job holds a lease that expires in <=300s and the web reaper reclaims it.
+    dockerCommand: python -m telegram_ingest.worker
+    autoDeploy: false           # same reason as astrail-backend
+    maxShutdownDelaySeconds: 120
+    # PYTHONPATH is DECLARED HERE with a literal value, not left to the dashboard. This
+    # service is Blueprint-managed, so a sync re-applies this file and overwrites anything
+    # set by hand — which is exactly how the 2026-08-02 post-merge deploy broke: a working
+    # dashboard `dockerCommand` was replaced by the wrong value still sitting in here.
+    # Anything the worker cannot boot without belongs in this file, not in the dashboard.
+    # It is a container path, not a secret, so it takes a literal `value:`.
+    #
+    # The eight secrets below are `sync: false` — entered in the dashboard, never a literal
+    # `value:` here.
+    #
+    # DELIBERATELY ABSENT, verified by grep — do not "complete" this list:
+    #   MEM0_API_KEY, LANGFUSE_*  the organize path never reaches them. `mem0_client` is
+    #                             imported only by main.py and pipeline/runner.py (both
+    #                             web-only), and `pipeline/tracing.py`'s default tracer is
+    #                             a no-op that nothing imports outside tests + evals.
+    #   SUPABASE_JWT_SECRET       auth is web-only, and the project verifies ES256 via JWKS.
+    #   ALLOWED_ORIGINS,          CORS, quota, throttle and port all belong to inbound HTTP,
+    #   DAILY_TRIP_QUOTA,         which a worker does not have.
+    #   BURST_LIMIT, PORT
+    envVars:
+      - key: PYTHONPATH                 # replaces `cd backend`; see the dockerCommand note
+        value: /app/backend
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: APIFY_TOKEN
+        sync: false
+      - key: MAPBOX_SECRET_TOKEN        # grounding._ground_place resolves every place
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_ALLOWED_CHAT_IDS  # fail-CLOSED: unset or blank is a boot failure,
+        sync: false                     # never "allow every chat". See .claude/docs/ENV.md.
+      - key: ASTRAIL_INGEST_USER_ID
+        sync: false

@@ -130,9 +130,28 @@ Render's deploy gate. Always cheap, never touches the DB.
 ```
 
 ### `GET /readiness` — deep readiness (no auth)
-Confirms Supabase is reachable (monitoring only — **not** the deploy gate).
-- `200` → `{ "ready": true }`
-- `503` → `{ "ready": false }` (DB unreachable)
+Confirms Supabase is reachable and reports mem0's **configuration** state (monitoring only — **not** the deploy gate).
+- `200` → `{ "ready": true, "mem0": "configured" | "disabled" | "init_failed" | "not_initialized" }`
+- `503` → `{ "ready": false, "mem0": … }` (DB unreachable — `mem0` is still reported)
+
+`mem0` is observed, never probed: `configured` means a key is set and the client was built, **not** that mem0 is reachable right now. `disabled` = no key · `init_failed` = key set but construction failed · `not_initialized` = key set, not yet constructed. A mem0 outage never fails readiness (guardrail #3).
+
+### `GET /settings/preferences` — the user's saved mem0 memories (auth)
+Read **live** from mem0 for the caller's own user (id comes from the token — you cannot read another user's memory). Rate-limited per user like the other authed routes.
+```json
+{ "status": "ok",
+  "facts": [ { "id": "…", "memory": "User prefers ramen and quiet, walkable days",
+               "created_at": "2026-07-07T03:08:44", "source": "mem0" } ] }
+```
+- `status: "ok"` → mem0 answered. **`facts: []` with `ok` is a legitimate empty memory, not an error** — render "nothing saved yet", not a failure.
+- `status: "disabled"` → no `MEM0_API_KEY`; memory is off by configuration.
+- `status: "unavailable"` → mem0 errored, timed out, or the client failed to construct. Render "memory unavailable", not "you have no preferences".
+
+Always `200` — a memory outage must not break the settings screen (guardrail #3). Mirrors `SettingsPreferencesResponse` in `frontend/lib/trip/backend-types.ts`.
+
+**These are STORED memories, not a preview of recall.** Generation recalls via a semantic `search(top_k=10)` and only when the user leaves preferences blank, so this list is a superset, differently ordered. Facts are mem0's own prose — deliberately **not** the structured `UserPreferenceFact` shape, because mem0 returns sentences and synthesising `fact_key`/`confidence` would be inventing data.
+
+> `POST /settings/memory/clear` (PRD §18) is **not implemented yet**. Until it ships, a "Clear memory" control has no backend — do not wire one to a mock that reports success.
 
 ---
 

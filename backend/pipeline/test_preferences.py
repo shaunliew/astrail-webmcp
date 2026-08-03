@@ -793,7 +793,7 @@ def test_intent_insert_returning_no_row_aborts_the_add():
 def test_guard_firing_retracts_the_intent_row_and_skips_the_add():
     # C11 test 3. ABSENCE, not present-and-ignored: nothing was sent, so there is no audit
     # event to keep, and a lingering 'learned' row would match the clear's in-flight check
-    # and make the NEXT clear answer `unknown` for 15s.
+    # and make the NEXT clear answer `unknown` for a whole _ADD_VISIBILITY_WINDOW_S.
     client = _FakeClient(memory_events=[_cleared_row()])
     mem = _FakeMem0Add()
     _run_write_back(client, mem)
@@ -852,7 +852,7 @@ def test_a_failing_retraction_is_swallowed_and_never_escapes():
     assert learned == ["loves ramen"]
     assert mem.added == []
     # State assertion, NOT a guard proof: the stale intent lingers, which over-suppresses the
-    # next clear (`unknown` for 15s) rather than resurrecting cleared data.
+    # next clear (`unknown` for one _ADD_VISIBILITY_WINDOW_S) rather than resurrecting cleared data.
     assert [r["event_type"] for r in client.events] == ["cleared", "learned"]
 
 

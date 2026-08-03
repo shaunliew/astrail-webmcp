@@ -1514,6 +1514,18 @@ refresh, and the read endpoint will show the true state.
 - Timeout on each of the three calls ⇒ the documented fail-safe outcome, never a raise.
 - `assert_schema` gate test covers the two added columns if the file has a test seam.
 
+### The residual is WIDER than "mem0's queue" — the window bounds declared timeouts, not wall clock
+
+Found by the final whole-branch review (round 2). `asyncio.wait_for` bounds **each await's duration,
+not the gaps between them**, and `sum(seen) < _ADD_VISIBILITY_WINDOW_S` pins the sum of the *declared
+timeouts*. So a process suspension or event-loop stall of ~15 s+ between the guard's cleared-read
+returning and the add landing ages the intent out **with mem0 perfectly healthy** — no provider queue
+involved. Same class, same mitigations, needs a pathological stall at one precise point.
+
+**Do not write "the only residual is mem0's queue" anywhere.** The honest sentence is: *the window
+bounds our declared timeouts, not real time.* On a small Render instance a multi-second event-loop
+stall is plausible rather than exotic.
+
 ### What this does NOT claim
 
 Codex is right that this is still **expiry based on measured timing**, not a durable guarantee. An

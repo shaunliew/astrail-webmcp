@@ -217,7 +217,14 @@ async def _cleared_since_generation_start(client, *, user_id: str, trip_id: str)
         return True
     # maybe_single() returns a BARE None on zero rows (postgrest 2.31.0) — not a result
     # whose .data is None. Both shapes must read as "no reference".
-    started_at = (getattr(trip, "data", None) or {}).get("created_at") if trip is not None else None
+    #
+    # isinstance(_, dict) rather than a bare `.get`: this line sits OUTSIDE the try above,
+    # so if postgrest ever shape-drifted `.data` to a list, the AttributeError would escape
+    # persist_trip_memory entirely. runner.py's outer try would catch it, but guardrail #3
+    # says nothing may raise out of here — this makes that claim literally true rather than
+    # true-by-someone-else's-safety-net (final whole-branch review P3).
+    _row = getattr(trip, "data", None) if trip is not None else None
+    started_at = _row.get("created_at") if isinstance(_row, dict) else None
     if not started_at:
         print("[mem0] write-back guard: no trip reference; skipping write", file=sys.stderr)
         return True

@@ -1562,6 +1562,35 @@ async def test_persist_falls_through_when_the_reconciliation_read_raises(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_persist_propagates_a_cancelled_error_raised_during_the_reconciliation_read(
+        monkeypatch):
+    """Case 18 — the lease is lost while the RE-READ is in flight, not the CAS.
+
+    The repair has TWO independently caught round trips, and case 10 only reaches the first: it
+    injects on the CAS, so flipping the re-read's `except Exception` to `except BaseException`
+    leaves every other test in this file green. That would let a superseded worker absorb its own
+    cancellation into a quiet fall-through and walk on to rewrite the replacement's trip — the
+    exact failure case 10 exists to prevent, one round trip later.
+
+    Same fixture as case 15 (CAS matches zero rows, re-read raises), with the ONLY difference
+    being the exception class, so the two pin opposite requirements on one boundary: a
+    `RuntimeError` there must fall through to B, a `CancelledError` must escape the function.
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c, place = _repairable(_PlacesOpFailsClient(
+        {"places": [_place_row("null-row", _JB, country_code=None),
+                    _place_row("my-row", _JB_NEAR2, country_code="MY")]},
+        ops={"select"}, single_only=True, update_returns_zero=True, exc=asyncio.CancelledError))
+
+    with pytest.raises(asyncio.CancelledError):
+        await _link_one(c, place, _Verifier(_MY_RESULT))
+
+    assert c.db.get("trip_places", []) == []          # no stale rewrite, and B never linked
+    assert len(c.db["places"]) == 2                   # no fork either
+    assert _country_triple(_row_by_id(c, "null-row")) == (None, None, None)
+
+
+@pytest.mark.asyncio
 async def test_persist_without_a_verified_country_keeps_todays_first_match_dedup(monkeypatch):
     """`grounded is None` — the unverified path, which must behave exactly as it does today.
 

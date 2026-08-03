@@ -329,3 +329,44 @@ called it cosmetic, the other reproduced it as a P1.
 
 **Waived with reason:** arc 2's conflicting-country live smoke would require manufacturing
 contradictory production data. Recorded as a waiver rather than seeding bad rows.
+
+
+---
+
+## 8. LIVE ACCEPTANCE — PASSED 2026-08-03
+
+Two runs, reel `DXwcVVliX3B`, fresh date windows, on the ROTATED Mapbox token.
+
+**Run 1** (`trip df82ad87`, 2026-08-12..14) — the repair fired. All four rows had been
+`country=NULL` through three prior runs:
+
+```
+trip_place_grounding grounded=4 ineligible=0 mismatched=0 failed=0
+  CHERMSIDE SANDWICH Harajuku …  Japan (JP/Japan)  [REUSED]  updated=…T06:10:34.380692+00:00
+  SANDO LAB TOKYO                Japan (JP/Japan)  [REUSED]  updated=…T06:10:34.527444+00:00
+  Pelican Cafe                   Japan (JP/Japan)  [REUSED]  updated=…T06:10:34.712089+00:00
+  Sandwich Senmon Ten Popo       Japan (JP/Japan)  [REUSED]  updated=…T06:10:34.845392+00:00
+=== grounding: 4/4 places carry a VERIFIED country (0 created by THIS run, 4 reused)
+```
+
+**Run 2** (`trip 0b8f8c3d`, 2026-08-15..17) — the fixed point. Identical ids, identical country
+triples, and **`updated_at` identical to the microsecond on all four**. Still `grounded=4`, so
+grounding ran and found nothing to repair: the CAS's `is_("country_code","null")` guard held.
+
+**Gate criteria, all met:**
+
+| Criterion | Result |
+|---|---|
+| 4/4 `[REUSED]` and repaired | ✅ |
+| Zero new `places` rows from `_find_or_create_place` | ✅ (all four `[REUSED]`) |
+| Fixed point — no second write | ✅ `updated_at` unchanged to the microsecond |
+| `trip_place_grounding` visible, `failed=0` | ✅ both runs |
+| **No `access_token=` / no `HTTP Request:` lines** | ✅ — the credential-leak fix, verified live |
+| Wall-clock vs 180 s | ✅ 28.6 s / 28.2 s |
+
+This also closes the last open question from arc 1's §8: the repair path is now proven end-to-end
+against production, on a rotated credential, with the counters visible and the secret absent.
+
+**Remaining before deploy:** merge, then deploy the exact merged `dev` SHA manually
+(`autoDeploy:false`), all three arcs together. Post-deploy: `/health`, one authenticated
+`/generate-trip`, clean logs.

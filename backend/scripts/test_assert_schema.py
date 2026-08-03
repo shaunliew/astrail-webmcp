@@ -371,7 +371,11 @@ async def test_invalid_manifest_is_reported_before_the_credential_check(monkeypa
 async def test_table_mapped_to_no_columns_aborts(monkeypatch, capsys):
     """`{"places": ()}` selects the empty string — a probe that asks the database nothing and
     can never fail. Narrowing a table to zero columns is how the manifest gets hollowed out one
-    entry at a time rather than all at once."""
+    entry at a time rather than all at once.
+
+    `places` deliberately, now that it is an anchor: presence is not protection, and the anchor
+    rule cannot see this case at all (the key is right there). Only the zero-column rule can.
+    """
     manifest = _anchored({"places": ()})
     monkeypatch.setattr(assert_schema, "REQUIRED_SCHEMA", manifest)
     client = FakeSupabase(schema_from_manifest(manifest))
@@ -383,11 +387,30 @@ async def test_table_mapped_to_no_columns_aborts(monkeypatch, capsys):
     assert "places: mapped to no columns" in "".join(capsys.readouterr())
 
 
+def test_the_anchor_set_is_pinned_to_a_literal():
+    """SELF-ERASURE GUARD, and the reason this test exists at all.
+
+    `test_missing_anchor_table_aborts_and_names_which` derives its cases FROM `ANCHOR_TABLES`,
+    so deleting an entry also deletes the case that would have caught the deletion — the suite
+    shrinks to five green params and reports nothing. Fault injection confirmed exactly that:
+    removing `places` from the tuple was GREEN across the whole file until this literal existed.
+
+    So the anchor set is pinned here, where narrowing it is a diff a reviewer has to approve.
+    Widen it by the selection rule documented above the constant, never by taste.
+    """
+    assert assert_schema.ANCHOR_TABLES == (
+        "jobs", "trips", "trip_places", "transport_legs", "places", "users")
+
+
 @pytest.mark.parametrize("anchor", assert_schema.ANCHOR_TABLES)
 async def test_missing_anchor_table_aborts_and_names_which(monkeypatch, capsys, anchor):
     """The non-empty and zero-column rules both pass on a manifest narrowed to one healthy
     table, so the anchors are what makes "narrowed" detectable at all. Naming the anchor
-    matters: the fix is to restore that entry, not to audit all sixteen."""
+    matters: the fix is to restore that entry, not to audit all sixteen.
+
+    Every anchor is proven individually — a six-param test in which two params cannot fail
+    would assert coverage it does not have.
+    """
     manifest = {t: c for t, c in assert_schema.REQUIRED_SCHEMA.items() if t != anchor}
     monkeypatch.setattr(assert_schema, "REQUIRED_SCHEMA", manifest)
     client = FakeSupabase(schema_from_manifest(manifest))

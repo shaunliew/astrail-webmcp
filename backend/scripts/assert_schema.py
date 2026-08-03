@@ -118,11 +118,39 @@ REQUIRED_SCHEMA: dict[str, tuple[str, ...]] = {
     "users": ("id", "daily_reel_analysis_limit"),
 }
 
-# Tables this backend cannot serve a single request without: `jobs` is the durable-job row every
-# run opens, `trips`/`trip_places` are what a run produces, `transport_legs` is what Phase 3
-# writes. A manifest that no longer names all four has stopped describing this codebase — which
-# is the only thing `_validate_manifest` can detect without a second copy of the schema.
-ANCHOR_TABLES: tuple[str, ...] = ("jobs", "trips", "trip_places", "transport_legs")
+# ANCHOR TABLES — the manifest's floor, and the only thing `_validate_manifest` can check
+# without keeping a second copy of the schema. These are table NAMES, not a threshold, so adding
+# one carries no false-positive risk; the rule for admitting the NEXT one is written down here so
+# it gets decided by rule rather than by taste.
+#
+# SELECTION RULE — a table anchors iff BOTH:
+#   (a) a core live path (trip generation, or Saved-Reels organize) cannot complete without
+#       reading or writing it, AND
+#   (b) this gate has a documented reason to probe it.
+# Anything the product survives losing is deliberately NOT an anchor — weather, restaurant and
+# hotel suggestions, feedback, memory. Guardrail #3 makes those partial-failure-tolerant, so
+# demanding them here would abort deploys over columns a healthy trip never needs.
+#
+#   jobs, trips, trip_places, transport_legs
+#       the durable-job row every run opens, what the run produces, and what Phase 3 writes.
+#   places
+#       no non-degenerate trip completes without a place row — and this is the table the module
+#       docstring above cites as the gate's motivating example (`name_local`; the
+#       `country`/`country_code`/`country_name` verification receipt). While it was not an
+#       anchor, deleting its manifest entry silently disabled the exact protection this file
+#       documents, which is how the rule and the stated purpose had drifted apart.
+#   users
+#       `daily_reel_analysis_limit` is the observable proxy for 20260802120000 having landed (a
+#       column probe cannot see an RPC's argument list). A live probe on 2026-08-03 found that
+#       column genuinely absent from production, so this table is load-bearing in fact rather
+#       than in theory.
+#
+# STILL NOT SEEN: a narrowing that keeps all six — dropping `reel_cache`, say. Deriving the
+# required set from a static scan of `.table("...")` call sites would close that rather than
+# shrink it, and is deliberately deferred until a dropped non-anchor table actually bites: it
+# means a parser, dynamic-name false positives, and another script that can itself rot.
+ANCHOR_TABLES: tuple[str, ...] = ("jobs", "trips", "trip_places", "transport_legs", "places",
+                                  "users")
 
 
 def _validate_manifest(schema: dict[str, tuple[str, ...]]) -> list[str]:

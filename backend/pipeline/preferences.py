@@ -172,6 +172,44 @@ async def list_memory_facts(mem0, user_id: str) -> tuple[str, list[dict]]:
     return "ok", facts
 
 
+async def _cleared_since_generation_start(client, *, user_id: str, trip_id: str) -> bool:
+    """True if this user cleared memory after this generation's trip row was created.
+
+    Generation takes 60-180s. Without this, a mid-generation clear is undone by the
+    post-`result` write-back: the UI says cleared, the memory exists.
+
+    Both timestamps are Postgres `now()` (trips.created_at, memory_events.created_at), so
+    there is ONE clock and no host/DB skew — stamping this host's clock is the mistake
+    jobs.py documents for the job lease. trips.created_at is stable across a recovery
+    re-run: the row is INSERTed once in POST /generate-trip and only ever `.update()`d
+    afterwards (verified), so restart-with-cache-reuse (guardrail #12) compares against the
+    ORIGINAL start, which is the safe direction.
+
+    Returns True (skip the write) whenever the reference cannot be determined — losing one
+    learned memory is benign; resurrecting cleared data is the bug.
+    """
+    try:
+        trip = await client.table("trips").select("created_at") \
+            .eq("id", trip_id).eq("user_id", user_id).maybe_single().execute()
+    except Exception as e:                  # noqa: BLE001
+        print(f"[mem0] write-back guard: trip lookup failed: {type(e).__name__}", file=sys.stderr)
+        return True
+    # maybe_single() returns a BARE None on zero rows (postgrest 2.31.0) — not a result
+    # whose .data is None. Both shapes must read as "no reference".
+    started_at = (getattr(trip, "data", None) or {}).get("created_at") if trip is not None else None
+    if not started_at:
+        print("[mem0] write-back guard: no trip reference; skipping write", file=sys.stderr)
+        return True
+    try:
+        res = await client.table("memory_events").select("id") \
+            .eq("user_id", user_id).eq("event_type", "cleared") \
+            .gt("created_at", started_at).execute()
+    except Exception as e:                  # noqa: BLE001
+        print(f"[mem0] write-back guard: cleared lookup failed: {type(e).__name__}", file=sys.stderr)
+        return True
+    return bool(getattr(res, "data", None))
+
+
 async def persist_trip_memory(client, mem0, *, user_id: str, trip_id: str,
                               ctx: PreferenceContext) -> list[str]:
     """Write-once, awaited AFTER the terminal `result` event so it's invisible to the
@@ -187,6 +225,11 @@ async def persist_trip_memory(client, mem0, *, user_id: str, trip_id: str,
         return learned   # memory disabled: nothing was actually sent to mem0, so no
                           # memory_events row either — preferences already live in
                           # trips.preference_summary (Task 3)
+
+    if await _cleared_since_generation_start(client, user_id=user_id, trip_id=trip_id):
+        # The user cleared memory during this generation. Re-adding would silently
+        # un-clear it. No audit row: nothing was learned and nothing failed.
+        return learned
 
     event_type = "learned"
     try:

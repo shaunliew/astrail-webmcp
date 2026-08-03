@@ -297,18 +297,118 @@ class _FakeMem0Add(_FakeMem0):
         return {"status": "PENDING", "event_id": "evt-1"}
 
 
+# --- multi-table Supabase fake (C9) -----------------------------------------------
+# Rebuilt from the old insert-only `memory_events` fake: persist_trip_memory's write-back
+# guard also reads `trips`, and a single-table fake would make the guard blow up inside its
+# own fail-safe — the write-back would look guarded while nothing was proven.
+#
+# Instants are Postgres-sourced and written as LITERALS rather than derived from one
+# another: a derived offset follows the comparison anywhere, so a guard keyed on the wrong
+# reference would keep every test green. No wall clock is read (determinism).
+_TRIP_START = "2026-08-03T12:00:00+00:00"     # trips.created_at — this generation's start
+_BEFORE_START = "2026-08-03T11:59:00+00:00"   # a clear from an EARLIER session
+_AFTER_START = "2026-08-03T12:01:00+00:00"    # a clear DURING this generation
+_LATER = "2026-08-03T12:05:00+00:00"          # later still (recovery re-run fixture)
+
+_DEFAULT_TRIP = {"id": "t1", "user_id": "u1", "created_at": _TRIP_START}
+
+
+class _Result:
+    def __init__(self, data): self.data = data
+
+
 class _FakeTable:
-    def __init__(self, sink): self.sink = sink; self._row = None
-    def insert(self, row): self._row = row; return self
+    """PostgREST-shaped builder over one table of a shared in-memory db.
+
+    Filters GENUINELY (BUILD-LOOP trap #4: a `return self` builder makes every window and
+    ownership case vacuous), and unsupported shapes raise rather than filtering on nothing
+    — the rule test_memory_clear.py and test_saved_reels_organize.py already follow.
+    """
+
+    def __init__(self, client, name: str) -> None:
+        self._client, self._name = client, name
+        self._op = None
+        self._payload = None
+        self._eq: dict = {}
+        self._gt: dict = {}
+        self._single = False
+
+    def insert(self, row): self._op, self._payload = "insert", dict(row); return self
+
+    def select(self, *_cols): self._op = "select"; return self
+
+    def eq(self, column, value):
+        if value is None:
+            raise ValueError(".eq(col, None) is never valid against postgrest; use .is_(col, 'null')")
+        self._eq[column] = value
+        return self
+
+    def gt(self, column, value):
+        if value is None:
+            raise ValueError(".gt(col, None) is never valid against postgrest; use .is_(col, 'null')")
+        self._gt[column] = value
+        return self
+
+    def maybe_single(self):
+        self._single = True
+        return self
+
+    def _matches(self, row) -> bool:
+        if any(row.get(col) != value for col, value in self._eq.items()):
+            return False
+        for col, value in self._gt.items():
+            current = row.get(col)
+            # Postgres: `NULL > x` is NULL, so a row missing the column does NOT match.
+            if current is None or not current > value:
+                return False
+        return True
+
     async def execute(self):
-        self.sink.append(self._row); return type("R", (), {"data": [self._row]})()
+        client = self._client
+        client.ops.append(f"{self._op}:{self._name}")
+        rows = client.db[self._name]
+        if self._op == "insert":
+            row = dict(self._payload)
+            client.seq += 1
+            # The DB supplies both as defaults and the guard reads created_at.
+            row.setdefault("id", f"{self._name}-{client.seq}")
+            row.setdefault("created_at", _LATER)   # audit rows land after the trip started
+            rows.append(row)
+            return _Result([dict(row)])
+        if self._op == "select":
+            if self._name in client.select_raises:
+                raise RuntimeError(f"select on {self._name} failed")
+            matched = [dict(r) for r in rows if self._matches(r)]
+            if self._single:
+                if len(matched) > 1:
+                    raise ValueError("maybe_single() matched multiple rows")
+                # Faithful to postgrest 2.31.0: a bare None on zero rows, NOT a result whose
+                # .data is None (test_main.py's fake carries the same note — a forgiving fake
+                # there hid a real 500 in the stream owner check).
+                return _Result(matched[0]) if matched else None
+            return _Result(matched)
+        raise ValueError(f"fake table used with no supported operation: {self._op!r}")
 
 
 class _FakeClient:
-    def __init__(self): self.events = []
+    def __init__(self, *, trips=None, memory_events=None, select_raises=()) -> None:
+        seeded_trips = [_DEFAULT_TRIP] if trips is None else trips
+        self.db = {
+            "trips": [dict(r) for r in seeded_trips],
+            "memory_events": [dict(r) for r in (memory_events or [])],
+        }
+        self.select_raises = frozenset(select_raises)
+        self.seq = 0
+        self.ops: list[str] = []   # so ORDER and short-circuiting are assertable
+
     def table(self, name):
-        assert name == "memory_events"
-        return _FakeTable(self.events)
+        if name not in self.db:
+            raise ValueError(f"fake serves only {sorted(self.db)}, got {name!r}")
+        return _FakeTable(self, name)
+
+    @property
+    def events(self):
+        return self.db["memory_events"]
 
 
 def test_write_back_writes_event_and_adds_on_explicit():
@@ -352,6 +452,149 @@ def test_write_back_disabled_memory_writes_no_event():
                                               ctx=ctx))
     assert learned == ["loves ramen"]
     assert client.events == []   # no audit row when memory is disabled
+
+
+# ---------------------------------------------------------------------------------
+# Write-back concurrency guard (C8): a clear that lands DURING a 60-180s generation must
+# not be undone by the post-`result` write-back. The UI would say cleared while the memory
+# quietly came back.
+# ---------------------------------------------------------------------------------
+
+def _explicit_ctx():
+    from pipeline.preferences import merge_preferences
+    return merge_preferences(explicit_text="loves ramen", pace="relaxed", memory_facts=[])
+
+
+def _cleared_row(**overrides):
+    row = {"id": "evt-clear", "user_id": "u1", "trip_id": None,
+           "event_type": "cleared", "created_at": _AFTER_START}
+    row.update(overrides)
+    return row
+
+
+def _run_write_back(client, mem):
+    from pipeline.preferences import persist_trip_memory
+    return asyncio.run(persist_trip_memory(client, mem, user_id="u1", trip_id="t1",
+                                           ctx=_explicit_ctx()))
+
+
+def test_write_back_proceeds_when_memory_was_never_cleared():
+    # Positive control for the guard: it must not suppress the ordinary path. Reddens if
+    # the guard is hard-wired to True (over-suppression is a real failure mode — every
+    # fail-safe branch returns True).
+    client, mem = _FakeClient(), _FakeMem0Add()
+    learned = _run_write_back(client, mem)
+    assert learned == ["loves ramen"]
+    assert mem.added and mem.added[0][1] == "u1"
+    assert [r["event_type"] for r in client.events] == ["learned"]
+
+
+def test_write_back_skipped_when_cleared_during_this_generation():
+    # THE case this guard exists for. The clear landed after trips.created_at, so re-adding
+    # would silently un-clear memory the endpoint already reported as cleared.
+    client = _FakeClient(memory_events=[_cleared_row()])
+    mem = _FakeMem0Add()
+    learned = _run_write_back(client, mem)
+    assert learned == ["loves ramen"]     # the caller's contract is unchanged
+    assert mem.added == []                # nothing re-added to mem0
+    # No audit row either: nothing was learned and nothing failed, so only the seeded
+    # marker remains.
+    assert [r["event_type"] for r in client.events] == ["cleared"]
+
+
+def test_write_back_proceeds_when_the_clear_predates_this_generation():
+    # Makes `.gt(created_at, started_at)` load-bearing: an OLD clear is already reflected in
+    # mem0, so suppressing here would lose every later preference the user states.
+    client = _FakeClient(memory_events=[_cleared_row(created_at=_BEFORE_START)])
+    mem = _FakeMem0Add()
+    _run_write_back(client, mem)
+    assert mem.added and mem.added[0][1] == "u1"
+    assert [r["event_type"] for r in client.events] == ["cleared", "learned"]
+
+
+def test_write_back_ignores_another_users_clear():
+    # Makes the memory_events `.eq("user_id", …)` filter load-bearing: without it one user
+    # clearing memory would stop every OTHER user's generation from learning.
+    client = _FakeClient(memory_events=[_cleared_row(user_id="u2")])
+    mem = _FakeMem0Add()
+    _run_write_back(client, mem)
+    assert mem.added and mem.added[0][1] == "u1"
+    assert [r["event_type"] for r in client.events] == ["cleared", "learned"]
+
+
+def test_write_back_ignores_a_non_clear_event_newer_than_the_trip():
+    # Makes `.eq("event_type", "cleared")` load-bearing: memory_events also carries this
+    # user's 'learned'/'failed' rows, and a filter-less lookup would read any of them as a
+    # clear and suppress learning forever.
+    client = _FakeClient(memory_events=[
+        {"id": "evt-learn", "user_id": "u1", "trip_id": "t0", "event_type": "learned",
+         "created_at": _AFTER_START}])
+    mem = _FakeMem0Add()
+    _run_write_back(client, mem)
+    assert mem.added and mem.added[0][1] == "u1"
+    assert [r["event_type"] for r in client.events] == ["learned", "learned"]
+
+
+def test_write_back_skipped_when_the_trip_lookup_fails():
+    # Fail-safe direction (D7): with no reference we cannot tell a clear from no clear.
+    # Losing one learned memory is benign; resurrecting cleared data is the bug.
+    client = _FakeClient(memory_events=[_cleared_row()], select_raises={"trips"})
+    mem = _FakeMem0Add()
+    _run_write_back(client, mem)
+    assert mem.added == []
+    assert [r["event_type"] for r in client.events] == ["cleared"]
+
+
+def test_write_back_skipped_when_the_trip_row_is_absent():
+    # maybe_single() returns a BARE None on zero rows (postgrest 2.31.0), not a result whose
+    # .data is None. `client.ops` proves the SHORT-CIRCUIT, which is the only outcome the
+    # `if not started_at` branch can produce on its own: with it gone the memory_events
+    # lookup runs (and then fails on `.gt(col, None)`), which the ops list sees.
+    client = _FakeClient(trips=[], memory_events=[_cleared_row()])
+    mem = _FakeMem0Add()
+    _run_write_back(client, mem)
+    assert mem.added == []
+    assert client.ops == ["select:trips"]
+    assert [r["event_type"] for r in client.events] == ["cleared"]
+
+
+def test_write_back_skipped_when_the_cleared_lookup_fails():
+    # Same fail-safe as the trip lookup, different query. Its own `except` — proving one
+    # says nothing about the other.
+    client = _FakeClient(select_raises={"memory_events"})
+    mem = _FakeMem0Add()
+    _run_write_back(client, mem)
+    assert mem.added == []
+    assert client.ops == ["select:trips", "select:memory_events"]
+    assert client.events == []
+
+
+def test_write_back_ignores_a_trip_owned_by_another_user():
+    # Guardrail #6 on the reference read itself: the trips row must match BOTH id and
+    # user_id. Without the user_id filter this reads a stranger's trip start and compares
+    # this user's clears against it.
+    client = _FakeClient(trips=[{"id": "t1", "user_id": "u2", "created_at": _TRIP_START}])
+    mem = _FakeMem0Add()
+    _run_write_back(client, mem)
+    assert mem.added == []
+    assert client.ops == ["select:trips"]
+
+
+def test_write_back_recovery_rerun_compares_against_the_original_trip_start():
+    # Guardrail #12: a crashed generation re-executes from Phase 1, but the trips row is
+    # INSERTed once in POST /generate-trip and only ever `.update()`d, so created_at still
+    # marks the ORIGINAL start. Here the clear is OLDER than the crashed attempt's own audit
+    # row: a guard keyed on "this attempt started now" — or on the newest memory_events row —
+    # would find no clear "since" and resurrect the memory.
+    client = _FakeClient(memory_events=[
+        _cleared_row(created_at=_AFTER_START),
+        {"id": "evt-crash", "user_id": "u1", "trip_id": "t1", "event_type": "failed",
+         "created_at": _LATER},
+    ])
+    mem = _FakeMem0Add()
+    _run_write_back(client, mem)
+    assert mem.added == []
+    assert [r["event_type"] for r in client.events] == ["cleared", "failed"]
 
 
 @pytest.mark.live

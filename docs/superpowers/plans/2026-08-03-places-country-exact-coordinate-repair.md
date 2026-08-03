@@ -370,3 +370,47 @@ against production, on a rotated credential, with the counters visible and the s
 **Remaining before deploy:** merge, then deploy the exact merged `dev` SHA manually
 (`autoDeploy:false`), all three arcs together. Post-deploy: `/health`, one authenticated
 `/generate-trip`, clean logs.
+
+
+---
+
+## 9. DEPLOYED AND VERIFIED IN PRODUCTION — 2026-08-03
+
+Merged as PR #57 (`f1047e0`, fast-forward `c79356f..f1047e0`), deployed manually to Render.
+
+| Service | Status | Commit |
+|---|---|---|
+| `astrail-backend` (web) | **live** | `f1047e0` |
+| `astrail-telegram-ingest` (worker) | **live** | `f1047e0` |
+
+- `/health` → `{"status":"ok"}`; `/readiness` → `{"ready":true,"mem0":"configured"}`.
+- **Credential scan of the deployed logs: 0 credential-bearing lines** across 276 + 278 lines —
+  no `access_token=`, no `sk.`, no `apikey=`.
+- Nine `telegram_poll_conflict` HTTP 409s at 06:20:37–06:21:16 are **deploy rollover**, not a
+  defect: Telegram allows one `getUpdates` consumer and the old/new workers briefly overlapped.
+  The escalating backoff handled it and they stopped on their own.
+- Telegram ingest confirmed working independently (`telegram_reel_accepted`, a **cold**
+  extraction `[extract] … places=1 kept of 1`, `telegram_poller_alive`) — though note it
+  exercises the `grounding.py` → `find_or_create_place` RPC path, **not** these three arcs.
+
+**Live generation against the DEPLOYED service** (`scripts/smoke_generate.py`, `trip f17b3400`),
+full SSE stream to the terminal event:
+
+```
+create_trip → preferences → cache_hit → dedup → narrate → weather → save
+            → restaurants → transport → hotels → summarize
+[result] stage=save   →   [DONE]
+
+day 1: 'Tokyo Dream Park'   Japan (JP/Japan)
+day 2: 'Grand Hyatt Tokyo'  Japan (JP/Japan)
+--- grounding: 2/2 places carry a VERIFIED country ---
+RESULT: PASS
+```
+
+`No forecast available this far ahead` (Open-Meteo's ~16-day horizon) and the
+`Tokyo (offline pipeline skeleton)` placeholder title are both known, documented, expected.
+
+**Still unproven, unchanged and accepted:** the INSERT path writing a country on the deployed
+service — every reel in the repo is cached with its places already in the corpus, so no run has
+ever created a fresh reel-place. Grounding itself is proven live; what remains untested is a
+three-key dict assignment covered by 17 fault-injected tests.

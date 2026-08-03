@@ -100,14 +100,24 @@ async def _dump_places(client, trip_id: str) -> None:
             print("  (no trip_places persisted)")
             return
         ids = list({r["place_id"] for r in tp if r.get("place_id")})
-        pl = (await client.table("places").select("id,name,lat,lng").in_("id", ids).execute()).data or []
+        pl = (await client.table("places")
+              .select("id,name,lat,lng,country,country_code,country_name")
+              .in_("id", ids).execute()).data or []
         pm = {p["id"]: p for p in pl}
         print(f"\n--- persisted evidence-backed places (DB, {len(tp)}) ---")
         for r in sorted(tp, key=lambda x: x.get("day_number") or 0):
             p = pm.get(r.get("place_id"), {})
             ev = r.get("evidence_json") or {}
             quote = ev.get("evidence_caption_quote") or ev.get("caption_quote") or (str(ev)[:80] if ev else "")
-            print(f"  day {r.get('day_number')}: {p.get('name')!r}  ({p.get('lat')},{p.get('lng')})  evidence={str(quote)[:100]!r}")
+            # `country` is a VERIFICATION RECEIPT: non-NULL means the coordinate was
+            # reverse-geocoded AND agreed with the extractor's claim. Printed explicitly —
+            # a blank would read as "fine" when NULL is the thing worth seeing.
+            badge = (f"{p.get('country')} ({p.get('country_code')}/{p.get('country_name')})"
+                     if p.get("country") else "country=NULL")
+            print(f"  day {r.get('day_number')}: {p.get('name')!r}  ({p.get('lat')},{p.get('lng')})  "
+                  f"{badge}  evidence={str(quote)[:80]!r}")
+        verified = [p for p in pl if p.get("country")]
+        print(f"--- grounding: {len(verified)}/{len(pl)} places carry a VERIFIED country ---")
     except Exception as e:  # noqa: BLE001
         print(f"  (place dump failed: {type(e).__name__}: {e})")
 

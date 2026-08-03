@@ -8,12 +8,14 @@
 export const RUNWAY_VH = 1000 // slice runway: ~10 screens for 3 beats
 
 export const T = {
-  /* Beat 0 — cold open. Idle loop holds until the user scrolls. */
-  heroCopyOut: [0.06, 0.12], // headline fades as the camera starts moving
-  zoom: [0.1, 0.24], // camera enlarges INTO the phone (scale 1 → 7)
-  zoomBlur: [0.16, 0.24], // motion blur sells the dive + masks the art switch
-  beat0Out: [0.2, 0.245], // cold-open dissolves away inside the zoom
-  beat1In: [0.18, 0.24], // POV phone fades in mid-zoom
+  /* HYBRID hero segment — windows are LOCAL to the hero's sticky block
+     (0→1 across its 260vh). The dive lands on REAL app UI (panelIn). */
+  heroCopyOut: [0.18, 0.3], // headline fades as the camera starts moving
+  zoom: [0.3, 0.85], // camera enlarges INTO the phone (scale 1 → 7)
+  zoomBlur: [0.5, 0.85], // motion blur sells the dive + masks the art switch
+  beat0Out: [0.76, 0.88], // cold-open dissolves away inside the zoom
+  panelIn: [0.72, 0.9], // the real-app panel resolves out of the dive
+  beat1In: [0.18, 0.24], // (parked story files only)
 
   /* Beat 1 — first-person scroll. Scroll = his thumb. */
   phone: [0.24, 0.6], // flick-scrub window (3 flick cycles)

@@ -39,9 +39,23 @@ export const faqs = [
     answer:
       "Because that's where most travel intent now starts. People save places months before they're ready to plan. Astrail starts from that messy inspiration layer and turns it into a real trip.",
   },
+  {
+    question: "Is it really free?",
+    answer:
+      "Yes — planning is completely free during the beta, and there's no card anywhere in the flow. Unlimited planning is limited to 25 seats we grant to the most active early explorers; everyone else can still sign up and plan real trips to try it out.",
+  },
+  {
+    question: "How do I give feedback?",
+    answer:
+      "Use the feedback link in the footer or just email us — we read every message. Astrail is an early beta, and what you tell us decides what we build next.",
+  },
 ] as const;
 
 export const tallyEmbedUrl =
   "https://tally.so/embed/QKjrvk?alignLeft=1&hideTitle=1&transparentBackground=1&dynamicHeight=1";
 
+// Full-launch notify list (hotel booking via Travala). Repurposes the old waitlist form.
 export const tallyFallbackUrl = "https://tally.so/r/QKjrvk";
+
+// Inbound alias (Cloudflare Email Routing). Confirm this address is live before launch.
+export const contactEmail = "hello@astrail.xyz";

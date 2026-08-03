@@ -19,6 +19,22 @@ export const CLIPS = {
   cta: '/landing/clips/beat7-cta.mp4',
 } as const
 
+/* Real app screenshots (swap-ready). Captured 2026-08-02 from the live app
+   as the Aster demo account (no PII) at 1440x900, webp q85.
+   undefined → the section renders a labeled slot instead. */
+export const SCREENS: {
+  createTrail?: string
+  reelLibrary?: string
+  tripWorkspace?: string
+} = {
+  createTrail: '/landing/screens/create-trail.webp',
+  reelLibrary: '/landing/screens/reel-library.webp',
+  tripWorkspace: '/landing/screens/trip-workspace.webp',
+}
+
+/* Fresh demo recording (Zhi Hao filming). Set when the file lands. */
+export const DEMO_VIDEO_SRC: string | undefined = undefined
+
 export const STILLS = {
   coldOpen: '/landing/coldopen-hero.webp',
   phoneScroll: '/landing/phone-scroll.webp',

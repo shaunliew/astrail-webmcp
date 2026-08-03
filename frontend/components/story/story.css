@@ -264,3 +264,19 @@
   .story-progress { display: none; }
   .story-nav { padding: 12px 16px; }
 }
+
+/* nav links (repointed to the open beta, 2026-08-03) */
+.story-nav__link {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--starlight-70);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.story-nav__link:hover { color: var(--starlight); }
+
+/* compact the pills on phones: keep the wordmark + the one primary action */
+@media (max-width: 640px) {
+  .story-nav__link,
+  .story-nav__seats { display: none; }
+}

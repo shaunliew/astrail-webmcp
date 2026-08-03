@@ -3,36 +3,39 @@
 import Link from 'next/link'
 
 import { AstrailLogo } from '@/components/brand/AstrailLogo'
-import { tallyFallbackUrl } from '@/components/landing/landing-copy'
-import { BOARDING_OPEN, SEATS_TOTAL } from './story-config'
+import { SEATS_TOTAL } from './story-config'
 
-/* Persistent chrome. Glass pills so the same nav reads on both the warm ivory
-   acts and the night acts without theme switching. Seat truth: no invented
-   counts — waitlist is primary until boarding actually opens. */
+/* Persistent chrome, repointed to the open beta (2026-08-03). Glass pills so
+   the same nav reads on both the warm ivory hero and the night sections. The
+   primary action is now the product itself — sign up and plan — not a waitlist.
+   Scarcity is real (25 unlimited seats) but earned by activation, so signing up
+   IS how you get considered; there is no separate "request a seat" button to
+   go dead before the entitlement backend ships. */
 export default function StoryNav() {
   return (
     <nav className="story-nav" aria-label="Astrail">
-      <Link href="/" className="story-nav__pill" aria-label="Astrail home">
-        <AstrailLogo variant="lockup" tone="chrome" height={24} priority />
-      </Link>
+      <div className="story-nav__pill">
+        <Link href="/" aria-label="Astrail home" className="flex items-center">
+          <AstrailLogo variant="lockup" tone="chrome" height={22} priority />
+        </Link>
+        <a href="#how-it-works" className="story-nav__link">
+          How it works
+        </a>
+        <a href="#faq" className="story-nav__link">
+          FAQ
+        </a>
+      </div>
+
       <div className="story-nav__pill">
         <span className="story-nav__seats">
-          <b>{SEATS_TOTAL} seats</b> &middot; boarding soon
+          <b>{SEATS_TOTAL} seats</b> &middot; open beta
         </span>
-        {BOARDING_OPEN ? (
-          <Link href="/sign-in" className="story-nav__cta">
-            Claim a seat
-          </Link>
-        ) : (
-          <a
-            href={tallyFallbackUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="story-nav__cta"
-          >
-            Join the waitlist
-          </a>
-        )}
+        <Link href="/sign-in" className="story-nav__link">
+          Log in
+        </Link>
+        <Link href="/sign-in" className="story-nav__cta">
+          Start planning free
+        </Link>
       </div>
     </nav>
   )

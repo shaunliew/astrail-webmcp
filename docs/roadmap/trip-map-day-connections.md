@@ -1,8 +1,9 @@
 # Trip map — connecting the pins (day-by-day routing roadmap)
 
-**Status:** Beta shipped (constellation trail) · hub + smart-routing phases pending
+**Status:** Beta shipped (constellation trail, now with per-hop road geometry) · hub +
+smart-routing phases pending
 **Owner:** Zhi Hao (frontend) · needs Shaun (backend) + Travala for the later phases
-**Last updated:** 2026-08-01
+**Last updated:** 2026-08-03
 
 > "Astrail turns scattered travel inspiration into the route you actually take." The map is
 > where that promise gets literal — this doc tracks how the pins go from scattered dots to a
@@ -30,8 +31,13 @@ pins dimmed — so there was no way to read the whole journey at a glance.
 ## Beta — the constellation trail (shipped)
 
 The simplest thing that always connects: **one continuous line through every stop in journey
-order, independent of transport data.** On brand — it literally draws the constellation the
-product is named for.
+order.** The stop order — not the transport legs — is what defines the line, so it draws even
+on a 0-leg trip. On brand — it literally draws the constellation the product is named for.
+
+Since **2026-08-03** each hop is *upgraded* to real road geometry where one is available
+(issue #42): the backend now writes `transport_legs.route_geometry`, and the trail substitutes
+that leg's road points for the straight link. This is a per-hop substitution, never a
+leg-driven line — see "Per-hop road geometry" below.
 
 **What it does**
 - Orders every dayed, resolved-coordinate stop across **all** days by `(day_number,
@@ -40,7 +46,9 @@ product is named for.
 - Numbers pins **globally, 1…N** — the last stop carries the highest number, so the pins read
   as one sequence you can follow end to end. All stops stay lit; the active day is emphasized
   by the **camera** (fly-to), not by dimming the others.
-- **Ignores transport legs entirely**, so it connects even on 0-leg trips.
+- **Never depends on transport legs to connect.** A hop upgrades to the leg's road geometry
+  only when one exists for that exact stop pair on that day; otherwise it stays a straight
+  pin-to-pin link. 0-leg trips therefore still connect, exactly as before.
 
 **Deliberately excluded from the trail**
 - The **base hotel** (`day_number = null`) — stays a standalone, receding pin for now. It
@@ -50,13 +58,32 @@ product is named for.
 
 **Files**
 - `frontend/lib/trip/selectors.ts` — `orderedTripPlaces()`, `buildTrailNumbers()`,
-  `hasRealCoords()` (promoted from `TripMap`), and `pinLabelForPlace()` reworked to global.
+  `hasRealCoords()` (promoted from `TripMap`), `pinLabelForPlace()` reworked to global, and
+  `trailCoordinates()` (the per-hop geometry substitution).
 - `frontend/components/map/TripMap.tsx` — `drawRoutes()` → `drawTrail()`; markers now use
   global trail numbers; the day-change effect only moves the camera (trail is day-independent).
 - Tests: `lib/trip/__tests__/selectors.test.ts`, `components/map/__tests__/TripMap.test.tsx`.
 
-**Explicitly *not* in beta:** real per-hop routing, the hotel hub, per-day colors, cross-day
-connectors. The trail is an honest placeholder that upgrades cleanly into the model below.
+**Explicitly *not* in beta:** the hotel hub, per-day colors, cross-day connectors, and any
+re-ordering of a day's stops. The trail is an honest placeholder that upgrades cleanly into
+the model below.
+
+### Per-hop road geometry (shipped 2026-08-03, issue #42)
+
+`trailCoordinates(bundle)` walks the ordered stops and, for each consecutive pair, looks for a
+transport leg matching `(day_number, from_place_id, to_place_id)`:
+
+- **Match with drawable geometry** → the leg's **interior** points are spliced between the two
+  pins. Endpoints are dropped deliberately: Mapbox snaps a route's ends to the road, which can
+  sit tens of metres off the place, and the trail must meet the pins.
+- **No match, no geometry, or a cross-day transition** → a straight pin-to-pin link. This is
+  the invariant: **the trail always connects.**
+- **Two leg rows sharing one hop** → a drawable row wins over a later NULL one. Two *drawable*
+  rows on one hop stay order-dependent (last write wins); today's producer cannot emit that,
+  so it is an accepted limit rather than a tie-break rule.
+
+The `day_number` in the key is defense-in-depth, not a bug fix: `persist_transport` groups
+stops by day before pairing them, so every leg it writes is already within one day.
 
 ---
 
@@ -91,12 +118,15 @@ stops **branch out from** and return to:
 ### Phase C — Smart routing (the agent's job)
 The agent sequences and routes each day intelligently:
 - Order a day's stops to **minimize travel** (nearest-neighbour / TSP-ish over the day's
-  set), instead of trusting raw `sort_order`.
-- Pick the **transport mode per hop** (walk / transit / drive) and surface **the shortest /
-  most sensible route** — real Mapbox Directions geometry per hop.
-- Emit these as `TransportLeg` rows so the map can draw **real routed geometry**, upgrading
-  each trail segment from the straight beta link to the actual path. (Backend work — pairs
-  with the multi-agent pipeline; see `.claude/docs/ARCHITECTURE.md`.)
+  set), instead of trusting raw `sort_order`. **Still pending.**
+- Pick the **transport mode per hop** (walk / transit / drive). Partly done — the transport
+  stage picks a profile per day and flags long transfers as `transit_hint`; real transit
+  routing stays a deferred v2 decision.
+- ~~Emit these as `TransportLeg` rows so the map can draw **real routed geometry**~~ —
+  **SHIPPED 2026-08-03 (issue #42).** The backend derives per-leg geometry from the Directions
+  `steps[]` of one call per day and writes `transport_legs.route_geometry`; the map splices it
+  in per hop. No backfill: only trips generated after that deploy carry geometry, and older
+  trips keep straight links — which is exactly the fallback the trail already had.
 
 ### Phase D — Whole-trip overview polish (optional)
 - Per-day color/hue so multiple days read as distinct trails; selected day brightest, others
@@ -109,8 +139,9 @@ The agent sequences and routes each day intelligently:
 
 - **[blocking Phase A]** Travala hotel lat/lng — confirm with the Travala dev whether the
   search result can include coordinates; if not, we geocode.
-- **[Phase C, backend]** Who owns leg generation + per-day sequencing — the enrich/transport
-  pipeline stage. Needs `TransportLeg` rows with `route_geometry` for the map to upgrade.
+- **[Phase C, backend]** ~~Who owns leg generation~~ — the enrich/transport pipeline stage
+  writes `route_geometry` as of issue #42. **Per-day sequencing** (re-ordering a day's stops)
+  is still unowned.
 - **Multi-base trips:** the current model assumes one base hotel for the whole trip. Trips
   that change cities mid-way need a hotel *per segment* — deferred until it comes up.
 - **Numbering vs. smart order:** beta numbers by `sort_order`; once Phase C reorders stops
@@ -120,6 +151,11 @@ The agent sequences and routes each day intelligently:
 
 ## Decisions log
 
+- **2026-08-03** (issue #42) — The trail upgrades **per hop** to `route_geometry` where a
+  same-day leg supplies it, keeping the straight-line fallback everywhere else. Chosen over
+  "draw the legs instead" precisely because a leg-driven line disconnects every
+  `saved_with_gaps` trip. The stop order still defines the line; geometry only decorates the
+  hops that have it.
 - **2026-08-01** — Beta = ordered constellation trail (global numbering, no transport-leg
   dependency, hotel excluded, camera unchanged). Agreed the hotel-hub + smart routing is the
   north star but out of scope for beta; the trail upgrades into it rather than being thrown

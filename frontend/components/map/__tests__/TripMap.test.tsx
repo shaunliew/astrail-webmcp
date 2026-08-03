@@ -59,6 +59,18 @@ function renderMap(props: Partial<Parameters<typeof TripMap>[0]> = {}) {
   )
 }
 
+// The trail upgrades each same-day hop to the leg's road geometry (selectors.trailCoordinates),
+// so the expectations below derive the interior points from the fixture rather than hardcoding
+// floats. Expected is assembled by a DIFFERENT expression than the implementation (explicit
+// literals + slices vs. a loop over the legs), so it is not circular.
+const geomOf = (id: string) =>
+  TOKYO_TRIP.transport_legs.find((l) => l.id === id)!.route_geometry!.coordinates
+
+function trailCoords(): number[][] {
+  const call = mapInstance.addSource.mock.calls.find((c) => c[0] === 'trip-trail')
+  return (call![1] as { data: { geometry: { coordinates: number[][] } } }).data.geometry.coordinates
+}
+
 describe('TripMap', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -174,17 +186,20 @@ describe('TripMap', () => {
       id: 'trip-trail-core',
       paint: expect.objectContaining({ 'line-width': 2.6, 'line-dasharray': [0.1, 1.6] }),
     }))
-    // the line threads every dayed stop in (day, sort_order) order, Day 1 → last day
+    // the line threads every dayed stop in (day, sort_order) order, Day 1 → last day, with
+    // each same-day hop's road interior spliced in between its two pins
     expect(mapInstance.addSource).toHaveBeenCalledWith('trip-trail', expect.objectContaining({
       data: expect.objectContaining({
         geometry: {
           type: 'LineString',
           coordinates: [
-            [139.7967, 35.7148], // Senso-ji   (Day 1, stop 1)
-            [139.7906, 35.6497], // teamLab     (Day 1, stop 2)
-            [139.7016, 35.658],  // Shibuya Sky (Day 2, stop 3)
-            [139.7002, 35.6606], // Ichiran     (Day 2, stop 4)
-            [139.8804, 35.6329], // Disneyland  (Day 3, stop 5)
+            [139.7967, 35.7148],             // Senso-ji    (Day 1, stop 1)
+            ...geomOf('leg_1').slice(1, -1), // road interior, Day 1 hop
+            [139.7906, 35.6497],             // teamLab     (Day 1, stop 2)
+            [139.7016, 35.658],              // Shibuya Sky (Day 2, stop 3) — cross-day, straight
+            ...geomOf('leg_2').slice(1, -1), // road interior, Day 2 hop
+            [139.7002, 35.6606],             // Ichiran     (Day 2, stop 4)
+            [139.8804, 35.6329],             // Disneyland  (Day 3, stop 5) — cross-day, straight
           ],
         },
       }),
@@ -217,5 +232,20 @@ describe('TripMap', () => {
     // day change only moves the camera; the trail is day-independent, so it is not re-added
     expect(mapInstance.addSource).not.toHaveBeenCalledWith('trip-trail', expect.anything())
     expect(mapInstance.flyTo).toHaveBeenCalled() // Day 3's single stop → camera flies there
+  })
+
+  // The wiring itself: the source must receive the LEG's road points, not five straight
+  // pin-to-pin coordinates. Reverting drawTrail to `stops.map(...)` reddens this.
+  it('draws the trail from per-leg route geometry, not straight pin-to-pin links', async () => {
+    renderMap()
+    await flush()
+    fireLoad()
+
+    const coordinates = trailCoords()
+    for (const point of [...geomOf('leg_1').slice(1, -1), ...geomOf('leg_2').slice(1, -1)]) {
+      expect(coordinates).toContainEqual(point)
+    }
+    // 5 stops + 4 interior points on each of the two same-day hops
+    expect(coordinates).toHaveLength(13)
   })
 })

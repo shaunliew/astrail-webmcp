@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react'
 import mapboxgl from 'mapbox-gl'
 import type { TripBundle } from '@/lib/trip/backend-types'
 import {
-  orderedTripPlaces, buildTrailNumbers, buildPlaceIndex, placesForDay, hasRealCoords,
+  trailCoordinates, buildTrailNumbers, buildPlaceIndex, placesForDay, hasRealCoords,
 } from '@/lib/trip/selectors'
 import { consumeTripFramed } from '@/lib/trip/map-handoff'
 import { useSharedMap } from '@/components/map/MapProvider'
@@ -78,19 +78,20 @@ export default function TripMap({
     setMarkers(markers)
   }
 
-  // Beta "constellation trail" (docs/roadmap/trip-map-day-connections.md): one continuous
-  // brass line threading every stop in journey order — Day 1's first stop through the last
-  // day's final stop. Deliberately built from the ordered stops, NOT from transport legs:
-  // most "saved with gaps" trips come back with zero legs, and a leg-driven line leaves those
-  // pins disconnected. This always connects. Real per-hop routing + the hotel-as-hub model
-  // land in a later phase, not here.
+  // "Constellation trail" (docs/roadmap/trip-map-day-connections.md): one continuous brass
+  // line threading every stop in journey order — Day 1's first stop through the last day's
+  // final stop — built from the ORDERED STOPS, with per-hop road geometry substituted where a
+  // same-day transport leg provides it (selectors.trailCoordinates). The stop order, not the
+  // legs, is what defines the line: most "saved with gaps" trips come back with zero legs, so
+  // a leg-DRIVEN line would leave those pins disconnected. Every hop without usable geometry
+  // stays a straight pin-to-pin link — this always connects. The hotel-as-hub model lands in a
+  // later phase, not here.
   function drawTrail() {
     const map = getMap()
     if (!map) return
     clearRoutes()
-    const stops = orderedTripPlaces(bundle)
-    if (stops.length < 2) return // one stop (or none) has nothing to connect
-    const coordinates = stops.map((tp) => [tp.place.lng, tp.place.lat] as [number, number])
+    const coordinates = trailCoordinates(bundle)
+    if (coordinates.length < 2) return // one stop (or none) has nothing to connect
     const id = 'trip-trail'
     const casingId = `${id}-casing`
     const coreId = `${id}-core`

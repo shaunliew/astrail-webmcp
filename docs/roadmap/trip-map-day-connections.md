@@ -1,7 +1,10 @@
 # Trip map — connecting the pins (day-by-day routing roadmap)
 
-**Status:** Beta shipped (constellation trail, now with per-hop road geometry) · hub +
-smart-routing phases pending
+**Status:** Beta shipped (constellation trail) · per-hop road geometry **merged, NOT yet
+deployed** — `render.yaml` sets `autoDeploy: false`, so both halves ship by hand and in either
+order; mark this SHIPPED only once the Render SHA, the Vercel SHA, and a live
+`geometry acceptance PASS` on one freshly generated trip are all verified · hub + smart-routing
+phases pending
 **Owner:** Zhi Hao (frontend) · needs Shaun (backend) + Travala for the later phases
 **Last updated:** 2026-08-03
 
@@ -125,8 +128,12 @@ The agent sequences and routes each day intelligently:
 - ~~Emit these as `TransportLeg` rows so the map can draw **real routed geometry**~~ —
   **SHIPPED 2026-08-03 (issue #42).** The backend derives per-leg geometry from the Directions
   `steps[]` of one call per day and writes `transport_legs.route_geometry`; the map splices it
-  in per hop. No backfill: only trips generated after that deploy carry geometry, and older
-  trips keep straight links — which is exactly the fallback the trail already had.
+  in per hop. No backfill. Geometry is carried by **legs written by a geometry-capable
+  backend deployment** — *not* by trip creation time, which is the wrong boundary in both
+  directions: a pre-deploy trip that gets reclaimed and re-executed WILL gain geometry, while a
+  trip generated during a frontend-first window (before the backend is promoted) stays NULL
+  permanently. Never infer provenance from `trip.created_at`. Trips without geometry keep straight
+  links — exactly the fallback the trail already had.
 
 ### Phase D — Whole-trip overview polish (optional)
 - Per-day color/hue so multiple days read as distinct trails; selected day brightest, others

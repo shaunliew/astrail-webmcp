@@ -142,7 +142,31 @@ Authenticated (Supabase JWT, ES256/JWKS):
 
 **Deployment:** live on Render as `astrail-backend` (Docker, Starter, `region: singapore`, Blueprint-managed via `render.yaml`). Launches `cd backend && uvicorn main:app` (bare imports need `backend/` as cwd). Env keys in `render.yaml` / `.claude/docs/ENV.md`.
 
-**`autoDeploy: false` — deploys are MANUAL, and merging is NOT deploying** (`render.yaml:32`). There is no pre-deploy migration hook anywhere, so schema is applied **by hand** and code ships only when someone triggers a Render deploy. For a migration-bearing branch the order is: apply the migration → confirm the *currently deployed* code still works against the new schema → merge → trigger the deploy. `/health` performs **no schema check**, so a code-first deploy against an old schema stays GREEN while jobs silently fail. Do not re-enable `autoDeploy` without landing a real pre-deploy migration gate — `render.yaml:12-30` records the incident that disabled it.
+**MERGING TO `dev` NOW DEPLOYS** (changed 2026-08-03). `render.yaml` sets
+**`autoDeployTrigger: checksPass`** on both services — note `autoDeploy` is the **deprecated**
+spelling of this field — plus a **`preDeployCommand`** running `backend/scripts/assert_schema.py`.
+The sequence on every merge is: **CI (both workflows, ~3 min) → pre-deploy schema gate → rollout**.
+A manual deploy skips `checksPass` but **NOT** the schema gate, which runs before every rollout.
+
+**The schema gate probes production for the columns the code needs** (PostgREST
+`select(cols).limit(0)` — reads zero rows) and **exits 1 to abort the rollout** on drift, leaving
+the old code serving. Two failure modes, deliberately distinguishable because the on-call response
+is opposite: `SCHEMA GATE MISCONFIGURED` = the gate is broken, revert the PR, **do not touch the
+database**; `SCHEMA GATE FAILED` = production schema is behind, apply the migration.
+
+**Migrations are still applied BY HAND** — there is no migration *runner*, only this *check*. The
+order for a migration-bearing branch is unchanged: apply the migration → confirm the currently
+deployed code still works against the new schema → merge.
+
+**THE GATE SEES COLUMNS ONLY — do not read it as "auto-deploy is safe".** A dropped constraint
+(`20260720100000`) or a changed SQLSTATE (`20260720130000`) is invisible to it, and both have taken
+production down before. For that class set `autoDeployTrigger: off` and sequence by hand.
+`/health` still performs **no schema check**, so this gate is the only drift detection that exists.
+**If you add a column the code requires, add it to `REQUIRED_SCHEMA` in the same PR** — a
+non-column migration can be made visible by anchoring a column it ships alongside.
+
+`render.yaml:16-52` carries the full reasoning, including the incident that disabled auto-deploy in
+the first place.
 
 ## The 4-Phase Pipeline
 
@@ -219,6 +243,6 @@ On match: append new evidence quote, increment `timesReferenced`. On miss: creat
 20. Landing page, settings
 21. Wire memory (mem0), guardrails, rate limiting (slowapi + per-user quota), and result caching
 22. Observability: Langfuse + UptimeRobot; product analytics: PostHog. (Sentry removed 2026-07-19 — never wired, and its default request-URL capture would re-open ISSUES-B1. Re-add only with a `before_send` URL scrubber; see STACK.md.)
-23. CI/CD: GitHub Actions → Vercel + Render. **Supabase migrations are applied BY HAND, not on merge** — `render.yaml` sets `autoDeploy: false` and there is no pre-deploy migration hook (see the Deployment note above).
+23. CI/CD: GitHub Actions → Vercel + Render. **Supabase migrations are still applied BY HAND**, but **merging to `dev` now deploys the backend** behind `autoDeployTrigger: checksPass` + a pre-deploy schema-drift gate (2026-08-03). CI runs pgTAP RLS tests (`rls-tests.yml`) *and* the backend pytest suite + frozen eval (`backend-tests.yml`); both must pass before a deploy fires. **Vercel is outside the Render Blueprint and is still promoted manually.** See the Deployment note above for what the gate cannot see.
 24. Deploy: Vercel + Render + Supabase
 25. Open beta

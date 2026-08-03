@@ -5,6 +5,15 @@
 > deploy config (`render.yaml`, Vercel), or any code that reads `os.environ` /
 > `process.env`.
 
+> **Deploy note (2026-08-03):** `render.yaml` now sets `autoDeployTrigger: checksPass` (the
+> current spelling — `autoDeploy` is deprecated) plus a `preDeployCommand` running
+> `backend/scripts/assert_schema.py`. **Merging to `dev` deploys the backend**, gated by CI and
+> a schema-drift probe. That probe reads `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` — the same
+> two secrets the service already has, so **no new env key was introduced**. It needs no
+> postgres DSN, which is why `supabase migration up` was not an option: `preDeployCommand` runs
+> inside the service image, which has no Supabase CLI and no psql. If you add a column the code
+> requires, add it to `REQUIRED_SCHEMA` in the same PR or the gate aborts the deploy.
+
 ## Backend (required)
 
 ```

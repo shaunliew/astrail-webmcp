@@ -81,6 +81,13 @@ export default function CreateTripFlow() {
           if (!activeRef.current) return
           setEvents((prev) => [...prev, event])
           if (event.type === 'result') {
+            // Terminal (success OR failure). Keep the entitlement gate consistent with server truth:
+            // a failed run refunds lifetime_trip_count in the SAME transaction that writes this
+            // terminal result (backend complete_trip_run), so this refetch reflects the refund
+            // without a reload. Defense-in-depth today — this handler navigates to the trip view
+            // immediately below, so the refreshed gate is only consulted if the flow is ever changed
+            // to retry inline. Harmless on success (the count holds; an exhausted trial stays exhausted).
+            void ent.refetch()
             // The signature moment. The map is the shell's, shared with the trip view,
             // so this transition carries across the navigation instead of dying with
             // this component.

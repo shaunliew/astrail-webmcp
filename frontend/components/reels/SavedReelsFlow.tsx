@@ -231,6 +231,12 @@ export default function SavedReelsFlow() {
           if (!activeRef.current) return
           setEvents((current) => [...current, event])
           if (event.type === 'result') {
+            // Terminal (success OR failure): refetch the entitlement so a failed run's refund
+            // (committed in the same transaction as this terminal result) keeps the gate consistent
+            // with server truth. Defense-in-depth — like CreateTripFlow this handler navigates to the
+            // trip view immediately below, so the refreshed gate matters only if the flow ever retries
+            // inline. See CreateTripFlow — same wiring, same reasoning.
+            void ent.refetch()
             // The signature moment — see CreateTripFlow: same live shell map, same beat.
             setLightPreset('dawn', relightDurationMs())
             generationHandleRef.current?.cancel()

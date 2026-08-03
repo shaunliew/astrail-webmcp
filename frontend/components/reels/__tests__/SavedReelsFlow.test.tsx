@@ -77,6 +77,7 @@ import type { SavedReelCard, SavedReelPlaceProof } from '@/lib/reels/backend-typ
 const NOT_EXHAUSTED = {
   loading: false, isTrialExhausted: false, seatRequested: false,
   requestSeat, requesting: false, canonicalTripId: null, canonicalTripLoading: false,
+  refetch: vi.fn(),
 }
 
 const cards: SavedReelCard[] = [
@@ -178,6 +179,7 @@ describe('SavedReelsFlow', () => {
       return { cancel: vi.fn() }
     })
     useEntitlement.mockReset(); useEntitlement.mockReturnValue(NOT_EXHAUSTED)
+    NOT_EXHAUSTED.refetch.mockClear() // shared module-scope mock — clear call history between tests
     requestSeat.mockReset(); requestSeat.mockResolvedValue(undefined)
   })
 
@@ -292,6 +294,9 @@ describe('SavedReelsFlow', () => {
       fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
 
       await waitFor(() => expect(push).toHaveBeenCalledWith('/app/trip/trip-1'))
+      // The terminal 'result' handler must refetch the entitlement (keeps the gate in sync with a
+      // failure refund). Guards against silently dropping the call site.
+      expect(NOT_EXHAUSTED.refetch).toHaveBeenCalled()
       await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
       const load = mapInstance.on.mock.calls.find((c) => c[0] === 'load')
       act(() => { (load?.[1] as () => void)?.() })

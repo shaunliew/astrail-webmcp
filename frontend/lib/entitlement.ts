@@ -3,7 +3,7 @@
 // Single source of the free-trial / beta-seat entitlement logic (plan L815-829). The own-row
 // read, the canonical-trip link, error classification, and the seat-request orchestration all
 // live here so the flows (Task 9) consume one hook and never re-derive the rules.
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { MOCK_AUTH_ENABLED } from '@/lib/auth/mock-auth'
 import { createClient } from '@/lib/supabase/client'
 import { getAccessToken } from '@/lib/supabase/session'
@@ -74,12 +74,18 @@ export type UseEntitlement = {
   requesting: boolean
   canonicalTripId: string | null
   canonicalTripLoading: boolean
+  // Re-read the own-row entitlement + canonical trip against current server state. Wired to a
+  // generation terminal in the flows so a server-side refund (failed run → complete_trip_run) is
+  // reflected without a full page reload. Fail-open and unmount-safe (see the hook).
+  refetch: () => Promise<void>
 }
 
 // The consumer hook (plain useState/useEffect, no SWR). Loads the own-row entitlement and the
-// canonical trip on mount, each with its own loading flag and an `active` cleanup guard. The
-// own-row read fails open: on error it resolves to a fresh-trial state (isTrialExhausted false)
-// so a downed advisory read shows Generate — the backend RPC is the real enforcer.
+// canonical trip on mount, each with its own loading flag; `refetch()` re-runs both against
+// current server state (wired to a generation terminal in the flows so a server-side refund is
+// reflected without a reload). The own-row read fails open: on the initial load an error resolves
+// to a fresh-trial state (isTrialExhausted false) so a downed advisory read shows Generate — the
+// backend RPC is the real enforcer.
 export function useEntitlement(): UseEntitlement {
   const [entitlement, setEntitlement] = useState<Entitlement | null>(null)
   const [loading, setLoading] = useState(true)
@@ -87,39 +93,54 @@ export function useEntitlement(): UseEntitlement {
   const [requesting, setRequesting] = useState(false)
   const [canonicalTripId, setCanonicalTripId] = useState<string | null>(null)
   const [canonicalTripLoading, setCanonicalTripLoading] = useState(true)
+  // Spans the whole mount (not one effect run) so `refetch` — called imperatively from a flow
+  // long after mount — can guard its own setState against an unmount in flight. Re-armed on mount
+  // so StrictMode's mount→unmount→mount leaves it true (same pattern as the flows' activeRef).
+  const activeRef = useRef(true)
+
+  // Load (or reload) both advisory reads. `initial` gates the loading flags AND the fallback
+  // policy. On the FIRST load a rejected own-row read falls back to a fresh-trial state so a
+  // downed read still shows Generate (fail-open, plan L823). On a REFETCH a rejected read leaves
+  // the prior state untouched — a transient reread failure must NEVER flip an eligible user (post
+  // -refund) back into a blocking isTrialExhausted=true. Both paths guard setState with activeRef.
+  const load = useCallback(async (initial: boolean): Promise<void> => {
+    await Promise.all([
+      readEntitlement()
+        .then((e) => {
+          if (!activeRef.current) return
+          setEntitlement(e)
+          if (e.seatRequestedAt) setSeatRequested(true)
+        })
+        .catch(() => {
+          // Initial: fresh-trial fallback (fail-open). Refetch: keep prior state (never re-block).
+          if (initial && activeRef.current) {
+            setEntitlement({ plan: 'trial', lifetimeTripCount: 0, seatRequestedAt: null })
+          }
+        })
+        .finally(() => {
+          if (initial && activeRef.current) setLoading(false)
+        }),
+      fetchCanonicalTripId()
+        .then((id) => {
+          if (activeRef.current) setCanonicalTripId(id)
+        })
+        .catch(() => {
+          // Initial: null (no recovery link). Refetch: keep prior id (fail-open, same as above).
+          if (initial && activeRef.current) setCanonicalTripId(null)
+        })
+        .finally(() => {
+          if (initial && activeRef.current) setCanonicalTripLoading(false)
+        }),
+    ])
+  }, [])
 
   useEffect(() => {
-    let active = true
-
-    readEntitlement()
-      .then((e) => {
-        if (!active) return
-        setEntitlement(e)
-        if (e.seatRequestedAt) setSeatRequested(true)
-      })
-      .catch(() => {
-        // Fail-open (plan L823): a fresh-trial fallback keeps isTrialExhausted false.
-        if (active) setEntitlement({ plan: 'trial', lifetimeTripCount: 0, seatRequestedAt: null })
-      })
-      .finally(() => {
-        if (active) setLoading(false)
-      })
-
-    fetchCanonicalTripId()
-      .then((id) => {
-        if (active) setCanonicalTripId(id)
-      })
-      .catch(() => {
-        if (active) setCanonicalTripId(null)
-      })
-      .finally(() => {
-        if (active) setCanonicalTripLoading(false)
-      })
-
+    activeRef.current = true
+    void load(true)
     return () => {
-      active = false
+      activeRef.current = false
     }
-  }, [])
+  }, [load])
 
   const isTrialExhausted =
     entitlement?.plan === 'trial' && entitlement.lifetimeTripCount >= TRIAL_LIFETIME_LIMIT
@@ -134,6 +155,9 @@ export function useEntitlement(): UseEntitlement {
     }
   }
 
+  // Revalidate without flipping the initial loading flags: a background reread, not a re-mount.
+  const refetch = useCallback(() => load(false), [load])
+
   return {
     loading,
     isTrialExhausted,
@@ -142,5 +166,6 @@ export function useEntitlement(): UseEntitlement {
     requesting,
     canonicalTripId,
     canonicalTripLoading,
+    refetch,
   }
 }

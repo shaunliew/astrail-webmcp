@@ -33,6 +33,7 @@ import { ApiError } from '@/lib/trip/api'
 const NOT_EXHAUSTED = {
   loading: false, isTrialExhausted: false, seatRequested: false,
   requestSeat, requesting: false, canonicalTripId: null, canonicalTripLoading: false,
+  refetch: vi.fn(),
 }
 
 // Drives the compose → brief affordance up to (and including) the "Generate my trip" click.
@@ -54,6 +55,7 @@ describe('CreateTripFlow', () => {
     streamGeneration.mockReset()
     useEntitlement.mockReset()
     requestSeat.mockReset()
+    NOT_EXHAUSTED.refetch.mockClear() // shared module-scope mock — clear call history between tests
     getAccessToken.mockResolvedValue('token')
     generateTrip.mockResolvedValue({ trip_id: 'trip_tokyo_demo' })
     useEntitlement.mockReturnValue(NOT_EXHAUSTED)
@@ -97,6 +99,9 @@ describe('CreateTripFlow', () => {
     )
     expect(await screen.findByText('Mapped 4 verified places.')).toBeInTheDocument()
     await waitFor(() => expect(push).toHaveBeenCalledWith('/app/trip/trip_tokyo_demo'))
+    // The terminal 'result' handler must refetch the entitlement (keeps the gate in sync with a
+    // failure refund). Guards against silently dropping the call site.
+    expect(NOT_EXHAUSTED.refetch).toHaveBeenCalled()
   })
 
   it('does not start the stream or navigate if unmounted while generateTrip is pending', async () => {

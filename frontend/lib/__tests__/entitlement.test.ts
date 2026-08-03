@@ -182,6 +182,60 @@ describe('useEntitlement', () => {
     expect(result.current.seatRequested).toBe(true)
   })
 
+  it('refetch() re-reads the own row and un-stales isTrialExhausted after a refund', async () => {
+    // First load: a trial user with a spent trip (exhausted). Refetch after a server-side refund:
+    // lifetime_trip_count is back to 0, so the gate must open again in the same mounted hook.
+    h.maybeSingle
+      .mockResolvedValueOnce({ data: { plan: 'trial', lifetime_trip_count: 1, seat_requested_at: null }, error: null })
+      .mockResolvedValueOnce({ data: { plan: 'trial', lifetime_trip_count: 0, seat_requested_at: null }, error: null })
+
+    const { result } = renderHook(() => useEntitlement())
+
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.isTrialExhausted).toBe(true)
+
+    await act(async () => { await result.current.refetch() })
+
+    expect(result.current.isTrialExhausted).toBe(false)
+  })
+
+  it('a rejected refetch keeps the prior (non-blocking) state — fail-open preserved', async () => {
+    // First load: a fresh trial (not exhausted). The refetch read then fails — it must NOT clobber
+    // the state into a blocking isTrialExhausted=true (that would re-block an eligible user).
+    h.maybeSingle
+      .mockResolvedValueOnce({ data: { plan: 'trial', lifetime_trip_count: 0, seat_requested_at: null }, error: null })
+      .mockRejectedValueOnce(new Error('read failed'))
+
+    const { result } = renderHook(() => useEntitlement())
+
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.isTrialExhausted).toBe(false)
+
+    await act(async () => { await result.current.refetch() })
+
+    expect(result.current.isTrialExhausted).toBe(false)
+  })
+
+  it('a rejected refetch keeps the prior EXHAUSTED state — never wrongly un-blocks (fail-closed)', async () => {
+    // The highest-stakes direction: prior state is exhausted (spent trial). The refetch read fails.
+    // The refetch's `initial=false` guard on the catch means it writes NOTHING, so prior state
+    // holds — a transient reread failure must never fabricate a refund and open the gate for a user
+    // the server still considers exhausted. (Drop the `initial &&` guard in load()'s catch and this
+    // goes red: the fallback fresh-trial write would flip isTrialExhausted false.)
+    h.maybeSingle
+      .mockResolvedValueOnce({ data: { plan: 'trial', lifetime_trip_count: 1, seat_requested_at: null }, error: null })
+      .mockRejectedValueOnce(new Error('read failed'))
+
+    const { result } = renderHook(() => useEntitlement())
+
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.isTrialExhausted).toBe(true)
+
+    await act(async () => { await result.current.refetch() })
+
+    expect(result.current.isTrialExhausted).toBe(true)
+  })
+
   it('flips seatRequested true after a successful requestSeat() action', async () => {
     stubRow({ plan: 'trial', lifetime_trip_count: 1, seat_requested_at: null })
     vi.stubGlobal(

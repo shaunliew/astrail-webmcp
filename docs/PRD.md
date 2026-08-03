@@ -534,12 +534,16 @@ Use it for:
 - stop B -> stop C.
 - stop C -> stop D.
 
-Prefer per-leg calls over one large daily route call because:
+**Shipped design (2026-08-03): one Directions call per day, not per leg.** Mapbox counts a request containing multiple coordinates as **1 request** against a **300 requests/minute** limit, and bills by request — so per-leg calls multiply both cost and rate-limit consumption by the number of legs in the day. The day-wide call still yields per-leg geometry, because `steps=true` returns each leg's own step geometries.
 
-- one failed leg does not break the whole day.
-- each leg can have its own profile.
-- each leg can be cached independently.
-- UI can show precise warnings.
+This section originally preferred per-leg calls for four reasons. Against those reasons, the day-wide call:
+
+- **one failed leg does not break the whole day — sacrificed.** A failed daily Directions request loses every leg in that day; `persist_transport` isolates day-to-day only.
+- **each leg can have its own profile — sacrificed**, and unrealized today: v1 uses one profile per trip.
+- **each leg can be cached independently — sacrificed**, and unrealized today: route legs are not cached.
+- **UI can show precise warnings — partly achieved.** Distance-based `transit_hint` warnings are per-leg and precise. Route failures are not: a top-level `NoRoute` is copied onto every pair in the day, so a failure cannot identify which hop failed.
+
+Revisit per-leg calls when a leg genuinely needs its own profile (mixed walk/drive days) or per-leg caching is measurably needed. Only then does the N-fold request cost buy something.
 
 ### Optimization API Usage
 

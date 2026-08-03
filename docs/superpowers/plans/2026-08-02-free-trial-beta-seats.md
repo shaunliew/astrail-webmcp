@@ -77,7 +77,7 @@ is fixes, not a redesign. The nine changes, keyed to r3's findings:
    never return `('replay', NULL, …)`. A pathological empty re-read returns a distinct
    `conflict_retry` outcome (→ 409), never NULL.
 2. **[HIGH] Narrowed exception.** The handler catches **only** `jobs_idempotency_key_active_uidx`
-   (via `GET STACKED DIAGNOSTICS … pg_exception_constraint_name`) and re-raises every other
+   (via `GET STACKED DIAGNOSTICS … CONSTRAINT_NAME`) and re-raises every other
    `unique_violation` — no more swallowing an unrelated constraint error.
 3. **[HIGH] Real concurrency tests.** The load-bearing undo branch gets **deterministic two-session
    DB tests** (uncommitted-insert → commit → forced collision), not the Rev 3 pgTAP that returned
@@ -404,7 +404,7 @@ begin
     -- Fix 2: only OUR active-key insert may collide here. Any other unique violation (a real bug,
     -- a future constraint) must NOT be swallowed as a replay — re-raise it. `is distinct from`
     -- re-raises on a NULL constraint name too (fail loud on uncertainty).
-    get stacked diagnostics v_constraint = pg_exception_constraint_name;
+    get stacked diagnostics v_constraint = constraint_name;   -- pg keyword is CONSTRAINT_NAME, not pg_exception_*
     if v_constraint is distinct from 'jobs_idempotency_key_active_uidx' then
       raise;
     end if;
@@ -1074,8 +1074,11 @@ untouched and needs no separate build artifact.)
   7. **[LOW] Add explicit `conflict_retry` tests** — one backend endpoint (RPC → 409) + one shared
      FE classifier/API test (both flows display the structured retry message).
 
-  Codex fact: `pg_exception_constraint_name` DOES populate with the standalone unique-INDEX name for
-  this violation (Fix 2 correct); the SHA-256 hash change (Fix 9) is safe (old requests get new keys,
+  Codex fact: the constraint-name diagnostic DOES populate with the standalone unique-INDEX name for
+  this violation (Fix 2 correct) — BUT the plpgsql item keyword is `CONSTRAINT_NAME`, not
+  `pg_exception_constraint_name` (that spelling is a syntax error, SQLSTATE 42601; caught at Task-1
+  verification 2026-08-03 and corrected in both the migration and the code block above);
+  the SHA-256 hash change (Fix 9) is safe (old requests get new keys,
   no harmful replay). "Lands with the migration" (Fix 9) should read "lands in the backend rollout
   that switches to the RPC" — DB-first inherently leaves a safe migration→backend gap.
 

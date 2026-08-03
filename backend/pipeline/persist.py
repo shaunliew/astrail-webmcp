@@ -209,7 +209,8 @@ async def _ground_all(client, canonical: list[CanonicalPlace], *,
 
 
 async def _find_or_create_place(client, place: CanonicalPlace, *, grounded: dict | None) -> str:
-    """Dedup-on-write: reuse a global places row matching by name/alias AND <500m, else insert.
+    """Dedup-on-write: reuse a global places row matching by name/alias AND <500m — and, when we
+    hold a verified country, whose own non-NULL `country_code` does not contradict it — else insert.
     The bbox is a coarse indexable pre-filter (uses the (lat,lng) index); the exact haversine
     gate decides. NOTE: select-then-insert is not atomic — two DIFFERENT trips saving the same
     brand-new place concurrently can both insert (a rare cross-trip flywheel dup); full safety
@@ -219,13 +220,26 @@ async def _find_or_create_place(client, place: CanonicalPlace, *, grounded: dict
     no default: a defaulted None is exactly the bypass a forgetful call site would take, and it
     would be silent — the row would just come back country-less again."""
     lat_d, lng_d = _bbox_deltas(place.lat)
-    candidates = (await client.table("places").select("id,name,aliases,lat,lng")
+    candidates = (await client.table("places").select("id,name,aliases,lat,lng,country_code")
                   .gte("lat", place.lat - lat_d).lte("lat", place.lat + lat_d)
                   .gte("lng", place.lng - lng_d).lte("lng", place.lng + lng_d)
                   .execute()).data
     for row in candidates:
         if _place_matches(place, row) and \
                 haversine_m(place.lat, place.lng, row["lat"], row["lng"]) < DEFAULT_DISTANCE_M:
+            # A row whose VERIFIED country contradicts this place's verified one is a different
+            # venue, however close and however alike the names: name + 500m alone links a
+            # Malaysian venue to a Singapore row across the strait, and the trip then renders the
+            # wrong country and the wrong canonical pin. Skipping the WRITE would not help — the
+            # id still comes back. Fall through to the next candidate, and insert if none fits.
+            #
+            # Only against a verified country, and only against a non-NULL one: a NULL is an
+            # ABSENT claim (87% of the corpus) rather than a conflicting one, and with
+            # `grounded is None` there is nothing to compare, so a provider outage must leave
+            # dedup exactly as it is rather than forking `places` (guardrail #1, #3).
+            if grounded is not None and row.get("country_code") \
+                    and row["country_code"] != grounded["country_code"]:
+                continue
             return row["id"]
     new_row = {
         "name": place.name,

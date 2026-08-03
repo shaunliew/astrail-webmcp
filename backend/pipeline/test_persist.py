@@ -57,19 +57,35 @@ class _Table:
     def __init__(self, name, db):
         self.name, self.db = name, db
         self._op = None; self._f = {}; self._range = {}; self._in = {}
-        self._on_conflict = None; self._single = False
+        self._on_conflict = None; self._single = False; self._columns = None
 
     def insert(self, row): self._op = ("insert", row); return self
     def upsert(self, row, on_conflict=None):
         self._op = ("upsert", row); self._on_conflict = on_conflict; return self
     def update(self, row): self._op = ("update", row); return self
     def delete(self): self._op = ("delete", None); return self
-    def select(self, *_): self._op = ("select", None); return self
+    def select(self, *columns):
+        # PostgREST returns ONLY the projected columns, and honouring that here is load-bearing
+        # rather than cosmetic: a whole-row fake lets production omit a column from its
+        # `.select(...)` and still read it in this file, so the read passes every test while the
+        # real client leaves the key out and `row.get(col)` is `None` in production.
+        cols = [c.strip() for spec in columns for c in str(spec).split(",") if c.strip()]
+        self._op = ("select", None)
+        self._columns = None if (not cols or "*" in cols) else cols
+        return self
+
     def eq(self, c, v): self._f[c] = v; return self
     def gte(self, c, v): self._range[(c, "gte")] = v; return self
     def lte(self, c, v): self._range[(c, "lte")] = v; return self
     def in_(self, c, values): self._in[c] = list(values); return self
     def maybe_single(self): self._single = True; return self
+
+    def _project(self, r):
+        """The selected columns only. A selected key the stored row lacks comes back as `None`,
+        which is how PostgREST reports a column that exists on the table and is NULL here."""
+        if self._columns is None:
+            return dict(r)
+        return {c: r.get(c) for c in self._columns}
 
     def _match(self, r):
         if not all(r.get(k) == v for k, v in self._f.items()):
@@ -114,7 +130,7 @@ class _Table:
         if op == "delete":
             keep = [r for r in rows if not self._match(r)]
             self.db[self.name] = keep; return _Result([])
-        matched = [r for r in rows if self._match(r)]
+        matched = [self._project(r) for r in rows if self._match(r)]
         # `.maybe_single()` yields the ROW (not a list), and `None` on zero rows — the shape
         # `grounding._lookup_cached_country` reads. Without it that call raised AttributeError,
         # which its blanket `except` logged as a cache MISS, so the whole write-through cache
@@ -162,6 +178,23 @@ class _Client:
         if name == "replace_trip_itinerary":
             return _ReplaceTripItineraryRpc(self, params)
         raise AssertionError(f"fake does not implement rpc {name!r}")
+
+
+@pytest.mark.asyncio
+async def test_the_fake_select_returns_only_the_projected_columns():
+    """The fake's PROJECTION contract, pinned directly — every dedup test below rests on it.
+
+    A fake that returns whole rows lets production forget a column in its `.select(...)` and
+    still read it here, so the read looks correct in this file while PostgREST omits the key in
+    production and every `row.get(col)` comes back `None`. That is not a hypothetical: the
+    country-conflict gate below is exactly a `row.get("country_code")` read, and with a
+    whole-row fake it would ship green and never fire against the real database.
+    """
+    c = _Client({"places": [{"id": "p1", "country_code": "SG"}]})
+
+    rows = (await c.table("places").select("id").execute()).data
+
+    assert rows == [{"id": "p1"}]
 
 
 @pytest.mark.asyncio
@@ -830,6 +863,156 @@ async def test_persist_writes_null_country_without_a_mapbox_token(monkeypatch):
 
     assert _country_of(c, "Tokyo Tower") == _NULL
     assert len(c.db["trip_places"]) == 1
+
+
+# --- R1: never REUSE a places row whose country contradicts the verified one ------------------
+# The dedup gate is name/alias + haversine < 500m with no country term, so an incoming Malaysian
+# venue matching a Singapore row 400m away is linked to the Singapore row: the trip renders the
+# wrong country and the wrong canonical pin. Suppressing the country WRITE on such a row is not
+# a fix — it still returns that row's id. R1 rejects the candidate and falls through.
+#
+# It applies ONLY when we hold a verified country. With `grounded is None` (no claim, placeholder
+# URL, provider outage) dedup stays country-agnostic first-match, or a Mapbox outage would start
+# forking the `places` corpus.
+_VENUE = "Kopi Corner"
+_JB = (1.4655, 103.7578)            # Johor Bahru (MY) — the incoming place's coordinate
+_JB_NEAR = (1.46575, 103.7578)      # ~28m from _JB: inside the 500m gate, so only country decides
+_JB_NEAR2 = (1.4655, 103.75805)     # ~28m from _JB on the other axis — a second passing candidate
+_JP_NEAR = (35.65885, 139.7454)     # ~28m from _JP
+_JP_NEAR2 = (35.6586, 139.74571)    # ~28m from _JP
+_MY_RESULT = CountryResult(country_code="MY", country_name="Malaysia")
+_COUNTRY_LABELS = {"MY": "Malaysia", "SG": "Singapore", "JP": "Japan"}
+
+
+def _place_row(row_id, coord, *, country_code, labels=None, name=_VENUE):
+    """One pre-existing global `places` row, in the shape the candidate query reads.
+
+    `labels` overrides the human-readable `country`/`country_name` independently of the code.
+    That combination is legal in the database — `places_country_fields_pair_check` pairs only
+    `country_code` and `country_name`, and `country` is unconstrained — so a legacy row really
+    can carry a correct code beside a wrong name, which is what case 3 below leans on.
+    """
+    label = labels if labels is not None else _COUNTRY_LABELS.get(country_code)
+    return {"id": row_id, "name": name, "aliases": [name],
+            "lat": coord[0], "lng": coord[1],
+            "country": label, "country_code": country_code, "country_name": label}
+
+
+def _row_by_id(c, row_id):
+    """These fixtures deliberately share ONE name across rows (that is the whole collision), so
+    they cannot be read back with `_country_of`'s name lookup."""
+    return next(p for p in c.db["places"] if p["id"] == row_id)
+
+
+def _country_triple(row):
+    return (row.get("country"), row.get("country_code"), row.get("country_name"))
+
+
+async def _link_one(c, place, verifier):
+    """Persist ONE place and return the global place_id its trip_places row points at."""
+    await persist.persist_itinerary(c, "trip-1", [place], ["2026-08-01"],
+                                    job_id=None, lease_token=None, verify_country=verifier)
+    return c.db["trip_places"][0]["place_id"]
+
+
+@pytest.mark.asyncio
+async def test_persist_rejects_a_candidate_whose_verified_country_conflicts(monkeypatch):
+    """The bug itself: the ONLY nearby same-name row is in the wrong country.
+
+    Asserting a new id — not merely that the Singapore row kept its own country — is what kills
+    the first draft of this fix, which suppressed the country write and went on returning that
+    row's id. Not overwriting a wrong answer is not the same as not using it.
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c = _Client({"places": [_place_row("sg-row", _JB_NEAR, country_code="SG")]})
+    place = _gp(_VENUE, *_JB, country_code="MY", country_name="Malaysia")
+
+    place_id = await _link_one(c, place, _Verifier(_MY_RESULT))
+
+    assert place_id != "sg-row"
+    assert len(c.db["places"]) == 2
+    assert _country_triple(_row_by_id(c, place_id)) == ("Malaysia", "MY", "Malaysia")
+    # R1 REJECTS, it does not repair — touching the other row is R3, deferred and not gated.
+    assert _country_triple(_row_by_id(c, "sg-row")) == ("Singapore", "SG", "Singapore")
+
+
+@pytest.mark.asyncio
+async def test_persist_falls_through_a_conflicting_candidate_to_a_compatible_one(monkeypatch):
+    """Conflict FIRST, compatible second — both passing the name and <500m gates.
+
+    An implementation that inserts as soon as it meets a conflicting candidate passes the case
+    above and violates the required fall-through: it forks a second Malaysian row for a venue
+    the corpus already holds.
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c = _Client({"places": [_place_row("sg-row", _JB_NEAR, country_code="SG"),
+                            _place_row("my-row", _JB_NEAR2, country_code="MY")]})
+    place = _gp(_VENUE, *_JB, country_code="MY", country_name="Malaysia")
+
+    place_id = await _link_one(c, place, _Verifier(_MY_RESULT))
+
+    assert place_id == "my-row"
+    assert len(c.db["places"]) == 2          # zero inserts
+
+
+@pytest.mark.asyncio
+async def test_persist_reuses_a_candidate_matching_on_the_code_not_the_country_names(monkeypatch):
+    """Same `country_code`, deliberately poisoned `country`/`country_name`.
+
+    An implementation comparing the human-readable NAMES instead of the code passes every other
+    case here and rejects this one, forking a duplicate row for a venue whose provenance already
+    agrees. The comparison is the code, which is the only half the database constrains.
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c = _Client({"places": [_place_row("my-row", _JB_NEAR, country_code="MY",
+                                       labels="Singapore")]})
+    place = _gp(_VENUE, *_JB, country_code="MY", country_name="Malaysia")
+
+    place_id = await _link_one(c, place, _Verifier(_MY_RESULT))
+
+    assert place_id == "my-row"
+    assert len(c.db["places"]) == 1
+    assert _country_triple(_row_by_id(c, "my-row")) == ("Singapore", "MY", "Singapore")
+
+
+@pytest.mark.asyncio
+async def test_persist_reuses_a_null_country_candidate_without_repairing_it(monkeypatch):
+    """A NULL country is an ABSENT claim, not a conflicting one — 87% of the corpus is NULL, so
+    rejecting those would fork a duplicate for nearly every venue we already hold. Repairing the
+    reused row is R3: deferred, not gated, and deliberately not what happens here."""
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c = _Client({"places": [_place_row("null-row", _JB_NEAR, country_code=None)]})
+    place = _gp(_VENUE, *_JB, country_code="MY", country_name="Malaysia")
+
+    place_id = await _link_one(c, place, _Verifier(_MY_RESULT))
+
+    assert place_id == "null-row"
+    assert len(c.db["places"]) == 1
+    assert _country_triple(_row_by_id(c, "null-row")) == (None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_persist_without_a_verified_country_keeps_todays_first_match_dedup(monkeypatch):
+    """`grounded is None` — the unverified path, which must behave exactly as it does today.
+
+    A JP-claim place whose provider call fails, with an SG row FIRST and a JP row second: the SG
+    row still wins, because with no verified country there is nothing to compare against. An
+    implementation that applies the country term here would fall through to the JP row (or
+    insert), which means one Mapbox outage silently re-points every trip and forks the corpus.
+    """
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "test-token")
+    c = _Client({"places": [_place_row("sg-row", _JP_NEAR, country_code="SG"),
+                            _place_row("jp-row", _JP_NEAR2, country_code="JP")]})
+    place = _gp(_VENUE, *_JP, country_code="JP", country_name="Japan")
+    verifier = _FailingVerifier()
+
+    place_id = await _link_one(c, place, verifier)
+
+    assert verifier.calls == 1               # the provider WAS asked, and it was down
+    assert place_id == "sg-row"              # first match wins, country-agnostic, as today
+    assert len(c.db["places"]) == 2          # no insert
+    assert _country_triple(_row_by_id(c, "sg-row")) == ("Singapore", "SG", "Singapore")
+    assert _country_triple(_row_by_id(c, "jp-row")) == ("Japan", "JP", "Japan")
 
 
 @pytest.mark.asyncio

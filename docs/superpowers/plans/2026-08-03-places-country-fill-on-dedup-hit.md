@@ -1,116 +1,128 @@
-# PLAN — repair a NULL `country` when a trip dedups onto an existing `places` row
+# PLAN — the dedup-hit path: reject conflicting countries, repair NULL ones safely
 
-> Status: **PLAN ONLY, no code written.** Follow-up to
-> `2026-08-02-places-country-two-writers.md` (merged-ready branch `fix/places-country-verified`).
-> Surfaced by that branch's final whole-branch review as the strongest remaining gap.
+> Status: **PLAN ONLY, no code written. REWRITTEN 2026-08-03 after a plan review scored the
+> first draft 4.7/10 (Correctness 3, Safety 3, Testability 2).** §2 records what the first
+> draft got wrong, because the mistake is instructive and easy to make again.
 >
-> **This is a change to the LIVE web trip-generation pipeline.** `pipeline/persist.py` runs on
-> every `/generate-trip`. Beta is 2026-08-08.
+> Follow-up to `2026-08-02-places-country-two-writers.md` (branch `fix/places-country-verified`,
+> merge-ready). **`pipeline/persist.py` runs on every `/generate-trip`.** Beta is 2026-08-08.
 
 ---
 
-## 1. The gap
+## 1. Two problems, one seam
 
-The parent branch makes `persist_itinerary` write a **verified** country on the INSERT path.
-It does nothing on the **dedup-hit** path: `_find_or_create_place` returns `row["id"]` and
-discards the verification it just paid Mapbox for.
+`_find_or_create_place`'s dedup gate is **name/alias match + haversine < 500 m, with no country
+term** (`persist.py:221-228`). That produces two distinct defects.
 
-Three facts compound (all three found by the parent branch's fable whole-branch review):
+**(A) A bug that exists in production RIGHT NOW, independent of any of this.** An incoming
+Malaysian venue whose name matches a Singapore row 400 m away is linked to the Singapore row.
+The trip renders the wrong country and the wrong canonical place. Nothing in the current code
+prevents it; the parent branch merely made it *visible*, because we now hold a verified country
+to compare against.
 
-1. `_find_or_create_place`'s dedup hit returns the row id with **no country repair**
-   (`persist.py:226-228`).
-2. `_find_or_create_restaurant_place` (`persist.py:~529`) keeps minting **new country-less
-   rows** — including NULL doppelgängers of a just-verified reel row for the same venue in the
-   same trip, because restaurant dedup is `mapbox_id`-only and never reuses the reel row.
-3. A later trip's grounded reel place matches whichever bbox candidate comes back first
-   (an unordered select, first-match loop), so it can **nondeterministically absorb into the
-   NULL twin** even when a verified row for the same venue exists.
+**(B) The gap the parent branch's whole-branch review flagged.** On a dedup hit we return
+`row["id"]` and discard the verification we just paid Mapbox for. Combined with the still-
+deferred third writer (`_find_or_create_restaurant_place` keeps minting country-less rows) and
+the unordered first-match loop, a verified food venue can render NULL indefinitely.
 
-Net: food venues featured in Reels — core to the product — can render NULL in `PlaceIntelPanel`
-indefinitely, and the Mapbox call made for them is wasted. The corpus does **not** "improve
-forward-only" as the parent plan's §6d assumed.
+## 2. What the first draft got wrong — read this before "simplifying" the plan back
 
-## 2. The decision: FILL-IF-NULL only. Explicitly NOT the RPC's overwrite.
+The first draft proposed **fill-if-null, and nothing else**. Its Case 2 asserted that a reused
+row with a *conflicting* country must not be overwritten. That is true and insufficient:
 
-The review that surfaced this recommended "mirroring the RPC's existing behaviour." **Read the
-RPC before copying it — it does something stronger, and the stronger thing is wrong here.**
+> Suppressing the write still **returns that row's id**. The Malaysian trip stays linked to the
+> Singapore pin. Not overwriting a wrong answer is not the same as not using it.
 
-`find_or_create_place` (`20260720190000:96-104`) **overwrites** `country`/`country_code`/
-`country_name` on reuse, reasoning that "this run RE-VERIFIED them against Mapbox, so the fresh
-value is strictly better than the stored one." That is sound **there** because its reuse
-predicate already constrains country:
+**A differing non-NULL country must REJECT the candidate, not merely suppress the update.**
 
-```sql
-where name = p_name
-  and (country_code = p_country_code or country_code is null)   -- agrees, or is unset
-```
+The draft also assumed filling a NULL row from *our* coordinate was safe. It is not: the reused
+row's stored coordinate can be up to 500 m from ours, and this repo's own
+`_coord_cache_key` docstring (`grounding.py:35-48`) refuses to let an **11 m** neighbour stand in
+for exact-coordinate verification, precisely because two nearby points can straddle a border.
+Filling row R's country from coordinate C is a receipt for C, stamped onto R. That breaks the
+invariant the parent branch exists to protect.
 
-A row it reuses therefore either already agrees with the freshly verified country or has none.
+Finally, the draft repeated an error already corrected in the parent plan:
+`places_country_fields_pair_check` pairs only `country_code` and `country_name`. **`country`
+itself is unconstrained**, so `(country=NULL, code=JP, name=Japan)` is a legal row.
 
-**`persist.py`'s gate is different and weaker: name/alias match + haversine < 500 m, with no
-country term at all** (`persist.py:221-228`). So a row it reuses can carry a *different*
-non-NULL country, set from **a coordinate we did not verify** (two same-named venues 500 m
-apart across a border is the real case). Overwriting it would replace a verification receipt for
-one coordinate with a receipt for another — writing an unverified claim about that row.
-That is guardrail #1 pointing the other way.
+## 3. The decision
 
-**Therefore: write the three columns ONLY when the existing row's `country_code` IS NULL.**
-Never overwrite a non-NULL value. Strictly narrower than the RPC, and the asymmetry is a
-consequence of the weaker dedup gate — not an oversight. If §5 of the parent plan is ever done
-(converging the two writers onto the RPC), this restriction disappears with it.
+Three rules, in this order.
 
-## 3. Tasks
+**R1 — Reject conflicting candidates.** When we hold a grounded result, skip any candidate whose
+non-NULL `country_code` differs from the verified code. Fixes (A). This is the highest-value
+part of the change and it stands alone.
 
-### T1 — Fetch `country_code` in the candidate query
+**R2 — Prefer a compatible verified candidate** over a NULL-country one, so repeated generations
+converge on the verified row instead of oscillating with the first-match-wins loop.
 
-`_find_or_create_place`'s select is `"id,name,aliases,lat,lng"`. Add `country_code` so the
-NULL-vs-set decision needs no second round-trip. It is one more column on a query that already
-runs per place.
+**R3 — Repair a NULL candidate only against ITS OWN coordinate.** Do not project our receipt
+onto it. Reverse-geocode the **row's stored `lat`/`lng`** and compare against the incoming
+place's claimed country; fill only on agreement. Reuse `_ground_place` — build a
+`place.model_copy(update={"lat": row["lat"], "lng": row["lng"]})` so the existing gates and the
+existing coordinate cache both apply unchanged. The receipt then genuinely describes that row.
 
-### T2 — Repair on the dedup hit
+Cost: one extra reverse call per NULL-country dedup hit, absorbed by `geocode_country_cache` on
+repeats. This is what makes R3 worth doing at all — the byte-identical-coordinate alternative
+would almost never fire, since the motivating case is a Mapbox-POI row meeting an LLM
+coordinate, which are never byte-identical.
 
-When a candidate matches AND `grounded is not None` AND the matched row's `country_code` is
-NULL, `UPDATE` that row's `country` / `country_code` / `country_name` from the verified result,
-then return its id. All three or none (`places_country_fields_pair_check`).
+**R4 — The repair write is atomic.** `.eq("id", row_id).is_("country_code", "null")` so two
+concurrent trips cannot last-writer-wins. A zero-row result means someone else won: re-read that
+row and reuse it **only if its country is now compatible**, else fall through to the next
+candidate. (`20260720180000:31` documents this exact race for the RPC's own NULL path.)
 
-**Best-effort (guardrail #3):** the repair is an optimisation, not the trip. Wrap it so any
-failure is swallowed — the place still links, the trip still saves, the row just stays NULL as
-it is today. Log the exception TYPE only, never the message.
+**Best-effort throughout (guardrail #3):** every repair step is an optimisation, never the trip.
+Any failure → no repair, place still links, trip still saves. Catch `Exception`, never
+`BaseException`.
 
-**Idempotent:** a second run sees a non-NULL `country_code` and issues no write.
+## 4. Tests — and the fake has to be fixed first
 
-### T3 — Tests
+The plan review found the current fake **cannot observe** most of what this change does. Two
+prerequisites, both real defects in the test harness:
 
-| # | Case | Expected |
-|---|---|---|
-| 1 | dedup hit onto a **NULL-country** row, grounding verified | row repaired to `Japan/JP/Japan`; trip links to it |
-| 2 | dedup hit onto a row that **already has** a country, ours differs | **NOT overwritten** — the anti-RPC guard |
-| 3 | dedup hit, grounding returned `None` | no UPDATE issued at all |
-| 4 | the repair UPDATE raises | trip still persists, place still linked (guardrail #3) |
-| 5 | INSERT path (no dedup hit) | exactly one write; no stray repair UPDATE |
-| 6 | run twice | second run issues no UPDATE (idempotent) |
+**P1 — the fake ignores `.select()` projections** (`test_persist.py:67,117`) and returns whole
+rows. So forgetting to add `country_code` to the production select passes every test, while real
+PostgREST omits it, `row.get("country_code")` is `None`, and production overwrites a set country.
+Make the fake honour the projection.
 
-Case 2 is the load-bearing one: it is the only test that distinguishes this design from the
-RPC's overwrite, and an implementation that copies the RPC passes every other case.
+**P2 — the fake records no operation ledger.** "Issues no UPDATE" is unobservable. Record
+(table, op) per `execute()` and assert against it.
 
-Per the parent branch's hard-won lesson — **state what makes each test red when its guard is
-removed, then prove it by deleting the guard.** The parent arc's 10 blocking findings were all
-tests that could not fail.
+| # | Case | Expected | Wrong impl it kills |
+|---|---|---|---|
+| 1 | conflicting non-NULL country candidate | **not reused, not written**; insert a new verified row | fill-if-null-only (the first draft) |
+| 2 | NULL candidate, row's OWN coord verifies | repaired + reused | projecting our receipt onto the row |
+| 3 | NULL candidate, row's own coord DISAGREES with the claim | **not repaired**; row stays NULL | grounding our coordinate instead of the row's |
+| 4 | both a verified-compatible and a NULL candidate present | the **verified** one is reused (R2) | first-match-wins |
+| 5 | grounded is `None` | no UPDATE issued at all (ledger) | unconditional repair |
+| 6 | repair UPDATE raises | trip persists, place linked, only the exception **type** logged | non-best-effort; leaking the message |
+| 7 | run twice | second run issues no UPDATE (ledger) | RPC-style unconditional update |
+| 8 | two concurrent trips, same NULL row, different countries | atomic guard: exactly one write; loser re-reads and only reuses if compatible | non-atomic read/check/write |
+| 9 | poisoned name (claim `JP`/"United States", provider `JP`/"Japan") | row reads `Japan` | writing the LLM's claim during repair |
+| 10 | INSERT path (no candidate) | exactly one write, no stray UPDATE | repair firing on the insert path |
 
-## 4. Constraints
+Per the parent arc's lesson — **10 of its 10 blocking findings were tests that could not fail** —
+state what makes each red when its guard is removed, then delete the guard and prove it.
 
-- `pipeline/persist.py` is on every `/generate-trip`. No migration ships.
-- Frozen `#16` anchor `mean_intra_day_travel_m = 6229.0` (`evals/test_run_eval.py:82`). This
-  change cannot affect it — it writes to `places`, never to which places survive — but run
-  `uv run pytest evals/ -q` anyway.
-- Guardrail #1 (never write an unverified country), #3 (best-effort), #7 (cache untouched).
-- **Out of scope, unchanged:** the third writer (`_find_or_create_restaurant_place` still mints
-  country-less rows — this plan reduces the damage, it does not stop the source), the 90-row
-  backfill, and the §5 dedup convergence.
+## 5. Constraints and scope
 
-## 5. Definition of done
+- No migration. `pipeline/persist.py` is on every `/generate-trip`; beta 2026-08-08.
+- Frozen `#16` anchor `6229.0` — unaffected in principle (this writes to `places`, never to
+  which places survive), but run `uv run pytest evals/ -q` anyway.
+- Guardrails #1 (never write an unverified country — including never *reusing* a row whose
+  country contradicts the verified one), #3, #7.
+- **A live dedup-hit smoke is part of done**, not optional: arrange a NULL-country row, run a
+  trip that dedups onto it, confirm the repair. The current `live_run.py` prints state but
+  arranges nothing.
+- **Out of scope:** the third writer (this reduces the damage, it does not stop the source —
+  give it a concrete trigger), the 90-row backfill, and the §5 RPC convergence. If convergence
+  ever happens, R1–R4 all collapse into the RPC and should be deleted.
 
-- A dedup hit onto a NULL-country row repairs it; a hit onto a set-country row does not.
-- Every test above passes and each has been proven to redden from its own guard.
-- `uv run pytest -q` and `uv run pytest evals/ -q` green, anchor intact.
-- Plan reviewed (Codex) before code; per-task review + final gates after.
+## 6. Honest scope note
+
+This is **no longer the small follow-up** the parent review implied. R1 changes dedup matching on
+the live path, R3 adds a provider call, R4 adds a concurrency guard, and the test harness needs
+two fixes before any of it is observable. Rule R1 alone fixes a real current bug and could ship
+separately if the rest slips past beta.

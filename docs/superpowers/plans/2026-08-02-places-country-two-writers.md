@@ -998,6 +998,64 @@ places created 2026-08-02:
 
 ---
 
+## 8. LIVE SMOKE EVIDENCE — 2026-08-03, three runs against production
+
+Run 3 (`trip 752435ea`, reel `DXwcVVliX3B`, 4 venues, **cold** coordinates) is the one that
+matters. Runs 1–2 hit warm coordinates and proved less than they appeared to.
+
+### Proven live
+
+```
+GET api.mapbox.com/search/geocode/v6/reverse?longitude=139.77174&latitude=35.70077
+    &types=country&limit=1&language=en&permanent=true          x4, interleaved
+POST .../geocode_country_cache?on_conflict=coord_key,verification_version -> 201  x4
+[log] pipeline.persist trip_place_grounding grounded=4 ineligible=0 mismatched=0 failed=0
+```
+
+- Grounding runs on the **default seam** (`runner.py:370` injects no verifier) — Codex's round-4
+  blocker, confirmed in production traffic.
+- Four cache lookups MISS, then four real reverse calls, then four write-through upserts —
+  guardrail #7 end-to-end, and `types=country`+`limit=1`+`permanent=true` exactly as §6g requires.
+- Calls are interleaved: parallel ACROSS coordinates, as §6b B4 pins.
+- **28.2s cold**, against the 180s target. Warm runs: 18.9s / 22.7s.
+- Runs 1–2 showed a `geocode_country_cache` hit with **no** subsequent reverse call — the warm
+  path costs one indexed SELECT and zero provider calls, as designed.
+
+### The finding that resizes the change
+
+**`grounded=4`, and `0/4` rows carry a country.** All four places deduped onto pre-existing
+NULL-country rows, so four verified results were paid for and discarded:
+
+```
+day 1 #0  CHERMSIDE SANDWICH Harajuku …  country=NULL  [REUSED]
+day 1 #1  SANDO LAB TOKYO                country=NULL  [REUSED]
+day 2 #0  Pelican Cafe                   country=NULL  [REUSED]
+day 3 #0  Sandwich Senmon Ten Popo       country=NULL  [REUSED]
+```
+
+This is the NULL-absorption channel §6d/§6f deferred as **R3**, and it is **not an edge case**:
+it fired on 4/4 places on the first multi-venue reel tried, every one a `restaurant`. Nothing
+regresses — NULL is exactly today's behaviour — but the honest sizing is: **this change labels
+genuinely-new venues; for any re-run reel the dedup path is the common case.**
+
+**R3 stays deferred** (it scored 6.2/10 with unsolved problems: must fail closed, non-atomic
+write, an unclosable cross-writer race with the RPC) but it belongs **first in the queue after
+beta**, not filed away.
+
+### Not proven, and deliberately not chased further
+
+The **insert** path never fired — three runs, zero new reel-places, because every reel in the
+repo is cached with its places already in the corpus. (The `POST /places 201` calls in run 3 are
+`_find_or_create_restaurant_place`, the third writer, country-less by design.) Grounding — the
+hard part — is proven live; what remains is a three-key dict assignment covered by 17
+fault-injected tests including the poisoned-name provenance case, which reddens under 15–16
+mutations. Residual risk accepted rather than spending more live credits.
+
+Mismatch→NULL and R1's conflict-rejection are also unproven live: both need a deliberately
+seeded contradicting row in production, which is not worth manufacturing days before beta.
+
+---
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Runs | Status | Findings |

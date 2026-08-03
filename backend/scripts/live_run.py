@@ -110,9 +110,12 @@ async def _inspect(client, trip_id: str) -> None:
         origin = "NEW" if trip_created and (p.get("created_at") or "") >= trip_created else "REUSED"
         # `updated_at` is the ONLY field that distinguishes "this run issued no second write"
         # from "it rewrote the same values" — the fixed-point check the repair plan requires.
+        # The row id is printed because the fixed-point check compares ids across two runs —
+        # without it the comparison is not possible at all.
         print(f"    day {tp['day_number']} #{tp['sort_order']}  {p.get('name', '?')} "
               f"[{p.get('place_type', '?')}] ({round(p.get('lat', 0), 4)},{round(p.get('lng', 0), 4)})"
-              f"  {badge}  [{origin}]  updated={p.get('updated_at')}")
+              f"  {badge}  [{origin}]")
+        print(f"        id={p.get('id')}  updated={p.get('updated_at')}")
     verified = [p for p in places if p.get("country")]
     fresh = [p for p in places
              if trip_created and (p.get("created_at") or "") >= trip_created]
@@ -121,9 +124,10 @@ async def _inspect(client, trip_id: str) -> None:
 
     # Would an exact-coordinate repair reach these rows? A row's OWN coordinate has been
     # Mapbox-verified iff its `_coord_cache_key` is already in `geocode_country_cache` — the key
-    # is a lossless repr() and deliberately un-bucketed, so a hit is byte-identity, not
-    # proximity. This is the measurement that decides whether the cheap exact-coordinate repair
-    # captures the observed NULL-on-reuse gap or almost none of it.
+    # is a lossless repr() and deliberately un-bucketed, so a hit means the SAME binary64
+    # coordinate (modulo signed zero), not proximity. This is the measurement that decides
+    # whether the cheap exact-coordinate repair captures the observed NULL-on-reuse gap or
+    # almost none of it.
     #
     # A cache hit does NOT by itself license writing the country: `_store_cached_country` runs
     # BEFORE `_ground_place`'s claim comparison (grounding.py:131 vs :132), so a hit means

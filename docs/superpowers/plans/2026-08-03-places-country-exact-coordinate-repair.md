@@ -137,7 +137,8 @@ Every case must be proven to redden by deleting its own guard.
 | 10 | lease lost during repair | `CancelledError` propagates; no stale trip rewrite | `except BaseException`; misplaced isolation |
 | 11 | lease lost **after** a successful repair | the global repair remains; prior itinerary unchanged; `LeaseLost` surfaces | assuming the trip fence rolls global writes back |
 | 12 | fake contract | `.is_()` changes only NULL rows and returns only matches | a fake that accepts but ignores `.is_()` |
-| 13 | a **non-repair** DB failure inside the candidate loop (e.g. the candidate select raises) | it **propagates** — the trip degrades as it does today, not silently | wrapping the WHOLE candidate block in `except Exception`. Round 2: cases 9–10 do NOT prove the catch is narrow — case 9 passes under a broad wrap, and `CancelledError` escapes in case 10 anyway because it is a `BaseException`. Only this case pins the boundary. |
+| 13 | **a failure raised AFTER candidate selection, inside the match logic** — monkeypatch `_place_matches` or `haversine_m` to raise | it **propagates**; the trip degrades as it does today, not silently | a broad **per-candidate** `try` around matching + CAS + re-read. Round 3 found the earlier version of this case (candidate *select* raises) only killed a whole-*function* catch, because a per-candidate wrap sits after the select and never sees it. This placement is the one that pins the boundary. |
+| 15 | CAS returns zero rows, then the **re-read RAISES** | candidate A is **never returned**; resolution picks a seeded compatible B or inserts correctly | treating a failed reconciliation read as "good enough, return A". Round 3: case 9 (the CAS *request* raising, which deliberately permits linking) cannot also prove this — they are different branches. |
 | 14 | candidate **deleted** between select and re-read | `continue`; never returns the dead id | returning a missing row's id → FK failure |
 
 **Case 8 is reachable, but not between two pipeline workers** (round 2): two pipeline workers
@@ -181,9 +182,15 @@ worker may leave a valid repair behind while the itinerary fence still blocks it
   1. Add `updated_at` to `live_run.py`'s place select.
   2. Run reel `DXwcVVliX3B` with a **fresh date window** (new idempotency key). Snapshot: the four
      row ids, total `places` count, the three country fields per row, and `updated_at`.
-  3. Require **4/4 reused rows repaired, zero new `places` rows**.
-  4. Run again with a **second fresh window**. Require count, ids, country triples **and
-     `updated_at` all unchanged** — that is the fixed point, and `updated_at` is the only field
-     that can distinguish "no second write" from "an idempotent rewrite".
+  3. Require **4/4 rows `[REUSED]` and repaired**.
+     **"Zero new rows" means zero new rows from `_find_or_create_place`, NOT a global count**
+     (round 3 asked for this): the restaurant writer legitimately inserts `places` rows on every
+     run — run 3 showed several `POST /places 201` from it — so the global total WILL grow and
+     that is unrelated. The observable is per-row: every one of the trip's four linked places
+     must print `[REUSED]`, i.e. `created_at` earlier than the trip's.
+  4. Run again with a **second fresh window**. Require the four row **ids**, their country
+     triples, **and `updated_at`** all unchanged — that is the fixed point. `updated_at` is the
+     only field separating "no second write" from "an idempotent rewrite", and the ids must be
+     printed for the comparison to be possible at all.
 - **Rollback:** reverting F stops future repairs; rows already repaired remain valid receipts.
   Schema-safe, no migration to unwind.

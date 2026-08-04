@@ -25,6 +25,17 @@ deletion, not provable-exactly-once machinery.
 - **Next:** on ZH's go — one lean plan-review of the destructive T2/T3, then build Task 1 and STOP. No
   build/wire yet this session.
 
+**★ TASK 1 BUILT + REVIEWED (2026-08-04): `89b7a42` on zh (local).** `backend/erasure.py` +
+`backend/test_erasure.py` — `_assert_real_uuid` (strict `str(uuid.UUID(u))==u`, catches
+ValueError/TypeError/**AttributeError** — int→AttributeError on Py3.14, not TypeError as the plan guessed)
++ `purge_account_memory(client, mem0, user_id)` (guard-first, reuses `clear_memory`, tri-state→exceptions)
++ 3 distinct exceptions under an `ErasureError` base. Built by astrail-developer (opus, TDD, 20 behavioral
+tests) → **astrail-reviewer (sonnet): APPROVED, no findings** (independent fault-injection in a scratch
+copy, each guard reddens alone, unwired, gate untouched, keyless import; 20 pass + full offline suite 1487
+pass). **STOPPED for ZH review** — nothing wired, no gate flipped, no push/PR/merge. **T3 note (folded into
+plan §3.4):** the retry loop must catch ONLY `(MemoryBackendUnavailable, MemoryPurgeError)`, NOT the
+`ErasureError` base, so `InvalidUserId` fails hard instead of looping.
+
 **LEAN Rev 3 IS THE CURRENT PLAN (`cbb764b`=Rev2, then Rev3):** Rev 2 folded the Codex lean review; **Rev 3
 DROPPED REAUTH** (ZH — Astrail is passwordless per `privacy/page.tsx:48`, so emailed-code reauth adds ~
 nothing; replaced by **type-to-confirm + 7-day grace + an immediate "scheduled — cancel by {date}"

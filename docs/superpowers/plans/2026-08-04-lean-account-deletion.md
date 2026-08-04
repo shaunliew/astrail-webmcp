@@ -125,7 +125,11 @@ generation (§3.6). `erase_user(client, mem0, log_row)`:
   trip/organize jobs** for the user (quiescence — near-certain after 7 days). `purge_account_memory` (T1
   wrapper). If NOT confirmed cleared → `last_error`+`attempts`+`next_attempt_at` backoff, **stay, retry;
   after N flag a loud error. NEVER hard-delete on an unconfirmed purge.** On confirmed clear → set
-  `purged_verified_at`, log `deleting`.
+  `purged_verified_at`, log `deleting`. **Exception discipline (T1-review note): the backoff path catches
+  ONLY `(MemoryBackendUnavailable, MemoryPurgeError)` — NOT the shared `ErasureError` base — so a corrupted
+  `user_id` (`InvalidUserId`) propagates as a hard, non-retryable failure instead of looping forever; also
+  ensure `log_row.user_id` is a `str` before the call (a native `uuid.UUID` fails closed correctly, but
+  pass a str).**
 - **Pass B** (`deleting`, `purged_verified_at` set, ≥1 sweep tick later = settle gap): **re-verify mem0
   still empty** (catches a late queued add). Then hard-delete `auth.users(uid, should_soft_delete=False)`
   → cascade. Best-effort completion email to the stored `recipient_email`, clear it, mark log `completed`.

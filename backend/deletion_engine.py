@@ -179,25 +179,27 @@ async def _mark_purged(client, log_row: dict) -> None:
 
 
 async def _mark_completed(client, log_row: dict) -> None:
-    """Terminal success: the auth user is gone (or already was). Fire the best-effort completion
-    email to the captured recipient_email, then mark the log 'completed' AND clear recipient_email
-    in one terminal write (plan §3.4). Ordering (email -> terminal write) is deliberate: the send
-    is best-effort and NEVER blocks the delete (the auth-user hard-delete already happened before
-    this call), and clearing the address only after the send means the log no longer retains a
-    recipient once the notice has gone out.
+    """Terminal success: the auth user is gone (or already was). Mark the log 'completed' AND clear
+    recipient_email in one terminal write FIRST, then fire the best-effort completion email to the
+    captured address (plan §3.4/§6). Write-before-send keeps this IDEMPOTENT: once the row is
+    'completed' the sweep never re-selects it, so a re-run (e.g. crash recovery) cannot double-send;
+    and if the terminal write itself fails the email has not gone out yet, so the row simply retries
+    next tick. The send is best-effort and NEVER blocks the delete (the hard-delete already
+    happened before this call).
     """
     from notifications import send_deletion_completed_email
 
-    # Best-effort: send_deletion_completed_email swallows every failure and no-ops without
-    # RESEND_API_KEY (notifications.py), so it never raises into the sweep. The account is already
-    # deleted, so a lost notice is acceptable (plan §6, best-effort delivery).
-    await send_deletion_completed_email(log_row.get("recipient_email"))
+    recipient = log_row.get("recipient_email")
     await (
         client.table("account_deletion_log")
         .update({"outcome": "completed", "completed_at": _now_iso(),
                  "next_attempt_at": None, "last_error": None, "recipient_email": None})
         .eq("id", log_row["id"]).execute()
     )
+    # AFTER the terminal write so a re-run can't fire it twice. Best-effort: the sender swallows
+    # every failure and no-ops without RESEND_API_KEY (notifications.py), never raising into the
+    # sweep. The account is already deleted, so a lost notice is acceptable (plan §6).
+    await send_deletion_completed_email(recipient)
 
 
 async def _mark_failed(client, log_row: dict, reason: str) -> None:

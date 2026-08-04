@@ -79,8 +79,10 @@ async def test_scheduled_email_posts_the_right_resend_shape(monkeypatch, fake_ht
     assert sent["headers"]["Authorization"] == "Bearer re_test_key"
     assert sent["json"]["from"] == "Astrail <no-reply@send.astrail.xyz>"
     assert sent["json"]["to"] == ["traveler@example.com"]
-    # The scheduled date and a cancel instruction are load-bearing (the safety net, plan §3.5).
-    assert "2026-08-12T00:00:00+00:00" in sent["json"]["text"]
+    # The scheduled date (HUMAN-friendly, not raw ISO) and a cancel instruction are load-bearing
+    # (the safety net, plan §3.5).
+    assert "August 12, 2026" in sent["json"]["text"]
+    assert "2026-08-12T00:00:00+00:00" not in sent["json"]["text"]   # rendered, never raw ISO
     assert "cancel" in sent["json"]["text"].lower()
     assert "Settings" in sent["json"]["text"]
 

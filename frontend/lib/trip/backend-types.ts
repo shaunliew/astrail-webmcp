@@ -288,7 +288,8 @@ export type MemoryClearErrorCode = 'memory_unavailable' | 'memory_clear_unknown'
 // (503) = nothing was deleted, safe to retry / couldn't reach the service; `memory_clear_unknown`
 // = attempted but the outcome could not be confirmed. While the reconciliation gate is off the
 // backend returns memory_unavailable, so the button honestly shows "couldn't reach" until go-live.
-export const ERROR_CODE_MEMORY_UNAVAILABLE = 'memory_unavailable' as const
+// The UI branches only on `memory_clear_unknown` and defaults everything else (incl. the 503
+// memory_unavailable) to "couldn't reach", so only that one slug is exported.
 export const ERROR_CODE_MEMORY_CLEAR_UNKNOWN = 'memory_clear_unknown' as const
 
 // POST /trips/:tripId/feedback — mirrors backend/api/schemas.py TripFeedback*.

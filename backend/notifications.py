@@ -33,11 +33,25 @@ _DEFAULT_FROM = "Astrail <no-reply@send.astrail.xyz>"
 _CANCEL_HOWTO = "cancel any time before then from Settings, and nothing will be deleted"
 
 
+def _friendly_date(scheduled_for: str) -> str:
+    """Render the ISO-8601 ``scheduled_for`` as a human date (e.g. 'August 5, 2026'). Falls back to
+    the raw string if it can't be parsed — a courtesy email must never fail on date formatting.
+    ``%-d`` is avoided for portability; the day is interpolated directly."""
+    from datetime import datetime
+
+    try:
+        dt = datetime.fromisoformat(scheduled_for)
+    except (TypeError, ValueError):
+        return scheduled_for
+    return f"{dt.strftime('%B')} {dt.day}, {dt.year}"
+
+
 async def send_deletion_scheduled_email(email: str | None, scheduled_for: str) -> None:
     """Best-effort notice that a 7-day deletion grace has started (plan §3.5, the safety net)."""
     subject = "Your Astrail account is scheduled for deletion"
     body = (
-        f"Your Astrail account and its travel data are scheduled to be deleted on {scheduled_for}.\n\n"
+        f"Your Astrail account and its travel data are scheduled to be deleted on "
+        f"{_friendly_date(scheduled_for)}.\n\n"
         f"If you didn't mean to do this, you can {_CANCEL_HOWTO}.\n\n"
         "After that date your account and everything Astrail remembers are permanently removed."
     )

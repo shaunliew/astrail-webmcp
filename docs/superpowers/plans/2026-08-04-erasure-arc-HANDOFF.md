@@ -69,6 +69,14 @@ T4 (notifications) held for the next wave (also edits main.py). All gated OFF.
     request (seeded via `DeleteAccountCard` `initialStatus` props = the T6 seam). T6 must wire a real status
     read (add `account_status`/`deletion_scheduled_for` to an existing settings/profile GET, or a new
     `GET /account/deletion/status`) so a returning user sees the banner + can Cancel.
+  - **T5 REVIEW DONE: Approved — no Critical/Important.** All 8 checks passed (exact-match confirm,
+    no-false-success, mount-gated flag, no-body authed client, banner+cancel, backend-types line-matched to
+    `98cc1bd`, tsc clean, 15/15 tests; the 2 SavedReelsFlow fails confirmed pre-existing since `7778791`).
+    3 Minors → **deferred to T6 polish:** (1) no unmount guard in `DeleteAccountCard` async handlers (vs
+    `SettingsView`'s `activeRef`); (2) the 2 new API fns skip the `MOCK_AUTH_ENABLED` short-circuit (dormant
+    while gated, but would fire a real call w/ a fake token under mock-auth demo); (3) silent revert on
+    `no_pending_deletion` (only reachable once cross-session reads exist). Plan §4-row-5 vs §3.5 ownership
+    of the clear-memory rewire → FIXED (it's Task 4; removed from the T5 row).
 - Pending: T3 result + T5 review → review each → fold the two T3 notes → T4 → hold at **T6** (live pgTAP +
   flip the flags + wire the status read) for ZH's go-live sign-off.
 

@@ -5,6 +5,34 @@
 > This captures state that otherwise lives only in the expiring session (the fable review came via
 > SendMessage; the Codex reviews are in session-only scratchpad). **Everything below is the durable record.**
 
+---
+
+## ★ SESSION-2 UPDATE (2026-08-04, cont.) — supersedes §0/§4/§8 below
+
+**ZH DECIDED: Direction A (full rigor)** + **HOLD Task 1** (planning only this session — do NOT build the
+`backend/erasure.py` core yet).
+
+**Rev 3 (full-rigor / Direction A) is WRITTEN + COMMITTED** — `631af6c` on `zh`
+(`docs/superpowers/plans/2026-08-04-self-serve-account-deletion.md`). It folds ALL of §5 (both R2 reviews)
+in full and pulls A's in-scope pieces out of deferral: `barrier_blocked` operator-escalation state (mem0
+ceiling), per-processor deletion inventory (T9: PostHog/Resend/Render-logs/Apify/OpenAI), webhook-confirmed
+completion (T8). Citations were **re-grounded** (Rev 2 had drift — corrected: `_renew_job_lease:143`,
+`reclaim_expired_jobs:212`, `enqueue_job:73` direct insert, `runner.py:561`, `_decode:auth.py:93` returns
+only sub, `get_current_user_id_stashed:rate_limit.py:60`, `create_organize_job:79`, reserve RPC
+`20260804000000:15`, geocode RLS `:39-41`, rollback dir exists but sparse). Task count grew to **13**
+(added T6 RLS-freeze, T9 processor-inventory; T8 now webhook delivery).
+
+**THIRD-ROUND RE-REVIEW IN FLIGHT (BUILD-LOOP step 3):** fable eng-review (astrail-reviewer, model fable)
++ Codex `gpt-5.6-sol` (`codex exec -m gpt-5.6-sol -s read-only`, output →
+`<scratchpad>/codex-r3-out.txt`). Both launched against Rev 3; verdicts pending. **Next session, if this
+one dies mid-review:** re-run both on `631af6c`, fold criticals into Rev 3.1, present to ZH. Then (only on
+ZH go) build Task 1 per §6 and STOP.
+
+**Still holds:** don't wire anything destructive before ZH review; don't merge/PR/deploy. Task 1 spec (§6)
+is unchanged and still the correct first build when ZH gives the go.
+
+---
+
 ## 0. One-line status
 Plan is at **Rev 2 (full-rigor), reviewed twice**: **fable REVISE 8/10 (buildable-with-revisions)** vs
 **Codex `gpt-5.6-sol` BLOCK 4/10 (still blocked)**. **A user decision is pending (direction A/B/C below)

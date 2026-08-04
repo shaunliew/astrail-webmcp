@@ -79,13 +79,14 @@ class AccountDeletionStatusResponse(BaseModel):
     AUTHENTICATED account, so a returning user's UI can show (or hide) the pending banner without
     an in-session request (the T5 gap, wired at T6).
 
-    Fail-safe by contract: whenever the real state can't be read (the columns not existing
-    pre-migration, a missing row, any read blip) the endpoint returns the safe default
-    {account_status: 'active', deletion_scheduled_for: null} — a returning user always defaults to
-    the banner HIDDEN rather than a spurious pending banner or a 500. `deletion_scheduled_for` is
-    the grace deadline (populated only while pending/deleting). Mirrored in
-    frontend/lib/trip/backend-types.ts (guardrail #4)."""
-    account_status: Literal["active", "pending_deletion", "deleting"]
+    Never 500s the UI, but it separates two cases (Fix 5): a SUCCESSFUL read that is
+    legitimately-absent (a missing row / unexpected value) returns 'active' (banner HIDDEN), while a
+    genuine read FAILURE returns 'unknown' — a read-failure SENTINEL that is NOT a stored
+    `users.account_status` value. Collapsing the failure to 'active' would hide the Cancel banner
+    from a genuinely-pending user with no route to cancel; 'unknown' lets the UI preserve
+    cancellation guidance. `deletion_scheduled_for` is the grace deadline (populated only while
+    pending/deleting). Mirrored in frontend/lib/trip/backend-types.ts (guardrail #4)."""
+    account_status: Literal["active", "pending_deletion", "deleting", "unknown"]
     deletion_scheduled_for: datetime | None = None
 
 

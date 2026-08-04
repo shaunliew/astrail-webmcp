@@ -72,6 +72,23 @@ class _Response:
         self.data = data
 
 
+class _FakeRpc:
+    """One `client.rpc(name, params).execute()` chain — the account-deletion claim RPC probe.
+
+    Default answer is a side-effect-free boolean `False` (what the real nil-uuid call returns), so
+    a healthy database passes the liveness probe. `rpc_error` scripts a definitive answer (a
+    `PGRST202` APIError for a missing RPC) or a transport failure (`httpx.ConnectError`)."""
+
+    def __init__(self, client: "FakeSupabase", name: str, params: dict) -> None:
+        self._client, self._name, self._params = client, name, params
+
+    async def execute(self):
+        self._client.rpc_calls.append((self._name, self._params))
+        if self._client.rpc_error is not None:
+            raise self._client.rpc_error
+        return _Response(self._client.rpc_result)
+
+
 class FakeSupabase:
     """Local stand-in for supabase-py's `AsyncClient` — see the module docstring on fidelity.
 
@@ -82,14 +99,23 @@ class FakeSupabase:
     """
 
     def __init__(self, schema: dict[str, set[str]], *, transport_errors: int = 0,
-                 transport_error_text: str = "connection refused") -> None:
+                 transport_error_text: str = "connection refused",
+                 rpc_error: Exception | None = None, rpc_result: object = False) -> None:
         self.schema = schema
         self.calls: list[tuple[str, str | None, int | None]] = []
         self._transport_errors = transport_errors
         self._transport_error_text = transport_error_text
+        # Claim-RPC liveness probe controls (Fix 3). Recorded on a SEPARATE list so the column
+        # `calls` assertions stay exact; default is a healthy side-effect-free False.
+        self.rpc_error = rpc_error
+        self.rpc_result = rpc_result
+        self.rpc_calls: list[tuple[str, dict]] = []
 
     def table(self, name: str) -> _FakeQuery:
         return _FakeQuery(self, name)
+
+    def rpc(self, name: str, params: dict) -> _FakeRpc:
+        return _FakeRpc(self, name, params)
 
     def _answer(self, table: str, select: str | None, limit: int | None):
         self.calls.append((table, select, limit))
@@ -255,6 +281,68 @@ async def test_no_credential_reaches_stdout_or_stderr(capsys):
     assert await assert_schema.run(LeakyOnOneColumn({}), schema=manifest, sleep=_no_sleep) == 1
     combined = _assert_clean()
     assert "status" in combined, "the offending column must still be named"
+
+
+# --------------------------------------------------------------------------------------
+# Fix 3 — the account-deletion claim RPC liveness probe.
+#
+# `20260805010000` adds ONLY an RPC + a partial index — no column REQUIRED_SCHEMA can proxy — so a
+# column-only gate would pass with migration 1 alone and then wedge every deletion sweep on a
+# missing claim RPC. These probe the RPC's existence + service_role grant, side-effect-free.
+# --------------------------------------------------------------------------------------
+
+
+async def test_missing_claim_rpc_aborts_the_deploy_and_names_the_migration(capsys):
+    """Migration 1 landed (all columns present) but migration 2 did NOT. A column-only gate passes;
+    the liveness probe must abort and name the RPC + its migration."""
+    rpc_absent = APIError({
+        "code": "PGRST202",
+        "message": "Could not find the function public.claim_account_for_deletion(p_user_id)",
+        "hint": None, "details": None,
+    })
+    client = FakeSupabase(schema_from_manifest(), rpc_error=rpc_absent)
+
+    code = await assert_schema.run(client, sleep=_no_sleep)
+
+    assert code == 1
+    combined = "".join(capsys.readouterr())
+    assert "claim_account_for_deletion" in combined
+    assert "20260805010000" in combined
+    # Probed exactly once with the nil uuid — a definitive PGRST202 answer is not retried.
+    assert client.rpc_calls == [
+        ("claim_account_for_deletion", {"p_user_id": assert_schema._NIL_UUID})
+    ]
+
+
+async def test_live_claim_rpc_passes_and_is_probed_with_the_nil_uuid(capsys):
+    """POSITIVE CONTROL. A healthy RPC (default side-effect-free False) passes, is probed with the
+    all-zeros uuid (so no real account is ever touched), and the summary names it."""
+    client = FakeSupabase(schema_from_manifest())
+
+    code = await assert_schema.run(client, sleep=_no_sleep)
+
+    assert code == 0
+    assert client.rpc_calls == [
+        ("claim_account_for_deletion", {"p_user_id": assert_schema._NIL_UUID})
+    ]
+    assert "claim_account_for_deletion" in capsys.readouterr().out
+
+
+async def test_claim_rpc_transport_error_fails_closed_and_is_secret_safe(capsys):
+    """A DB the probe cannot reach is NOT a pass — bounded retries, then abort (fail closed), the
+    same as an unreachable column probe. Type-only: the transport message never reaches the log."""
+    client = FakeSupabase(schema_from_manifest(),
+                          rpc_error=httpx.ConnectError("connection refused to secret-host"))
+
+    code = await assert_schema.run(client, sleep=_no_sleep)
+
+    assert code == 1
+    assert len(client.rpc_calls) == assert_schema.PROBE_ATTEMPTS, "the RPC probe must retry, bounded"
+    combined = "".join(capsys.readouterr())
+    assert "unreachable" in combined.lower()
+    assert "claim_account_for_deletion" in combined
+    assert "ConnectError" in combined                 # the TYPE, for diagnosis
+    assert "secret-host" not in combined              # never the message text
 
 
 # --------------------------------------------------------------------------------------

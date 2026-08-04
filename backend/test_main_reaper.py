@@ -14,6 +14,7 @@ is a CAS.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -116,6 +117,42 @@ async def test_the_reaper_survives_a_db_blip_and_keeps_reaping(monkeypatch, capl
         await reaper
 
     assert "reap_loop_iteration_failed" in caplog.text
+
+
+async def test_the_deletion_sweep_catch_logs_the_type_only_never_the_traceback(monkeypatch, caplog):
+    """Fix 8: the deletion-sweep branch of the reaper must log the exception TYPE only — never
+    exc_info (a postgrest/supabase traceback can carry connection details), keeping the deletion
+    arc's type-only discipline. A sibling to reap_loop_iteration_failed, which stays as-is."""
+    monkeypatch.setattr(main, "REAP_INTERVAL_S", 0)
+    client = _Client({"jobs": [], "organize_jobs": []})
+
+    async def _no_reclaim(**_kwargs):
+        return []
+
+    async def _no_recover(_client):
+        return []
+
+    monkeypatch.setattr(main, "reclaim_expired_jobs", _no_reclaim)
+    monkeypatch.setattr(main, "recover_organize_jobs", _no_recover)
+
+    async def _boom_sweep(_client):
+        # The message carries the exact connection detail a real postgrest error would embed.
+        raise RuntimeError("connect host=db.internal apikey=SUPER-SECRET-KEY failed")
+
+    monkeypatch.setattr(main, "_run_deletion_sweep", _boom_sweep)
+
+    reaper = asyncio.create_task(main._reap_loop(client))
+    await _spin_until(lambda: "deletion_sweep_iteration_failed" in caplog.text)
+    reaper.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await reaper
+
+    # Format WITH any attached traceback (exc_info would surface here) — the ingest suite's method.
+    formatter = logging.Formatter("%(levelname)s %(message)s")
+    blob = "\n".join(formatter.format(r) for r in caplog.records)
+    assert "deletion_sweep_iteration_failed error=RuntimeError" in blob   # TYPE name logged
+    assert "SUPER-SECRET-KEY" not in blob                                 # message NOT logged
+    assert "db.internal" not in blob                                      # no traceback / exc_info
 
 
 async def test_the_reaper_and_its_redispatches_are_retained_against_garbage_collection():

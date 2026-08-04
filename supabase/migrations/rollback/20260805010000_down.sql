@@ -5,11 +5,13 @@
 -- hatch, applied BY HAND with psql, and it exists before the deploy rather than being written
 -- under pressure.
 --
--- SAFE TO ROLL BACK ANY TIME BEFORE THE FEATURE GOES LIVE. Task 3 ships gated OFF
--- (`_DELETION_EXECUTION_READY=False`) and nothing calls this RPC until Task 6 flips the gate, so
--- before that flip this is a database-only step: no code revert, no redeploy, no ordering against
--- a release. (After go-live, rolling back would strip the claim a two-pass deletion depends on —
--- do not run it then without draining in-flight deletions first.)
+-- SAFE TO ROLL BACK ONLY BEFORE THIS BRANCH'S CODE IS DEPLOYED — or in lockstep with reverting/
+-- redeploying that code. This is NOT a database-only step, even though the deletion FEATURE ships
+-- gated OFF (`_DELETION_EXECUTION_READY=False`): `scripts/assert_schema.py`'s preDeploy gate now
+-- probes `claim_account_for_deletion` for LIVENESS, so dropping this RPC BRICKS every subsequent
+-- deploy until the migration is re-applied or the code reverted. Roll back only with the branch
+-- code reverted/redeployed in the SAME window. After go-live it also strips the claim a two-pass
+-- deletion depends on — drain in-flight deletions first.
 --
 -- TWO objects to drop (the claim RPC + the sweep index). `if exists` so a partial/repeated
 -- rollback is re-runnable.

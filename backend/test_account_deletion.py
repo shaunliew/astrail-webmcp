@@ -49,16 +49,24 @@ class _DeletionSpy:
         return [c["user_id"] for c in self.calls]
 
 
-def _client(monkeypatch, *, uid_box, ready, request_spy=None, cancel_spy=None):
+def _client(monkeypatch, *, uid_box, ready, request_spy=None, cancel_spy=None, resend_key=True):
     """ASGI client with auth overridden to uid_box['uid'] and the deletion service spied.
 
     `main.get_supabase_client` is counted so the gated path can be proven to touch no DB.
+
+    `resend_key` (Fix 4): the request endpoint now fail-closes with 503 unless RESEND_API_KEY is
+    configured (the scheduled-deletion email is the safety net). Default True so every existing
+    request-path test still reaches the RPC; the notification-readiness test passes False.
     """
     import deletion
     import main
     from rate_limit import get_current_user_id_stashed
 
     monkeypatch.setattr(main, "_DELETION_EXECUTION_READY", ready)
+    if resend_key:
+        monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+    else:
+        monkeypatch.delenv("RESEND_API_KEY", raising=False)
     if request_spy is not None:
         monkeypatch.setattr(deletion, "request_account_deletion", request_spy)
     if cancel_spy is not None:
@@ -144,6 +152,21 @@ async def test_request_deletion_503_when_rpc_absent(monkeypatch):
     assert r.json()["error"]["code"] == "deletion_unavailable"
 
 
+async def test_request_deletion_503_when_execution_ready_but_resend_unconfigured(monkeypatch):
+    """Fix 4: flipping _DELETION_EXECUTION_READY while RESEND_API_KEY is UNSET must FAIL CLOSED.
+    The scheduled-deletion email is the load-bearing safety net (plan §3.5), so a grace we cannot
+    notify must not start — and the fail-close is BEFORE any DB work (no RPC, no get_supabase_client)."""
+    spy = _DeletionSpy(returns="2026-08-12T00:00:00+00:00")   # would 200 if the gate were reached
+    async with _client(monkeypatch, uid_box={"uid": "u1"}, ready=True, request_spy=spy,
+                       resend_key=False) as c:
+        r = await c.post("/account/deletion")
+    body = r.json()
+    assert r.status_code == 503
+    assert body["error"]["code"] == "deletion_unavailable"
+    assert spy.calls == []              # never reached the RPC
+    assert c._sb_calls == []            # fail-closed before any DB round-trip
+
+
 async def test_request_deletion_requires_auth(monkeypatch):
     # No dependency override: the real auth dependency must reject BEFORE the handler body.
     import deletion
@@ -189,6 +212,7 @@ def _email_client(monkeypatch, *, uid, admin, send_spy, request_returns="2026-08
     from rate_limit import get_current_user_id_stashed
 
     monkeypatch.setattr(main, "_DELETION_EXECUTION_READY", True)
+    monkeypatch.setenv("RESEND_API_KEY", "re_test_key")   # Fix 4: past the notification-readiness gate
 
     req_spy = _DeletionSpy(returns=request_returns, raises=request_raises)
     monkeypatch.setattr(deletion, "request_account_deletion", req_spy)
@@ -424,13 +448,15 @@ async def test_status_is_ungated_and_returns_active_while_the_flag_is_off(monkey
     assert r.json() == {"account_status": "active", "deletion_scheduled_for": None}
 
 
-async def test_status_fail_safe_when_the_read_raises(monkeypatch):
-    """FAIL-SAFE: any read error (incl. the column not existing pre-migration) -> {active, null}."""
+async def test_status_read_failure_reports_unknown_not_a_false_active(monkeypatch):
+    """Fix 5: a genuine READ FAILURE (the read raised) must surface as 'unknown', NOT masquerade as
+    'active' — a false 'active' would hide the Cancel banner from a genuinely-pending user with no
+    route to cancel. Still a 200 (never a 500), and secret-safe (TYPE-only log)."""
     async with _status_client(monkeypatch, uid="u1",
                               raises=RuntimeError("column does not exist")) as c:
         r = await c.get("/account/deletion/status")
     assert r.status_code == 200
-    assert r.json() == {"account_status": "active", "deletion_scheduled_for": None}
+    assert r.json() == {"account_status": "unknown", "deletion_scheduled_for": None}
 
 
 async def test_status_fail_safe_when_the_row_is_missing(monkeypatch):

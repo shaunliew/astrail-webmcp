@@ -165,8 +165,10 @@ async def _reap_loop(client) -> None:
         # the gate is off. Same cadence as the reclaim sweeps (this shares the 120s tick).
         try:
             await _run_deletion_sweep(client)
-        except Exception:
-            logger.warning("deletion_sweep_iteration_failed", exc_info=True)
+        except Exception as exc:  # noqa: BLE001 — TYPE only: a postgrest/supabase traceback can
+            # carry connection details, so this deletion path stays on the arc's type-only
+            # discipline (never exc_info / the message). The row stays selected and retries next tick.
+            logger.warning("deletion_sweep_iteration_failed error=%s", type(exc).__name__)
 
 
 @asynccontextmanager
@@ -770,6 +772,14 @@ async def request_account_deletion_endpoint(
     if not _DELETION_EXECUTION_READY:
         return build_error_response(503, _DELETION_GATED_MESSAGE, code="deletion_unavailable")
 
+    from notifications import resend_configured
+    if not resend_configured():
+        # The scheduled-deletion email is the load-bearing safety net (plan §3.5). Refuse to start a
+        # grace we cannot notify — flipping execution-ready without RESEND must fail closed, not
+        # accept a silent no-notice deletion. (Transient SEND failures stay best-effort; this is
+        # CONFIG.) Pre-DB slot, like the gate above: returns before any RPC / get_supabase_client.
+        return build_error_response(503, _DELETION_GATED_MESSAGE, code="deletion_unavailable")
+
     from deletion import DeletionRPCUnavailable, request_account_deletion
 
     client = await get_supabase_client()
@@ -834,11 +844,14 @@ async def account_deletion_status_endpoint(
     caller's JWT sub — there is no request body or query id to supply another uuid — so this can
     never leak a different user's status (guardrails #5/#6).
 
-    FAIL-SAFE: any read error (the columns not existing pre-migration, a missing row, a status
-    blip, an unexpected value) returns the safe default {account_status: 'active',
-    deletion_scheduled_for: null}. A returning user thus defaults to the banner HIDDEN rather than
-    a spurious pending banner or a 500 whenever the real state can't be read. Secret-safe: logs
-    only the exception TYPE name.
+    NEVER 500s a returning user's UI, but it distinguishes two cases that used to collapse (Fix 5):
+      * a SUCCESSFUL read whose row is absent / a bare None / an unexpected value = a
+        legitimately-absent status = NO pending deletion → the safe default {account_status:
+        'active', deletion_scheduled_for: null} (banner HIDDEN); and
+      * a genuine read FAILURE (the read raised) → {account_status: 'unknown', ...null}. Collapsing
+        this to 'active' would hide the Cancel banner from a genuinely-pending user while a
+        re-request says "already scheduled" — no route to cancel. 'unknown' lets the UI preserve
+        cancellation guidance instead. Secret-safe: logs only the exception TYPE name.
     """
     try:
         client = await get_supabase_client()
@@ -852,9 +865,12 @@ async def account_deletion_status_endpoint(
                 account_status=row["account_status"],
                 deletion_scheduled_for=row.get("deletion_scheduled_for"),
             )
-    except Exception as exc:  # noqa: BLE001 — fail safe: never 500 (or mis-flag) a returning user's UI
+        # A successful read with no matching row / bare None / an unexpected value = no pending
+        # deletion. Keep the 'active' default (banner HIDDEN) — only the EXCEPTION path is 'unknown'.
+        return AccountDeletionStatusResponse(account_status="active", deletion_scheduled_for=None)
+    except Exception as exc:  # noqa: BLE001 — a genuine read FAILURE is 'unknown', never a false 'active'
         logger.warning("account deletion status read failed: %s", type(exc).__name__)
-    return AccountDeletionStatusResponse(account_status="active", deletion_scheduled_for=None)
+        return AccountDeletionStatusResponse(account_status="unknown", deletion_scheduled_for=None)
 
 
 class _OrganizeSavedReelsRequest(OrganizeSavedReelsRequest):

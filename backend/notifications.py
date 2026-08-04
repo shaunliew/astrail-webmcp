@@ -33,6 +33,14 @@ _DEFAULT_FROM = "Astrail <no-reply@send.astrail.xyz>"
 _CANCEL_HOWTO = "cancel any time before then from Settings, and nothing will be deleted"
 
 
+def resend_configured() -> bool:
+    """True when RESEND_API_KEY is set — read at CALL time, matching the senders' env discipline
+    (the environment is never read at import). The account-deletion request endpoint uses this to
+    fail closed rather than start a 7-day grace it cannot send the scheduled-deletion notice for
+    (plan §3.5, the safety net)."""
+    return bool(os.environ.get("RESEND_API_KEY"))
+
+
 def _friendly_date(scheduled_for: str) -> str:
     """Render the ISO-8601 ``scheduled_for`` as a human date (e.g. 'August 5, 2026'). Falls back to
     the raw string if it can't be parsed — a courtesy email must never fail on date formatting.

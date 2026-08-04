@@ -14,7 +14,7 @@ import {
   ERROR_CODE_DELETION_NOT_ACTIVE,
   ERROR_CODE_DELETION_UNAVAILABLE,
   ERROR_CODE_NO_PENDING_DELETION,
-  type AccountStatus,
+  type AccountDeletionStatus,
 } from '@/lib/trip/backend-types'
 
 /* DeleteAccountCard — self-serve account deletion (plan §3.7). The user opens a
@@ -53,13 +53,13 @@ export default function DeleteAccountCard({
   initialStatus = 'active',
   initialScheduledFor = null,
 }: {
-  initialStatus?: AccountStatus
+  initialStatus?: AccountDeletionStatus
   initialScheduledFor?: string | null
 }) {
   const { user } = useUser()
   const email = user?.email ?? ''
 
-  const [status, setStatus] = useState<AccountStatus>(initialStatus)
+  const [status, setStatus] = useState<AccountDeletionStatus>(initialStatus)
   const [scheduledFor, setScheduledFor] = useState<string | null>(initialScheduledFor)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [confirmText, setConfirmText] = useState('')
@@ -182,6 +182,23 @@ export default function DeleteAccountCard({
       {notice}
     </p>
   ) : null
+
+  if (status === 'unknown') {
+    // Fix 5: a genuine status-read FAILURE. Do NOT render this as the normal (no-banner) active
+    // state — that would hide the cancel affordance from a user who really did request deletion.
+    // Show a notice that preserves cancellation guidance instead.
+    return (
+      <section className={CARD} aria-labelledby="delete-account-heading">
+        <h2 id="delete-account-heading" className="font-display text-[18px] font-medium text-[color:var(--text)]">
+          Account deletion
+        </h2>
+        <p role="status" className="text-[14px] text-[color:var(--text)]">
+          We couldn’t confirm your account’s deletion status right now. Refresh this page, or if you
+          requested deletion and don’t see a cancel option, contact support.
+        </p>
+      </section>
+    )
+  }
 
   if (status === 'pending_deletion' || status === 'deleting') {
     const deleting = status === 'deleting'

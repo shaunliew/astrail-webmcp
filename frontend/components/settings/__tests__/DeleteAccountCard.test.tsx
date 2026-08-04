@@ -140,6 +140,18 @@ describe('DeleteAccountCard — cross-session status seed', () => {
     expect(screen.getByRole('button', { name: /cancel deletion/i })).toBeDisabled()
   })
 
+  it('renders a status-unknown notice (not the plain active state) when the read resolves unknown', async () => {
+    // Fix 5: a genuine backend read FAILURE surfaces as 'unknown'. The card must NOT fall back to
+    // the normal delete control (which hides the cancel path) — it shows a notice preserving
+    // cancellation guidance.
+    getAccountDeletionStatus.mockResolvedValue({ account_status: 'unknown', deletion_scheduled_for: null })
+    render(<DeleteAccountCard />)
+
+    expect(await screen.findByText(/couldn.t confirm your account.s deletion status/i)).toBeInTheDocument()
+    // The point: it does NOT render the plain active state that would hide the cancel affordance.
+    expect(screen.queryByRole('button', { name: /^delete account$/i })).not.toBeInTheDocument()
+  })
+
   it('does not setState after unmount when the status read resolves late (unmount guard)', async () => {
     // React 19 no-ops a setState on an unmounted component, so the guard is a leak-safety measure;
     // this asserts a late-resolving read after unmount surfaces no warning/leak.

@@ -5,11 +5,17 @@
 -- hatch, applied BY HAND with psql, and it exists before the deploy rather than being written
 -- under pressure.
 --
--- SAFE TO ROLL BACK ANY TIME BEFORE THE FEATURE GOES LIVE. Task 2 ships gated OFF
--- (`_DELETION_EXECUTION_READY=False`) and no code reads these objects until Task 6 flips the gate,
--- so before that flip this is a database-only step: no code revert, no redeploy, no ordering
--- against a release. (After go-live, rolling back would strip the state a pending deletion depends
--- on — do not run it then without draining in-flight deletions first.)
+-- SAFE TO ROLL BACK ONLY BEFORE THIS BRANCH'S CODE IS DEPLOYED — or in lockstep with reverting/
+-- redeploying that code. This is NOT a database-only step, even though the deletion FEATURE ships
+-- gated OFF (`_DELETION_EXECUTION_READY=False`): two live code paths already read these objects the
+-- instant the branch deploys, gate or no gate.
+--   1. `pipeline/preferences.py::_account_deletion_frozen` reads `users.account_status` on EVERY
+--      generation write-back and FAILS CLOSED on a missing column — so dropping `account_status`
+--      SILENTLY disables ALL mem0 write-back platform-wide (guardrail #3 makes the failure silent).
+--   2. `scripts/assert_schema.py`'s preDeploy gate now REQUIRES these columns, so dropping them
+--      BRICKS every subsequent deploy until the migration is re-applied or the code reverted.
+-- Roll back only with the branch code reverted/redeployed in the SAME window. After go-live it also
+-- strips the state a pending deletion depends on — drain in-flight deletions first.
 --
 -- ORDER IS LOAD-BEARING: drop the two RPCs FIRST (they name the columns), then the log table, then
 -- the columns. `if exists` on every statement so a partial rollback is re-runnable.

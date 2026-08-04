@@ -63,6 +63,20 @@ def fake_httpx(monkeypatch):
     return _FakeAsyncClient
 
 
+# --- resend_configured: the notification-readiness gate (Fix 4) ---------------------------
+
+
+def test_resend_configured_reads_the_key_at_call_time(monkeypatch):
+    """Fix 4: the request endpoint fail-closes on this. True only when RESEND_API_KEY is a
+    non-empty value, read at CALL time (never at import), matching the senders' env discipline."""
+    monkeypatch.delenv("RESEND_API_KEY", raising=False)
+    assert notifications.resend_configured() is False
+    monkeypatch.setenv("RESEND_API_KEY", "")
+    assert notifications.resend_configured() is False       # empty string is not configured
+    monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+    assert notifications.resend_configured() is True
+
+
 # --- configured happy path ----------------------------------------------------------------
 
 

@@ -341,6 +341,13 @@ export type RequestSeatResponse = { requested_at: string }
 // return (Task 3) and can no longer be cancelled.
 export type AccountStatus = 'active' | 'pending_deletion' | 'deleting'
 
+// The GET /account/deletion/status endpoint additionally reports 'unknown' — a read-failure
+// SENTINEL, NOT a stored account_status value (backend api/schemas.py AccountDeletionStatusResponse,
+// Fix 5). The backend returns it only when it could not read the real state; the card then shows a
+// notice that PRESERVES cancellation guidance instead of falsely rendering the no-banner active
+// state (which would hide the Cancel affordance from a genuinely-pending user).
+export type AccountDeletionStatus = AccountStatus | 'unknown'
+
 // Mirror of backend AccountDeletionResponse (Pydantic: scheduled_for: datetime → ISO string on
 // the wire). POST /account/deletion success body — the account entered the grace; `scheduled_for`
 // is the date shown to the user + named in the "deletion scheduled" email (Task 4). Failures use
@@ -358,7 +365,7 @@ export type AccountDeletionCancelResponse = { cancelled: true }
 // request. Fail-safe by design: the backend returns ('active', null) when the real state can't be
 // read, so the read never blocks the delete UI.
 export type AccountDeletionStatusResponse = {
-  account_status: AccountStatus
+  account_status: AccountDeletionStatus
   deletion_scheduled_for: string | null
 }
 

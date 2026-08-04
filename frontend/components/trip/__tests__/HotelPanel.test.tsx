@@ -1,23 +1,92 @@
-import { describe, it, expect } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen, fireEvent } from '@testing-library/react'
 import HotelPanel from '@/components/trip/HotelPanel'
 import { tripHotels } from '@/lib/trip/selectors'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures'
+import type { HotelSuggestion } from '@/lib/trip/backend-types'
+
+const HOTELS = tripHotels(TOKYO_TRIP)
+const placed = HOTELS.find((h) => h.geo_status === 'placed')!        // hotel_1: placed + recommended (rank 1)
+const unresolved = HOTELS.find((h) => h.geo_status === 'unresolved')! // hotel_2: skipped → never placed
+
+function renderPanel(
+  hotels: HotelSuggestion[],
+  opts: {
+    selectedHotelId?: string | null
+    onSelectHotel?: (id: string) => void
+    layerMode?: 'route' | 'hub'
+  } = {},
+) {
+  return render(
+    <HotelPanel
+      hotels={hotels}
+      selectedHotelId={opts.selectedHotelId ?? null}
+      onSelectHotel={opts.onSelectHotel ?? (() => {})}
+      layerMode={opts.layerMode ?? 'route'}
+    />,
+  )
+}
 
 describe('HotelPanel', () => {
   it('renders each hotel name', () => {
-    render(<HotelPanel hotels={tripHotels(TOKYO_TRIP)} />)
-    expect(screen.getByText(tripHotels(TOKYO_TRIP)[0].name)).toBeInTheDocument()
+    renderPanel(HOTELS)
+    expect(screen.getByText(placed.name)).toBeInTheDocument()
   })
 
   it('shows a skipped state for a skipped hotel', () => {
-    const skipped = tripHotels(TOKYO_TRIP).find((h) => h.status === 'skipped')!
-    render(<HotelPanel hotels={[skipped]} />)
+    const skipped = HOTELS.find((h) => h.status === 'skipped')!
+    renderPanel([skipped])
     expect(screen.getByText(/skipped/i)).toBeInTheDocument()
   })
 
   it('renders the composed empty state when there are no hotels', () => {
-    render(<HotelPanel hotels={[]} />)
+    renderPanel([])
     expect(screen.getByText(/no hotel suggestions for these dates/i)).toBeInTheDocument()
+  })
+
+  it('renders a recommended badge on the rank-1 hotel', () => {
+    renderPanel([placed])
+    expect(screen.getByText(/recommended/i)).toBeInTheDocument()
+  })
+
+  it('selecting a placed hotel calls onSelectHotel with its id', () => {
+    const onSelectHotel = vi.fn()
+    renderPanel([placed], { onSelectHotel })
+    // The placed hotel is the sole interactive row (a hub-pick button).
+    fireEvent.click(screen.getByRole('button'))
+    expect(onSelectHotel).toHaveBeenCalledWith(placed.id)
+  })
+
+  it('shows the honest note for an unresolved hotel and makes it non-selectable', () => {
+    const onSelectHotel = vi.fn()
+    renderPanel([unresolved], { onSelectHotel })
+    expect(screen.getByText(/couldn.t place this hotel on the map/i)).toBeInTheDocument()
+    // Guardrail #1: an unplaceable hotel has no pin, so it is never a selectable hub button.
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+  })
+
+  it('gates on geo_status not status: a search-succeeded but geocode-failed hotel is non-selectable', () => {
+    // The exact Guardrail #1 case (decision #7): Travala search SUCCEEDED (status 'suggested')
+    // but the geocode failed, so geo_status is 'unresolved' with no coords. The panel must gate on
+    // geo_status, NOT status — pins this against a regression that swaps the gate to `status`.
+    const geocodeFailed: HotelSuggestion = {
+      ...placed, id: 'hotel_geofail', status: 'suggested', geo_status: 'unresolved',
+      lat: null, lng: null, route_score: null, rank: null, is_recommended: false,
+      place_durations: {},
+    }
+    const onSelectHotel = vi.fn()
+    renderPanel([geocodeFailed], { onSelectHotel })
+    expect(screen.getByText(/couldn.t place this hotel on the map/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+  })
+
+  it('marks the selected hub as on the map only in hub mode', () => {
+    const { rerender } = renderPanel([placed], { selectedHotelId: placed.id, layerMode: 'route' })
+    // In route mode the selection is latent (the route line is drawn, not the hub).
+    expect(screen.queryByText(/on map/i)).not.toBeInTheDocument()
+    rerender(
+      <HotelPanel hotels={[placed]} selectedHotelId={placed.id} onSelectHotel={() => {}} layerMode="hub" />,
+    )
+    expect(screen.getByText(/on map/i)).toBeInTheDocument()
   })
 })

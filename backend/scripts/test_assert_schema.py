@@ -353,6 +353,25 @@ async def test_claim_rpc_transport_error_fails_closed_and_is_secret_safe(capsys)
     assert "secret-host" not in combined              # never the message text
 
 
+async def test_present_but_ungranted_claim_rpc_fails_closed(capsys):
+    """Migration 2's function landed but its service_role EXECUTE grant did NOT (SQLSTATE 42501): the
+    RPC is present-but-not-callable, so the sweep's own claim would fail. The gate must FAIL CLOSED and
+    name the code — NOT wave it through just because PostgREST resolved the function name."""
+    grant_missing = APIError({
+        "code": "42501",
+        "message": "permission denied for function claim_account_for_deletion",
+        "hint": None, "details": None,
+    })
+    client = FakeSupabase(schema_from_manifest(), rpc_error=grant_missing)
+
+    code = await assert_schema.run(client, sleep=_no_sleep)
+
+    assert code == 1
+    combined = "".join(capsys.readouterr())
+    assert "claim_account_for_deletion" in combined
+    assert "42501" in combined
+
+
 # --------------------------------------------------------------------------------------
 # Supporting invariants
 # --------------------------------------------------------------------------------------

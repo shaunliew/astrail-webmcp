@@ -316,14 +316,18 @@ async def _probe_claim_rpc(client, *, attempts: int, backoff_s: float, sleep) ->
     """RPC-LIVENESS probe for `claim_account_for_deletion` — the column loop cannot see an RPC.
 
     STRUCTURALLY side-effect-free: calls the RPC once with a deliberately INVALID uuid
-    (`_CLAIM_RPC_PROBE_ID`), so PostgreSQL rejects the `p_user_id uuid` cast (SQLSTATE 22P02) BEFORE
-    the function body — the CAS UPDATE never runs, no row can ever be touched. Only a `PGRST202`
-    (PostgREST could not resolve the function name+arg → it is absent) means migration 2 has not
-    landed → abort. ANY other server ANSWER — the 22P02 cast rejection, a permission error, or even a
-    (practically impossible) success — means PostgREST RESOLVED the function, so it EXISTS → pass. Same
-    retry discipline as `_probe`: a transport failure is retried and then fails closed as
-    `_Unreachable`; a server answer is a verdict, never retried. Secret-safe: names our own label + the
-    SQLSTATE code only, never the server message; transport errors log the TYPE only.
+    (`_CLAIM_RPC_PROBE_ID`). PostgreSQL evaluates a function call IN ORDER — resolve the name (else
+    `PGRST202`), check the service_role EXECUTE grant (else `42501`), then CAST `p_user_id` to uuid
+    (fails `22P02` on our invalid input) — so the CAS UPDATE body NEVER runs and no row can be touched.
+    The only HEALTHY answer is therefore `22P02`: the function is present AND service_role can execute
+    it, and it rejected our bad input before the body → pass. EVERYTHING ELSE FAILS CLOSED, naming the
+    code: `PGRST202` = the function/signature is absent (migration 2 didn't land); `42501` = present
+    but service_role lacks EXECUTE (migration 2's grant didn't land, so the sweep itself couldn't
+    claim); any other code (e.g. `PGRST203` ambiguous overload) = the RPC is not present-and-callable
+    as this code needs — never wave through a half-applied migration. Same retry discipline as
+    `_probe`: a transport failure is retried and then fails closed as `_Unreachable`; a server answer
+    is a verdict, never retried. Secret-safe: names our own label + the SQLSTATE code only, never the
+    server message; transport errors log the TYPE only.
     """
     from postgrest.exceptions import APIError
 
@@ -332,15 +336,22 @@ async def _probe_claim_rpc(client, *, attempts: int, backoff_s: float, sleep) ->
         try:
             await client.rpc("claim_account_for_deletion",
                              {"p_user_id": _CLAIM_RPC_PROBE_ID}).execute()
-            return  # PostgREST accepted the call → the function exists (unreachable with a bad uuid)
+            return  # accepted (unreachable in prod with a bad uuid, but = present + ran)
         except APIError as exc:
-            if getattr(exc, "code", None) == "PGRST202":
+            code = getattr(exc, "code", None)
+            if code == "22P02":
+                # Healthy: present + service_role can execute it + rejected our invalid uuid at the
+                # arg cast, BEFORE the body. Structurally side-effect-free → the one passing verdict.
+                return
+            if code == "PGRST202":
                 raise _RpcDrift(f"{_CLAIM_RPC_LABEL}: RPC NOT FOUND (PGRST202) — migration 2 has "
                                 "not landed; apply it, then redeploy") from None
-            # Any other server answer (22P02 cast rejection, a grant error, …) means PostgREST
-            # resolved the function → it EXISTS. Pass: the probe only asserts existence, and the
-            # invalid uuid guarantees the body never ran.
-            return
+            # FAIL CLOSED on every other answer — 42501 (service_role EXECUTE grant missing), a
+            # PGRST203 ambiguous overload, or anything else: the RPC is not present-and-callable as
+            # migration 2 defines it, so the sweep would break. Abort, naming the code.
+            raise _RpcDrift(f"{_CLAIM_RPC_LABEL}: NOT callable — unexpected error code {code} (e.g. a "
+                            "missing service_role EXECUTE grant); apply/repair migration 2, then "
+                            "redeploy") from None
         except Exception as exc:                      # noqa: BLE001 — transport only; type name only
             last_error_type = type(exc).__name__
             if attempt + 1 < attempts:

@@ -113,7 +113,40 @@ T4 (notifications) held for the next wave (also edits main.py). All gated OFF.
   goes `completed` → sweep stops selecting; `recipient_email` cleared same write) — acceptable per §6 (the
   scheduled email is the load-bearing one), review to confirm.
 
-**ALL BUILD TASKS (T1–T5) DONE. Only T6 remains — HELD for ZH go-live.**
+- **T4 REVIEW DONE: SHIP, no Critical/Important** — verified live (best-effort/never-raises, no-op-without-
+  key, secret-safe logging proven by embedding the key in a raised error + asserting absence, gates off,
+  engine logic + T3 folds byte-identical). 4 Minors → **3 FOLDED `303b56b`:** (1) `_mark_completed`
+  write-then-send (was send-then-write) → idempotent terminal path, no double-send on crash-recovery re-run;
+  (2) scheduled email renders a human date not raw ISO; (3) drop the unused `ERROR_CODE_MEMORY_UNAVAILABLE`.
+  Backend 1539 pass, tsc clean, settings 18 pass. **4th Minor → T6 DECISION:** the scheduled email is
+  `await`ed in the request path (worst case ~40s if GoTrue+Resend degraded; inert while gated) → at go-live
+  choose fire-and-forget (`create_task`) vs tighter timeouts.
+
+**★★★★ ALL BUILD TASKS (T1–T5) BUILT + REVIEWED + FOLDED. Everything GATED OFF, local on `zh`, NOT pushed.**
+Commits: `89b7a42`(T1) `98cc1bd`(T2) `5cc6fda`+`76b7ecb`(T3) `9fb1a59`(T5) `9d3d81f`+`303b56b`(T4) +
+`52f2cce`(tracing-off, standalone). Backend 1539 pass, frontend green, eval 6229.0 holds.
+
+## T6 — GO-LIVE CHECKLIST (do NOT start without ZH's explicit go)
+1. **Live DB gate:** apply the 3 migrations to a rebased local Postgres; run pgTAP `019_account_deletion.sql`
+   + `020_claim_account_for_deletion.sql` (privilege-pin + CAS runtime proof, deferred here — no local PG).
+2. **Wire the cross-session `account_status` read** (T5 gap): add `account_status`+`deletion_scheduled_for`
+   to an existing settings/profile GET (or a new `GET /account/deletion/status`) so a returning user sees
+   the pending banner + can Cancel; feed it into `DeleteAccountCard`'s `initialStatus`/`initialScheduledFor`.
+3. **Fold deferred minors:** T5's 3 (unmount guard, `MOCK_AUTH_ENABLED` short-circuit in the 2 new api fns,
+   silent-revert on `no_pending_deletion`); T4's #4 (sync scheduled-email latency — fire-and-forget vs
+   timeouts); T2's cancel cosmetic-message race (optional).
+4. **`/privacy` honest copy** (`page.tsx:131`): self-serve flow + 7-day grace + name the residual windows
+   (Render logs, Resend send-log ~30d); OpenAI tracing already off.
+5. **Config:** set `RESEND_API_KEY` (+ `RESEND_FROM_EMAIL`) in `render.yaml`/Render env (`.env.example`
+   already has them). Decide `_CLEAR_RECONCILIATION_READY` (clear-memory live-enable) — separate from the
+   delete flags.
+6. **FLIP THE FLAGS (the actual go-live):** `_DELETION_EXECUTION_READY=True` (`main.py:351`) +
+   `NEXT_PUBLIC_DELETION_ENABLED=true`. Schema-first: migrations + config land BEFORE the flag flip.
+7. **Live E2E** (`/qa`): request→scheduled email arrives w/ friendly date+cancel copy→banner shows→cancel;
+   then a full grace-lapsed deletion→two-pass sweep→auth-delete→22 tables gone→completion email→log
+   `completed`+`recipient_email` cleared; clear-memory button honest states.
+8. **FINAL whole-branch review — fable/opus + gstack `/review` Codex cross-model (run BOTH)** before any
+   PR/merge/deploy. THEN PR to `dev`, merge, sync.
 - **T6 (HOLD for ZH go-live)** — live pgTAP 019/020 + wire the cross-session `account_status` read (T5 gap)
   + the T2/T5 minors + flip `_DELETION_EXECUTION_READY` + `NEXT_PUBLIC_DELETION_ENABLED` (+ decide
   `_CLEAR_RECONCILIATION_READY`) + `/privacy` honest copy. FINAL whole-branch pass (fable/opus +

@@ -731,6 +731,26 @@ async def request_seat(
     return RequestSeatResponse(requested_at=stamp)
 
 
+async def _send_scheduled_deletion_email(client, user_id: str, scheduled_for: str) -> None:
+    """Best-effort: look up the caller's email (the JWT carries only the sub, never the address)
+    and fire the "deletion scheduled" notice (plan §3.5, the safety net).
+
+    Wrapped so NOTHING here — the service-role auth.users read or the send — can raise into the
+    endpoint: an email must never fail an already-scheduled deletion. Secret-safe: logs only the
+    exception TYPE name (an auth/httpx error can embed the bearer key or the address).
+    """
+    from notifications import send_deletion_scheduled_email
+
+    try:
+        # The JWT sub is the identity; read the address service-side (RPC already captured it into
+        # the log, but the endpoint only got scheduled_for back). get_user_by_id is the admin read.
+        resp = await client.auth.admin.get_user_by_id(user_id)
+        email = getattr(getattr(resp, "user", None), "email", None)
+        await send_deletion_scheduled_email(email, scheduled_for)
+    except Exception as exc:  # noqa: BLE001 — a notice must NEVER break a scheduled deletion
+        logger.warning("scheduled deletion email failed: %s", type(exc).__name__)
+
+
 @app.post("/account/deletion", response_model=AccountDeletionResponse)
 @limiter.limit(BURST_LIMIT)
 async def request_account_deletion_endpoint(
@@ -764,8 +784,10 @@ async def request_account_deletion_endpoint(
         # The CAS matched nothing: the account is not 'active' (already pending/deleting).
         raise HTTPException(409, {"code": "deletion_not_active",
             "message": "This account can't be scheduled for deletion right now."})
-    # TODO(Task 4): fire the immediate "deletion scheduled — cancel by {date}" email (Resend,
-    # best-effort) — the load-bearing safety net (plan §3.5). NOT built here.
+    # Fire the immediate "deletion scheduled — cancel by {date}" notice (Resend, best-effort) —
+    # the load-bearing safety net (plan §3.5). Wrapped so NEITHER the email lookup NOR the send can
+    # fail the 200 or the already-scheduled deletion.
+    await _send_scheduled_deletion_email(client, user_id, scheduled_for)
     return AccountDeletionResponse(scheduled_for=scheduled_for)
 
 

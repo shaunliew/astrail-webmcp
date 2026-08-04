@@ -215,6 +215,23 @@ def _frozen_clock(monkeypatch):
     monkeypatch.setattr(deletion_engine, "_now_utc", lambda: _NOW)
 
 
+@pytest.fixture(autouse=True)
+def completion_emails(monkeypatch):
+    """Record the best-effort completion email _mark_completed fires (Task 4) so no send ever
+    leaves in the keyless suite, regardless of RESEND_API_KEY. `_mark_completed` does
+    `from notifications import send_deletion_completed_email` at call time, so patching the module
+    attribute is what it resolves. Returns the list of recipients sent to."""
+    import notifications
+
+    sends: list = []
+
+    async def _record(email):
+        sends.append(email)
+
+    monkeypatch.setattr(notifications, "send_deletion_completed_email", _record)
+    return sends
+
+
 def _patch_purge(monkeypatch, *behaviours) -> _FakePurge:
     fake = _FakePurge(*behaviours)
     monkeypatch.setattr(deletion_engine, "purge_account_memory", fake)
@@ -338,7 +355,7 @@ async def test_pass_b_reverify_catches_a_late_add_and_backs_off(monkeypatch):
     assert "re-verify" in client.log_row["last_error"]
 
 
-async def test_pass_b_happy_path_hard_deletes_and_completes(monkeypatch):
+async def test_pass_b_happy_path_hard_deletes_and_completes(monkeypatch, completion_emails):
     purge = _patch_purge(monkeypatch, None)      # re-verify: still empty
     client = _FakeClient(log=[_deleting_log()],
                          users=[{"id": _UID, "account_status": "deleting"}])
@@ -350,8 +367,10 @@ async def test_pass_b_happy_path_hard_deletes_and_completes(monkeypatch):
     row = client.log_row
     assert row["outcome"] == "completed"
     assert row["completed_at"] is not None
-    # recipient_email is left for Task 4's completion email (deliberately NOT cleared here)
-    assert row["recipient_email"] == "gone@example.com"
+    # Task 4: the best-effort completion email fired to the CAPTURED address, then it was cleared
+    # from the log in the terminal write (the row no longer retains the recipient).
+    assert completion_emails == ["gone@example.com"]
+    assert row["recipient_email"] is None
 
 
 async def test_pass_b_auth_delete_404_is_success(monkeypatch):

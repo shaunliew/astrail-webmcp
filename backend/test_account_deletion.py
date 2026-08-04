@@ -156,6 +156,98 @@ async def test_request_deletion_requires_auth(monkeypatch):
     assert spy.calls == []              # an anonymous caller never reaches the RPC
 
 
+# --- POST /account/deletion — the scheduled "safety net" email (Task 4) -------------------
+# The load-bearing notice (plan §3.5). These drive the endpoint with a fake service-role client
+# whose admin API returns the caller's email, and prove: (a) a successful request fires the notice
+# to the LOOKED-UP address with the scheduled date; (b) an email failure NEVER blocks the 200 or
+# the already-scheduled deletion (best-effort).
+
+
+class _FakeAdmin:
+    def __init__(self, email, raises=None):
+        self.email, self.raises, self.calls = email, raises, []
+
+    async def get_user_by_id(self, uid):
+        self.calls.append(uid)
+        if self.raises is not None:
+            raise self.raises
+        return type("_Resp", (), {"user": type("_U", (), {"email": self.email})()})()
+
+
+class _FakeClientWithAuth:
+    def __init__(self, admin):
+        self.auth = type("_Auth", (), {"admin": admin})()
+
+
+def _email_client(monkeypatch, *, uid, admin, send_spy, request_returns="2026-08-12T00:00:00+00:00",
+                  request_raises=None):
+    import deletion
+    import main
+    import notifications
+    from rate_limit import get_current_user_id_stashed
+
+    monkeypatch.setattr(main, "_DELETION_EXECUTION_READY", True)
+
+    req_spy = _DeletionSpy(returns=request_returns, raises=request_raises)
+    monkeypatch.setattr(deletion, "request_account_deletion", req_spy)
+    monkeypatch.setattr(notifications, "send_deletion_scheduled_email", send_spy)
+
+    async def _sb():
+        return _FakeClientWithAuth(admin)
+
+    monkeypatch.setattr(main, "get_supabase_client", _sb)
+
+    async def _override(request: Request) -> str:
+        request.state.user_id = uid
+        return uid
+
+    main.app.dependency_overrides[get_current_user_id_stashed] = _override
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test")
+
+
+async def test_request_deletion_fires_the_scheduled_email_to_the_looked_up_address(monkeypatch):
+    sent: list = []
+
+    async def _send(email, scheduled_for):
+        sent.append((email, scheduled_for))
+
+    admin = _FakeAdmin("traveler@example.com")
+    async with _email_client(monkeypatch, uid="u1", admin=admin, send_spy=_send) as c:
+        r = await c.post("/account/deletion")
+    assert r.status_code == 200
+    assert r.json() == {"scheduled_for": "2026-08-12T00:00:00Z"}
+    # The notice went to the address resolved for the TOKEN's sub, with the scheduled date.
+    assert admin.calls == ["u1"]
+    assert sent == [("traveler@example.com", "2026-08-12T00:00:00+00:00")]
+
+
+async def test_request_deletion_still_200_when_the_email_lookup_raises(monkeypatch):
+    """Best-effort: a failing auth.users lookup must NOT fail an already-scheduled deletion."""
+    sent: list = []
+
+    async def _send(email, scheduled_for):
+        sent.append((email, scheduled_for))
+
+    admin = _FakeAdmin(None, raises=RuntimeError("gotrue down"))
+    async with _email_client(monkeypatch, uid="u1", admin=admin, send_spy=_send) as c:
+        r = await c.post("/account/deletion")
+    assert r.status_code == 200                     # the deletion is scheduled regardless
+    assert r.json() == {"scheduled_for": "2026-08-12T00:00:00Z"}
+    assert sent == []                               # the lookup failed before a send
+
+
+async def test_request_deletion_still_200_when_the_email_send_raises(monkeypatch):
+    """Best-effort: even if the notice send itself raised, the endpoint must still return 200."""
+    async def _send(email, scheduled_for):
+        raise RuntimeError("resend unreachable")
+
+    admin = _FakeAdmin("traveler@example.com")
+    async with _email_client(monkeypatch, uid="u1", admin=admin, send_spy=_send) as c:
+        r = await c.post("/account/deletion")
+    assert r.status_code == 200
+    assert r.json() == {"scheduled_for": "2026-08-12T00:00:00Z"}
+
+
 # --- POST /account/deletion/cancel --------------------------------------------------------
 
 

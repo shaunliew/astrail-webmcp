@@ -179,16 +179,25 @@ async def _mark_purged(client, log_row: dict) -> None:
 
 
 async def _mark_completed(client, log_row: dict) -> None:
-    """Terminal success: the auth user is gone (or already was). Task 4 will send the completion
-    email to recipient_email and then clear it; deliberately NOT touched here."""
+    """Terminal success: the auth user is gone (or already was). Fire the best-effort completion
+    email to the captured recipient_email, then mark the log 'completed' AND clear recipient_email
+    in one terminal write (plan §3.4). Ordering (email -> terminal write) is deliberate: the send
+    is best-effort and NEVER blocks the delete (the auth-user hard-delete already happened before
+    this call), and clearing the address only after the send means the log no longer retains a
+    recipient once the notice has gone out.
+    """
+    from notifications import send_deletion_completed_email
+
+    # Best-effort: send_deletion_completed_email swallows every failure and no-ops without
+    # RESEND_API_KEY (notifications.py), so it never raises into the sweep. The account is already
+    # deleted, so a lost notice is acceptable (plan §6, best-effort delivery).
+    await send_deletion_completed_email(log_row.get("recipient_email"))
     await (
         client.table("account_deletion_log")
         .update({"outcome": "completed", "completed_at": _now_iso(),
-                 "next_attempt_at": None, "last_error": None})
+                 "next_attempt_at": None, "last_error": None, "recipient_email": None})
         .eq("id", log_row["id"]).execute()
     )
-    # TODO(Task 4): fire the best-effort "your account has been deleted" completion email to
-    # log_row["recipient_email"], then clear recipient_email once the send is accepted.
 
 
 async def _mark_failed(client, log_row: dict, reason: str) -> None:

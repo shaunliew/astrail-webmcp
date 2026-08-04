@@ -2,11 +2,18 @@
 
 import { useEffect, useRef, useState } from 'react'
 // Profile (origin/style/interests) comes from the RLS-guarded traveler_profiles row and the
-// remembered facts come from the backend's mem0 store — the same live reads the plan sheet
-// uses, never the mock. `clearMemory` stays on mock-api pending the erasure-backend decision.
+// remembered facts come from the backend's mem0 store — the same live reads the plan sheet uses,
+// never the mock. Clearing memory now hits the REAL POST /settings/memory/clear (no longer the
+// mock's fake success): the backend is STRICT and surfaces distinct honest states.
 import { getProfile, getMemoryPreferences } from '@/lib/trip/supabase-api'
-import { clearMemory } from '@/lib/trip/mock-api'
-import type { MemoryFact, MemoryStatus, TravelerProfile } from '@/lib/trip/backend-types'
+import { ApiError, clearMemory } from '@/lib/trip/api'
+import { getAccessToken } from '@/lib/supabase/session'
+import {
+  ERROR_CODE_MEMORY_CLEAR_UNKNOWN,
+  type MemoryFact,
+  type MemoryStatus,
+  type TravelerProfile,
+} from '@/lib/trip/backend-types'
 import DeleteAccountCard from '@/components/settings/DeleteAccountCard'
 
 // Self-serve account deletion is HIDDEN until go-live: Task 6 flips this frontend flag together
@@ -18,6 +25,12 @@ function deletionUiEnabled(): boolean {
 }
 
 type ProfileData = { profile: TravelerProfile; status: MemoryStatus; facts: MemoryFact[] }
+
+// Honest end-states of the real clear-memory call (never a fake success): 'cleared' = the backend
+// verified the wipe; 'unavailable' = 503 / memory_unavailable / a transport error (nothing was
+// deleted — the message the button shows while the backend gate is still off); 'unknown' = the
+// backend attempted it but couldn't confirm (memory_clear_unknown).
+type ClearStatus = 'idle' | 'clearing' | 'cleared' | 'unavailable' | 'unknown'
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -42,8 +55,7 @@ const CARD = 'flex flex-col gap-4 rounded-2xl border border-[color:var(--paper-l
 
 export default function SettingsView() {
   const [data, setData] = useState<ProfileData | null>(null)
-  const [cleared, setCleared] = useState(false)
-  const [clearing, setClearing] = useState(false)
+  const [clearStatus, setClearStatus] = useState<ClearStatus>('idle')
   const activeRef = useRef(true)
 
   useEffect(() => {
@@ -64,11 +76,21 @@ export default function SettingsView() {
   }, [])
 
   async function handleClear() {
-    setClearing(true)
-    await clearMemory()
-    if (!activeRef.current) return
-    setCleared(true)
-    setClearing(false)
+    setClearStatus('clearing')
+    try {
+      const token = await getAccessToken()
+      await clearMemory(token)
+      if (!activeRef.current) return
+      setClearStatus('cleared')
+    } catch (e) {
+      if (!activeRef.current) return
+      // Honest states — NEVER a fake success. memory_clear_unknown = the backend attempted the
+      // wipe but couldn't confirm it; anything else (memory_unavailable / 503 / a network error)
+      // means we couldn't reach the service and nothing was deleted.
+      setClearStatus(
+        e instanceof ApiError && e.code === ERROR_CODE_MEMORY_CLEAR_UNKNOWN ? 'unknown' : 'unavailable',
+      )
+    }
   }
 
   if (!data) {
@@ -104,7 +126,7 @@ export default function SettingsView() {
           </p>
         </div>
 
-        {cleared ? (
+        {clearStatus === 'cleared' ? (
           <p className="text-[14px] text-[color:var(--text-muted)]">Memory cleared. Astrail will infer fresh preferences next time.</p>
         ) : status !== 'ok' ? (
           /* Distinguish "memory is down" from "nothing saved yet" (backend api/schemas.py):
@@ -135,11 +157,23 @@ export default function SettingsView() {
         <button
           type="button"
           onClick={handleClear}
-          disabled={cleared || clearing}
+          disabled={clearStatus === 'cleared' || clearStatus === 'clearing'}
           className="mt-2 self-start rounded-lg border border-[color:var(--fail)] px-3 py-2 text-[12px] font-semibold uppercase tracking-wide text-[color:var(--fail)] transition-colors hover:bg-[color:var(--surface-2)] disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]"
         >
-          {clearing ? 'Clearing…' : 'Clear memory'}
+          {clearStatus === 'clearing' ? 'Clearing…' : 'Clear memory'}
         </button>
+
+        {/* Honest outcome of a REAL clear — never a fake success. Truthful copy for each backend
+            state; while the reconciliation gate is off the backend 503s → "couldn't reach". */}
+        {clearStatus === 'unavailable' ? (
+          <p role="status" className="text-[13px] text-[color:var(--text-muted)]">
+            Couldn’t reach the memory service — try again later.
+          </p>
+        ) : clearStatus === 'unknown' ? (
+          <p role="status" className="text-[13px] text-[color:var(--text-muted)]">
+            Clearing started — couldn’t fully confirm.
+          </p>
+        ) : null}
       </section>
 
       {/* Self-serve deletion — hidden until go-live (Task 6 flips NEXT_PUBLIC_DELETION_ENABLED).

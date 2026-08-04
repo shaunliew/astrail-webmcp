@@ -3,6 +3,7 @@ import type {
   AccountDeletionResponse,
   GenerateTripRequest,
   GenerateTripResponse,
+  MemoryClearResponse,
   RequestSeatResponse,
   StreamEvent,
 } from './backend-types'
@@ -116,6 +117,31 @@ export async function requestAccountDeletion(accessToken: string): Promise<Accou
 // showing the in-progress state and disabling Cancel. 503 deletion_unavailable = gated off.
 export async function cancelAccountDeletion(accessToken: string): Promise<AccountDeletionCancelResponse> {
   const res = await fetch(`${BACKEND_URL}/account/deletion/cancel`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+
+  if (!res.ok) {
+    throw await apiErrorFrom(res)
+  }
+
+  return res.json()
+}
+
+// POST /settings/memory/clear — clear the caller's remembered mem0 preferences (self-serve; no
+// body — identity from the token: guardrails #5/#6). STRICT by design (the inverse of the
+// degrading GET /settings/preferences): the backend returns 200 {"cleared":true} ONLY on a
+// verified clear, and otherwise a 503 with a DISTINCT code — memory_unavailable (nothing was
+// deleted; safe to retry / service unreachable) vs memory_clear_unknown (attempted, could not be
+// confirmed). A non-ok response throws an ApiError carrying that code so the caller surfaces each
+// state honestly — never a fake success. While the backend's reconciliation gate is off it 503s
+// memory_unavailable, so the button truthfully reports "couldn't reach" until go-live.
+export async function clearMemory(accessToken: string): Promise<MemoryClearResponse> {
+  if (MOCK_AUTH_ENABLED) return mockApi.clearMemory().then(() => ({ cleared: true }))
+  const res = await fetch(`${BACKEND_URL}/settings/memory/clear`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

@@ -9,9 +9,6 @@ const { getProfile, getMemoryPreferences } = vi.hoisted(() => ({
 }))
 vi.mock('@/lib/trip/supabase-api', () => ({ getProfile, getMemoryPreferences }))
 
-const { clearMemory } = vi.hoisted(() => ({ clearMemory: vi.fn(async () => ({ ok: true as const })) }))
-vi.mock('@/lib/trip/mock-api', () => ({ clearMemory }))
-
 // DeleteAccountCard reads the account email via useUser once it mounts (flag on only).
 const { useUser } = vi.hoisted(() => ({ useUser: vi.fn() }))
 vi.mock('@/lib/auth/use-user', () => ({ useUser }))

@@ -7,6 +7,29 @@
 
 ---
 
+## ★★★ SESSION-2 PIVOT (2026-08-04, latest) — READ THIS FIRST; supersedes the A/full-rigor track
+
+**ZH re-scoped after seeing full-rigor's cost: → LEAN self-serve (Direction B) + 7-day grace.** The
+13-task full-rigor Rev 4 was correct-but-overkill for a 25-seat beta; the law needs an honest, real
+deletion, not provable-exactly-once machinery.
+- **ACTIVE PLAN NOW: `docs/superpowers/plans/2026-08-04-lean-account-deletion.md`** (~6 tasks, days). Keeps
+  the button + reauth(OTP+`amr`) + real delete + verify + 7-day grace + honest email + un-lie clear-memory
+  (#2). Drops the barrier/leased-jobs/webhook/`admin`/HMAC-audit machinery (see its §6 "what we accept" +
+  §8 upgrade triggers). Task 1 is UNCHANGED (same non-destructive choke-point, both reviewers cleared it).
+- **Rev 4 (`2026-08-04-self-serve-account-deletion.md`) is SHELVED** as the scale-up blueprint — not
+  deleted; adopt its pieces when a §8 trigger fires.
+- **DONE this session: OpenAI Agents SDK tracing DISABLED** (`52f2cce`) — it was ON by default, exporting
+  gen/tool data to OpenAI's trace store, contradicting `/privacy`. `set_tracing_disabled(True)` at all 3
+  `Runner.run` sites; verified `NoOpTrace`; genagents 109 pass. Standalone honesty fix, cherry-pickable to
+  dev. Lesson recorded in `LESSONS-HACKATHON.md`.
+- **Next:** on ZH's go — one lean plan-review of the destructive T2/T3, then build Task 1 and STOP. No
+  build/wire yet this session.
+
+Everything below (SESSION-2 UPDATE, the A/B/C decision, the Rev-3/Rev-4 review captures) is HISTORY of the
+full-rigor track — still accurate, but the active direction is LEAN above.
+
+---
+
 ## ★ SESSION-2 UPDATE (2026-08-04, cont.) — supersedes §0/§4/§8 below
 
 **ZH DECIDED: Direction A (full rigor)** + **HOLD Task 1** (planning only this session — do NOT build the

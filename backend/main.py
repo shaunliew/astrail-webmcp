@@ -112,6 +112,22 @@ async def _redispatch_organize(client, job: dict) -> None:
         await run_organize_job(job["id"], job["user_id"], client=client)
 
 
+async def _run_deletion_sweep(client) -> None:
+    """The reaper's account-deletion branch. NO-OP unless the execution gate is live.
+
+    Gated OFF through Task 6: while `_DELETION_EXECUTION_READY` is False this returns before
+    importing or touching anything, so the two-pass delete engine never runs — the sweep is
+    inert until the same PR that builds notifications + the live E2E proof flips the flag.
+    Kept a separate function (called in its OWN try in `_reap_loop`) so a deletion failure can
+    never skip trip/organize job recovery, and so the gate is unit-testable in isolation.
+    """
+    if not _DELETION_EXECUTION_READY:
+        return
+    from deletion_engine import sweep_due_deletions
+
+    await sweep_due_deletions(client)
+
+
 async def _reap_loop(client) -> None:
     """Reclaim expired leases on a timer, not only at boot.
 
@@ -139,6 +155,13 @@ async def _reap_loop(client) -> None:
             # A DB blip must NEVER kill the reaper — a reaper that dies on its first
             # transient error is worse than none, because nothing after it says so.
             logger.warning("reap_loop_iteration_failed", exc_info=True)
+        # Account-deletion sweep in its OWN try: a deletion error must never skip the trip/
+        # organize recovery above (they are the load-bearing guardrail #12 path). No-op while
+        # the gate is off. Same cadence as the reclaim sweeps (this shares the 120s tick).
+        try:
+            await _run_deletion_sweep(client)
+        except Exception:
+            logger.warning("deletion_sweep_iteration_failed", exc_info=True)
 
 
 @asynccontextmanager
@@ -455,6 +478,25 @@ async def submit_trip_feedback(
     )
 
 
+async def _account_is_pending_deletion(client, user_id: str) -> bool:
+    """True when the account is in the deletion grace ('pending_deletion') or being deleted
+    ('deleting') — the generation-freeze read (plan §3.6).
+
+    INERT while every account is 'active' (the shipping state), so this UX gate ships UNGATED.
+    Fails OPEN — a status-read blip must not break generation for everyone. The load-bearing
+    freeze is `persist_trip_memory`'s fail-closed add + the auth-delete cascade (they actually
+    stop new data for a to-be-deleted account); this early return is only the friendly response.
+    """
+    try:
+        res = await (client.table("users").select("account_status")
+                     .eq("id", user_id).maybe_single().execute())
+    except Exception:                                     # noqa: BLE001 — fail open (UX gate only)
+        return False
+    row = getattr(res, "data", None) if res is not None else None
+    status = row.get("account_status") if isinstance(row, dict) else None
+    return status in ("pending_deletion", "deleting")
+
+
 @app.post("/generate-trip", response_model=GenerateTripResponse)
 @limiter.limit(BURST_LIMIT)
 async def generate_trip(
@@ -465,6 +507,11 @@ async def generate_trip(
     user_id: str = Depends(get_current_user_id_stashed),  #   _inject_headers(None, ...) breaks every call.
 ) -> GenerateTripResponse:                               # (the dep stashes request.state.user_id for key_func)
     client = await get_supabase_client()
+    # Generation freeze (plan §3.6): a pending/deleting account gets a clean "scheduled for
+    # deletion" response instead of starting a trip. Ungated + inert while everyone is 'active'.
+    if await _account_is_pending_deletion(client, user_id):
+        raise HTTPException(403, {"code": "account_pending_deletion",
+            "message": "This account is scheduled for deletion. Cancel the deletion to plan new trips."})
     place_ids = [str(place_id) for place_id in req.place_ids]
     idem = compute_idempotency_key(user_id, req.reel_urls, req.start_date, req.end_date,
                                    preferences=req.preferences, pace=req.pace,

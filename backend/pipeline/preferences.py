@@ -240,6 +240,37 @@ async def _cleared_since_generation_start(client, *, user_id: str, trip_id: str)
     return bool(getattr(res, "data", None))
 
 
+async def _account_deletion_frozen(client, *, user_id: str) -> bool:
+    """True when this account is leaving the platform ('pending_deletion' / 'deleting') and must
+    take on NO new mem0 data — the LOAD-BEARING half of the generation freeze (plan §3.6).
+
+    Fails CLOSED: only a positively-read 'active' status permits the add; a non-active status,
+    a missing row, or any read failure ALL return True (skip). Same conservative direction as
+    `_cleared_since_generation_start` — losing one learned memory on a DB blip is benign (D7),
+    while adding memory to a to-be-deleted account is exactly the bug this freeze prevents. INERT
+    while every account is 'active' (the shipping state).
+
+    Deliberately the ONE write-back read NOT wrapped in `asyncio.wait_for`: it is a pre-flight gate
+    that runs BEFORE the intent-first window opens, and it reads `users` (not `memory_events`), so
+    its latency can never produce a false-`cleared` the way an unbounded guard read could (that is
+    the specific race C12 bounds). The shared 30s HTTP timeout still caps it, and this runs off the
+    critical path (after the terminal `result` event), so a slow read only delays a background
+    write, never the stream."""
+    try:
+        res = await (client.table("users").select("account_status")
+                     .eq("id", user_id).maybe_single().execute())
+    except Exception as e:                  # noqa: BLE001
+        print(f"[mem0] write-back freeze: account_status read failed: {type(e).__name__}",
+              file=sys.stderr)
+        return True                         # fail closed — never add for a possibly-deleting acct
+    # maybe_single() returns a BARE None on zero rows; both that and a None `.data` read as "no
+    # readable status" -> skip. isinstance guard keeps a shape-drifted `.data` from raising out of
+    # here (guardrail #3 — nothing may raise from the write-back).
+    _row = getattr(res, "data", None) if res is not None else None
+    status = _row.get("account_status") if isinstance(_row, dict) else None
+    return status != "active"
+
+
 async def _write_add_intent(client, *, user_id: str, trip_id: str,
                             learned: list[str]) -> str | None:
     """Insert the audit row BEFORE the add is attempted and return its id (None on failure).
@@ -323,6 +354,13 @@ async def persist_trip_memory(client, mem0, *, user_id: str, trip_id: str,
         return learned   # memory disabled: nothing was actually sent to mem0, so no
                           # memory_events row either — preferences already live in
                           # trips.preference_summary (Task 3)
+
+    # GENERATION FREEZE (plan §3.6): if the account entered the deletion grace during this
+    # 60-180s generation, take on NO new mem0 data. Fail-closed (see _account_deletion_frozen).
+    # Checked BEFORE the intent row so a frozen account writes nothing at all — no add, no audit.
+    if await _account_deletion_frozen(client, user_id=user_id):
+        print("[mem0] write-back: account pending deletion; skipping add", file=sys.stderr)
+        return learned
 
     # INTENT-FIRST (C11). `_add_possibly_in_flight` can only see an in-flight add if a row
     # exists BEFORE the guard reads memory_events — the race is between the guard's READ

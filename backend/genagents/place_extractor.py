@@ -278,8 +278,12 @@ def build_extractor(model: str):
 
 async def _default_runner(agent, user_input: str):
     """Real run. Lazy-imports the Agents SDK Runner."""
-    from agents import Runner
+    from agents import Runner, set_tracing_disabled
 
+    # Privacy: never export gen/tool data (Reel captions, user prefs) to the OpenAI
+    # trace store — Agents SDK tracing is ON by default and /privacy promises we don't
+    # retain user data there. Global + idempotent, so it holds in every environment.
+    set_tracing_disabled(True)
     return await Runner.run(agent, user_input, max_turns=12)
 
 

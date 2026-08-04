@@ -11,6 +11,7 @@
 - `evidence_caption_quote` must be verbatim substring of `caption + locationName`. Drop if not.
 - Counting `WebSearchTool` calls: in openai-agents **0.17.x** a hosted web search surfaces in `result.new_items` as a **`ToolCallItem`** whose `raw_item` is `openai.types.responses.ResponseFunctionWebSearch` with **`type == "web_search_call"`** — match `raw_item.type` (tolerating a `dict` raw_item), NOT the wrapper class name. `ToolSearchCallItem` is a **separate, unrelated tool-search feature** — do not match on it. (Corrected 2026-06-29; the old "appears as `ToolSearchCallItem`" note caused `web_search_calls=0` on real runs. See `genagents/place_extractor.py::_count_web_searches`.)
 - Apify MCP `client_session_timeout_seconds` default is 5s — always too short. Irrelevant now (using direct HTTP), but note if SDK ever returns.
+- **OpenAI Agents SDK tracing is ON by default** — every `Runner.run` exports gen/tool data (Reel captions, user prefs) to OpenAI's trace store, which contradicts `/privacy`. Fix: `set_tracing_disabled(True)` at each lazy `Runner.run` site (`place_extractor.py`/`narrator.py`/`restaurant.py` `_default_runner`) — global + idempotent, holds without env config. **Do not remove it.** Verified: when disabled, `agents.trace()` returns `NoOpTrace`. (Added 2026-08-04; found by the erasure-arc processor review.)
 
 ## Adding new lessons
 

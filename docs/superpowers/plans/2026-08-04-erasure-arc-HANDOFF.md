@@ -92,10 +92,24 @@ T4 (notifications) held for the next wave (also edits main.py). All gated OFF.
     filtered in Python). Cheap; beta-scale it's a seq-scan today.
   - Atomicity note (T2 #2): SATISFIED-BY-DESIGN (not forced atomic) — no observer is harmed by the window;
     T3 review to confirm.
-- Pending: T3 review → fold the index (+ any findings) → **T4** (Resend scheduled/completed emails + the
-  clear-memory un-lie #2, wire the `_mark_completed` email TODO) → hold at **T6** (live pgTAP 019/020 +
-  wire the cross-session status read + flip `_DELETION_EXECUTION_READY` & `NEXT_PUBLIC_DELETION_ENABLED`)
-  for ZH's go-live sign-off. FINAL whole-branch pass (fable/opus + Codex cross-model) before any merge.
+- **T3 REVIEW DONE: SHIP (Approved), no Critical/Important** — destructive invariants fault-injection-
+  verified (unconfirmed-purge→no-delete, no-delete-after-cancel, freeze closes Pass-B TOCTOU, 404 fails
+  safe vs real `supabase_auth 2.31.0 .status`). 4 Minors → **ALL FOLDED `76b7ecb`** (orchestrator applied,
+  transcript of the T3 dev had expired): (1) `initializing` added to organize quiescence set; (2) sweep
+  partial index `account_deletion_log(scheduled_for) where outcome in (pending,deleting)`; (3) Pass B backs
+  off on a non-`deleting` account_status (self-guard); (4) skip `_get_mem0()` on a quiet tick. +2 tests;
+  full suite 1529 pass.
+
+**WAVE DONE + REVIEWED + FOLDED. Remaining:**
+- **T4 (next, building)** — Resend `notifications.py` (best-effort scheduled + completed emails) + wire the
+  scheduled email in `POST /account/deletion` + fill the `_mark_completed` completion-email TODO (send to
+  `recipient_email`, then clear it) + **clear-memory un-lie #2** (rewire `SettingsView.tsx:8` off the mock
+  to the real `POST /settings/memory/clear` + honest states; do NOT flip `_CLEAR_RECONCILIATION_READY` —
+  that live-enable is a T6/ZH call, like the account-delete flag). All dormant while gated.
+- **T6 (HOLD for ZH go-live)** — live pgTAP 019/020 + wire the cross-session `account_status` read (T5 gap)
+  + the T2/T5 minors + flip `_DELETION_EXECUTION_READY` + `NEXT_PUBLIC_DELETION_ENABLED` (+ decide
+  `_CLEAR_RECONCILIATION_READY`) + `/privacy` honest copy. FINAL whole-branch pass (fable/opus +
+  Codex cross-model) before any merge/PR/deploy.
 
 **LEAN Rev 3 IS THE CURRENT PLAN (`cbb764b`=Rev2, then Rev3):** Rev 2 folded the Codex lean review; **Rev 3
 DROPPED REAUTH** (ZH — Astrail is passwordless per `privacy/page.tsx:48`, so emailed-code reauth adds ~

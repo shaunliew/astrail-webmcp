@@ -7,7 +7,72 @@
 
 ---
 
-## ★★★ SESSION-2 PIVOT (2026-08-04, latest) — READ THIS FIRST; supersedes the A/full-rigor track
+## ⏩ PICKUP — SESSION-3 CLOSE (2026-08-04) — READ THIS FIRST (supersedes everything below)
+
+**STATE: the LEAN self-serve account-deletion feature (Direction B · 7-day grace · passwordless, NO reauth)
+is CODE-COMPLETE and ALL GATED OFF.** Local commits on branch `zh` (worktree
+`/Users/desmondchyezhihao/Github/astrail-zh`, NOT the main `dev` checkout); **NOTHING pushed / PR'd /
+merged.** Active plan: `docs/superpowers/plans/2026-08-04-lean-account-deletion.md` (Lean Rev 3). The
+full-rigor Rev 4 (`2026-08-04-self-serve-account-deletion.md`, 13 tasks) is SHELVED as the scale-up
+blueprint — adopt its pieces per its §8 triggers.
+
+**COMMIT MAP (this arc, all on `zh`, local):**
+- Standalone honesty fix — OpenAI Agents tracing OFF: `52f2cce` (cherry-pickable to `dev` on its own).
+- Plan: `664b392` (lean) → `cbb764b` (Rev 2, folds Codex lean review) → `5760610` (Rev 3, drops reauth).
+- **T1** choke-point `89b7a42` (review APPROVED) · **T2** schema + request/cancel RPCs `98cc1bd` (SHIP,
+  privilege-pinned) · **T3** two-pass delete engine + sweep + freeze `5cc6fda` + folds `76b7ecb` (opus
+  SHIP) · **T5** frontend delete card `9fb1a59` (Approved) · **T4** Resend emails + clear-memory un-lie #2
+  `9d3d81f` + folds `303b56b` (SHIP).
+- **T6 CODE PARTS** (ZH-approved "code parts, stop before flipping flags"): `5fa0b33` (GET
+  `/account/deletion/status` + email-latency bound) · `edc4393` (FE status wiring + 3 T5 folds) · `710adc7`
+  (bare-`None` test) — combined review **SHIP**.
+
+**GATES — ALL OFF (verify before any go-live):** `_DELETION_EXECUTION_READY=False` (`main.py:352`) ·
+`_CLEAR_RECONCILIATION_READY=False` (`main.py:336`) · `NEXT_PUBLIC_DELETION_ENABLED` unset (delete UI
+hidden) · no `RESEND_API_KEY` (emails no-op). Backend suite green (~1548 pass / 12 skipped), frontend green
+(tsc clean; the only 2 full-suite fails are PRE-EXISTING in `SavedReelsFlow.test.tsx`), eval anchor 6229.0
+holds. Every task per-task-reviewed (SHIP/APPROVED); every finding folded or explicitly deferred.
+
+**REMAINING = T6 GO-LIVE SWITCHES ONLY — HELD for ZH (full detail in § T6 GO-LIVE CHECKLIST below):**
+live pgTAP `019`/`020` on a rebased local Postgres → honest `/privacy` copy → set `RESEND_API_KEY` +
+`RESEND_FROM_EMAIL` in `render.yaml` + decide `_CLEAR_RECONCILIATION_READY` → **flip
+`_DELETION_EXECUTION_READY` + `NEXT_PUBLIC_DELETION_ENABLED`** (schema-first: migrations + config land
+BEFORE the flag flip) → live `/qa` E2E → **FINAL whole-branch review — run BOTH `astrail-reviewer`
+(fable/opus) AND gstack `/review` Codex cross-model** → PR/merge to `dev`, sync.
+
+**DEFERRED (non-blocking):** T2 cancel cosmetic wrong-409-*message* race (never wrong state); a rate-limiter
+on GET `/account/deletion/status` (matches the repo's unrated GET-status convention).
+
+**GUARDRAILS:** destructive + legally-binding; everything gated off; do NOT flip flags, set secrets, merge,
+PR, or push without ZH's explicit go; STOP before any flag flip.
+
+### PICKUP PROMPT (paste to resume)
+> Resume the Astrail LEAN account-deletion arc. Branch `zh`, worktree
+> `/Users/desmondchyezhihao/Github/astrail-zh` (NOT the main `dev` checkout).
+> READ FIRST: `docs/superpowers/plans/2026-08-04-erasure-arc-HANDOFF.md` (the ⏩ PICKUP block at the top,
+> then § T6 GO-LIVE CHECKLIST) + `docs/superpowers/plans/2026-08-04-lean-account-deletion.md` (active Lean
+> Rev 3) + memory `launch-gate-erasure-arc.md`.
+> STATE: the lean self-serve account-deletion feature (Direction B, 7-day grace, passwordless — no reauth)
+> is CODE-COMPLETE and ALL GATED OFF, as local commits on `zh` (nothing pushed/PR'd/merged). Tasks T1–T5 +
+> T4 + the T6 code parts (status-read endpoint + FE wiring + all deferred folds) are built and each
+> per-task-reviewed (SHIP/APPROVED); every finding folded or deferred. Backend + frontend suites green,
+> eval anchor 6229.0 holds. OpenAI Agents tracing was disabled (`52f2cce`, standalone, cherry-pickable to
+> dev). Full-rigor Rev 4 is SHELVED as the scale-up blueprint.
+> WHAT REMAINS = T6 GO-LIVE SWITCHES ONLY — do NOT do without my explicit go, and STOP before flipping any
+> flag: live pgTAP `019`/`020` on a rebased local Postgres; honest `/privacy` copy; set `RESEND_API_KEY` +
+> `RESEND_FROM_EMAIL` in `render.yaml` + decide `_CLEAR_RECONCILIATION_READY`; flip
+> `_DELETION_EXECUTION_READY` (`main.py:352`) + `NEXT_PUBLIC_DELETION_ENABLED` (schema-first); live `/qa`
+> E2E; then the FINAL whole-branch review — run BOTH `astrail-reviewer`(fable/opus) AND gstack `/review`
+> Codex — before any PR/merge to `dev`.
+> GUARDRAILS: destructive + legally-binding; all gated off; don't flip flags / set secrets / merge / PR /
+> push without my explicit go. Deferred non-blocking: T2 cancel cosmetic-message race; a rate-limiter on
+> GET `/account/deletion/status`.
+> FIRST: confirm you've read the handoff + plan, tell me the current gate state, and ask which T6 step I
+> want to start with (or whether to run the final whole-branch review first as a pre-flight).
+
+---
+
+## ★★★ SESSION-2 PIVOT (2026-08-04) — history; superseded by the ⏩ PICKUP above
 
 **ZH re-scoped after seeing full-rigor's cost: → LEAN self-serve (Direction B) + 7-day grace.** The
 13-task full-rigor Rev 4 was correct-but-overkill for a 25-seat beta; the law needs an honest, real

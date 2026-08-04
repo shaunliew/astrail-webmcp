@@ -59,8 +59,18 @@ T4 (notifications) held for the next wave (also edits main.py). All gated OFF.
 - **T3 REVIEW MUST CHECK (reviewer forward-notes):** (1) add the `(outcome, next_attempt_at)` index; (2)
   the `pending_deletion→deleting` claim CAS **and** the log `outcome='deleting'` write must be ATOMIC (one
   RPC/txn) — else a window where `users.account_status='deleting'` but the log still reads `'pending'`.
-- Pending: T3 + T5 results → review each → fold the two T3 notes → T4 → hold at **T6** (live pgTAP + flip
-  the flags) for ZH's go-live sign-off.
+- **T5 BUILT: `9fb1a59`** (frontend, 7 files) — `backend-types` mirror + `api.ts` client + `DeleteAccountCard`
+  (type-to-confirm email/`DELETE` → request → pending banner + Cancel; `deletion_already_started` locks
+  Cancel) + `SettingsView` gated by `NEXT_PUBLIC_DELETION_ENABLED` (default OFF). tsc clean, 20 tests pass
+  (2 full-suite fails are PRE-EXISTING in `SavedReelsFlow.test.tsx`, proven by stash). Committed only its
+  7 frontend files (T3's concurrent WIP correctly excluded — disjoint file sets, shared worktree held).
+  **T5 review IN FLIGHT.**
+  - **[→T6 GAP] no cross-session `account_status` read:** the pending banner only shows after an in-session
+    request (seeded via `DeleteAccountCard` `initialStatus` props = the T6 seam). T6 must wire a real status
+    read (add `account_status`/`deletion_scheduled_for` to an existing settings/profile GET, or a new
+    `GET /account/deletion/status`) so a returning user sees the banner + can Cancel.
+- Pending: T3 result + T5 review → review each → fold the two T3 notes → T4 → hold at **T6** (live pgTAP +
+  flip the flags + wire the status read) for ZH's go-live sign-off.
 
 **LEAN Rev 3 IS THE CURRENT PLAN (`cbb764b`=Rev2, then Rev3):** Rev 2 folded the Codex lean review; **Rev 3
 DROPPED REAUTH** (ZH — Astrail is passwordless per `privacy/page.tsx:48`, so emailed-code reauth adds ~

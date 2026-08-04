@@ -46,13 +46,21 @@ endpoints in `main.py`, **503 when `_DELETION_EXECUTION_READY=False`** (before a
 `assert_schema` extended; 14 endpoint/static tests + a 27-assert pgTAP (`supabase/tests/019_*`) staged for
 the T6 live gate; 1501 pass. Orchestrator self-verified the migration + wrappers.
 
-**★ PARALLEL WAVE IN FLIGHT (2026-08-04):** after T2's contract landed, launched 3 concurrent agents (they
-touch disjoint files): **astrail-reviewer on T2** (per-task, read-only) · **T3 developer** (delete engine
-+ sweep + freeze: new `deletion_engine.py` + `claim_account_for_deletion` CAS RPC migration `20260805010000`
-+ `_reap_loop` branch + `persist_trip_memory` fail-closed) · **T5 developer** (frontend delete card +
-type-to-confirm + pending banner + `backend-types`, flag-gated off). T4 (notifications) held for the next
-wave (it also edits main.py). All gated OFF. On completion: review each, then T4, then hold at **T6**
-(live pgTAP + flip the flags) for ZH's go-live sign-off.
+**★ PARALLEL WAVE (2026-08-04):** after T2's contract landed, launched 3 concurrent agents (disjoint
+files): astrail-reviewer on T2 · T3 developer (engine/sweep/freeze) · T5 developer (frontend, flag-gated).
+T4 (notifications) held for the next wave (also edits main.py). All gated OFF.
+- **T2 REVIEW DONE: SHIP — no Critical/Important.** Privilege pin + gating + CAS + timestamp-clear all
+  verified by independent fault-injection (4 mutations each reddened exactly one test). 4 Minors, all
+  ACCEPTED/deferred: cancel post-CAS-miss `select` reads a raced value → **cosmetic wrong-409-message only,
+  never wrong state** (`…lean.sql:123-129`); endpoints' `-> …Response` annotation vs raw JSONResponse on
+  gated branches (harmless, no mypy gate; `clear_settings_memory` omits the annotation); no test for a
+  non-PGRST202 APIError (inherited from request_seat); **[→T3] no index on `account_deletion_log(outcome,
+  next_attempt_at)`** for the sweep query.
+- **T3 REVIEW MUST CHECK (reviewer forward-notes):** (1) add the `(outcome, next_attempt_at)` index; (2)
+  the `pending_deletion→deleting` claim CAS **and** the log `outcome='deleting'` write must be ATOMIC (one
+  RPC/txn) — else a window where `users.account_status='deleting'` but the log still reads `'pending'`.
+- Pending: T3 + T5 results → review each → fold the two T3 notes → T4 → hold at **T6** (live pgTAP + flip
+  the flags) for ZH's go-live sign-off.
 
 **LEAN Rev 3 IS THE CURRENT PLAN (`cbb764b`=Rev2, then Rev3):** Rev 2 folded the Codex lean review; **Rev 3
 DROPPED REAUTH** (ZH — Astrail is passwordless per `privacy/page.tsx:48`, so emailed-code reauth adds ~

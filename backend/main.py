@@ -29,6 +29,8 @@ from slowapi.errors import RateLimitExceeded
 
 from api.errors import build_error_response, register_error_handlers
 from api.schemas import (
+    AccountDeletionCancelResponse,
+    AccountDeletionResponse,
     CaptureSavedReelRequest,
     CaptureSavedReelResponse,
     GenerateTripRequest,
@@ -312,6 +314,21 @@ _CLEAR_RECONCILIATION_READY = False
 _CLEAR_GATED_MESSAGE = (
     "Clearing saved memory is temporarily unavailable while we make deletion verifiable. "
     "Nothing was deleted."
+)
+
+# ---------------------------------------------------------------------------------------
+# ACCOUNT-DELETION IS DELIBERATELY GATED OFF (Task 2 of the lean account-deletion arc).
+#
+# The schema, the request/cancel RPCs, and these two endpoints ship FIRST, but the delete
+# ENGINE + sweep that actually acts on `pending_deletion`/`deleting` accounts is Task 3, and
+# the notification emails are Task 4. Entering an account into a 7-day grace that nothing
+# will act on would be a lie of its own, so both endpoints fail-closed with 503 until Task 6
+# builds the rest and flips this to True IN THE SAME PR as the live E2E proof. Fail-closed:
+# a missing RPC (a migration lagging a deploy) 503s the same way.
+_DELETION_EXECUTION_READY = False
+
+_DELETION_GATED_MESSAGE = (
+    "Account deletion isn't available yet. Nothing on your account was changed."
 )
 
 
@@ -665,6 +682,76 @@ async def request_seat(
         raise HTTPException(503, {"code": "identity_unavailable",
             "message": "We couldn't verify your account. Please sign in again."})
     return RequestSeatResponse(requested_at=stamp)
+
+
+@app.post("/account/deletion", response_model=AccountDeletionResponse)
+@limiter.limit(BURST_LIMIT)
+async def request_account_deletion_endpoint(
+    request: Request,                                     # required by slowapi; must be named `request`
+    response: Response,                                   # REQUIRED with headers_enabled=True (see generate_trip)
+    user_id: str = Depends(get_current_user_id_stashed),  # token-derived: guardrails #5 + #6
+) -> AccountDeletionResponse:
+    """Enter the 7-day cancellable deletion grace for the AUTHENTICATED account.
+
+    GATED OFF until Task 6 (`_DELETION_EXECUTION_READY`): the delete engine + sweep +
+    notifications don't exist yet, so this must not schedule a deletion nothing will act on.
+    Returns 503 while gated — before any DB round-trip, so nothing is touched.
+
+    The deleted account is ALWAYS the caller's JWT sub (self-serve only) — this endpoint has
+    no request body and never accepts a client-supplied user_id. The RPC is privilege-pinned to
+    service_role, so a client cannot schedule another uuid via PostgREST either.
+    """
+    if not _DELETION_EXECUTION_READY:
+        return build_error_response(503, _DELETION_GATED_MESSAGE, code="deletion_unavailable")
+
+    from deletion import DeletionRPCUnavailable, request_account_deletion
+
+    client = await get_supabase_client()
+    try:
+        scheduled_for = await request_account_deletion(client, user_id)
+    except DeletionRPCUnavailable:
+        # A migration lagging a deploy: fail CLOSED, don't 500. Returned (not raised) so the
+        # envelope carries the distinct code, matching the clear route's 503 handling.
+        return build_error_response(503, _DELETION_GATED_MESSAGE, code="deletion_unavailable")
+    if scheduled_for is None:
+        # The CAS matched nothing: the account is not 'active' (already pending/deleting).
+        raise HTTPException(409, {"code": "deletion_not_active",
+            "message": "This account can't be scheduled for deletion right now."})
+    # TODO(Task 4): fire the immediate "deletion scheduled — cancel by {date}" email (Resend,
+    # best-effort) — the load-bearing safety net (plan §3.5). NOT built here.
+    return AccountDeletionResponse(scheduled_for=scheduled_for)
+
+
+@app.post("/account/deletion/cancel", response_model=AccountDeletionCancelResponse)
+@limiter.limit(BURST_LIMIT)
+async def cancel_account_deletion_endpoint(
+    request: Request,                                     # required by slowapi; must be named `request`
+    response: Response,                                   # REQUIRED with headers_enabled=True
+    user_id: str = Depends(get_current_user_id_stashed),  # token-derived: guardrails #5 + #6
+) -> AccountDeletionCancelResponse:
+    """Cancel the pending deletion for the AUTHENTICATED account, reversing the grace.
+
+    GATED OFF until Task 6 (503 while gated). Only works before the sweeper claims the account
+    into 'deleting' (Task 3's point of no return) — a row already 'deleting' returns 409
+    deletion_already_started. Caller is always the JWT sub (privilege-pinned RPC)."""
+    if not _DELETION_EXECUTION_READY:
+        return build_error_response(503, _DELETION_GATED_MESSAGE, code="deletion_unavailable")
+
+    from deletion import DeletionRPCUnavailable, cancel_account_deletion
+
+    client = await get_supabase_client()
+    try:
+        status = await cancel_account_deletion(client, user_id)
+    except DeletionRPCUnavailable:
+        return build_error_response(503, _DELETION_GATED_MESSAGE, code="deletion_unavailable")
+    if status == "cancelled":
+        return AccountDeletionCancelResponse()
+    if status == "already_deleting":
+        raise HTTPException(409, {"code": "deletion_already_started",
+            "message": "Your account deletion has already started and can no longer be cancelled."})
+    # status == "not_pending": there is no pending deletion to cancel.
+    raise HTTPException(409, {"code": "no_pending_deletion",
+        "message": "There is no pending account deletion to cancel."})
 
 
 class _OrganizeSavedReelsRequest(OrganizeSavedReelsRequest):

@@ -132,8 +132,18 @@ REQUIRED_SCHEMA: dict[str, tuple[str, ...]] = {
     # beta-seat gate. Same proxy logic as the jobs charge columns above — the request_seat and
     # reserve_and_enqueue_trip_job RPC bodies are invisible to a column probe, so these columns
     # stand in for that migration having landed.
+    # `account_status`/`deletion_requested_at`/`deletion_scheduled_for` (20260805000000) are the
+    # soft-delete grace state; they are ALSO the observable proxy for that migration's two RPCs
+    # (request_/cancel_account_deletion) having landed — a column probe can't see an RPC signature,
+    # so the account-deletion endpoints would fail-closed against a DB missing them.
     "users": ("id", "daily_reel_analysis_limit", "plan", "lifetime_trip_count",
-              "seat_requested_at"),
+              "seat_requested_at", "account_status", "deletion_requested_at",
+              "deletion_scheduled_for"),
+    # FK-free audit + work-queue for account deletion (20260805000000). Task 3's sweep selects and
+    # updates every column below, so their presence is the proxy for the whole deletion migration.
+    "account_deletion_log": ("id", "user_id", "recipient_email", "requested_at", "scheduled_for",
+                             "attempts", "next_attempt_at", "last_error", "purged_verified_at",
+                             "completed_at", "outcome"),
 }
 
 # ANCHOR TABLES — the manifest's floor, and the only thing `_validate_manifest` can check

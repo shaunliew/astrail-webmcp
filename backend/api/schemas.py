@@ -57,6 +57,23 @@ class RequestSeatResponse(BaseModel):
     requested_at: datetime
 
 
+class AccountDeletionResponse(BaseModel):
+    """POST /account/deletion 200 body — when the account is scheduled to be deleted.
+
+    The account has entered a 7-day cancellable grace; `scheduled_for` is the date shown to
+    the user (and named in the "deletion scheduled" email, Task 4). Failures use the standard
+    error envelope (503 deletion_unavailable while gated, 409 deletion_not_active). TypeScript
+    mirror in frontend/lib/trip/backend-types.ts is Task 5 (guardrail #4)."""
+    scheduled_for: datetime
+
+
+class AccountDeletionCancelResponse(BaseModel):
+    """POST /account/deletion/cancel 200 body — success only. Failures use the standard error
+    envelope (503 deletion_unavailable, 409 deletion_already_started / no_pending_deletion).
+    TypeScript mirror is Task 5 (guardrail #4)."""
+    cancelled: Literal[True] = True
+
+
 class CaptureSavedReelRequest(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
 

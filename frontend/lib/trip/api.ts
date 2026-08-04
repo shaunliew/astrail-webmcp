@@ -2,9 +2,10 @@ import type { GenerateTripRequest, GenerateTripResponse, RequestSeatResponse, St
 // Mock-auth shell: generation runs against the offline fixture replay with zero backend
 // (mirrors the MOCK_AUTH_ENABLED switches in middleware.ts and use-user.ts).
 import { MOCK_AUTH_ENABLED } from '@/lib/auth/mock-auth'
+import { resolveBackendUrl } from '@/lib/backend-url'
 import * as mockApi from '@/lib/trip/mock-api'
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000'
+const BACKEND_URL = resolveBackendUrl()
 
 // Thrown on any non-ok backend response. Carries the HTTP `status` and the backend error
 // `code` (from the {"error":{"code","message"}} envelope) so callers can branch on a stable

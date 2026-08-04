@@ -1,9 +1,10 @@
+import { resolveBackendUrl } from '@/lib/backend-url'
 import { createClient } from '@/lib/supabase/client'
 import type {
   CaptureSavedReelResponse, OrganizeJob, OrganizeStreamEvent, SavedReelCard, StartOrganizeResponse,
 } from './backend-types'
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000'
+const BACKEND_URL = resolveBackendUrl()
 export const ACTIVE_ORGANIZE_CONFLICT_MESSAGE = 'One of those Reels is already being organized. Wait for it to finish, or deselect it and organize the others.'
 const SAFE_SAVED_REEL_CARD_COLUMNS = [
   'id', 'user_id', 'normalized_url', 'source_platform', 'reel_cache_id',

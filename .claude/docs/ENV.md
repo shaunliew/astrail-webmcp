@@ -156,7 +156,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY    # RLS-protected, safe to ship to client
 NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN  # pk — URL-restricted
 NEXT_PUBLIC_POSTHOG_KEY
 NEXT_PUBLIC_POSTHOG_HOST=https://us.i.posthog.com
-NEXT_PUBLIC_BACKEND_URL          # defaults to http://localhost:8000
+NEXT_PUBLIC_BACKEND_URL          # REQUIRED in prod (NODE_ENV=production) — resolveBackendUrl() throws at module load if unset/empty; defaults to http://localhost:8000 in local dev only
 ```
 
 ## Removed — do not reintroduce

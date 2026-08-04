@@ -49,6 +49,10 @@ from api.schemas import (
 )
 from api.streaming import stream_organize_events, stream_trip_events
 from auth import get_current_user_id, get_user_id_from_query_or_header
+# Shared fail-open generation-freeze read (plan §3.6). Kept in deletion.py so all three generation
+# entrypoints (generate_trip, organize, the Telegram worker) call ONE implementation; the leading
+# underscore preserves the in-module name the existing tests reference.
+from deletion import account_is_pending_deletion as _account_is_pending_deletion
 from config_validation import validate_required_secrets
 from jobs import compute_idempotency_key, enqueue_job, reclaim_expired_jobs
 from log_redaction import install as _install_log_redaction
@@ -479,25 +483,6 @@ async def submit_trip_feedback(
     )
 
 
-async def _account_is_pending_deletion(client, user_id: str) -> bool:
-    """True when the account is in the deletion grace ('pending_deletion') or being deleted
-    ('deleting') — the generation-freeze read (plan §3.6).
-
-    INERT while every account is 'active' (the shipping state), so this UX gate ships UNGATED.
-    Fails OPEN — a status-read blip must not break generation for everyone. The load-bearing
-    freeze is `persist_trip_memory`'s fail-closed add + the auth-delete cascade (they actually
-    stop new data for a to-be-deleted account); this early return is only the friendly response.
-    """
-    try:
-        res = await (client.table("users").select("account_status")
-                     .eq("id", user_id).maybe_single().execute())
-    except Exception:                                     # noqa: BLE001 — fail open (UX gate only)
-        return False
-    row = getattr(res, "data", None) if res is not None else None
-    status = row.get("account_status") if isinstance(row, dict) else None
-    return status in ("pending_deletion", "deleting")
-
-
 @app.post("/generate-trip", response_model=GenerateTripResponse)
 @limiter.limit(BURST_LIMIT)
 async def generate_trip(
@@ -886,6 +871,12 @@ async def organize_saved_reels(
     user_id: str = Depends(get_current_user_id_stashed),
 ) -> OrganizeSavedReelsResponse:
     client = await get_supabase_client()
+    # Generation freeze (plan §3.6): organize is the THIRD generation entrypoint — a pending/
+    # deleting account gets a clean "scheduled for deletion" response instead of burning
+    # Apify/OpenAI spend (and racing the cascade). Ungated + inert while everyone is 'active'.
+    if await _account_is_pending_deletion(client, user_id):
+        raise HTTPException(403, {"code": "account_pending_deletion",
+            "message": "This account is scheduled for deletion. Cancel the deletion to organize reels."})
     saved_reel_ids = [str(saved_reel_id) for saved_reel_id in req.saved_reel_ids]
     try:
         job_id = await create_organize_job(client, user_id, saved_reel_ids)

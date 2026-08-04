@@ -140,6 +140,16 @@ class _AdminAuth:
         if self.client.delete_user_raises is not None:
             raise self.client.delete_user_raises
 
+    async def get_user_by_id(self, user_id):
+        # Pass B's positive auth-absence probe (_auth_user_absent). Raise the scripted error
+        # (e.g. a 404 for a confirmed-gone user, or a non-404 to prove propagation), else return
+        # a response whose .user.id is present/absent per `auth_user_present`.
+        self.client.get_user_calls.append(user_id)
+        if self.client.get_user_raises is not None:
+            raise self.client.get_user_raises
+        user = type("_U", (), {"id": user_id})() if self.client.auth_user_present else None
+        return type("_Resp", (), {"user": user})()
+
 
 class _Auth:
     def __init__(self, client) -> None:
@@ -156,7 +166,8 @@ class _AuthApiErrorLike(Exception):
 
 class _FakeClient:
     def __init__(self, *, log=None, users=None, jobs=None, organize_jobs=None,
-                 claim=True, delete_user_raises=None, raises=None) -> None:
+                 claim=True, delete_user_raises=None, raises=None,
+                 get_user_raises=None, auth_user_present=True) -> None:
         self.db = {
             "account_deletion_log": [dict(r) for r in (log or [])],
             "users": [dict(r) for r in (users or [])],
@@ -166,10 +177,15 @@ class _FakeClient:
         self.claim = claim
         self.delete_user_raises = delete_user_raises
         self.raises = raises or {}
+        # Pass B auth-absence probe controls (Fix 1b): get_user_raises scripts an exception from
+        # get_user_by_id; auth_user_present picks whether a returned response carries a user id.
+        self.get_user_raises = get_user_raises
+        self.auth_user_present = auth_user_present
         self.ops: list[str] = []
         self.updates: list = []
         self.rpc_calls: list = []
         self.deleted: list = []
+        self.get_user_calls: list = []
         self.auth = _Auth(self)
 
     def table(self, name):
@@ -297,6 +313,23 @@ async def test_claim_false_but_status_deleting_is_our_prior_claim_and_keeps_retr
     assert client.log_row["outcome"] == "pending"
 
 
+async def test_pass_a_missing_users_row_flags_failed_never_completes(monkeypatch, completion_emails):
+    # Fix 1a: claim false AND public.users is GONE while the log is still 'pending' (purge NEVER
+    # verified). The row was removed OUT-OF-BAND (e.g. founder SQL), so completing here would email
+    # "everything deleted" over UNVERIFIED mem0 — the one false-"deleted" the engine forbids. It
+    # must terminalize as a NON-retryable FAILURE and never complete / never email.
+    purge = _patch_purge(monkeypatch, None)
+    client = _FakeClient(log=[_log()], users=[], claim=False)
+    await deletion_engine.erase_user(client, object(), client.log_row)
+
+    row = client.log_row
+    assert row["outcome"] == "failed"            # flagged for a human, NOT completed
+    assert purge.calls == []                     # mem0 was never (re)verified here
+    assert client.deleted == []                  # no hard-delete
+    assert completion_emails == []               # the "everything deleted" email NEVER fired
+    assert "reconcile mem0 manually" in row["last_error"]
+
+
 async def test_quiescence_nonterminal_job_backs_off_without_purge_or_delete(monkeypatch):
     purge = _patch_purge(monkeypatch, None)
     client = _FakeClient(log=[_log()], claim=True,
@@ -397,14 +430,46 @@ async def test_pass_b_auth_delete_other_error_backs_off(monkeypatch):
 
 async def test_pass_b_crash_recovery_missing_users_row_completes(monkeypatch):
     # outcome='deleting' but public.users is GONE (a prior Pass B auth-delete cascaded it, then
-    # crashed before marking the log). Treat as done — no re-verify, no re-delete.
+    # crashed before marking the log). Treat as done — no re-verify, no re-delete. Fix 1b: the auth
+    # user must be POSITIVELY confirmed gone first (get_user_by_id 404s for the absent user).
     purge = _patch_purge(monkeypatch, None)
-    client = _FakeClient(log=[_deleting_log()], users=[])      # no row for _UID
+    client = _FakeClient(log=[_deleting_log()], users=[],      # no row for _UID
+                         get_user_raises=_AuthApiErrorLike(404))
     await deletion_engine.erase_user(client, object(), client.log_row)
 
-    assert purge.calls == []                     # never re-verified a gone account
+    assert client.get_user_calls == [_UID]       # positively probed auth absence (Fix 1b)
+    assert purge.calls == []                      # never re-verified a gone account
     assert client.deleted == []                  # never re-deleted
     assert client.log_row["outcome"] == "completed"
+
+
+async def test_pass_b_missing_users_but_auth_user_present_is_drift_and_backs_off(monkeypatch):
+    # Fix 1b: outcome='deleting' + public.users missing from DRIFT while auth.users STILL EXISTS.
+    # This is NOT our cascade, so it must NOT be reported completed — back off + flag instead.
+    purge = _patch_purge(monkeypatch, None)
+    client = _FakeClient(log=[_deleting_log()], users=[],      # no public.users row
+                         auth_user_present=True)               # but the auth user is still there
+    await deletion_engine.erase_user(client, object(), client.log_row)
+
+    assert client.get_user_calls == [_UID]        # positively probed auth presence
+    assert client.deleted == []                   # NEVER completed / deleted over live auth
+    row = client.log_row
+    assert row["outcome"] == "deleting"           # not terminalized
+    assert row["attempts"] == 1                   # backed off, still retryable
+    assert "auth user present" in row["last_error"]
+
+
+async def test_pass_b_missing_users_and_auth_lookup_unknown_error_propagates(monkeypatch):
+    # Fix 1b: an UNKNOWN error from the auth-absence probe must PROPAGATE (never infer absence
+    # from a failed lookup), so the row is not completed and the sweep's generic catch backs off.
+    _patch_purge(monkeypatch, None)
+    client = _FakeClient(log=[_deleting_log()], users=[],
+                         get_user_raises=_AuthApiErrorLike(500))
+    with pytest.raises(_AuthApiErrorLike):
+        await deletion_engine.erase_user(client, object(), client.log_row)
+
+    assert client.deleted == []                   # nothing deleted / completed on an unknown error
+    assert client.log_row["outcome"] == "deleting"
 
 
 # --- Exception discipline -----------------------------------------------------------------
@@ -458,6 +523,48 @@ async def test_sweep_terminalizes_a_corrupted_row_to_failed(monkeypatch):
     await deletion_engine.sweep_due_deletions(client)
     assert client.log_row["outcome"] == "failed"
     assert client.log_row["last_error"] == "invalid_user_id"
+
+
+async def test_sweep_backs_off_an_unexpected_failure_so_attempts_advance(monkeypatch):
+    # Fix I3: a persistent UNEXPECTED failure inside erase_user (e.g. a missing claim RPC) must
+    # advance `attempts` and schedule a backoff, not retry silently every tick forever — otherwise
+    # the loud _MAX_ATTEMPTS stalled flag can never fire.
+    from deletion import DeletionRPCUnavailable
+
+    async def _boom(client, mem0, row):
+        raise DeletionRPCUnavailable("claim RPC not deployed")
+
+    monkeypatch.setattr(deletion_engine, "erase_user", _boom)
+    monkeypatch.setattr(deletion_engine, "_get_mem0", lambda: _async_none())
+    client = _FakeClient(log=[_log(scheduled_for="2026-08-13T00:00:00+00:00")], claim=True)
+
+    await deletion_engine.sweep_due_deletions(client)
+    row = client.log_row
+    assert row["attempts"] == 1                  # advanced — not a silent forever-retry
+    assert row["next_attempt_at"] is not None    # spaced out
+    assert "unexpected: DeletionRPCUnavailable" in row["last_error"]
+    assert row["outcome"] == "pending"           # still selectable; backoff, not terminal
+
+
+async def test_sweep_unexpected_failure_with_failing_backoff_write_is_swallowed(monkeypatch, caplog):
+    # Fix I3: if the backoff write ITSELF fails (total DB outage), the sweep must fall back to a
+    # type-only log and move on — never let one row's double failure kill the whole sweep.
+    import logging
+
+    async def _boom(client, mem0, row):
+        raise RuntimeError("primary failure")
+
+    monkeypatch.setattr(deletion_engine, "erase_user", _boom)
+    monkeypatch.setattr(deletion_engine, "_get_mem0", lambda: _async_none())
+    # The backoff write is an update on account_deletion_log; make THAT raise too.
+    client = _FakeClient(log=[_log(scheduled_for="2026-08-13T00:00:00+00:00")], claim=True,
+                         raises={("update", "account_deletion_log"): RuntimeError("db outage")})
+    with caplog.at_level(logging.WARNING, logger="deletion_engine"):
+        await deletion_engine.sweep_due_deletions(client)   # must not raise
+    blob = " ".join(r.getMessage() for r in caplog.records)
+    assert "backoff also failed" in blob
+    assert "RuntimeError" in blob
+    assert "db outage" not in blob                # type-only, never the message (token safety)
 
 
 async def test_sweep_ignores_terminal_and_future_rows(monkeypatch):

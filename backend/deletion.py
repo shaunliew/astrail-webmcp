@@ -12,6 +12,26 @@ reach them for another uuid via PostgREST.
 from __future__ import annotations
 
 
+async def account_is_pending_deletion(client, user_id: str) -> bool:
+    """True when the account is in the deletion grace ('pending_deletion') or being deleted
+    ('deleting') — the generation-freeze read (plan §3.6), shared by all three generation
+    entrypoints (POST /generate-trip, POST /saved-reels/organize, the Telegram ingest worker).
+
+    INERT while every account is 'active' (the shipping state), so this UX gate ships UNGATED.
+    Fails OPEN — a status-read blip must not break generation for everyone. The load-bearing
+    freeze is `persist_trip_memory`'s fail-closed add + the auth-delete cascade (they actually
+    stop new data for a to-be-deleted account); this early return is only the friendly response.
+    """
+    try:
+        res = await (client.table("users").select("account_status")
+                     .eq("id", user_id).maybe_single().execute())
+    except Exception:                                     # noqa: BLE001 — fail open (UX gate only)
+        return False
+    row = getattr(res, "data", None) if res is not None else None
+    status = row.get("account_status") if isinstance(row, dict) else None
+    return status in ("pending_deletion", "deleting")
+
+
 class DeletionRPCUnavailable(Exception):
     """The request/cancel RPC is absent from the live DB (PostgREST PGRST202).
 

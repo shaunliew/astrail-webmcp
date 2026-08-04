@@ -143,6 +143,19 @@ async def _admin_hard_delete(client, user_id: str) -> None:
         raise
 
 
+async def _auth_user_absent(client, user_id: str) -> bool:
+    """True only if the auth user is CONFIRMED gone (a 404 / no user). An unknown error PROPAGATES
+    (the sweep backs off + retries) — never infer absence from a failed lookup. Secret-safe by
+    construction: raises the original exception; the sweep logs only its type."""
+    try:
+        resp = await client.auth.admin.get_user_by_id(user_id)
+    except Exception as exc:  # noqa: BLE001 — classified by status; unknown errors re-raised
+        if getattr(exc, "status", None) == 404:
+            return True
+        raise
+    return getattr(getattr(resp, "user", None), "id", None) is None
+
+
 def _backoff_seconds(attempts: int) -> int:
     return min(_BACKOFF_BASE_S * (2 ** max(attempts - 1, 0)), _BACKOFF_CAP_S)
 
@@ -238,8 +251,16 @@ async def _erase_pass_a(client, mem0, log_row: dict, user_id: str) -> None:
         # status to tell them apart — the RPC stays a pure CAS.
         status = await _read_account_status(client, user_id)
         if status is None:
-            # public.users is gone — the auth-delete cascaded it already. Reconcile to done.
-            await _mark_completed(client, log_row)
+            # public.users is gone, but Pass A never auth-deletes and never verified the mem0 purge
+            # (outcome is still 'pending'). So the user row was removed OUT-OF-BAND (e.g. the plan §6
+            # founder-SQL remedy for a wedged deletion). Completing here would email "everything
+            # deleted" over UNVERIFIED mem0 — the one false-"deleted" this engine forbids. Terminalize
+            # as a NON-retryable failure and shout, so a human reconciles mem0 by hand.
+            logger.error(
+                "account_deletion pass A: public.users missing before purge verified log_id=%s "
+                "— FLAGGED, reconcile mem0 manually", log_row.get("id"),
+            )
+            await _mark_failed(client, log_row, "user gone before purge verified — reconcile mem0 manually")
             return
         if status != "deleting":
             # 'active' (a cancel won) or a transient 'pending_deletion' race. Do NOT delete;
@@ -271,11 +292,20 @@ async def _erase_pass_b(client, mem0, log_row: dict, user_id: str) -> None:
     recovery (public.users already gone) as success."""
     status = await _read_account_status(client, user_id)
     if status is None:
-        # Crash recovery: outcome='deleting' but public.users is MISSING — a prior Pass B already
-        # ran the auth-delete (which re-verified mem0 first) and crashed before marking the log.
-        # The user is gone; finish the log. Re-verifying/re-deleting here is neither needed nor
-        # safe (a mem0 blip must not wedge an account that is already deleted).
-        await _mark_completed(client, log_row)
+        # outcome='deleting' + public.users MISSING. Usually crash-recovery (our own auth-delete
+        # cascaded the row, then we crashed before marking the log). But a row missing from drift
+        # while auth.users still exists must NOT be reported completed — POSITIVELY confirm the auth
+        # user is gone first (a real 404). If it's still present, this is drift, not our delete: back
+        # off + flag. (An unknown error in _auth_user_absent propagates → the sweep's generic catch
+        # backs off and retries — correct, no false completion.)
+        if await _auth_user_absent(client, user_id):
+            await _mark_completed(client, log_row)
+        else:
+            logger.error(
+                "account_deletion pass B: public.users missing but auth user PRESENT log_id=%s "
+                "— drift, FLAGGED for manual review", log_row.get("id"),
+            )
+            await _backoff(client, log_row, "pass B: public.users missing but auth user present")
         return
 
     if status != "deleting":
@@ -293,8 +323,11 @@ async def _erase_pass_b(client, mem0, log_row: dict, user_id: str) -> None:
         return
 
     try:
-        # Re-verify: a late-queued add that landed after Pass A now makes this RAISE, sending us
-        # back to retry instead of deleting over live data.
+        # Re-verify: purge_account_memory re-runs the strict clear, so a late-queued add that
+        # landed after Pass A is DELETED here and the wrapper returns 'cleared' only once mem0 is
+        # CONFIRMED empty — strictly stronger than a re-check, because the add is purged before the
+        # auth-delete. It RAISES only on an unconfirmed delete or an add still in flight (<30s
+        # visibility window), which backs us off instead of deleting over unverified data.
         await purge_account_memory(client, mem0, user_id)
     except (MemoryBackendUnavailable, MemoryPurgeError) as exc:
         await _backoff(client, log_row, f"pass B re-verify unconfirmed: {type(exc).__name__}")
@@ -368,7 +401,13 @@ async def sweep_due_deletions(client) -> None:
             logger.error("account_deletion invalid user_id log_id=%s — FLAGGED", row.get("id"))
             await _mark_failed(client, row, "invalid_user_id")
         except Exception as exc:  # noqa: BLE001 — one row's transient failure must not stop the rest
-            # Type only, never the message/traceback: a postgrest/supabase error can carry
-            # connection details. The row stays selected and retries on the next tick.
-            logger.warning("account_deletion row failed log_id=%s error=%s",
-                           row.get("id"), type(exc).__name__)
+            # Type only, never the message/traceback (a postgrest/supabase error can carry
+            # connection details). Record a backoff so a PERSISTENT unexpected failure advances
+            # attempts and hits the loud _MAX_ATTEMPTS stalled flag instead of retrying silently
+            # every tick. Best-effort: if the backoff write itself fails (total DB outage), fall
+            # back to a type-only log and let the next reap tick retry.
+            try:
+                await _backoff(client, row, f"unexpected: {type(exc).__name__}")
+            except Exception as backoff_exc:  # noqa: BLE001
+                logger.warning("account_deletion row failed log_id=%s error=%s (backoff also failed: %s)",
+                               row.get("id"), type(exc).__name__, type(backoff_exc).__name__)

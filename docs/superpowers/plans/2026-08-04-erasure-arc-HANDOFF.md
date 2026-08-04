@@ -25,9 +25,14 @@ deletion, not provable-exactly-once machinery.
 - **Next:** on ZH's go — one lean plan-review of the destructive T2/T3, then build Task 1 and STOP. No
   build/wire yet this session.
 
-**LEAN REVIEW DONE (Codex `gpt-5.6-sol`, on lean terms): BLOCK 4/10 — shape right, but 5 lean-level
-correctness/security bugs in the Rev-1 lean plan (none need the fortress). Task 1 re-confirmed safe.**
-Folded into **Lean Rev 2**. The 5 must-fixes:
+**LEAN Rev 3 IS THE CURRENT PLAN (`cbb764b`=Rev2, then Rev3):** Rev 2 folded the Codex lean review; **Rev 3
+DROPPED REAUTH** (ZH — Astrail is passwordless per `privacy/page.tsx:48`, so emailed-code reauth adds ~
+nothing; replaced by **type-to-confirm + 7-day grace + an immediate "scheduled — cancel by {date}"
+notification email** as the safety net; removed `_decode_claims`/`amr`/forced-sign-out). Also DONE this
+session: **OpenAI Agents tracing disabled** (`52f2cce`).
+
+**Codex lean review (on lean terms): BLOCK 4/10 — shape right, 5 lean-level bugs in Rev-1 (none need the
+fortress), all folded into Rev 2. Task 1 re-confirmed safe.** The 5 must-fixes:
 1. **False "cleared" is reproducible** — the plan trusted `clear_memory=="cleared"` as terminal proof, but
    that function's in-flight check only looks back 30s (`memory_clear.py:135`), mem0 has shown a 17-min
    queue (`:28`), and `_CLEAR_RECONCILIATION_READY` exists BECAUSE of a live repro where it said cleared

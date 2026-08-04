@@ -36,6 +36,24 @@ pass). **STOPPED for ZH review** — nothing wired, no gate flipped, no push/PR/
 plan §3.4):** the retry loop must catch ONLY `(MemoryBackendUnavailable, MemoryPurgeError)`, NOT the
 `ErasureError` base, so `InvalidUserId` fails hard instead of looping.
 
+**★ TASK 2 BUILT (2026-08-04): `98cc1bd` on zh (local).** Migration `20260805000000_account_deletion_lean.sql`
+(+ rollback twin): `users.account_status IN (active/pending_deletion/deleting)` + timestamps; FK-free
+service-role-only `account_deletion_log`; **privilege-pinned** `request_/cancel_account_deletion` RPCs
+(revoke public/anon/authenticated + grant service_role — the Codex must-fix, present on both) with correct
+CAS (request only from active; cancel only from pending_deletion, clears timestamps, loses to `deleting`).
+`backend/deletion.py` service wrappers (PGRST202→503 fail-closed). `POST /account/deletion` + `/cancel`
+endpoints in `main.py`, **503 when `_DELETION_EXECUTION_READY=False`** (before any DB call), JWT-sub only.
+`assert_schema` extended; 14 endpoint/static tests + a 27-assert pgTAP (`supabase/tests/019_*`) staged for
+the T6 live gate; 1501 pass. Orchestrator self-verified the migration + wrappers.
+
+**★ PARALLEL WAVE IN FLIGHT (2026-08-04):** after T2's contract landed, launched 3 concurrent agents (they
+touch disjoint files): **astrail-reviewer on T2** (per-task, read-only) · **T3 developer** (delete engine
++ sweep + freeze: new `deletion_engine.py` + `claim_account_for_deletion` CAS RPC migration `20260805010000`
++ `_reap_loop` branch + `persist_trip_memory` fail-closed) · **T5 developer** (frontend delete card +
+type-to-confirm + pending banner + `backend-types`, flag-gated off). T4 (notifications) held for the next
+wave (it also edits main.py). All gated OFF. On completion: review each, then T4, then hold at **T6**
+(live pgTAP + flip the flags) for ZH's go-live sign-off.
+
 **LEAN Rev 3 IS THE CURRENT PLAN (`cbb764b`=Rev2, then Rev3):** Rev 2 folded the Codex lean review; **Rev 3
 DROPPED REAUTH** (ZH — Astrail is passwordless per `privacy/page.tsx:48`, so emailed-code reauth adds ~
 nothing; replaced by **type-to-confirm + 7-day grace + an immediate "scheduled — cancel by {date}"

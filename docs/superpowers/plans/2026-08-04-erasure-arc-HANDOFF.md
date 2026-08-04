@@ -101,11 +101,19 @@ T4 (notifications) held for the next wave (also edits main.py). All gated OFF.
   full suite 1529 pass.
 
 **WAVE DONE + REVIEWED + FOLDED. Remaining:**
-- **T4 (next, building)** — Resend `notifications.py` (best-effort scheduled + completed emails) + wire the
-  scheduled email in `POST /account/deletion` + fill the `_mark_completed` completion-email TODO (send to
-  `recipient_email`, then clear it) + **clear-memory un-lie #2** (rewire `SettingsView.tsx:8` off the mock
-  to the real `POST /settings/memory/clear` + honest states; do NOT flip `_CLEAR_RECONCILIATION_READY` —
-  that live-enable is a T6/ZH call, like the account-delete flag). All dormant while gated.
+- **T4 BUILT: `9d3d81f`** — `notifications.py` (first Resend integration; 2 best-effort senders, catch-all,
+  secret-safe TYPE-only logs, **no-op+log when `RESEND_API_KEY` unset**, lazy httpx + call-time env) + wired
+  the scheduled email into `POST /account/deletion` (email via `admin.get_user_by_id`, wrapped so it can't
+  block/fail the 200) + filled `_mark_completed`'s completion-email TODO (send then clear `recipient_email`)
+  + **#2 un-lie**: `SettingsView` off the mock → real `POST /settings/memory/clear` via `api.ts clearMemory`,
+  honest states, never fake success (button honestly shows unavailable while gated). `.env.example` +=
+  `RESEND_API_KEY`/`RESEND_FROM_EMAIL` (NOT render.yaml — T6). Backend 1539 pass, eval anchor holds; frontend
+  tsc + 18 tests. Gates NOT flipped; engine two-pass LOGIC + T3 folds intact; keyless import OK. **T4 review
+  IN FLIGHT (sonnet).** Flagged deviation (for the review): completion email is best-effort-no-retry (row
+  goes `completed` → sweep stops selecting; `recipient_email` cleared same write) — acceptable per §6 (the
+  scheduled email is the load-bearing one), review to confirm.
+
+**ALL BUILD TASKS (T1–T5) DONE. Only T6 remains — HELD for ZH go-live.**
 - **T6 (HOLD for ZH go-live)** — live pgTAP 019/020 + wire the cross-session `account_status` read (T5 gap)
   + the T2/T5 minors + flip `_DELETION_EXECUTION_READY` + `NEXT_PUBLIC_DELETION_ENABLED` (+ decide
   `_CLEAR_RECONCILIATION_READY`) + `/privacy` honest copy. FINAL whole-branch pass (fable/opus +

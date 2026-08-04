@@ -327,3 +327,27 @@ export type RequestSeatResponse = { requested_at: string }
 
 // The `jobs` charge columns (charge_kind / charge_date / charge_refunded_at) are backend-only
 // entitlement bookkeeping (plan L813) — no frontend row mirror.
+
+// --- Account deletion: self-serve 7-day grace (mirrors backend api/schemas.py + main.py) ---
+// `users.account_status` CHECK constraint (supabase migration, Task 2). A pending/deleting
+// account is inside the 7-day cancellable grace; `deleting` is the sweeper's atomic point of no
+// return (Task 3) and can no longer be cancelled.
+export type AccountStatus = 'active' | 'pending_deletion' | 'deleting'
+
+// Mirror of backend AccountDeletionResponse (Pydantic: scheduled_for: datetime → ISO string on
+// the wire). POST /account/deletion success body — the account entered the grace; `scheduled_for`
+// is the date shown to the user + named in the "deletion scheduled" email (Task 4). Failures use
+// ErrorResponse: 503 deletion_unavailable (gated off / migration lag), 409 deletion_not_active.
+export type AccountDeletionResponse = { scheduled_for: string }
+
+// Mirror of backend AccountDeletionCancelResponse (Pydantic Literal[True]). POST
+// /account/deletion/cancel success body. Failures use ErrorResponse: 503 deletion_unavailable,
+// 409 deletion_already_started (sweeper claimed it → status `deleting`) or no_pending_deletion.
+export type AccountDeletionCancelResponse = { cancelled: true }
+
+// Error `code` values on the {"error":{"code","message"}} envelope for the deletion endpoints
+// (backend main.py HTTPException details). The UI branches on these to react distinctly.
+export const ERROR_CODE_DELETION_UNAVAILABLE = 'deletion_unavailable' as const         // 503 — gated off / migration lag
+export const ERROR_CODE_DELETION_NOT_ACTIVE = 'deletion_not_active' as const            // 409 — account not 'active' (already pending/deleting)
+export const ERROR_CODE_DELETION_ALREADY_STARTED = 'deletion_already_started' as const  // 409 — sweeper claimed it, can no longer cancel
+export const ERROR_CODE_NO_PENDING_DELETION = 'no_pending_deletion' as const            // 409 — nothing pending to cancel

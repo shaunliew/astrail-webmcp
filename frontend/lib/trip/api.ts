@@ -1,4 +1,11 @@
-import type { GenerateTripRequest, GenerateTripResponse, RequestSeatResponse, StreamEvent } from './backend-types'
+import type {
+  AccountDeletionCancelResponse,
+  AccountDeletionResponse,
+  GenerateTripRequest,
+  GenerateTripResponse,
+  RequestSeatResponse,
+  StreamEvent,
+} from './backend-types'
 // Mock-auth shell: generation runs against the offline fixture replay with zero backend
 // (mirrors the MOCK_AUTH_ENABLED switches in middleware.ts and use-user.ts).
 import { MOCK_AUTH_ENABLED } from '@/lib/auth/mock-auth'
@@ -81,6 +88,47 @@ export async function requestSeat(accessToken: string): Promise<RequestSeatRespo
 
 // Fixed stamp for the mock-auth shell — no wall-clock, so the offline flow is deterministic.
 const MOCK_SEAT_REQUESTED_AT = '2026-01-01T00:00:00.000Z'
+
+// POST /account/deletion — enter the 7-day cancellable deletion grace for the AUTHENTICATED
+// account (self-serve; no body — the backend reads identity from the token, never a
+// client-supplied user id: guardrails #5/#6). Mirrors requestSeat's authed-POST shape. Non-ok
+// responses throw an ApiError whose `status` + `code` let the caller branch distinctly: 503
+// deletion_unavailable (gated off / not live) vs 409 deletion_not_active (already pending/deleting).
+export async function requestAccountDeletion(accessToken: string): Promise<AccountDeletionResponse> {
+  const res = await fetch(`${BACKEND_URL}/account/deletion`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+
+  if (!res.ok) {
+    throw await apiErrorFrom(res)
+  }
+
+  return res.json()
+}
+
+// POST /account/deletion/cancel — reverse a pending deletion for the AUTHENTICATED account.
+// Only works before the sweeper claims the account into `deleting` (Task 3's point of no return):
+// a claimed row throws ApiError(409, 'deletion_already_started'), which the UI reacts to by
+// showing the in-progress state and disabling Cancel. 503 deletion_unavailable = gated off.
+export async function cancelAccountDeletion(accessToken: string): Promise<AccountDeletionCancelResponse> {
+  const res = await fetch(`${BACKEND_URL}/account/deletion/cancel`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+
+  if (!res.ok) {
+    throw await apiErrorFrom(res)
+  }
+
+  return res.json()
+}
 
 export function streamTrip(tripId: string, accessToken: string): EventSource {
   const url = new URL(`${BACKEND_URL}/generate-trip/stream/${tripId}`)

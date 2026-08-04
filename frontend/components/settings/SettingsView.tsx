@@ -7,6 +7,15 @@ import { useEffect, useRef, useState } from 'react'
 import { getProfile, getMemoryPreferences } from '@/lib/trip/supabase-api'
 import { clearMemory } from '@/lib/trip/mock-api'
 import type { MemoryFact, MemoryStatus, TravelerProfile } from '@/lib/trip/backend-types'
+import DeleteAccountCard from '@/components/settings/DeleteAccountCard'
+
+// Self-serve account deletion is HIDDEN until go-live: Task 6 flips this frontend flag together
+// with the backend `_DELETION_EXECUTION_READY` gate. Read at render (not a module const) so it
+// stays default-off in the current build while remaining togglable. Gating the child's mount here
+// keeps the delete control — and its auth/session work — entirely out of the current build.
+function deletionUiEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_DELETION_ENABLED === 'true'
+}
 
 type ProfileData = { profile: TravelerProfile; status: MemoryStatus; facts: MemoryFact[] }
 
@@ -132,6 +141,10 @@ export default function SettingsView() {
           {clearing ? 'Clearing…' : 'Clear memory'}
         </button>
       </section>
+
+      {/* Self-serve deletion — hidden until go-live (Task 6 flips NEXT_PUBLIC_DELETION_ENABLED).
+          Gated at the mount site so the control never renders in the current build. */}
+      {deletionUiEnabled() ? <DeleteAccountCard /> : null}
     </div>
   )
 }

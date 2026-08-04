@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures'
 import { placesForDay } from '@/lib/trip/selectors'
+import type { TripBundle } from '@/lib/trip/backend-types'
 
 const { getTrip, MapCtor, mapInstance } = vi.hoisted(() => {
   const handler = () => ({ enable: vi.fn(), disable: vi.fn() })
@@ -98,6 +99,35 @@ describe('TripWorkspace', () => {
     // getAllByText: day 3's narrated title is also the place name (Tokyo Disneyland)
     await waitFor(() => expect(screen.getAllByText(day3Place).length).toBeGreaterThan(0))
     expect(screen.queryByText(day1Place)).not.toBeInTheDocument()
+  })
+
+  // Hotel-hub map (plan 2026-08-04-hotel-hub-map, T8). Route ⇄ Hotel is a single segmented
+  // control; the mode is observable through each segment's aria-pressed state.
+  it('toggles the map layer between route and hotel', async () => {
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    renderWorkspace(TOKYO_TRIP.trip.id)
+    const hotelBtn = await screen.findByRole('button', { name: /^hotel$/i })
+    const routeBtn = screen.getByRole('button', { name: /^route$/i })
+    expect(routeBtn).toHaveAttribute('aria-pressed', 'true')
+    expect(hotelBtn).toHaveAttribute('aria-pressed', 'false')
+
+    fireEvent.click(hotelBtn)
+    expect(hotelBtn).toHaveAttribute('aria-pressed', 'true')
+    expect(routeBtn).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  // C5: no hotel got a coordinate ⇒ the hub layer has nothing to draw, so the Hotel segment is
+  // disabled rather than flipping to a silently blank map.
+  it('disables the hotel layer when no hotel could be placed', async () => {
+    const allUnresolved: TripBundle = {
+      ...TOKYO_TRIP,
+      hotels: TOKYO_TRIP.hotels.map((h) => ({
+        ...h, geo_status: 'unresolved' as const, is_recommended: false, rank: null, lat: null, lng: null,
+      })),
+    }
+    getTrip.mockResolvedValueOnce(allUnresolved)
+    renderWorkspace(TOKYO_TRIP.trip.id)
+    expect(await screen.findByRole('button', { name: /^hotel$/i })).toBeDisabled()
   })
 
   it('shows a not-found state for an unknown trip id', async () => {

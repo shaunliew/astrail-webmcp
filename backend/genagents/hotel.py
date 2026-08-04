@@ -26,6 +26,52 @@ def _parse_sse(text: str) -> dict:
     return json.loads("".join(data_lines))
 
 
+# Narrative fields (besides the required `address`) carried from Travala's 2nd content block, additively.
+_NARRATIVE_KEYS = ("location", "headline", "thumbnail")
+
+
+def _merge_narrative(hotels: list[dict], content: list) -> None:
+    """Merge Travala's SECOND content block onto the compact hotels, matched by `hotelId`.
+
+    `travala_search_hotel` returns two content blocks: content[0] is the compact list (name/star/
+    price/hotelId) we already parse; content[1] carries the real street `address` (+ narrative
+    location/headline/thumbnail) we'd otherwise discard. Blocks share the same hotels but we match
+    by `hotelId` (not position) defensively.
+
+    Mutates the locally-owned `hotels` dicts in place. Fully defensive — the payload is untrusted
+    third-party content (guardrail #11): a missing/malformed/mismatched second block leaves `hotels`
+    untouched and never raises, so `address` is simply absent exactly as before this parse existed."""
+    if len(content) < 2:
+        return
+    try:
+        narrative = json.loads(content[1]["text"])
+    except (ValueError, KeyError, IndexError, TypeError):
+        return
+    if isinstance(narrative, list):
+        entries = narrative
+    elif isinstance(narrative, dict):
+        entries = narrative.get("hotels") or narrative.get("results") or []
+    else:
+        return
+    if not isinstance(entries, list):
+        return
+    by_id = {e["hotelId"]: e for e in entries
+             if isinstance(e, dict) and e.get("hotelId") is not None}
+    for hotel in hotels:
+        if not isinstance(hotel, dict):
+            continue
+        entry = by_id.get(hotel.get("hotelId"))
+        if entry is None:
+            continue
+        address = entry.get("address")
+        if address is not None:
+            hotel["address"] = address                # content[1] is authoritative for the street address
+        for key in _NARRATIVE_KEYS:
+            value = entry.get(key)
+            if value is not None:
+                hotel.setdefault(key, value)          # additive: never clobber the compact block
+
+
 async def search_hotels(location: str, check_in: str, check_out: str, rooms: list[str],
                         *, client=None) -> tuple[str | None, list[dict]]:
     """Search Travala for hotels in `location` for the dates + rooms. Returns (session_id, hotels),
@@ -69,6 +115,7 @@ async def search_hotels(location: str, check_in: str, check_out: str, rooms: lis
     except (ValueError, KeyError, IndexError, TypeError):
         return None, []
     hotels = payload.get("hotels") or payload.get("results") or []
+    _merge_narrative(hotels, content)   # additively merge the street address from content[1] (defensive)
     session_id = payload.get("sessionId")
     print(f"  [hotels] location={location} {check_in}..{check_out} -> {len(hotels)} hotels", file=sys.stderr)
     return session_id, hotels

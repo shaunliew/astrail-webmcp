@@ -146,6 +146,16 @@ export type HotelSuggestion = {
   source: 'travala' | 'manual' | 'agent'
   status: HotelStatus
   searched_at: string | null
+  // Hotel-hub geo + ranking (migration 20260804…_hotel_geo_ranking). Nullability mirrors the
+  // DB columns EXACTLY [CODEX-FOLD C3]: lat/lng/route_score/rank are nullable (unresolved hotels
+  // + Matrix-failure carry NULL); geo_status/is_recommended/place_durations are NOT NULL DEFAULT.
+  lat: number | null                 // NULL when geo_status='unresolved' (honest-failure, Guardrail #1)
+  lng: number | null                 // NULL when geo_status='unresolved'
+  geo_status: 'placed' | 'unresolved'  // NOT NULL DEFAULT 'unresolved'
+  route_score: number | null         // NULL when Matrix unavailable (placed, ranked by preference only)
+  rank: number | null                // 1..N among placed hotels; NULL for unresolved
+  is_recommended: boolean            // NOT NULL DEFAULT false — rank 1 (default-selected route-central hub)
+  place_durations: Record<string, number>  // NOT NULL DEFAULT '{}' — {place_id: duration_s}
 }
 
 export type TripInspirationItem = {

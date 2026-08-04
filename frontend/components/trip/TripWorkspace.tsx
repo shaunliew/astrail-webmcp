@@ -7,7 +7,7 @@ import type { TripBundle } from '@/lib/trip/backend-types'
 import { getTrip } from '@/lib/trip/supabase-api'
 import {
   orderedDays, placesForDay, legsForDay, restaurantsForDay,
-  tripHotels, buildPlaceIndex, findTripPlace,
+  tripHotels, buildPlaceIndex, findTripPlace, recommendedHotelId,
 } from '@/lib/trip/selectors'
 import { useSharedMap } from '@/components/map/MapProvider'
 import DaySelector from './DaySelector'
@@ -44,6 +44,15 @@ const TOGGLE_CHROME =
   'bg-[rgba(253,251,245,0.94)] text-[var(--muted)] backdrop-blur-sm ' +
   'shadow-[0_2px_12px_rgba(0,0,0,0.2)] transition-opacity duration-200 hover:text-[var(--starlight)]'
 
+// One segment of the map layer switch (Route ⇄ Hotel). The active segment gets the brass fill;
+// the rest read as a muted, tappable label — same paper palette as the panel toggles above.
+function segClass(active: boolean): string {
+  return [
+    'type-label rounded-full px-3 py-1 text-[11px] uppercase tracking-wide transition-colors',
+    active ? 'bg-[var(--brass-soft)] text-[var(--brass-bright)]' : 'text-[var(--muted)] hover:text-[var(--starlight)]',
+  ].join(' ')
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="mt-5">
@@ -62,6 +71,11 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
   const [status, setStatus] = useState<'loading' | 'ready' | 'not_found'>('loading')
   const [activeDayNumber, setActiveDayNumber] = useState(1)
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null)
+  // Hotel-hub map (plan 2026-08-04-hotel-hub-map, T8) — ephemeral client state, no DB write.
+  // Default selection = the route-central hotel (rank 1), which is `null` when NO hotel was
+  // geocoded (honest-failure, C5); default layer = the existing itinerary route line.
+  const [selectedHotelId, setSelectedHotelId] = useState<string | null>(null)
+  const [layerMode, setLayerMode] = useState<'route' | 'hub'>('route')
   const [expanded, setExpanded] = useState(false)
   const [panelOpen, setPanelOpen] = useState(true)
 
@@ -73,6 +87,7 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
       if (!b) { setStatus('not_found'); return }
       setBundle(b)
       setActiveDayNumber(orderedDays(b)[0]?.day_number ?? 1)
+      setSelectedHotelId(recommendedHotelId(b))
       setStatus('ready')
     })
     return () => { active = false }
@@ -80,6 +95,10 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
 
   const days = useMemo(() => (bundle ? orderedDays(bundle) : []), [bundle])
   const placeIndex = useMemo(() => (bundle ? buildPlaceIndex(bundle) : new Map()), [bundle])
+  // No hotel got a coordinate ⇒ the hub layer has nothing to draw, so the Hotel toggle is
+  // disabled rather than flipping to a silently blank map (C5). Same signal that seeds the
+  // default selection above, so "toggle enabled" and "a hub is selected" never disagree.
+  const canUseHubLayer = useMemo(() => (bundle ? recommendedHotelId(bundle) !== null : false), [bundle])
   const activeDay = days.find((d) => d.day_number === activeDayNumber) ?? null
   const dayPlaces = bundle ? placesForDay(bundle, activeDayNumber) : []
   const dayLegs = bundle && activeDay ? legsForDay(bundle, activeDay.id) : []
@@ -157,7 +176,41 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
           activeDayNumber={activeDayNumber}
           selectedPlaceId={selectedPlaceId}
           onSelectPlace={(id) => { setSelectedPlaceId(id); setExpanded(true); setPanelOpen(true) }}
+          selectedHotelId={selectedHotelId}
+          layerMode={layerMode}
         />
+      </div>
+
+      {/* Map layer switch — route line vs. hotel hub-and-spokes, never both (plan decision #3).
+          Floats over the map, clear of the left/bottom details panel. The Hotel segment is
+          disabled when no hotel could be placed, so it never flips to a blank map (C5). */}
+      <div
+        role="group"
+        aria-label="Map layer"
+        className={[
+          'paper-scope pointer-events-auto absolute z-20 left-1/2 top-4 -translate-x-1/2',
+          'flex items-center gap-0.5 rounded-full border border-[var(--line)]',
+          'bg-[rgba(253,251,245,0.94)] p-0.5 shadow-[0_2px_12px_rgba(0,0,0,0.2)] backdrop-blur-sm',
+        ].join(' ')}
+      >
+        <button
+          type="button"
+          onClick={() => setLayerMode('route')}
+          aria-pressed={layerMode === 'route'}
+          className={segClass(layerMode === 'route')}
+        >
+          Route
+        </button>
+        <button
+          type="button"
+          onClick={() => setLayerMode('hub')}
+          aria-pressed={layerMode === 'hub'}
+          disabled={!canUseHubLayer}
+          title={canUseHubLayer ? undefined : 'No hotel could be placed on the map'}
+          className={[segClass(layerMode === 'hub'), canUseHubLayer ? '' : 'cursor-not-allowed opacity-40'].join(' ')}
+        >
+          Hotel
+        </button>
       </div>
 
       <aside
@@ -254,7 +307,12 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
           </Section>
 
           <Section title="Where to stay">
-            <HotelPanel hotels={tripHotels(bundle)} />
+            <HotelPanel
+              hotels={tripHotels(bundle)}
+              selectedHotelId={selectedHotelId}
+              onSelectHotel={setSelectedHotelId}
+              layerMode={layerMode}
+            />
           </Section>
 
           <Section title="Place detail">

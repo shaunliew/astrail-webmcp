@@ -5,17 +5,24 @@ import mapboxgl from 'mapbox-gl'
 import type { TripBundle } from '@/lib/trip/backend-types'
 import {
   trailCoordinates, buildTrailNumbers, buildPlaceIndex, placesForDay, hasRealCoords,
+  selectedHotel, hubSpokeFeatures, isHotelBasePlace, hotelBasePlaceIds,
 } from '@/lib/trip/selectors'
 import { consumeTripFramed } from '@/lib/trip/map-handoff'
 import { useSharedMap } from '@/components/map/MapProvider'
 
 export default function TripMap({
   bundle, activeDayNumber, selectedPlaceId, onSelectPlace,
+  selectedHotelId = null, layerMode = 'route',
 }: {
   bundle: TripBundle
   activeDayNumber: number
   selectedPlaceId: string | null
   onSelectPlace: (placeId: string) => void
+  // Hotel-hub map (plan 2026-08-04-hotel-hub-map, T9). Optional with route-preserving defaults so
+  // today's caller (TripWorkspace, pre-T8) keeps the itinerary-only behavior untouched; T8 passes
+  // both explicitly (`string | null` / `'route' | 'hub'`) to drive the Route/Hotel toggle.
+  selectedHotelId?: string | null
+  layerMode?: 'route' | 'hub'
 }) {
   const { hasToken, ready, getMap, acquire, release, setMarkers } = useSharedMap()
   const routeIdsRef = useRef<string[]>([])
@@ -60,21 +67,47 @@ export default function TripMap({
     // read as one sequence you can follow end to end — independent of the active day.
     // Pins with no number (the undayed base hotel, unresolved coordinates) recede.
     const trailNumbers = buildTrailNumbers(bundle)
-    const markers = bundle.places.filter((tp) => hasRealCoords(tp.place.lng, tp.place.lat)).map((tp) => {
-      const el = document.createElement('button')
-      el.type = 'button'
-      el.setAttribute('aria-label', tp.place.name)
-      const number = trailNumbers.get(tp.id) ?? null
-      el.className = [
-        'constellation-pin',
-        `constellation-pin--${tp.source_type}`,
-        number === null ? 'constellation-pin--receding' : '',
-        tp.place_id === selectedPlaceId ? 'constellation-pin--selected' : '',
-      ].filter(Boolean).join(' ')
-      el.textContent = number === null ? '' : String(number)
-      el.addEventListener('click', (e) => { e.stopPropagation(); onSelectPlace(tp.place_id) })
-      return new mapboxgl.Marker({ element: el }).setLngLat([tp.place.lng, tp.place.lat]).addTo(map)
-    })
+    // Hub mode (hotel-hub map): the selected hotel is drawn once as a distinct hub pin below, so
+    // suppress the base-hotel PLACE marker to avoid a duplicate pin sitting on top of the hub. The
+    // predicate is IMPORTED from selectors (the same one hubSpokeFeatures uses to pick spoke
+    // targets) — reimplementing it risks dropping the base_place_id signal and double-pinning.
+    const basePlaceIds = hotelBasePlaceIds(bundle)
+    const markers = bundle.places
+      .filter((tp) => hasRealCoords(tp.place.lng, tp.place.lat))
+      .filter((tp) => layerMode !== 'hub' || !isHotelBasePlace(tp, basePlaceIds))
+      .map((tp) => {
+        const el = document.createElement('button')
+        el.type = 'button'
+        el.setAttribute('aria-label', tp.place.name)
+        const number = trailNumbers.get(tp.id) ?? null
+        el.className = [
+          'constellation-pin',
+          `constellation-pin--${tp.source_type}`,
+          number === null ? 'constellation-pin--receding' : '',
+          tp.place_id === selectedPlaceId ? 'constellation-pin--selected' : '',
+        ].filter(Boolean).join(' ')
+        el.textContent = number === null ? '' : String(number)
+        el.addEventListener('click', (e) => { e.stopPropagation(); onSelectPlace(tp.place_id) })
+        return new mapboxgl.Marker({ element: el }).setLngLat([tp.place.lng, tp.place.lat]).addTo(map)
+      })
+    // Hub mode: pin the selected PLACED hotel as the hub. Honest empty-state (Guardrail #1 / C5):
+    // a null/unresolved/coordless selection draws no hub — the panel/toggle owns the messaging, and
+    // hubSpokeFeatures returns an empty collection in the very same case (never an invented coord).
+    if (layerMode === 'hub') {
+      const hub = selectedHotel(bundle, selectedHotelId)
+      if (
+        hub && hub.geo_status === 'placed'
+        && hub.lng !== null && hub.lat !== null && hasRealCoords(hub.lng, hub.lat)
+      ) {
+        const el = document.createElement('button')
+        el.type = 'button'
+        el.setAttribute('aria-label', hub.name)
+        el.className = 'hotel-hub-pin'
+        markers.push(
+          new mapboxgl.Marker({ element: el }).setLngLat([hub.lng, hub.lat]).addTo(map),
+        )
+      }
+    }
     setMarkers(markers)
   }
 
@@ -119,6 +152,45 @@ export default function TripMap({
       },
     })
     routeIdsRef.current.push(id, casingId, coreId)
+  }
+
+  // Hotel-hub map (plan 2026-08-04-hotel-hub-map, T9): hub mode's counterpart to drawTrail. Straight
+  // 2-point spokes from the selected hub hotel to each destination place (hub-and-spoke), built by
+  // selectors.hubSpokeFeatures — which owns the geometry, the base-hotel exclusion, and the
+  // missing-duration handling, all unit-tested in T7. This only wires the FeatureCollection onto the
+  // map as line layers, pushing their ids into routeIdsRef so clearRoutes tears them down on the next
+  // redraw / unmount. Honest empty-state: an empty collection (no placed hub) draws nothing at all.
+  function drawSpokes() {
+    const map = getMap()
+    if (!map) return
+    clearRoutes()
+    const spokes = hubSpokeFeatures(selectedHotel(bundle, selectedHotelId), bundle)
+    if (spokes.features.length === 0) return
+    const id = 'hotel-spokes'
+    const casingId = `${id}-casing`
+    const coreId = `${id}-core`
+    map.addSource(id, { type: 'geojson', data: spokes })
+    map.addLayer({
+      id: casingId,
+      type: 'line',
+      source: id,
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: { 'line-color': '#C9974E', 'line-width': 6, 'line-opacity': 0.12 },
+    })
+    map.addLayer({
+      id: coreId,
+      type: 'line',
+      source: id,
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: { 'line-color': '#C9974E', 'line-width': 1.6, 'line-opacity': 0.7 },
+    })
+    routeIdsRef.current.push(id, casingId, coreId)
+  }
+
+  // The map shows the itinerary trail OR the hotel hub-and-spokes, never both at once (decision #3).
+  function drawRouteLayer() {
+    if (layerMode === 'hub') drawSpokes()
+    else drawTrail()
   }
 
   // The details panel overlays the map — the left 440px on desktop, a bottom sheet on
@@ -176,7 +248,7 @@ export default function TripMap({
       if (cancelled) return
       framedRef.current = true
       drawMarkers()
-      drawTrail()
+      drawRouteLayer()
       // Arriving from the trips dashboard already framed on this trip → settle into the
       // panel geometry (short) rather than re-fly the whole camera (full). Any other entry
       // (generation handoff, direct load) never marks the handoff, so it frames normally.
@@ -213,6 +285,18 @@ export default function TripMap({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPlaceId])
+
+  // Hotel-hub map (T9): redraw when the hub selection or the layer mode changes — swap the itinerary
+  // trail for the hub's spokes (or back), (re)pin the hub, and toggle base-hotel marker suppression.
+  // Gated on framedRef so it never races the first paint on a SHARED map that is already loaded (the
+  // initial draw is owned by the [ready] effect above); by the time a user can toggle, framing is
+  // long done. No camera move — toggling the view stays put (scope: T9).
+  useEffect(() => {
+    if (!ready || !framedRef.current) return
+    drawMarkers()
+    drawRouteLayer()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedHotelId, layerMode])
 
   if (!hasToken) {
     return (

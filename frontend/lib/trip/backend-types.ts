@@ -13,6 +13,7 @@ export type TransportStatus = 'pending' | 'ok' | 'no_route' | 'failed' | 'skippe
 export type RoutingProfile = 'walking' | 'driving' | 'driving-traffic' | 'cycling'
 export type TransportMode = 'walk' | 'drive' | 'cycle' | 'transit_hint' | 'unknown'
 export type PreferenceSource = 'explicit' | 'memory' | 'inferred_default'
+export type UserPlan = 'trial' | 'beta'   // users.plan CHECK constraint (free trial vs beta seat)
 export type InspirationItemType = 'reel_url' | 'requested_place'
 export type InspirationSource = 'manual_paste' | 'clipboard' | 'web_share_target' | 'manual_input'
 export type InspirationStatus =
@@ -278,6 +279,12 @@ export type MemoryStatus = 'ok' | 'disabled' | 'unavailable'
 export type MemoryFact = { id: string; memory: string; created_at: string; source: 'mem0' }
 export type SettingsPreferencesResponse = { status: MemoryStatus; facts: MemoryFact[] }
 
+// POST /settings/memory/clear — success only; failures use ErrorResponse above with
+// one of these codes. `unavailable` means nothing was deleted (safe to retry);
+// `unknown` means the outcome could not be verified (do not retry blindly).
+export type MemoryClearResponse = { cleared: true }
+export type MemoryClearErrorCode = 'memory_unavailable' | 'memory_clear_unknown'
+
 // POST /trips/:tripId/feedback — mirrors backend/api/schemas.py TripFeedback*.
 // Trip-level only; artifact_type is always 'trip' in v1. The backend does NOT accept
 // artifact_type/artifact_id from the client, so they are absent from the request type.
@@ -304,3 +311,19 @@ export type TripFeedback = {
 }
 
 export type TripFeedbackResponse = { feedback: TripFeedback }
+
+// --- Entitlements: free trial + beta seats (mirrors backend main.py / api/schemas.py) ---
+// Error `code` values carried by the {"error":{"code","message"}} envelope (api.ts ApiError).
+// Values MUST match the backend HTTPException details verbatim — they are the branch keys the
+// UI classifies on (e.g. classifyGenerateError → TrialExhaustedCard).
+export const ERROR_CODE_TRIAL_EXHAUSTED = 'trial_exhausted' as const       // 403 — free trip already spent
+export const ERROR_CODE_IDENTITY_UNAVAILABLE = 'identity_unavailable' as const  // 503 — missing users row
+export const ERROR_CODE_RATE_LIMITED = 'rate_limited' as const             // 429 — daily/burst limit
+export const ERROR_CODE_CONFLICT_RETRY = 'conflict_retry' as const         // 409 — reservation raced, retry
+
+// Mirror of backend RequestSeatResponse (Pydantic: requested_at: datetime → ISO string on the wire).
+// POST /request-seat returns {"requested_at": "<iso>"}; idempotent (repeat clicks return the original stamp).
+export type RequestSeatResponse = { requested_at: string }
+
+// The `jobs` charge columns (charge_kind / charge_date / charge_refunded_at) are backend-only
+// entitlement bookkeeping (plan L813) — no frontend row mirror.

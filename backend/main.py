@@ -33,10 +33,12 @@ from api.schemas import (
     CaptureSavedReelResponse,
     GenerateTripRequest,
     GenerateTripResponse,
+    MemoryClearResponse,
     MemoryFact,
     OrganizeJobStatus,
     OrganizeSavedReelsRequest,
     OrganizeSavedReelsResponse,
+    RequestSeatResponse,
     SettingsPreferencesResponse,
     TripFeedback,
     TripFeedbackRequest,
@@ -52,10 +54,13 @@ from preferences import compose_preference_summary, fetch_traveler_profile
 from rate_limit import (
     BURST_LIMIT,
     DAILY_TRIP_QUOTA,
+    ENTITLEMENTS_ENABLED,
+    TRIAL_LIFETIME_LIMIT,
     check_and_increment_daily_quota,
     get_current_user_id_stashed,
     limiter,
     refund_daily_quota,
+    reserve_and_enqueue_trip_job,
 )
 from saved_reels import capture_saved_reel
 from organizer import (
@@ -270,6 +275,84 @@ async def get_settings_preferences(
         status=status, facts=[MemoryFact(**f) for f in facts])
 
 
+_CLEAR_FAILURE_MESSAGE = {
+    "unavailable": "Memory could not be cleared. Nothing was deleted — please try again.",
+    "unknown": "We could not confirm whether your memory was cleared. Refresh this page to "
+               "see the current state; do not retry blindly.",
+}
+
+# ---------------------------------------------------------------------------------------
+# THE CLEAR ROUTE IS DELIBERATELY GATED OFF. Do not flip this without reading why.
+#
+# Codex's cross-model code review returned DO-NOT-MERGE on this endpoint, and it was right.
+# `cleared: true` promises a postcondition ("your memory is now empty") that we cannot yet
+# keep, because TWO unbounded delays sit between us and mem0, both MEASURED on 2026-08-03:
+#   1. mem0's own add queue — an add sat PENDING for 17 minutes, 33x the 30s visibility
+#      window. Our own live smoke reproduced the failure: it added, the clear answered
+#      `cleared`, and the adds were still queued afterwards.
+#   2. our own event loop — `asyncio.wait_for` bounds each await's DURATION, not the gaps
+#      between them, so a stall ages an in-flight add out of view with mem0 perfectly
+#      healthy.
+# No finite window closes either. A route that can emit a `cleared` it cannot stand behind
+# is precisely the lie this whole arc exists to delete, so it stays shut.
+#
+# WHAT DOES SHIP: the engine (pipeline/memory_clear.py) and the write-back interlock
+# (pipeline/preferences.py) are complete, reviewed and fully exercised by the suite — the
+# interlock is a real improvement to every generation and runs in production from day one.
+#
+# TO ENABLE: land durable reconciliation of mem0's returned event ids (its V3 add response
+# carries `event_id`; the completion mechanism is the events endpoint, which the installed
+# Python SDK does not expose — so it needs a small raw-HTTP adapter plus a reconciler that
+# is SEPARATE from trip-job terminal state, because the write-back runs after the job is
+# terminal). Then flip this to True IN THE SAME PR, and re-run
+# scripts/smoke_memory_clear.py — which itself must first be taught to reconcile accepted
+# event ids, or it will keep leaving provider-side data for a deleted test entity.
+_CLEAR_RECONCILIATION_READY = False
+
+_CLEAR_GATED_MESSAGE = (
+    "Clearing saved memory is temporarily unavailable while we make deletion verifiable. "
+    "Nothing was deleted."
+)
+
+
+@app.post("/settings/memory/clear", response_model=MemoryClearResponse)
+@limiter.limit(BURST_LIMIT)
+async def clear_settings_memory(
+    request: Request,                                     # required by slowapi; must be named `request`
+    response: Response,                                   # REQUIRED with headers_enabled=True
+    user_id: str = Depends(get_current_user_id_stashed),  # token-derived: guardrails #5 + #6
+):
+    """PRD §824. STRICT by design — the deliberate inverse of GET /settings/preferences,
+    which degrades (guardrail #3). Never reports a clear it did not verify."""
+    from mem0_client import get_mem0_client
+    from pipeline.memory_clear import clear_memory        # NOT pipeline.preferences (A17)
+
+    if not _CLEAR_RECONCILIATION_READY:
+        # `memory_unavailable`, NOT `memory_clear_unknown`: that code means "CONFIRMED
+        # nothing was deleted", which is exactly and provably true when we do not attempt.
+        # Reporting `unknown` would claim an uncertainty we do not actually have — a small
+        # lie in the opposite direction, and this endpoint exists to stop lying.
+        # Returns BEFORE touching Supabase or mem0: nothing is attempted, nothing is spent.
+        return build_error_response(503, _CLEAR_GATED_MESSAGE, code="memory_unavailable")
+
+    try:
+        client = await get_supabase_client()
+    except Exception:                                     # noqa: BLE001 — A7
+        # Without a client we cannot arm the guard, so nothing is deleted. Truthful AND
+        # inside the documented contract; the global handler's 500 would be neither.
+        return build_error_response(
+            503, _CLEAR_FAILURE_MESSAGE["unavailable"], code="memory_unavailable")
+
+    outcome = await clear_memory(client, await get_mem0_client(), user_id=user_id)
+    if outcome == "cleared":
+        return MemoryClearResponse()
+    # Returned, not raised: _STATUS_CODE_SLUG (api/errors.py) has no 503 entry, so
+    # HTTPException(503) would emit code "error" and collapse the two failure codes into
+    # one. Precedent: the rate-limit handler above does exactly this for 429.
+    code = "memory_unavailable" if outcome == "unavailable" else "memory_clear_unknown"
+    return build_error_response(503, _CLEAR_FAILURE_MESSAGE[outcome], code=code)
+
+
 @app.post("/saved-reels", response_model=CaptureSavedReelResponse)
 @limiter.limit(BURST_LIMIT)
 async def create_saved_reel(
@@ -368,12 +451,75 @@ async def generate_trip(
     place_ids = [str(place_id) for place_id in req.place_ids]
     idem = compute_idempotency_key(user_id, req.reel_urls, req.start_date, req.end_date,
                                    preferences=req.preferences, pace=req.pace,
-                                   destination_hint=req.destination_hint, place_ids=place_ids)
+                                   destination_hint=req.destination_hint, place_ids=place_ids,
+                                   budget_level=req.budget_level, origin_city=req.origin_city,   # Fix 9
+                                   requested_places=req.requested_places)
 
+    # ROLLBACK PATH (Fix 3): flag off -> the retained pre-arc legacy daily-quota flow
+    # (_generate_trip_legacy below). Flag on -> the new atomic-RPC entitlement path.
+    if not ENTITLEMENTS_ENABLED:
+        return await _generate_trip_legacy(client, req, user_id, idem, place_ids, background)
+
+    # Forward path: an atomic Postgres RPC reserves the entitlement (trial OR daily) AND
+    # enqueues the durable job in ONE transaction, so a charge can never precede a job.
+    # fetch_traveler_profile is a traveler_profiles READ that swallows read failures (a
+    # benign empty profile), so nothing here raises a charge into existence.
+    profile = await fetch_traveler_profile(client, user_id)
+    preference_summary, preference_sources = compose_preference_summary(profile, req.preferences)
+    origin_city = req.origin_city or (profile.get("origin_city") if profile else None)
+    event_payload = {
+        "reel_urls": req.reel_urls, "start_date": req.start_date, "end_date": req.end_date,
+        "pace": req.pace, "preferences": req.preferences,
+        "destination_hint": req.destination_hint,
+        "requested_places": req.requested_places, "place_ids": place_ids,
+    }
+
+    res = await reserve_and_enqueue_trip_job(
+        client, user_id=user_id, idempotency_key=idem,
+        destination_hint=req.destination_hint, start_date=req.start_date, end_date=req.end_date,
+        budget_level=req.budget_level, origin_city=origin_city,
+        preference_summary=preference_summary, preference_sources=preference_sources,
+        event_payload=event_payload, trial_limit=TRIAL_LIFETIME_LIMIT, daily_limit=DAILY_TRIP_QUOTA,
+    )
+
+    if res.outcome == "identity_unavailable":
+        raise HTTPException(503, {"code": "identity_unavailable",
+            "message": "We couldn't verify your account. Please sign in again."})
+    if res.outcome in ("replay",):
+        return GenerateTripResponse(trip_id=res.trip_id)
+    if res.outcome == "trial_exhausted":
+        raise HTTPException(403, {"code": "trial_exhausted",
+            "message": "Your free trip is planned. Beta seats unlock unlimited planning — only 25 exist."})
+    if res.outcome == "daily_exhausted":
+        raise HTTPException(429, {"code": "rate_limited",
+            "message": "Daily trip limit reached. Try again tomorrow."})
+    if res.outcome == "conflict_retry":                                           # Fix 1 — never NULL
+        raise HTTPException(409, {"code": "conflict_retry",
+            "message": "That request is already being processed — please retry."})
+    # created — the only remaining outcome. ReserveResult.outcome is a fixed 6-value contract
+    # from the pgTAP-tested RPC; every rejection/replay case returned or raised above, so here
+    # res.trip_id/res.job_id are guaranteed non-null.
+    background.add_task(
+        run_generation, res.trip_id, user_id, req.reel_urls, req.start_date, req.end_date,
+        job_id=res.job_id, pace=req.pace, preferences=req.preferences,
+        destination_hint=req.destination_hint, place_ids=place_ids,
+    )
+    return GenerateTripResponse(trip_id=res.trip_id)
+
+
+async def _generate_trip_legacy(client, req, user_id: str, idem: str,
+                                place_ids: list[str], background: BackgroundTasks) -> GenerateTripResponse:
+    """Pre-arc rollback path (Fix 1/Fix 3): the CURRENT generate_trip flow verbatim, with the
+    single change that its replay lookup filters `charge_refunded_at IS NULL` so it stays
+    partial-index-safe. Legacy jobs carry `charge_kind = NULL` (harmless). It enforces only
+    the durable DAILY quota (no lifetime trial) and is reached only when ENTITLEMENTS_ENABLED
+    is false. Reuses check_and_increment_daily_quota / refund_daily_quota / enqueue_job."""
     # Idempotent replay: a retried POST (same request-derived key) returns the
     # SAME trip instead of creating a duplicate — WITHOUT consuming daily quota.
+    # ACTIVE row only (Fix 1/Fix 4): `.is_(...,"null")` keeps this partial-index-safe.
     existing = await (
-        client.table("jobs").select("trip_id").eq("idempotency_key", idem).maybe_single().execute()
+        client.table("jobs").select("trip_id").eq("idempotency_key", idem)
+        .is_("charge_refunded_at", "null").maybe_single().execute()
     )
     if existing is not None and existing.data is not None:
         return GenerateTripResponse(trip_id=existing.data["trip_id"])
@@ -477,6 +623,48 @@ async def generate_trip(
         place_ids=place_ids,
     )
     return GenerateTripResponse(trip_id=trip_id)
+
+
+@app.post("/request-seat", response_model=RequestSeatResponse)
+@limiter.limit(BURST_LIMIT)
+async def request_seat(
+    request: Request,                                     # required by slowapi; must be named `request`
+    response: Response,                                   # REQUIRED with headers_enabled=True (see generate_trip)
+    user_id: str = Depends(get_current_user_id_stashed),  # token-derived: guardrails #5 + #6
+) -> RequestSeatResponse:
+    """Record this user's beta-seat request time, idempotently.
+
+    The stamp is a security-definer RPC that sets seat_requested_at = coalesce(
+    seat_requested_at, now()): the FIRST click records now(); repeat clicks return the
+    ORIGINAL time (no overwrite). It's an RPC — not a PostgREST .update() — because `users`
+    has no authenticated UPDATE RLS policy and the coalesce is a SQL expression, matching the
+    arc's other atomic mutations (reserve_and_enqueue_trip_job / increment_daily_trip_usage).
+
+    A missing users row makes the UPDATE match nothing, so the RPC returns NULL -> 503
+    identity_unavailable (never a silent 200 with no stamp). If the RPC is absent from the
+    live DB (a migration that lagged a code deploy — deploys are manual, render.yaml
+    autoDeploy:false), PostgREST returns PGRST202; fail CLOSED with a distinct 503
+    (code seat_request_unavailable), mirroring check_and_increment_daily_quota / the reserve
+    wrapper. Any other APIError propagates (-> 500).
+    """
+    from postgrest.exceptions import APIError
+
+    client = await get_supabase_client()
+    try:
+        resp = await client.rpc("request_seat", {"p_user_id": user_id}).execute()
+    except APIError as exc:
+        if getattr(exc, "code", None) == "PGRST202":
+            raise HTTPException(503, {"code": "seat_request_unavailable",
+                "message": "Couldn't record your seat request right now. Please try again shortly."}) from None
+        raise
+    # request_seat RETURNS a scalar timestamptz, so resp.data IS the value (the repo's
+    # scalar-RPC convention: check_and_increment_daily_quota reads increment_daily_trip_usage's
+    # `returns int` the same way). No matching row -> the RPC returns NULL -> resp.data is None.
+    stamp = resp.data
+    if not stamp:
+        raise HTTPException(503, {"code": "identity_unavailable",
+            "message": "We couldn't verify your account. Please sign in again."})
+    return RequestSeatResponse(requested_at=stamp)
 
 
 class _OrganizeSavedReelsRequest(OrganizeSavedReelsRequest):

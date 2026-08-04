@@ -534,12 +534,16 @@ Use it for:
 - stop B -> stop C.
 - stop C -> stop D.
 
-Prefer per-leg calls over one large daily route call because:
+**Shipped design (2026-08-03): one Directions call per day, not per leg.** Mapbox counts a request containing multiple coordinates as **1 request** against a **300 requests/minute** limit, and bills by request — so per-leg calls multiply both cost and rate-limit consumption by the number of legs in the day. The day-wide call still yields per-leg geometry, because `steps=true` returns each leg's own step geometries.
 
-- one failed leg does not break the whole day.
-- each leg can have its own profile.
-- each leg can be cached independently.
-- UI can show precise warnings.
+This section originally preferred per-leg calls for four reasons. Against those reasons, the day-wide call:
+
+- **one failed leg does not break the whole day — sacrificed.** A failed daily Directions request loses every leg in that day; `persist_transport` isolates day-to-day only.
+- **each leg can have its own profile — sacrificed**, and unrealized today: v1 uses one profile per trip.
+- **each leg can be cached independently — sacrificed**, and unrealized today: route legs are not cached.
+- **UI can show precise warnings — partly achieved.** Distance-based `transit_hint` warnings are per-leg and precise. Route failures are not: a top-level `NoRoute` is copied onto every pair in the day, so a failure cannot identify which hop failed.
+
+Revisit per-leg calls when a leg genuinely needs its own profile (mixed walk/drive days) or per-leg caching is measurably needed. Only then does the N-fold request cost buy something.
 
 ### Optimization API Usage
 
@@ -1107,7 +1111,7 @@ Both must agree on frozen API/types before frontend-backend integration.
 
 ## 27. Milestones
 
-> **Implementation status (2026-07-07 — backend shipped + live-verified on `dev`).** The core backend agent pipeline is done: the #16 offline eval baseline (`mean_intra_day_travel_m = 6229.0`), the durable runtime spine (jobs + SSE + auth + startup recovery), normalized trip persistence, and the enrich agents — weather, transport + `transit_hint`, restaurants, hotels (Travala search), narrator + orchestrator summary — plus latency work (enrich parallelization + reel extraction cache) and, most recently, **mem0 preference memory (Phase 1.3, PR #31)**: read-once → inject into restaurant/narrator prompts → best-effort write-back, with a persisted memory receipt (`memory_events`). Deferred to fast-follows: **Settings memory clear** (§10) and per-fact `user_preference_facts` writes (ship with the settings UI); the frontend (Weeks 7-8), observability (Week 10), hardening (Week 11), and launch remain open. Task state: GitHub Project #1.
+> **Implementation status (2026-07-07 — backend shipped + live-verified on `dev`).** The core backend agent pipeline is done: the #16 offline eval baseline (`mean_intra_day_travel_m = 6229.0`), the durable runtime spine (jobs + SSE + auth + startup recovery), normalized trip persistence, and the enrich agents — weather, transport + `transit_hint`, restaurants, hotels (Travala search), narrator + orchestrator summary — plus latency work (enrich parallelization + reel extraction cache) and, most recently, **mem0 preference memory (Phase 1.3, PR #31)**: read-once → inject into restaurant/narrator prompts → best-effort write-back, with a persisted memory receipt (`memory_events`). **Settings memory clear** (§10) — the **backend** engine and the clear/write-back interlock are implemented, reviewed and live-verified against real mem0 + Supabase, **but the route itself ships GATED OFF** (`503 memory_unavailable`) because mem0's add queue and our own event loop are both unboundedly slow, so `cleared: true` cannot be honestly promised until deletion is verifiable (see `.claude/docs/ARCHITECTURE.md`). **The frontend is also still wired to a mock**, so the user-facing feature has NOT shipped (`SettingsView.tsx` imports `clearMemory` from `mock-api` and renders "Memory cleared." unconditionally — until that card lands, the honest interim is a **disabled** Clear button). Still deferred: per-fact `user_preference_facts` writes (ship with the settings UI); the frontend (Weeks 7-8), observability (Week 10), hardening (Week 11), and launch remain open. Task state: GitHub Project #1.
 
 ### Weeks 1-2: Contracts And Foundation
 

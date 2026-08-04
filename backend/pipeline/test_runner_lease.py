@@ -23,8 +23,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import pytest
-
 import jobs
 from organizer import LeaseLost
 from pipeline import persist, runner
@@ -197,6 +195,66 @@ async def test_a_superseded_workers_failure_terminal_is_fenced_too(monkeypatch):
     assert out == {"error": "boom"}
     assert results(client) == []                          # the stale result never lands
     assert job_row(client)["status"] == "running"         # the replacement's state stands
+
+
+async def test_a_leased_worker_whose_cas_loses_writes_nothing_unfenced(monkeypatch):
+    """FIX 5 — the core new guard. The leased path's SOLE terminal writer is the fenced CAS.
+
+    Approach O removes the unfenced `error` event + `_set_status('failed')` from `_fail`'s leased
+    path entirely: `complete_trip_run` does `jobs.status`, `trips.status`, the refund and the
+    terminal `result` in ONE fenced transaction, so `_fail` calls ONLY the CAS and lets it
+    arbitrate. Here `lease_lost` is deliberately NOT set and the CAS is stubbed to LOSE — the exact
+    state a worker superseded between renewals reaches, and the one the old code got wrong: with
+    `lease_lost` clear it wrote BOTH unfenced writes. Under O there is nothing left to leak.
+
+    Discriminator, not decoration: re-add a single `record_event(error)` before the CAS in `_fail`
+    and this test goes red — `client.events` gains the stray row. That is the whole point of Fix 5.
+    """
+    client = seeded_client()
+    token = await jobs.mark_job_running(client, "job-1")
+
+    async def cas_loses(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(runner, "_complete_trip_run", cas_loses)
+
+    out = await runner._fail(client, "trip-1", "user-1", "job-1", "save", "boom",
+                             lease_token=token, lease_lost=asyncio.Event())   # NOT set
+
+    assert out == {"error": "boom"}
+    assert client.events == [], \
+        "no unfenced generation_events row — the fenced CAS is the sole terminal writer"
+    assert client.trip_updates == [], \
+        "no unfenced trips write — trips.status rides the fenced CAS, which lost here"
+
+
+async def test_a_leased_failure_routes_the_error_through_the_fenced_cas_once(monkeypatch):
+    """The leased happy path calls the CAS exactly once, carrying the error in its payload.
+
+    The failure detail no longer rides an unfenced `error` event — it rides the fenced `result`
+    the RPC writes, via `payload={"error": message}`, so the frontend still sees WHY the trip
+    failed and the SSE stream still terminates on that single fenced row.
+    """
+    client = seeded_client()
+    token = await jobs.mark_job_running(client, "job-1")
+
+    calls: list[dict] = []
+
+    async def capture(_client, _job_id, _trip_id, _lease_token, *, status, stage, message, payload):
+        calls.append({"status": status, "stage": stage, "message": message, "payload": payload})
+        return True
+
+    monkeypatch.setattr(runner, "_complete_trip_run", capture)
+
+    out = await runner._fail(client, "trip-1", "user-1", "job-1", "extract", "no places",
+                             lease_token=token, lease_lost=asyncio.Event())
+
+    assert out == {"error": "no places"}
+    assert len(calls) == 1                                 # exactly one fenced terminal write
+    assert calls[0]["status"] == "failed"
+    assert calls[0]["payload"] == {"error": "no places"}   # the detail rides the fenced result
+    assert [event for event in client.events if event["event_type"] == "error"] == [], \
+        "the leased path emits NO unfenced error event — the CAS is the only writer"
 
 
 async def test_fail_without_a_lease_token_does_not_write_job_status():
@@ -441,12 +499,42 @@ def parked_at_first_place_lookup(entered: asyncio.Event, release: asyncio.Event)
     real = persist._find_or_create_place
     armed = [True]
 
-    async def hook(client, place):
+    async def hook(client, place, *, grounded=None):
         if armed[0]:
             armed[0] = False
             entered.set()
             await release.wait()
-        return await real(client, place)
+        return await real(client, place, grounded=grounded)
+
+    return hook
+
+
+def parked_at_first_grounding_call(entered: asyncio.Event, release: asyncio.Event,
+                                   asked: list[str]):
+    """Park the FIRST worker to reach the GROUNDING phase, inside `persist_itinerary`.
+
+    `persist_itinerary` now opens with `_ground_all`, so `parked_at_first_place_lookup` above
+    parks at the SECOND await point of the save path and leaves the first one uncovered.
+
+    The hook replaces `_ground_place` and NOT `_safe_ground`, and that is the whole of the
+    discrimination. `_safe_ground`'s `except Exception` decides something only for an exception
+    raised INSIDE its `try`, and `_ground_place` is the single call that `try` awaits. Parking
+    one level up — on `_safe_ground` or on `_ground_group` — delivers the `CancelledError` to
+    the hook itself, and the test then passes identically against an `except BaseException`
+    that absorbs a lost lease into a silent NULL.
+
+    One-shot, like its sibling: every later member returns immediately, so an implementation
+    that keeps grounding after the abort is observed by `asked` rather than by a hang.
+    """
+    armed = [True]
+
+    async def hook(client, place, *, verify_country=None):
+        asked.append(place.name)
+        if armed[0]:
+            armed[0] = False
+            entered.set()
+            await release.wait()
+        return None            # unverifiable — the honest degradation, per guardrail #3
 
     return hook
 
@@ -596,6 +684,66 @@ async def test_losing_the_lease_mid_save_cancels_the_worker_before_it_writes(mon
     assert results(client) == []
 
 
+async def test_losing_the_lease_during_grounding_stops_the_worker_where_it_stands(monkeypatch):
+    """The EARLIER cancellation window: country grounding, now the save path's first await.
+
+    The test above parks at `_find_or_create_place`, which used to be where a worker first
+    suspended inside `persist_itinerary`. It is now the second: every canonical place is
+    grounded against Mapbox before the day loop starts, and that phase is a fan-out of
+    unbounded network calls — precisely where a superseded worker sits longest.
+
+    What this pins is `_safe_ground`'s `except Exception`. A `CancelledError` is a
+    BaseException, so a lost lease unwinds THROUGH the grounding phase instead of being
+    absorbed into a silent NULL; widen that `except` to `BaseException` and the abort is
+    swallowed, the group's loop rolls on to its next member, and the worker keeps paying
+    Mapbox for a job a replacement already owns. Both places sit on ONE coordinate on purpose:
+    that puts them in a single `_ground_group`, whose members are grounded SEQUENTIALLY, so
+    "the next member was never asked" is an observable rather than a timing accident.
+
+    `asked` carries this test, not the write assertions. `asyncio.gather` re-raises a
+    cancellation it requested even when every child swallowed it, so the rewrite stays
+    unattempted under BOTH spellings — the write assertions state the guarantee, and the
+    grounding-stopped assertion is the one that can tell the two apart.
+    """
+    monkeypatch.setattr(jobs, "JOB_LEASE_RENEW_S", 0)
+    client = seeded_client()
+    entered, release = asyncio.Event(), asyncio.Event()
+    asked: list[str] = []
+    monkeypatch.setattr(persist, "_ground_place",
+                        parked_at_first_grounding_call(entered, release, asked))
+
+    async def extract_two_places_on_one_coordinate(_reel_data):
+        return [_place("Tokyo Tower"), _place("Zojoji")]
+
+    renewals: list[bool] = []
+    real_renew = jobs._renew_job_lease
+
+    async def watched_renew(*args):
+        outcome = await real_renew(*args)
+        renewals.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(jobs, "_renew_job_lease", watched_renew)
+
+    task = asyncio.create_task(run(client, extract=extract_two_places_on_one_coordinate))
+    await _spin_until(entered.is_set)                # parked INSIDE the grounding phase
+
+    job_row(client)["lease_token"] = "t-replacement"
+    await _spin_until(lambda: False in renewals)     # the RUNNING beat saw the zero-row CAS
+
+    out = await asyncio.wait_for(task, timeout=5)    # unwinds with NOTHING releasing it
+
+    assert not release.is_set()
+    assert asked == ["Tokyo Tower"], \
+        "the abort must unwind out of grounding, not be absorbed into the next member"
+    assert out == {"error": "unexpected generation error"}       # not a payload, not "saved"
+    assert "replace_trip_itinerary" not in [name for name, _params in client.rpc_calls], \
+        "a cancelled worker must not have attempted the destructive rewrite"
+    assert client.db.get("trip_places") is None                  # no half-written state
+    assert client.db.get("trip_days") is None
+    assert results(client) == []
+
+
 async def test_a_worker_whose_heartbeat_cannot_reach_postgres_stops(monkeypatch):
     """Sustained unreachability must abort the run, not be swallowed into "keep working".
 
@@ -660,7 +808,14 @@ async def test_a_worker_whose_heartbeat_cannot_reach_postgres_stops(monkeypatch)
 
 
 async def test_a_live_worker_still_writes_its_own_failure():
-    """The gate must not silence a legitimate failure — that would hide every real error."""
+    """The gate must not silence a legitimate failure — that would hide every real error.
+
+    Fix 5 moved the WRITER, not the guarantee: a live worker still holding its lease wins the
+    fenced CAS (`complete_trip_run`), which stamps `trips.status='failed'` inside the transaction.
+    So the failure still reaches `trips.status` — now through the CAS, not the unfenced
+    `_set_status` the leased path no longer issues. `lease_lost` is NOT set, but under Approach O
+    that is irrelevant: the CAS's own predicate arbitrates, and here it matches (own token).
+    """
     client = seeded_client()
     token = await jobs.mark_job_running(client, "job-1")
 
@@ -669,4 +824,4 @@ async def test_a_live_worker_still_writes_its_own_failure():
 
     assert out == {"error": "boom"}
     assert any(u.get("status") == "failed" for u in client.trip_updates), \
-        "a live worker's own failure must still reach trips.status"
+        "a live worker's own failure must still reach trips.status (now via the fenced CAS)"

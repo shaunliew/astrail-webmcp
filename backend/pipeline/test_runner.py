@@ -15,7 +15,8 @@ from pipeline import runner
 # Postgres-faithful `NULL < value` semantics and its refusal to evaluate an unimplemented
 # operator are pinned by fidelity tests in `test_organizer_lease.py`. A second, subtly
 # different evaluator here is how a lease test passes while proving nothing.
-from test_saved_reels_organize import _LEASE_RPCS, _eval_filter_term, _lt, _split_top_level
+from test_saved_reels_organize import (_LEASE_RPCS, _eval_filter_term, _gt, _lt,
+                                       _split_top_level)
 
 
 class _Result:
@@ -34,7 +35,9 @@ class _Table:
         self._in_filters: dict = {}
         self._range: dict = {}
         self._lt_filters: dict = {}
+        self._gt_filters: dict = {}
         self._or_filters: list = []
+        self._single = False
 
     def insert(self, row):
         self._op = ("insert", row)
@@ -72,6 +75,20 @@ class _Table:
         self._lt_filters[col] = val
         return self
 
+    def gt(self, col, val):
+        # The write-back guard (preferences.py) pushes the trip's start down as
+        # `.gt("created_at", started_at)`. Real filtering via the organize fake's `_gt`, not
+        # a `return self` no-op: unfiltered, EVERY 'cleared' row would match and the guard
+        # would suppress learning forever.
+        if val is None:
+            raise ValueError(".gt(col, None) is never valid against postgrest; use .is_(col, 'null')")
+        self._gt_filters[col] = val
+        return self
+
+    def maybe_single(self):
+        self._single = True
+        return self
+
     def or_(self, expr):
         self._or_filters.append(expr)
         return self
@@ -87,6 +104,8 @@ class _Table:
             if op == "lte" and not row.get(col, 0) <= val:
                 return False
         if not all(_lt(row, k, v) for k, v in self._lt_filters.items()):
+            return False
+        if not all(_gt(row, k, v) for k, v in self._gt_filters.items()):
             return False
         return all(
             any(_eval_filter_term(row, term) for term in _split_top_level(expr))
@@ -111,17 +130,32 @@ class _Table:
             self.db[self.name] = keep
             return _Result([])
         matched = [r for r in rows if self._matches(r)]
+        if self._single:
+            if len(matched) > 1:
+                raise ValueError("maybe_single() matched multiple rows")
+            # Faithful to postgrest 2.31.0: a BARE None on zero rows, not a result whose
+            # .data is None (test_main.py's fake carries the same note — a forgiving fake
+            # there hid a real 500).
+            return _Result(matched[0]) if matched else None
         return _Result(matched)
 
 
 class _CompleteTripRunRpc:
-    """Mirror of `public.complete_trip_run` (20260720090000_job_leases.sql).
+    """Mirror of `public.complete_trip_run` (extended in 20260803120000_entitlement_free_trial.sql).
 
     The fence and the insert are ONE unit here for the same reason they are one transaction
     there: a superseded worker must write NEITHER the job status NOR the terminal `result`
     event. A fake that inserted unconditionally would leave the caller's `False` branch dead
     under test while the real fence could be missing entirely — and every fencing test in
     `test_runner_lease.py` would pass while proving nothing.
+
+    Fix 5 (entitlement arc): the failure branch of the RPC now owns `trips.status='failed'`
+    INSIDE the fence, so the fake writes it here too — otherwise `_fail`'s leased path (which no
+    longer issues an unfenced `_set_status`) would leave `trips` untouched in the fake and the
+    runner-level "the trip is marked failed" property would silently stop being tested. Only
+    `trips.status` is mirrored: the counter refund + `charge_refunded_at` are RPC-internal
+    entitlement effects owned by pgTAP (`supabase/tests/017_entitlement_rpcs.sql`), not asserted
+    at the runner level, so mirroring them here would be dead scaffolding.
     """
 
     def __init__(self, client, params):
@@ -136,6 +170,13 @@ class _CompleteTripRunRpc:
         if job is None:
             return _Result(False)
         job.update({"status": params["p_status"], "completed_at": "2026-07-20T00:00:00+00:00"})
+        if params["p_status"] == "failed":
+            # Fenced terminal write (RPC B): trips.status='failed' rides the same transaction as
+            # the job mark + result event. Routed through the trips table so `trip_updates` records
+            # it exactly as an unfenced `_set_status` would have — the property moves writers, not
+            # visibility.
+            await self.client.table("trips").update({"status": "failed"}).eq(
+                "id", params["p_trip_id"]).execute()
         events = self.client.db.setdefault("generation_events", [])
         events.append({
             "id": f"generation_events-{len(events) + 1}",
@@ -182,9 +223,26 @@ class _ReplaceTripItineraryRpc:
         return _Result(True)
 
 
+# This generation's `trips.created_at`, as Postgres stamped it at POST /generate-trip.
+# A LITERAL, never a derived offset or a wall clock: the write-back guard compares clear
+# markers against it, and a reference that moved with the fixtures would let a broken
+# comparison stay green. `_CLEARED_MID_RUN` is deliberately LATER — a clear that landed
+# while the generation was still running.
+_TRIP_CREATED_AT = "2026-08-03T12:00:00+00:00"
+_CLEARED_MID_RUN = "2026-08-03T12:01:00+00:00"
+_CLEARED_BEFORE_RUN = "2026-08-03T11:59:00+00:00"
+
+
 class _Client:
     def __init__(self, jobs=None):
-        self.db: dict = {"jobs": jobs or []}
+        # The runner only UPDATEs trips, never inserts, so the row is seeded here: the
+        # write-back guard READS trips.created_at, and with no row it can find no reference,
+        # skips the write, and every memory assertion below would silently stop proving
+        # anything (the guard's fail-safe swallows the miss).
+        self.db: dict = {
+            "jobs": jobs or [],
+            "trips": [{"id": "trip-1", "user_id": "user-1", "created_at": _TRIP_CREATED_AT}],
+        }
         self.rpc_calls: list = []
         # The DATABASE's clock, as the organize fake documents at length: every lease instant
         # is `clock_timestamp()` inside Postgres, so the mirrors must read this and never
@@ -270,6 +328,21 @@ class _AddRaisingMem0:
         raise RuntimeError("mem0 add failed")
 
 
+class _RecordingMem0:
+    """add RECORDS instead of raising, so a suppressed write-back is observable as the
+    absence of a mem0 call and not merely the absence of an audit row."""
+
+    def __init__(self):
+        self.added: list = []
+
+    async def search(self, *_a, **_k):
+        return {"results": []}
+
+    async def add(self, messages, **kwargs):
+        self.added.append((messages, kwargs))
+        return {"status": "PENDING", "event_id": "evt-1"}
+
+
 @pytest.mark.asyncio
 async def test_happy_path_completes_marks_job_and_emits_result():
     c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "status": "pending"}])
@@ -352,6 +425,9 @@ async def test_all_reels_fail_is_critical_failure():
     assert "error" in out
     assert [e for e in c.events if e["event_type"] == "result"][0]["payload"]["error"]
     assert c.db["jobs"][0]["status"] == "failed"
+    # Fix 5: on the leased path `trips.status='failed'` now rides the FENCED CAS
+    # (`complete_trip_run`), not an unfenced `_set_status` — the property is unchanged, the writer
+    # moved. The last trips write is still `failed` (the CAS runs after the `generating` mark).
     assert c.trip_updates[-1]["status"] == "failed"
 
 
@@ -896,6 +972,63 @@ async def test_runner_write_back_raise_does_not_double_result_or_flip_status(mon
     # as every other best-effort stage in this function.
     warning_events = [e for e in c.events if e["event_type"] == "warning" and e["stage"] == "save"]
     assert any(e["message"] == "memory write-back unavailable" for e in warning_events)
+
+
+@pytest.mark.asyncio
+async def test_runner_write_back_proceeds_when_the_clear_predates_the_trip():
+    # Keeps `_Table.gt` honest. Without this case the fake's `.gt` wiring could be a
+    # `return self` no-op and every runner test would stay green (verified: deleting the
+    # `_gt` line from `_matches` came back GREEN before this test existed) — the whole
+    # suite would then be blind to a guard that suppresses learning forever.
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c.db["memory_events"] = [{"id": "evt-clear", "user_id": "user-1", "trip_id": None,
+                              "event_type": "cleared", "created_at": _CLEARED_BEFORE_RUN}]
+    mem = _RecordingMem0()
+
+    async def scrape(url): return _reel(url)
+    async def extract(reel): return [_place("Tokyo Tower")]
+
+    await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+                                job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                mem0=mem, preferences="loves ramen",
+                                weather=_no_weather, transport=_no_transport,
+                                restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
+
+    assert mem.added and mem.added[0][1]["user_id"] == "user-1"
+    assert [e["event_type"] for e in c.db["memory_events"]] == ["cleared", "learned"]
+
+
+@pytest.mark.asyncio
+async def test_runner_recovery_rerun_still_honours_a_clear_from_the_first_attempt():
+    # C9's recovery-replay case, end-to-end through the runner rather than the unit.
+    # Guardrail #12: recovery is restart-with-cache-reuse, so a crashed generation
+    # re-executes from Phase 1 — but trips.created_at still marks the ORIGINAL start (the
+    # row is INSERTed once in POST /generate-trip and only ever `.update()`d). A clear that
+    # landed during the first attempt must therefore keep suppressing on the re-run; a guard
+    # keyed on "this attempt started now" would resurrect exactly what the user cleared.
+    c = _Client(jobs=[
+        {"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"},
+        {"id": "job-2", "trip_id": "trip-1", "attempt_count": 1, "started_at": None, "status": "pending"},
+    ])
+    c.db["memory_events"] = [{"id": "evt-clear", "user_id": "user-1", "trip_id": None,
+                              "event_type": "cleared", "created_at": _CLEARED_MID_RUN}]
+    mem = _RecordingMem0()
+
+    async def scrape(url): return _reel(url)
+    async def extract(reel): return [_place("Tokyo Tower")]
+
+    for job_id in ("job-1", "job-2"):   # the crashed attempt, then the re-queued one
+        out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01",
+                                          "2026-08-01", job_id=job_id, client=c, scrape=scrape,
+                                          extract=extract, mem0=mem, preferences="loves ramen",
+                                          weather=_no_weather, transport=_no_transport,
+                                          restaurant=_no_restaurant, narrator=_no_narrator,
+                                          hotel=_no_hotel)
+        assert out["itinerary"]["days"]   # the trip still renders; only the write-back is skipped
+
+    assert mem.added == []               # nothing re-added to mem0 on either attempt
+    # No audit row on either attempt either: nothing was learned and nothing failed.
+    assert [e["event_type"] for e in c.db["memory_events"]] == ["cleared"]
 
 
 @pytest.mark.asyncio

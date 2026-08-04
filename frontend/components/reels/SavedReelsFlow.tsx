@@ -9,6 +9,8 @@ import { groupPlacesByCountry, type CountryTray } from '@/lib/reels/organize'
 import { getAccessToken } from '@/lib/supabase/session'
 import { generateTrip, streamGeneration } from '@/lib/trip/api'
 import { toGenerateRequest, type BriefInput, type DraftInspirationItem } from '@/lib/trip/parse-inspiration'
+import { classifyGenerateError, useEntitlement } from '@/lib/entitlement'
+import TrialExhaustedCard from '@/components/entitlement/TrialExhaustedCard'
 import { useSharedMap } from '@/components/map/MapProvider'
 import { relightDurationMs } from '@/components/map/relight'
 import GenerationScene from '@/components/create/GenerationScene'
@@ -57,6 +59,11 @@ export default function SavedReelsFlow() {
   const [events, setEvents] = useState<StreamEvent[]>([])
   const [tripId, setTripId] = useState<string | null>(null)
   const [generateError, setGenerateError] = useState<string | null>(null)
+  // Entitlement gate: the same hook + classifier as CreateTripFlow (single source, no logic
+  // duplication). `caughtTrialExhausted` is the post-hoc 403 belt to the pre-emptive read.
+  const ent = useEntitlement()
+  const [caughtTrialExhausted, setCaughtTrialExhausted] = useState(false)
+  const gated = ent.isTrialExhausted || caughtTrialExhausted
   // The saved-reel fetch state, forwarded to TraysScreen/TrayDetail so a tray with members
   // never reads as "0 reels" / "No reels yet" while the cards are still loading or failed (M3).
   const [cardsStatus, setCardsStatus] = useState<'loading' | 'error' | 'ready'>('loading')
@@ -224,6 +231,12 @@ export default function SavedReelsFlow() {
           if (!activeRef.current) return
           setEvents((current) => [...current, event])
           if (event.type === 'result') {
+            // Terminal (success OR failure): refetch the entitlement so a failed run's refund
+            // (committed in the same transaction as this terminal result) keeps the gate consistent
+            // with server truth. Defense-in-depth — like CreateTripFlow this handler navigates to the
+            // trip view immediately below, so the refreshed gate matters only if the flow ever retries
+            // inline. See CreateTripFlow — same wiring, same reasoning.
+            void ent.refetch()
             // The signature moment — see CreateTripFlow: same live shell map, same beat.
             setLightPreset('dawn', relightDurationMs())
             generationHandleRef.current?.cancel()
@@ -235,9 +248,25 @@ export default function SavedReelsFlow() {
       )
     } catch (err) {
       if (activeRef.current) {
-        setGenerateError(err instanceof Error ? err.message : 'Could not start generating your trip.')
         setPhase('brief')
+        // trial_exhausted → the card; every other backend code (incl. the structured
+        // conflict_retry/409) surfaces its verbatim message via ApiError extends Error.
+        if (classifyGenerateError(err)) {
+          setCaughtTrialExhausted(true)
+          return
+        }
+        setGenerateError(err instanceof Error ? err.message : 'Could not start generating your trip.')
       }
+    }
+  }
+
+  // Task-8 carry-forward: requestSeat() has no internal catch — wrap it so a rejection has a
+  // home in the flow's error surface instead of becoming an unhandled rejection.
+  async function handleRequestSeat() {
+    try {
+      await ent.requestSeat()
+    } catch (err) {
+      setGenerateError(err instanceof Error ? err.message : 'Could not request a seat.')
     }
   }
 
@@ -268,6 +297,15 @@ export default function SavedReelsFlow() {
       onBack={() => setPhase('trays')}
       onGenerate={handleGenerate}
       error={generateError}
+      gateSlot={gated ? (
+        <TrialExhaustedCard
+          seatRequested={ent.seatRequested}
+          onRequestSeat={handleRequestSeat}
+          requesting={ent.requesting}
+          canonicalTripId={ent.canonicalTripId}
+          canonicalTripLoading={ent.canonicalTripLoading}
+        />
+      ) : undefined}
     />
   )
   return (

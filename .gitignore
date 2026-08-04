@@ -73,3 +73,7 @@ graphify-out/
 # account; regen/fetch per docs/landing/HANDOFF-PRODUCT-FIRST.md). Compress +
 # host before production deploy (raw clips are ~55MB each).
 frontend/public/landing/clips/
+
+# Raw landing capture screenshots — working artifacts, may contain PII.
+# The app uses the clean webp finals in frontend/public/landing/screens/.
+docs/landing/screens-raw/

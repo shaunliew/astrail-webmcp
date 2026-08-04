@@ -7,7 +7,13 @@ manually confirm a real generation after backend changes.
 
 SPENDS REAL CREDITS (Apify + OpenAI + Mapbox) and writes to the live DB. NOT a pytest
 test (pytest stays keyless/offline) — run it by hand. Import stays keyless: the app
-modules are imported inside the run body, never at module scope.
+modules are imported inside the run body, never at module scope — with ONE deliberate
+exception, `genagents.transport.is_drawable_linestring` below. It is safe because
+`transport.py` is itself import-keyless (MAPBOX_SECRET_TOKEN is read inside the request
+function, never at import time), and it MUST stay at module scope: `_geometry_acceptance`
+AND `_inspect`'s per-leg point count both call it, so a function-local import would bind
+the name inside one function only and raise NameError in the other. Do not "restore" the
+discipline here — that reintroduces the bug, it does not remove one.
 
 Requires backend/.env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, APIFY_TOKEN,
 OPENAI_API_KEY, MAPBOX_SECRET_TOKEN, ASTRAIL_TEST_USER_ID.
@@ -24,7 +30,30 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as _dt
+import logging
 import os
+
+# The single module-scope app import — see the exception documented in the module docstring.
+from genagents.transport import is_drawable_linestring
+
+# The ONLY logger this tool lifts to INFO, and why it is a list of one rather than the root
+# logger: `pipeline.persist` emits the per-trip `trip_place_grounding` counters (see
+# `_configure_logging`). Add a name here only after checking it cannot print a URL.
+_VERBOSE_LOGGERS = ("pipeline.persist",)
+
+# Third-party loggers pinned to WARNING so a future root-level change cannot re-leak. What each
+# entry buys is documented once, at `telegram_ingest/worker.py`'s copy of this tuple — read it
+# before deleting one. The reason this script needs its own copy is that the credential differs:
+#
+#   httpx     THE live leak here. Logs `HTTP Request: GET <url>` at INFO, and MAPBOX_SECRET_TOKEN
+#             is IN that URL as `access_token=sk...` — the Search Box / Geocoding APIs have no
+#             header auth, so `geocode/mapbox_forward.py` and `geocode/mapbox_reverse.py` must
+#             pass it as a query param, and both go to lengths to keep it out of their own error
+#             messages. One root logger at INFO undid all of it, on every geocode of a real run.
+#   httpcore  DEBUG-only and carries no URL path today. Pinned pre-emptively.
+#   realtime  `get_supabase_client()` constructs an `AsyncRealtimeClient` on every boot, which
+#             logs `wss://…?apikey=<SERVICE_ROLE_KEY>` at DEBUG.
+_NOISY_TRANSPORT_LOGGERS = ("httpx", "httpcore", "realtime")
 
 # Default reels: the repo's real Japan demo set (evals/fixtures/japan_demo_reels.json).
 _DEFAULT_REELS = [
@@ -39,12 +68,26 @@ def _default_dates() -> tuple[str, str]:
     return (today + _dt.timedelta(days=5)).isoformat(), (today + _dt.timedelta(days=7)).isoformat()
 
 
+def _geometry_acceptance(legs: list[dict]) -> tuple[bool, str]:
+    """#42's live acceptance. A bare with_geom/total ratio is the WRONG condition — a healthy trip
+    may legitimately contain no_route/failed legs, so N/N fails a correct run. Judges with
+    `is_drawable_linestring`, the same rule the writer enforces (R3 blocking #1: a second, weaker
+    validator here silently passed malformed geometry)."""
+    ok = [lg for lg in legs if lg.get("status") == "ok"]
+    ok_good = [lg for lg in ok if is_drawable_linestring(lg.get("route_geometry"))]
+    leaked = [lg for lg in legs if lg.get("status") != "ok" and lg.get("route_geometry") is not None]
+    passed = bool(ok) and len(ok_good) == len(ok) and not leaked
+    return passed, (f"    → geometry acceptance {'PASS' if passed else 'FAIL'}: "
+                    f"{len(ok_good)}/{len(ok)} ok-legs drawable; {len(leaked)} non-ok leaked; "
+                    f"{'routed legs present' if ok else 'NO ROUTED LEG AT ALL'}")
+
+
 async def _inspect(client, trip_id: str) -> None:
     """Print the persisted trip exactly as the frontend would read it: day -> place -> weather."""
     trip_result = (
         await client.table("trips")
         .select("id,status,destination_hint,start_date,end_date,title,summary,"
-                "preference_summary,preference_sources")
+                "preference_summary,preference_sources,created_at")
         .eq("id", trip_id).maybe_single().execute()
     )
     # maybe_single() returns a bare None on zero rows, so `.data` cannot be read inline --
@@ -53,6 +96,7 @@ async def _inspect(client, trip_id: str) -> None:
     if trip is None:
         print(f"no trip {trip_id}")
         return
+    trip_created = trip.get("created_at")
     tps = (
         await client.table("trip_places").select("place_id,day_number,sort_order,source_type")
         .eq("trip_id", trip_id).execute()
@@ -63,7 +107,9 @@ async def _inspect(client, trip_id: str) -> None:
     ).data
     pids = [t["place_id"] for t in tps]
     places = (
-        (await client.table("places").select("id,name,place_type,lat,lng").in_("id", pids).execute()).data
+        (await client.table("places")
+         .select("id,name,place_type,lat,lng,country,country_code,country_name,created_at,updated_at")
+         .in_("id", pids).execute()).data
         if pids else []
     )
     by_id = {p["id"]: p for p in places}
@@ -94,15 +140,68 @@ async def _inspect(client, trip_id: str) -> None:
     print(f"=== trip_places: {len(tps)} | places: {len(places)} | trip_days: {len(tds)}")
     for tp in sorted(tps, key=lambda x: (x["day_number"] or 0, x["sort_order"] or 0)):
         p = by_id.get(tp["place_id"], {})
+        # `country` is a VERIFICATION RECEIPT, not a label: non-NULL means the coordinate was
+        # reverse-geocoded AND agreed with the extractor's independent claim. NULL is the honest
+        # answer for anything unverified, so print it explicitly rather than blanking it.
+        country = p.get("country")
+        cc, cn = p.get("country_code"), p.get("country_name")
+        badge = f"{country} ({cc}/{cn})" if country else "country=NULL"
+        # NEW vs REUSED is the difference between "this run wrote the country" and "the row
+        # already had one". Without it a smoke that only ever dedups onto already-verified rows
+        # reads as a pass while proving nothing about the insert path.
+        origin = "NEW" if trip_created and (p.get("created_at") or "") >= trip_created else "REUSED"
+        # `updated_at` is the ONLY field that distinguishes "this run issued no second write"
+        # from "it rewrote the same values" — the fixed-point check the repair plan requires.
+        # The row id is printed because the fixed-point check compares ids across two runs —
+        # without it the comparison is not possible at all.
         print(f"    day {tp['day_number']} #{tp['sort_order']}  {p.get('name', '?')} "
-              f"[{p.get('place_type', '?')}] ({round(p.get('lat', 0), 4)},{round(p.get('lng', 0), 4)})")
+              f"[{p.get('place_type', '?')}] ({round(p.get('lat', 0), 4)},{round(p.get('lng', 0), 4)})"
+              f"  {badge}  [{origin}]")
+        print(f"        id={p.get('id')}  updated={p.get('updated_at')}")
+    verified = [p for p in places if p.get("country")]
+    fresh = [p for p in places
+             if trip_created and (p.get("created_at") or "") >= trip_created]
+    print(f"=== grounding: {len(verified)}/{len(places)} places carry a VERIFIED country "
+          f"({len(fresh)} row(s) created by THIS run, {len(places) - len(fresh)} reused)")
+
+    # Would an exact-coordinate repair reach these rows? A row's OWN coordinate has been
+    # Mapbox-verified iff its `_coord_cache_key` is already in `geocode_country_cache` — the key
+    # is a lossless repr() and deliberately un-bucketed, so a hit means the SAME binary64
+    # coordinate (modulo signed zero), not proximity. This is the measurement that decides
+    # whether the cheap exact-coordinate repair captures the observed NULL-on-reuse gap or
+    # almost none of it.
+    #
+    # A cache hit does NOT by itself license writing the country: `_store_cached_country` runs
+    # BEFORE `_ground_place`'s claim comparison (grounding.py:131 vs :132), so a hit means
+    # "Mapbox answered", never "the claim agreed". This only reports reachability.
+    from grounding import _coord_cache_key, GEOCODE_CACHE_TABLE, LOCATION_VERIFICATION_VERSION
+
+    null_rows = [p for p in places if not p.get("country")]
+    if null_rows:
+        reachable = 0
+        for p in null_rows:
+            hit = (await client.table(GEOCODE_CACHE_TABLE).select("country_code")
+                   .eq("coord_key", _coord_cache_key(p["lat"], p["lng"]))
+                   .eq("verification_version", LOCATION_VERIFICATION_VERSION)
+                   .execute()).data
+            mark = "exact-coord VERIFIED in cache" if hit else "own coord never grounded"
+            reachable += 1 if hit else 0
+            print(f"    NULL row {p.get('name', '?')!r}: {mark}")
+        print(f"=== exact-coordinate repair would reach {reachable}/{len(null_rows)} NULL row(s)")
+    mismatched = [p for p in places
+                  if p.get("country") and (p.get("country") != p.get("country_name"))]
+    if mismatched:
+        # `find_or_create_place` binds p_country from the verified country NAME; if these ever
+        # diverge the two writers have drifted apart again, which is the whole point of the fix.
+        print(f"    !! {len(mismatched)} row(s) where country != country_name — WRITERS HAVE DRIFTED")
     print("=== trip_days weather:")
     for d in sorted(tds, key=lambda x: x["day_number"]):
         print(f"    day {d['day_number']} {d['day_date']}  {d.get('weather_source')}: {d.get('weather_summary')} "
               f"{d.get('title') or ''}")
     legs = (
         await client.table("transport_legs")
-        .select("from_place_id,to_place_id,leg_order,transport_mode,status,duration_seconds,distance_meters,warning")
+        .select("from_place_id,to_place_id,leg_order,transport_mode,status,duration_seconds,"
+                "distance_meters,warning,route_geometry")
         .eq("trip_id", trip_id).execute()
     ).data
     print(f"=== transport_legs: {len(legs)}")
@@ -114,8 +213,17 @@ async def _inspect(client, trip_id: str) -> None:
         mins = f"{round(dur / 60)}min" if dur else "-"
         dist_s = f"{dist}m" if dist is not None else "-"
         warn = f"  ⚠ {lg['warning']}" if lg.get("warning") else ""
+        # NULL-safe by construction, and judged by the SHARED predicate. The acceptance rule
+        # explicitly permits no_route/failed legs with route_geometry = NULL, so the obvious
+        # `len(lg["route_geometry"]["coordinates"])` would pass a healthy-only test and then CRASH
+        # on a legitimate partial trip. Malformed geometry prints no count rather than a plausible
+        # one, so this line can never disagree with the acceptance verdict printed below it.
+        g = lg.get("route_geometry")
+        pts = g["coordinates"] if is_drawable_linestring(g) else []
+        geo = f"  ▸{len(pts)}pts" if pts else "  ▸no-geom"
         print(f"    #{lg['leg_order']} {lg.get('transport_mode')}/{lg.get('status')}  "
-              f"{frm} -> {to}  {mins} {dist_s}{warn}")
+              f"{frm} -> {to}  {mins} {dist_s}{geo}{warn}")
+    print(_geometry_acceptance(legs)[1])
     rests = (
         await client.table("restaurant_suggestions")
         .select("trip_day_id,restaurant_place_id,near_place_id,cuisine,summary")
@@ -167,7 +275,8 @@ async def _run(args: argparse.Namespace) -> None:
                                    preferences=args.preferences, pace=args.pace,
                                    destination_hint=args.dest)
     existing = (
-        await client.table("jobs").select("trip_id").eq("idempotency_key", idem).maybe_single().execute()
+        await client.table("jobs").select("trip_id").eq("idempotency_key", idem)
+        .is_("charge_refunded_at", "null").maybe_single().execute()  # ACTIVE row only (Fix 4)
     )
     if existing is not None and existing.data is not None:
         trip_id = existing.data["trip_id"]
@@ -209,6 +318,30 @@ async def _run(args: argparse.Namespace) -> None:
         print(f"\nTRIP_ID (view in Supabase): {trip_id}")
 
 
+def _configure_logging(quiet: bool) -> None:
+    """Surface the grounding counters WITHOUT handing INFO to every library in the process.
+
+    `pipeline.persist` emits ONE `trip_place_grounding` line per trip carrying
+    grounded/ineligible/mismatched/failed counts — the only signal that separates "every
+    coordinate legitimately disagreed" from "the Mapbox credential is dead". Nothing else in
+    this script configures logging, so without this the smoke discards it silently.
+
+    Root STAYS at WARNING and the one logger we want is lifted instead. Raising root to get
+    that line also raises `httpx`, which prints the Mapbox secret token on every geocode (see
+    `_NOISY_TRANSPORT_LOGGERS`) — this tool runs with the real one in its environment.
+    """
+    logging.basicConfig(level=logging.WARNING, format="  [log] %(name)s %(message)s")
+    # Assigned unconditionally, in BOTH directions: a `if not quiet: raise it` would leave
+    # `--quiet` meaning "whatever this logger was already set to", which is a promise about
+    # process state rather than about the flag.
+    for name in _VERBOSE_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING if quiet else logging.INFO)
+    # NOT optional tidying — see `_NOISY_TRANSPORT_LOGGERS`. Deleting this loop puts a live
+    # Mapbox token back in the smoke output the day anyone lifts root again.
+    for name in _NOISY_TRANSPORT_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="scripts.live_run",
@@ -226,8 +359,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--user", help="user_id (default: ASTRAIL_TEST_USER_ID env)")
     p.add_argument("--cleanup", action="store_true", help="delete the generated trip after (hermetic smoke)")
     p.add_argument("--inspect", metavar="TRIP_ID", help="re-print an existing trip and exit (no run, no cost)")
+    p.add_argument("--quiet", action="store_true", help="suppress backend INFO logs (hides the grounding counters)")
     return p.parse_args(argv)
 
 
 if __name__ == "__main__":
-    asyncio.run(_run(_parse_args()))
+    _args = _parse_args()
+    _configure_logging(_args.quiet)
+    asyncio.run(_run(_args))

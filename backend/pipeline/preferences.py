@@ -31,6 +31,23 @@ from models.prefs import PreferenceContext
 # taste, not per-destination, so destination_hint never gets interpolated in here.
 _PREFERENCE_QUERY = "travel preferences for a trip"
 
+# EVERY write-back Supabase call is bounded (C12), and these bounds are load-bearing rather
+# than latency hygiene. Unbounded, they inherit the shared 30s HTTP timeout
+# (supabase_client.py), so a slow guard read can outlast memory_clear's visibility window
+# while holding a PRE-clear snapshot: the intent row ages out of the clear's view, the clear
+# answers 'cleared', and then the read resumes and the add lands behind it. Codex reproduced
+# exactly that (`expired_intent_verdict='cleared'`, `add_landed=True`).
+#
+# The budget: 4 (intent insert) + 4 + 4 (the guard's two reads) = 12s worst case from
+# intent-commit to add-issued, +5s for the add itself and mem0's measured 4-8s
+# PENDING -> readable — all inside memory_clear._ADD_VISIBILITY_WINDOW_S (30s). Widening
+# either constant without widening that window reopens the race.
+#
+# A timeout takes the SAME fail-safe path as any other failure of that call (skip the add /
+# assume a clear happened); nothing here may raise (guardrail #3).
+_ADD_INTENT_TIMEOUT_S = 4    # the intent row's insert, and its retract/mark-failed writes
+_GUARD_TIMEOUT_S = 4         # per guard read, and there are two of them
+
 
 def merge_preferences(*, explicit_text: str | None, pace: str | None,
                       memory_facts: list[str]) -> PreferenceContext:
@@ -172,13 +189,132 @@ async def list_memory_facts(mem0, user_id: str) -> tuple[str, list[dict]]:
     return "ok", facts
 
 
+async def _cleared_since_generation_start(client, *, user_id: str, trip_id: str) -> bool:
+    """True if this user cleared memory after this generation's trip row was created.
+
+    Generation takes 60-180s. Without this, a mid-generation clear is undone by the
+    post-`result` write-back: the UI says cleared, the memory exists.
+
+    Both timestamps are Postgres `now()` (trips.created_at, memory_events.created_at), so
+    there is ONE clock and no host/DB skew — stamping this host's clock is the mistake
+    jobs.py documents for the job lease. trips.created_at is stable across a recovery
+    re-run: the row is INSERTed once in POST /generate-trip and only ever `.update()`d
+    afterwards (verified), so restart-with-cache-reuse (guardrail #12) compares against the
+    ORIGINAL start, which is the safe direction.
+
+    Returns True (skip the write) whenever the reference cannot be determined — losing one
+    learned memory is benign; resurrecting cleared data is the bug. A read that OVERRUNS
+    _GUARD_TIMEOUT_S is one of those cases (C12): an unbounded read is what let a stale
+    pre-clear snapshot outlive the clear's visibility window and green-light the add.
+    """
+    try:
+        trip = await asyncio.wait_for(
+            client.table("trips").select("created_at")
+            .eq("id", trip_id).eq("user_id", user_id).maybe_single().execute(),
+            timeout=_GUARD_TIMEOUT_S)
+    except Exception as e:                  # noqa: BLE001
+        print(f"[mem0] write-back guard: trip lookup failed: {type(e).__name__}", file=sys.stderr)
+        return True
+    # maybe_single() returns a BARE None on zero rows (postgrest 2.31.0) — not a result
+    # whose .data is None. Both shapes must read as "no reference".
+    #
+    # isinstance(_, dict) rather than a bare `.get`: this line sits OUTSIDE the try above,
+    # so if postgrest ever shape-drifted `.data` to a list, the AttributeError would escape
+    # persist_trip_memory entirely. runner.py's outer try would catch it, but guardrail #3
+    # says nothing may raise out of here — this makes that claim literally true rather than
+    # true-by-someone-else's-safety-net (final whole-branch review P3).
+    _row = getattr(trip, "data", None) if trip is not None else None
+    started_at = _row.get("created_at") if isinstance(_row, dict) else None
+    if not started_at:
+        print("[mem0] write-back guard: no trip reference; skipping write", file=sys.stderr)
+        return True
+    try:
+        res = await asyncio.wait_for(
+            client.table("memory_events").select("id")
+            .eq("user_id", user_id).eq("event_type", "cleared")
+            .gt("created_at", started_at).execute(),
+            timeout=_GUARD_TIMEOUT_S)
+    except Exception as e:                  # noqa: BLE001
+        print(f"[mem0] write-back guard: cleared lookup failed: {type(e).__name__}", file=sys.stderr)
+        return True
+    return bool(getattr(res, "data", None))
+
+
+async def _write_add_intent(client, *, user_id: str, trip_id: str,
+                            learned: list[str]) -> str | None:
+    """Insert the audit row BEFORE the add is attempted and return its id (None on failure).
+
+    It is `event_type='learned'` with `trip_id` set FROM THE START, because that is exactly
+    what memory_clear._add_possibly_in_flight matches ('learned' or 'failed', trip_id NOT
+    NULL): the row is visible to a concurrent clear the instant it exists. A dedicated
+    'intent' event_type would need a migration and would have to be added to that filter to
+    do the same job.
+
+    Bounded (C12): an insert that overruns _ADD_INTENT_TIMEOUT_S reads as "no intent" and so
+    skips the add, which is the same fail-safe an insert error already took. The row may
+    still have committed with only its response lost — that leaves an orphan 'learned' row
+    for an add that never happened, which makes the next clear answer `unknown` rather than
+    `cleared` for one _ADD_VISIBILITY_WINDOW_S. Over-suppressing is the safe direction, and
+    it is the same trade the crash-between-intent-and-add case already accepts.
+    """
+    try:
+        res = await asyncio.wait_for(
+            client.table("memory_events").insert({
+                "user_id": user_id, "trip_id": trip_id, "event_type": "learned",
+                # Object shape to match the existing convention (supabase/tests/001_…:34-37).
+                "learned_facts_json": [{"fact": f} for f in learned],
+            }).execute(),
+            timeout=_ADD_INTENT_TIMEOUT_S)
+        return ((getattr(res, "data", None) or [{}])[0]).get("id")
+    except Exception as e:                  # noqa: BLE001
+        # Type only — a postgrest error can carry connection details.
+        print(f"[mem0] write-back: intent insert raised: {type(e).__name__}", file=sys.stderr)
+        return None
+
+
+async def _retract_add_intent(client, intent_id: str) -> None:
+    """DELETE the intent by id — the guard fired, so nothing was sent and there is no audit
+    event to keep. This preserves the pre-C11 behaviour exactly (guard fires ⇒ no row).
+    Flipping it to 'failed' instead would keep matching the in-flight check and make the
+    next clear report a false `unknown` for a whole _ADD_VISIBILITY_WINDOW_S.
+
+    Bounded like the insert (C12): a hung DELETE must not wedge the write-back task."""
+    try:
+        await asyncio.wait_for(
+            client.table("memory_events").delete().eq("id", intent_id).execute(),
+            timeout=_ADD_INTENT_TIMEOUT_S)
+    except Exception as e:                  # noqa: BLE001
+        print(f"[mem0] write-back: intent retraction failed: {type(e).__name__}", file=sys.stderr)
+
+
+async def _mark_intent_failed(client, intent_id: str) -> None:
+    """Flip the intent to 'failed' by id. 'failed' means "issued, outcome unconfirmed" —
+    which is what the clear's in-flight check must treat as may-still-land, so the row is
+    updated in place rather than deleted.
+
+    Bounded like the other two (C12): failing to record the flip leaves the row 'learned',
+    which the in-flight check ALSO matches — the conservative direction either way."""
+    try:
+        await asyncio.wait_for(
+            client.table("memory_events").update({"event_type": "failed"})
+            .eq("id", intent_id).execute(),
+            timeout=_ADD_INTENT_TIMEOUT_S)
+    except Exception as e:                  # noqa: BLE001
+        print(f"[mem0] write-back: intent mark-failed failed: {type(e).__name__}", file=sys.stderr)
+
+
 async def persist_trip_memory(client, mem0, *, user_id: str, trip_id: str,
                               ctx: PreferenceContext) -> list[str]:
     """Write-once, awaited AFTER the terminal `result` event so it's invisible to the
-    stream yet can't be GC'd. Records a memory_events audit row and pushes mem0.add —
-    BOTH best-effort (guardrail #3): a mem0 error OR TIMEOUT can't fail the (already
-    saved) trip. Only writes when the user stated something NEW this trip
-    (distill_memory_text is None otherwise)."""
+    stream yet can't be GC'd. Only writes when the user stated something NEW this trip
+    (distill_memory_text is None otherwise).
+
+    ORDER IS LOAD-BEARING: intent row -> guard -> add (C11). The audit row is written
+    FIRST so a clear landing mid-write-back can observe it; the guard's own read is part
+    of the race window, so an intent written just before the add would not close it.
+    Nothing here may RAISE (guardrail #3 — the trip is already saved and streamed), but a
+    failed intent insert does ABORT the add: an add nobody can observe is precisely the
+    false-`cleared` this ordering exists to prevent."""
     text = distill_memory_text(ctx)
     learned = [ctx.explicit_text] if text else []
     if not text:
@@ -188,23 +324,31 @@ async def persist_trip_memory(client, mem0, *, user_id: str, trip_id: str,
                           # memory_events row either — preferences already live in
                           # trips.preference_summary (Task 3)
 
-    event_type = "learned"
+    # INTENT-FIRST (C11). `_add_possibly_in_flight` can only see an in-flight add if a row
+    # exists BEFORE the guard reads memory_events — the race is between the guard's READ
+    # and the add, so an intent written just before mem0.add() would not close it.
+    intent_id = await _write_add_intent(client, user_id=user_id, trip_id=trip_id,
+                                        learned=learned)
+    if intent_id is None:
+        # Cannot record the intent -> do NOT add. An add nobody can observe is exactly the
+        # false-`cleared` this fix removes (that is C4-bis). Losing one learned memory on a
+        # DB blip is the fail-safe direction, consistent with D7.
+        print("[mem0] write-back: intent row failed; skipping add", file=sys.stderr)
+        return learned
+
+    if await _cleared_since_generation_start(client, user_id=user_id, trip_id=trip_id):
+        # The user cleared during this generation. Nothing was sent, so the intent must not
+        # linger: a stale 'learned' row would make the NEXT clear report `unknown` for a
+        # whole _ADD_VISIBILITY_WINDOW_S.
+        await _retract_add_intent(client, intent_id)
+        return learned
+
     try:
         # Timeout-bounded (Codex): a hung hosted add must not wedge the task.
         await asyncio.wait_for(
             mem0.add([{"role": "user", "content": text}], user_id=user_id,
                      metadata={"source": "generation", "trip_id": trip_id}),
             timeout=5)
-    except Exception:
-        event_type = "failed"   # add error OR TimeoutError → record for observability
-
-    try:
-        await client.table("memory_events").insert({
-            "user_id": user_id, "trip_id": trip_id, "event_type": event_type,
-            # Object shape to match the existing convention (supabase/tests/001_…:34-37).
-            "learned_facts_json": [{"fact": f} for f in learned],
-        }).execute()
-    except Exception:
-        pass   # audit is best-effort too
-
+    except Exception:                       # noqa: BLE001
+        await _mark_intent_failed(client, intent_id)   # 'failed' still reads as may-have-landed
     return learned

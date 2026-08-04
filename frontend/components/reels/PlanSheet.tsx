@@ -46,6 +46,7 @@ export default function PlanSheet({
   onBack,
   onGenerate,
   error,
+  gateSlot,
 }: {
   places: SavedReelPlaceProof[]
   reelCount: number
@@ -54,6 +55,10 @@ export default function PlanSheet({
   onBack: () => void
   onGenerate: () => void
   error?: string | null
+  // Optional node rendered in place of the Generate button. PlanSheet stays presentational:
+  // it renders whatever it is handed and knows nothing about entitlements — the gate decision
+  // lives in SavedReelsFlow (via useEntitlement).
+  gateSlot?: React.ReactNode
 }) {
   const [originFromProfile, setOriginFromProfile] = useState<string | null>(null)
   const [styleFromProfile, setStyleFromProfile] = useState<string | null>(null)
@@ -213,14 +218,18 @@ export default function PlanSheet({
               {error}
             </p>
           ) : null}
-          <button
-            type="button"
-            onClick={onGenerate}
-            disabled={!ready}
-            className="pointer-events-auto flex min-h-[52px] w-full items-center justify-center rounded-full border border-[color:var(--accent)] bg-[color:var(--accent)] px-5 text-[14px] font-medium text-[color:var(--accent-text)] shadow-[0_10px_28px_-8px_rgba(138,90,24,0.55)] transition-opacity hover:opacity-90 disabled:cursor-default disabled:border-dashed disabled:border-[color:var(--line-soft)] disabled:bg-transparent disabled:text-[color:var(--text-muted)]"
-          >
-            {ready ? 'Generate trip' : 'Add your dates to generate'}
-          </button>
+          {gateSlot ? (
+            <div className="pointer-events-auto">{gateSlot}</div>
+          ) : (
+            <button
+              type="button"
+              onClick={onGenerate}
+              disabled={!ready}
+              className="pointer-events-auto flex min-h-[52px] w-full items-center justify-center rounded-full border border-[color:var(--accent)] bg-[color:var(--accent)] px-5 text-[14px] font-medium text-[color:var(--accent-text)] shadow-[0_10px_28px_-8px_rgba(138,90,24,0.55)] transition-opacity hover:opacity-90 disabled:cursor-default disabled:border-dashed disabled:border-[color:var(--line-soft)] disabled:bg-transparent disabled:text-[color:var(--text-muted)]"
+            >
+              {ready ? 'Generate trip' : 'Add your dates to generate'}
+            </button>
+          )}
         </div>
       </section>
     </div>

@@ -539,6 +539,26 @@ button:focus-visible {
   scale: 1.15;
 }
 
+/* Hotel-hub map (plan 2026-08-04-hotel-hub-map, T9): the selected Travala hotel drawn as the
+   central parent "hub" pin that the spokes radiate from. Deliberately distinct from the hollow,
+   numbered constellation place pins — larger and FILLED brass so it reads as the anchor of the
+   hub-and-spoke view, not one stop among many. */
+.hotel-hub-pin {
+  align-items: center;
+  background: #EFC98D;
+  border: 2px solid #0b0f16;
+  border-radius: 9999px;
+  box-shadow: 0 0 0 6px var(--brass-glow), 0 0 22px rgba(239, 201, 141, 0.55);
+  color: #0b0f16;
+  cursor: default;  /* the hub pin is a non-interactive marker (selection happens in HotelPanel) */
+  display: flex;
+  height: 34px;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+  width: 34px;
+}
+
 /* The single persistent Mapbox instance (components/map/MapProvider). Fixed to the
    viewport because both map-bearing scenes render the map full-bleed, so one container
    serves the generation scene and the trip workspace with no DOM moved across the route

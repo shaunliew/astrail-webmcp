@@ -248,4 +248,81 @@ describe('TripMap', () => {
     // 5 stops + 4 interior points on each of the two same-day hops
     expect(coordinates).toHaveLength(13)
   })
+
+  // ---- Hotel-hub map (plan 2026-08-04-hotel-hub-map, T9) ----
+  // Route mode is covered by the trail test above (the receding base-hotel pin at 'the undayed
+  // base hotel is not a stop on the trail' MUST stay green — it proves route mode is untouched).
+  // The spoke GEOMETRY is unit-tested in T7 (selectors); here we assert at the marker-class /
+  // layer-added level, the right altitude for canvas-heavy map rendering.
+
+  it('hub mode pins the selected placed hotel, draws spokes, and suppresses the duplicate base-hotel place pin', async () => {
+    renderMap({ selectedHotelId: 'hotel_1', layerMode: 'hub' })
+    await flush()
+    fireLoad()
+
+    // exactly one distinct hub pin, at the selected PLACED hotel (hotel_1 → geo_status 'placed')
+    const hubPins = markerElements.filter((el) => el.classList.contains('hotel-hub-pin'))
+    expect(hubPins).toHaveLength(1)
+    expect(hubPins[0]).toHaveAttribute('aria-label', 'Shinjuku Granbell Hotel')
+
+    // the base-hotel PLACE marker is suppressed — no constellation-pin duplicate under the hub
+    const baseDuplicate = markerElements.filter(
+      (el) => el.classList.contains('constellation-pin')
+        && el.getAttribute('aria-label') === 'Shinjuku Granbell Hotel',
+    )
+    expect(baseDuplicate).toHaveLength(0)
+
+    // spokes layer added; the itinerary trail is gated OFF in hub mode
+    expect(mapInstance.addSource).toHaveBeenCalledWith('hotel-spokes', expect.anything())
+    expect(mapInstance.addSource).not.toHaveBeenCalledWith('trip-trail', expect.anything())
+  })
+
+  // Proves the [selectedHotelId, layerMode] redraw effect is load-bearing: a live toggle must tear
+  // the trail down (via routeIdsRef/clearRoutes) and draw the spokes in its place.
+  it('toggling route -> hub tears down the itinerary trail and draws the hotel spokes', async () => {
+    const view = renderMap() // route mode by default
+    await flush()
+    fireLoad()
+    expect(mapInstance.addSource).toHaveBeenCalledWith('trip-trail', expect.anything())
+
+    // clearRoutes only removes layers/sources the map reports it currently has
+    mapInstance.getLayer.mockReturnValue({} as never)
+    mapInstance.getSource.mockReturnValue({} as never)
+    mapInstance.addSource.mockClear()
+    view.rerender(
+      <MapProvider>
+        <TripMap
+          bundle={TOKYO_TRIP}
+          activeDayNumber={1}
+          selectedPlaceId={null}
+          onSelectPlace={() => {}}
+          selectedHotelId="hotel_1"
+          layerMode="hub"
+        />
+      </MapProvider>,
+    )
+
+    expect(mapInstance.removeLayer).toHaveBeenCalledWith('trip-trail-core')
+    expect(mapInstance.addSource).toHaveBeenCalledWith('hotel-spokes', expect.anything())
+    mapInstance.getLayer.mockReturnValue(undefined as never)
+    mapInstance.getSource.mockReturnValue(undefined as never)
+  })
+
+  it('hub mode with no hotel selected draws no hub and no spokes (honest empty-state)', async () => {
+    renderMap({ selectedHotelId: null, layerMode: 'hub' })
+    await flush()
+    fireLoad()
+
+    expect(markerElements.filter((el) => el.classList.contains('hotel-hub-pin'))).toHaveLength(0)
+    expect(mapInstance.addSource).not.toHaveBeenCalledWith('hotel-spokes', expect.anything())
+  })
+
+  it('hub mode with an unresolved (unplaceable) selected hotel draws no hub and no spokes', async () => {
+    renderMap({ selectedHotelId: 'hotel_2', layerMode: 'hub' }) // hotel_2 → geo_status 'unresolved'
+    await flush()
+    fireLoad()
+
+    expect(markerElements.filter((el) => el.classList.contains('hotel-hub-pin'))).toHaveLength(0)
+    expect(mapInstance.addSource).not.toHaveBeenCalledWith('hotel-spokes', expect.anything())
+  })
 })

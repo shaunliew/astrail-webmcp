@@ -52,7 +52,7 @@ logger = logging.getLogger(__name__)
 # Non-terminal work that must have drained before we hard-delete (quiescence). After a 7-day
 # grace these are near-certainly empty; a straggler makes Pass A back off, never delete.
 _NONTERMINAL_TRIP_JOB_STATUSES = ("pending", "running", "retryable")
-_NONTERMINAL_ORGANIZE_JOB_STATUSES = ("pending", "processing")
+_NONTERMINAL_ORGANIZE_JOB_STATUSES = ("initializing", "pending", "processing")
 
 # Settle gap between a confirmed Pass A purge and the Pass B hard-delete: at least one sweep tick,
 # so a mem0 add that was still materializing at purge time has surfaced and Pass B's re-verify can
@@ -267,6 +267,15 @@ async def _erase_pass_b(client, mem0, log_row: dict, user_id: str) -> None:
         await _mark_completed(client, log_row)
         return
 
+    if status != "deleting":
+        # Defensive belt-and-suspenders on the destructive path: Pass B only ever hard-deletes a
+        # 'deleting' account. The CAS invariant guarantees this today (once 'deleting' it cannot
+        # revert), but never hard-delete on an unexpected status — back off loudly so any FUTURE
+        # change that lets account_status revert (a support tool, a new admin action) cannot cause
+        # a wrong delete.
+        await _backoff(client, log_row, f"pass B unexpected status: {status}")
+        return
+
     if not _settle_gap_elapsed(log_row.get("purged_verified_at")):
         # Too soon after the Pass A purge. Wait for a later tick (no backoff — this is not a
         # failure); the row stays selected until the gap elapses.
@@ -325,6 +334,9 @@ async def sweep_due_deletions(client) -> None:
         .lte("scheduled_for", now.isoformat())
         .execute()
     ).data or []
+
+    if not rows:
+        return  # nothing due — don't init a mem0 client on a quiet tick
 
     mem0 = await _get_mem0()
     for row in rows:

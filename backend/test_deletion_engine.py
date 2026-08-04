@@ -540,3 +540,32 @@ def test_claim_rpc_cas_predicate_is_pending_to_deleting():
     # The CAS wins ONLY from a still-'pending_deletion' row — a cancel that flipped to 'active'
     # loses. Broadening this predicate is the load-bearing regression this guards.
     assert "where id = p_user_id and account_status = 'pending_deletion'" in sql
+
+
+# --- T3 review folds: initializing quiescence + Pass B status self-guard --------------------
+
+
+async def test_quiescence_treats_initializing_organize_job_as_in_flight(monkeypatch):
+    # 'initializing' is in the repo-wide organize-jobs in-flight set (organize_jobs CHECK +
+    # recover_organize_jobs et al.); a claimed account must back off, never delete, until it drains.
+    purge = _patch_purge(monkeypatch, None)
+    client = _FakeClient(log=[_log()], claim=True,
+                         organize_jobs=[{"id": "o1", "user_id": _UID, "status": "initializing"}])
+    await deletion_engine.erase_user(client, object(), client.log_row)
+    assert purge.calls == []                      # did not purge while an initializing job is live
+    assert client.deleted == []
+    assert client.log_row["attempts"] == 1
+
+
+async def test_pass_b_refuses_to_delete_a_non_deleting_account(monkeypatch):
+    # Defensive: outcome='deleting' but account_status has reverted (e.g. a future support tool).
+    # Pass B must NOT hard-delete a non-'deleting' account — back off loudly instead.
+    purge = _patch_purge(monkeypatch, None)
+    client = _FakeClient(log=[_deleting_log()],
+                         users=[{"id": _UID, "account_status": "active"}])
+    await deletion_engine.erase_user(client, object(), client.log_row)
+    assert purge.calls == []                      # never re-verified
+    assert client.deleted == []                   # never deleted a non-'deleting' account
+    assert client.log_row["outcome"] == "deleting"
+    assert client.log_row["attempts"] == 1
+    assert "unexpected status" in client.log_row["last_error"]

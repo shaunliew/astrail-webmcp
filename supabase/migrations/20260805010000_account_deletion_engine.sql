@@ -41,3 +41,10 @@ end $$;
 
 revoke all on function public.claim_account_for_deletion(uuid) from public, anon, authenticated;
 grant execute on function public.claim_account_for_deletion(uuid) to service_role;
+
+-- ── Sweep index (T3 review) ───────────────────────────────────────────────────────────────────
+-- sweep_due_deletions filters `outcome IN ('pending','deleting') AND scheduled_for <= now`. A
+-- partial index on the range-filtered column, scoped to the non-terminal work set, keeps the sweep
+-- off a seq scan as the log grows. `next_attempt_at` is filtered in Python, so it is NOT indexed.
+create index if not exists account_deletion_log_sweep_idx
+  on public.account_deletion_log (scheduled_for) where outcome in ('pending', 'deleting');

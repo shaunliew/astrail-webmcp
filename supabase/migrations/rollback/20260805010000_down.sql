@@ -11,7 +11,8 @@
 -- a release. (After go-live, rolling back would strip the claim a two-pass deletion depends on —
 -- do not run it then without draining in-flight deletions first.)
 --
--- ONE object to drop. `if exists` so a partial/repeated rollback is re-runnable.
+-- TWO objects to drop (the claim RPC + the sweep index). `if exists` so a partial/repeated
+-- rollback is re-runnable.
 --
 -- RUN IT WITH `psql -1`: Postgres DDL is transactional, so one transaction makes a failure
 -- all-or-nothing. With lock_timeout set, a rollback that cannot get its lock aborts cleanly and is
@@ -20,6 +21,7 @@
 set lock_timeout = '3s';
 set statement_timeout = '30s';
 
+drop index if exists public.account_deletion_log_sweep_idx;
 drop function if exists public.claim_account_for_deletion(uuid);
 
 -- Session-level, and this file is applied by hand into an operator's psql session that keeps going

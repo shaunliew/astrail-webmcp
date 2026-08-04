@@ -32,6 +32,18 @@ alter table public.hotel_suggestions
   add column is_recommended boolean not null default false,
   add column place_durations jsonb not null default '{}'::jsonb;
 
+-- geo_status <-> coords invariant (Codex P2): a `placed` row MUST carry real coords and an
+-- `unresolved` row MUST have NULL coords. This is the honest-failure contract as a hard DB rule —
+-- neither the RPC's coalesced inserts nor _build_hotel_rows can ever write a placed-but-coordless
+-- (or unresolved-but-coordbearing) row. Existing rows backfill `unresolved` + NULL coords, which
+-- satisfies the second branch, so the ALTER validates cleanly against current data.
+alter table public.hotel_suggestions
+  add constraint hotel_suggestions_geo_coords_consistent
+    check (
+      (geo_status = 'placed' and lat is not null and lng is not null)
+      or (geo_status = 'unresolved' and lat is null and lng is null)
+    );
+
 comment on column public.hotel_suggestions.lat is
   'Geocoded latitude (Mapbox). NULL when geo_status=unresolved — never an invented coordinate.';
 comment on column public.hotel_suggestions.lng is
@@ -39,7 +51,7 @@ comment on column public.hotel_suggestions.lng is
 comment on column public.hotel_suggestions.geo_status is
   'Honest-failure discriminant: placed (has coords, mappable) vs unresolved (list-only).';
 comment on column public.hotel_suggestions.route_score is
-  'Blended route-centrality score; NULL when Matrix degraded (hotel still placed, ranked on preference only).';
+  'Mean route duration to the trip''s places, in seconds (lower = more central). NULL when the hotel is not a top-3 hub candidate, did not reach every place, or the Matrix degraded (still placed, ranked on preference only).';
 comment on column public.hotel_suggestions.rank is
   'Shortlist position 1..N among placed hotels; the top 3 are the hub candidates.';
 comment on column public.hotel_suggestions.is_recommended is

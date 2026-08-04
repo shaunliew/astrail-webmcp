@@ -80,6 +80,36 @@ describe('HotelPanel', () => {
     expect(screen.queryByRole('button')).not.toBeInTheDocument()
   })
 
+  it('makes a placed top-3 hotel (rank set) a selectable hub button', () => {
+    // The shortlist is placed + ranked (rank ∈ {1,2,3}). A rank-2 placed hotel is a hub candidate.
+    const rank2: HotelSuggestion = { ...placed, id: 'hotel_rank2', rank: 2, is_recommended: false }
+    const onSelectHotel = vi.fn()
+    renderPanel([rank2], { onSelectHotel })
+    fireEvent.click(screen.getByRole('button'))
+    expect(onSelectHotel).toHaveBeenCalledWith('hotel_rank2')
+  })
+
+  it('renders a placed-but-unranked hotel (top-3 overflow) plainly: not a button, no honest note', () => {
+    // geo_status='placed' with rank===null is a 4th+ placed hotel: it DID geocode, it just is not a
+    // top-3 hub candidate. It shows plainly (name + meta), never as a hub-pick button, and never the
+    // "couldn't place" note — that note is honest only for hotels that actually failed to geocode.
+    const rankNull: HotelSuggestion = {
+      ...placed, id: 'hotel_overflow', rank: null, is_recommended: false,
+    }
+    renderPanel([rankNull])
+    expect(screen.getByText(rankNull.name)).toBeInTheDocument()
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+    expect(screen.queryByText(/couldn.t place this hotel on the map/i)).not.toBeInTheDocument()
+  })
+
+  it('does not offer a hub the map cannot draw: a placed hotel with null coords is non-selectable', () => {
+    // Defense-in-depth (Codex P2): geo_status='placed' + rank set but lat/lng null must NOT be a
+    // selectable hub — the map has no point to pin. Guards against a partially-written row.
+    const noCoords: HotelSuggestion = { ...placed, id: 'hotel_nocoords', lat: null, lng: null }
+    renderPanel([noCoords])
+    expect(screen.queryByRole('button')).not.toBeInTheDocument()
+  })
+
   it('marks the selected hub as on the map only in hub mode', () => {
     const { rerender } = renderPanel([placed], { selectedHotelId: placed.id, layerMode: 'route' })
     // In route mode the selection is latent (the route line is drawn, not the hub).

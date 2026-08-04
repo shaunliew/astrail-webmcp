@@ -891,6 +891,33 @@ async def test_runner_hotel_failure_is_non_critical():
 
 
 @pytest.mark.asyncio
+async def test_runner_hotel_lease_lost_emits_no_warning(monkeypatch):
+    # A LeaseLost from the fenced hotel RPC (persist_hotels raises it when replace_hotel_suggestions
+    # returns false) means a REPLACEMENT worker owns this run. Unlike a real hotel-search failure,
+    # this superseded worker must NOT record a "couldn't find hotels" warning — that would pollute
+    # the replacement's live event stream. Contrast with the RuntimeError case above, which DOES warn.
+    from organizer import LeaseLost
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c.db["trips"] = [{"id": "trip-1", "user_id": "user-1", "start_date": "2026-08-01",
+                      "end_date": "2026-08-01", "adult_count": 1, "room_count": 1,
+                      "destination_hint": "Tokyo"}]
+    async def scrape(url): return _reel(url)
+    async def extract(reel): return [_place("A", lat=35.60, lng=139.70), _place("B", lat=35.62, lng=139.72)]
+    async def _lease_lost_persist(*_a, **_k):
+        raise LeaseLost("hotel job job-1 lease superseded during persist")
+    monkeypatch.setattr(runner, "persist_hotels", _lease_lost_persist)
+    async def hotel(location, check_in, check_out, rooms): return "sess-1", []
+    out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+                                      job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                      mem0=None, weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant,
+                                      narrator=_no_narrator, hotel=hotel)
+    assert out["itinerary"]["days"]                                      # the run still completed
+    assert any(e["stage"] == "hotels" and e["event_type"] == "stage" for e in c.events)  # stage ran
+    # the LeaseLost was swallowed WITHOUT a hotel warning
+    assert not any(e["event_type"] == "warning" and e["stage"] == "hotels" for e in c.events)
+
+
+@pytest.mark.asyncio
 async def test_runner_records_preferences_stage_and_mem0_failure_is_non_critical():
     c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
 

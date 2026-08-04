@@ -473,6 +473,13 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                         # `_abort_when_lease_lost` race is what actually aborts the run.
                         await persist_hotels(client, trip_id, fetch=hotel,
                                              job_id=job_id, lease_token=lease_token)
+                    except LeaseLost:
+                        # A superseded run: the fenced hotel RPC refused our write because a
+                        # replacement worker owns this job. Return WITHOUT recording a warning — a
+                        # "couldn't find hotels" event here would pollute the REPLACEMENT's live
+                        # event stream. This is NOT a hotel-search failure; the run's lease backstops
+                        # (`_abort_when_lease_lost` / the fenced completion) drive the actual abort.
+                        return
                     except Exception:
                         try:
                             await record_event(client, trip_id, event_type="warning", stage="hotels",

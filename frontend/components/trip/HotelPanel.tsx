@@ -7,11 +7,14 @@ const STATUS_LABEL: Record<HotelStatus, string> = {
   failed: 'Search failed',
 }
 
-// The hotel list doubles as the hub picker (plan 2026-08-04-hotel-hub-map, T8). Only hotels the
-// backend actually geocoded (`geo_status==='placed'`) can become the map hub — an unresolved hotel
-// has no pin to select (Guardrail #1), so it renders as a plain, non-interactive row with an honest
-// "couldn't place it" note. `layerMode` is load-bearing: the picked hub is only DRAWN on the map in
-// hub mode, so the "On map" indicator only appears there (in route mode the selection is latent).
+// The hotel list doubles as the hub picker (plan 2026-08-04-hotel-hub-map, T8). A hotel is a
+// selectable map hub iff it is `geo_status==='placed'` AND in the backend's top-3 shortlist
+// (`rank != null` — a placed hotel ranked 4+ carries rank===null and is NOT a hub candidate). An
+// unresolved hotel has no pin to select (Guardrail #1), so it renders as a plain, non-interactive
+// row with an honest "couldn't place it" note; a placed-but-unranked hotel also renders plainly but
+// WITHOUT that note (it DID place — it's just not a top-3 candidate). `layerMode` is load-bearing:
+// the picked hub is only DRAWN on the map in hub mode, so the "On map" indicator only appears there
+// (in route mode the selection is latent).
 export default function HotelPanel({
   hotels, selectedHotelId, onSelectHotel, layerMode,
 }: {
@@ -31,8 +34,12 @@ export default function HotelPanel({
     <ul className="flex flex-col gap-2">
       {hotels.map((h) => {
         const inactive = h.status !== 'suggested'
-        const placed = h.geo_status === 'placed'
-        const selected = placed && h.id === selectedHotelId
+        // Selectable hub = placed AND a top-3 candidate (rank set) AND has real coords the map can
+        // draw. The coords check is defense-in-depth (Codex P2): a `placed` row with null lat/lng
+        // is a partial write we must never offer as a hub — there is no point to pin.
+        const selectable =
+          h.geo_status === 'placed' && h.rank != null && h.lat != null && h.lng != null
+        const selected = selectable && h.id === selectedHotelId
         const meta = [h.area, h.star_rating ? `${h.star_rating}★` : null].filter(Boolean).join(' · ')
 
         // Identical body whether or not the row is a selectable hub-pick button.
@@ -69,7 +76,7 @@ export default function HotelPanel({
           </>
         )
 
-        if (placed) {
+        if (selectable) {
           return (
             <li key={h.id}>
               <button

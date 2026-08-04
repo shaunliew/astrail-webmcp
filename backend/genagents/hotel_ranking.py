@@ -49,20 +49,31 @@ class RankedHotel:
 
     Field names match the migration columns (schema parity, Guardrail #4). `hotel` is the untouched
     source dict (name/star/price/hotelId/address/…) the caller reads for the other row fields.
-    For an `unresolved` hotel: lat/lng/route_score/rank are None, is_recommended is False,
-    place_durations is empty.
+
+    Only the TOP 3 placed hotels are hub candidates: they carry rank (1..3), is_recommended on
+    rank 1, route_score, and place_durations. A placed hotel ranked 4+ keeps its real geocoded coords
+    (geo_status='placed') but rank/route_score are None, is_recommended is False, place_durations is
+    empty — it is not a selectable hub. An `unresolved` hotel has None lat/lng/route_score/rank,
+    is_recommended False, empty place_durations.
     """
     hotel: Mapping[str, Any]
     lat: float | None
     lng: float | None
     geo_status: str            # 'placed' | 'unresolved' (matches the geo_status CHECK)
-    route_score: float | None  # min-average duration (s) to the trip places; lower = more central
-    rank: int | None           # 1..N over placed hotels in blended-score order
+    route_score: float | None  # mean duration (s) to ALL trip places; lower = more central. Top-3 only
+    rank: int | None           # 1..3 hub-candidate position; None for placed hotels ranked 4+
     is_recommended: bool       # the rank-1 hub (the default-selected central hotel)
-    place_durations: dict[str, float] = field(default_factory=dict)  # {place_id: duration_s}
+    place_durations: dict[str, float] = field(default_factory=dict)  # {place_id: duration_s}, top-3 only
 
 
 # --- pure helpers (no IO) --------------------------------------------------------------------
+
+
+def _all_unresolved(hotels: Sequence[Mapping[str, Any]]) -> list[RankedHotel]:
+    """Every hotel as an honest `unresolved` record (NULL coords, no rank) — the shared result
+    whenever nothing can be placed (no trip country, no centroid). Never invents a coordinate."""
+    return [RankedHotel(hotel=h, lat=None, lng=None, geo_status="unresolved",
+                        route_score=None, rank=None, is_recommended=False) for h in hotels]
 
 
 def _minmax(values: dict[Any, float]) -> dict[Any, float]:
@@ -77,9 +88,16 @@ def _minmax(values: dict[Any, float]) -> dict[Any, float]:
 
 
 def _coord(place: Mapping[str, Any], num) -> tuple[float, float] | None:
-    """(lat, lng) for a place with finite numeric coords, else None."""
+    """(lat, lng) for a place with real, finite numeric coords, else None.
+
+    (0, 0) is the saved-with-gaps unresolved sentinel (mirrors the frontend `hasRealCoords`), NOT a
+    real point in the Gulf of Guinea: a single (0, 0) place would otherwise drag the centroid
+    thousands of km, mass-fail the 60km proximity gate, and mark every hotel unresolved.
+    """
     lat, lng = num(place.get("lat")), num(place.get("lng"))
     if lat is None or lng is None:
+        return None
+    if lat == 0 and lng == 0:
         return None
     return (lat, lng)
 
@@ -182,14 +200,19 @@ async def rank_hotels(
     if not hotels:
         return []
 
+    # Without a trip country the in-country gate rejects every hotel, so short-circuit BEFORE firing
+    # N geocode calls (no wasted Mapbox requests). The all-unresolved result is identical to letting
+    # the gate reject each hit — this only skips the futile network round-trips.
+    if country_code is None:
+        return _all_unresolved(hotels)
+
     from pipeline.geo import haversine_m  # lazy: keeps this module import-keyless / stdlib-only
     from pipeline.tradeoffs import _num as num  # reuse the finite-number helper (DRY, C4)
 
     centroid = _centroid(places, num)
     # Without a trip centroid the proximity gate is undefined → nothing can be honestly placed.
     if centroid is None:
-        return [RankedHotel(hotel=h, lat=None, lng=None, geo_status="unresolved",
-                            route_score=None, rank=None, is_recommended=False) for h in hotels]
+        return _all_unresolved(hotels)
     clat, clng = centroid
 
     # Geocode every address-bearing hotel CONCURRENTLY (bounds added latency to ~1 RTT, not N).
@@ -210,7 +233,7 @@ async def rank_hotels(
     for idx, res in zip(to_geocode, results):
         if isinstance(res, BaseException) or res is None:
             continue  # a raised geocode (sanitized) or a miss → unresolved (never surfaced/logged)
-        if country_code is None or res.country_code is None:
+        if res.country_code is None:  # country_code None already returned early above
             continue
         if res.country_code.lower() != country_code.lower():
             continue
@@ -261,7 +284,11 @@ async def rank_hotels(
                     if fv is not None:
                         pd[pid] = fv
                 place_durations[idx] = pd
-                if pd:
+                # Centrality is a fair comparison only when the hotel reaches EVERY destination
+                # (Codex P1): a hotel that reaches one stop and fails the rest must NOT out-rank one
+                # that reaches them all. Partial reach → route_score None (ranked on preference
+                # only); the reachable cells still ride in place_durations as valid spoke labels.
+                if pd and len(pd) == len(dest_ids):
                     route_score[idx] = sum(pd.values()) / len(pd)
 
     # Preference proxy (normalized affordability + normalized stars), then blend with centrality.
@@ -284,18 +311,24 @@ async def rank_hotels(
         placed_idx,
         key=lambda idx: (-score[idx], -star_by_idx[idx], str(hotels[idx].get("hotelId") or "")),
     )
-    rank_by_idx = {idx: rank for rank, idx in enumerate(ordered, start=1)}
 
+    # TOP-3 SHORTLIST (Goal + decision #5): only the top 3 placed hotels are hub CANDIDATES — they
+    # carry a rank (1..3), is_recommended on rank 1, plus route_score + place_durations (the spoke
+    # data the map draws for the chosen hub). Placed hotels ranked 4+ keep their REAL geocoded coords
+    # (they placed fine — never relabel them unresolved) but rank=None / is_recommended=False /
+    # route_score=None / no place_durations: they are not selectable hubs. Frontend contract: a hotel
+    # is a hub candidate iff geo_status=='placed' AND rank is not None (rank in {1, 2, 3}).
     out: list[RankedHotel] = []
-    for idx in ordered:  # placed hotels first, in rank order
+    for pos, idx in enumerate(ordered):  # placed hotels first, in blended-score order
+        in_top3 = pos < 3
         out.append(RankedHotel(
             hotel=hotels[idx],
             lat=geo_by_idx[idx].lat, lng=geo_by_idx[idx].lng,
             geo_status="placed",
-            route_score=route_score.get(idx),
-            rank=rank_by_idx[idx],
-            is_recommended=(rank_by_idx[idx] == 1),
-            place_durations=place_durations[idx],
+            route_score=route_score.get(idx) if in_top3 else None,
+            rank=(pos + 1) if in_top3 else None,
+            is_recommended=(pos == 0),
+            place_durations=place_durations[idx] if in_top3 else {},
         ))
     for idx in range(len(hotels)):  # unresolved hotels after, in input order
         if idx in geo_by_idx:

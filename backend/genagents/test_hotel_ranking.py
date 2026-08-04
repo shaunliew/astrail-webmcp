@@ -203,7 +203,10 @@ def test_destinations_exclude_base_and_preserve_order():
     assert h.route_score == pytest.approx(115.0)   # min-average duration to the two places
 
 
-def test_place_durations_omits_unreachable_none_cells():
+def test_partial_reach_has_no_route_score_but_keeps_durations():
+    # Centrality (route_score) is computed ONLY when the hotel reaches EVERY destination (Codex P1).
+    # A hotel that reaches one stop and fails another is NOT scored as central (route_score None) —
+    # but the reachable cell survives in place_durations as a valid spoke label, and it stays placed.
     hotels = [_hotel("A", address="1-1 Shinjuku")]
     geo = FakeGeocode({"1-1 Shinjuku": _geo(35.69, 139.75)})
 
@@ -213,8 +216,9 @@ def test_place_durations_omits_unreachable_none_cells():
     out = _run(rank_hotels(hotels, _PLACES, "Tokyo", "JP", "mid_range",
                            geocode=geo, matrix=matrix))
     h = out[0]
-    assert h.place_durations == {"pl_1": 200.0}       # None cell dropped
-    assert h.route_score == pytest.approx(200.0)      # averaged over reachable only
+    assert h.geo_status == "placed"                   # geocoded fine → still placed
+    assert h.place_durations == {"pl_1": 200.0}       # reachable cell kept as a spoke label
+    assert h.route_score is None                       # not reachable to ALL destinations → no score
 
 
 # --- preference / centrality blend, ranking --------------------------------------------------
@@ -236,7 +240,9 @@ def test_central_hotel_is_recommended():
     assert rec.rank == 1
 
 
-def test_top3_and_single_recommended_across_many_placed():
+def test_top3_shortlist_only_three_are_hub_candidates():
+    # 5 placeable hotels force the cut: exactly 3 become hub candidates (rank 1..3); the 4th+ stay
+    # placed with REAL coords but are NOT candidates (rank=None, no route_score/place_durations).
     hotels = [_hotel(str(i), star=(i % 5) + 1, price=80 + i * 10,
                      address=f"{i}-{i} St") for i in range(5)]
     geo = FakeGeocode({f"{i}-{i} St": _geo(35.68 + i * 0.001, 139.75 + i * 0.001)
@@ -245,12 +251,18 @@ def test_top3_and_single_recommended_across_many_placed():
     out = _run(rank_hotels(hotels, _PLACES, "Tokyo", "JP", "mid_range",
                            geocode=geo, matrix=matrix))
     placed = [r for r in out if r.geo_status == "placed"]
-    ranks = sorted(r.rank for r in placed)
-    assert ranks == [1, 2, 3, 4, 5]                    # contiguous 1..N over placed
-    assert sum(r.is_recommended for r in placed) == 1  # exactly one recommended
+    assert len(placed) == 5                             # all 5 geocoded fine → all placed
+    candidates = [r for r in placed if r.rank is not None]
+    assert sorted(r.rank for r in candidates) == [1, 2, 3]     # exactly 3 ranked, contiguous
+    assert sum(r.is_recommended for r in placed) == 1          # exactly one recommended
     assert next(r for r in placed if r.is_recommended).rank == 1
-    top3 = sorted(placed, key=lambda r: r.rank)[:3]
-    assert [r.rank for r in top3] == [1, 2, 3]
+    assert all(r.route_score is not None and r.place_durations for r in candidates)
+    # the 4th+ placed hotels are NOT hub candidates: real coords kept, everything else cleared.
+    non_candidates = [r for r in placed if r.rank is None]
+    assert len(non_candidates) == 2
+    assert all(r.is_recommended is False for r in non_candidates)
+    assert all(r.lat is not None and r.lng is not None for r in non_candidates)  # not relabeled
+    assert all(r.route_score is None and r.place_durations == {} for r in non_candidates)
 
 
 def test_tiebreak_is_deterministic_across_runs():
@@ -301,10 +313,11 @@ def test_cap_trim_keeps_matrix_under_25_dropping_lowest_preference():
     # all 20 still returned + placed (trim only removes them from the Matrix, not the result)
     assert len(out) == 20
     assert all(r.geo_status == "placed" for r in out)
-    # the 5 low-star hotels were dropped from routing → no route_score; survivors are all star 5
-    routed = [r for r in out if r.route_score is not None]
-    assert len(routed) == 15
-    assert all(r.hotel["star"] == 5 for r in routed)
+    # top-3 shortlist: exactly 3 hub candidates, all drawn from the routed star-5 survivors
+    candidates = [r for r in out if r.rank is not None]
+    assert len(candidates) == 3
+    assert all(r.hotel["star"] == 5 for r in candidates)     # the low-star hotels never routed
+    assert all(r.route_score is not None for r in candidates)  # the 3 candidates were routed
 
 
 def test_no_centroid_all_unresolved():
@@ -319,6 +332,29 @@ def test_no_centroid_all_unresolved():
                            geocode=geo, matrix=matrix))
     assert out[0].geo_status == "unresolved"
     assert geo.calls == [] and matrix.calls == []
+
+
+def test_zero_zero_coord_place_is_excluded_from_centroid_and_destinations():
+    # (0, 0) is the saved-with-gaps unresolved sentinel (mirrors the frontend's hasRealCoords), NOT
+    # a real point. Without excluding it the centroid is dragged ~thousands of km, the 60km gate
+    # mass-fails, and every hotel would go unresolved. Excluded, the real Tokyo places still place
+    # the hotel, and (0, 0) is never a Matrix destination.
+    places = [
+        _place("pl_1", 35.69, 139.77),
+        _place("pl_2", 35.66, 139.74),
+        _place("pl_zero", 0.0, 0.0),          # saved-with-gaps sentinel, not a real coordinate
+    ]
+    hotels = [_hotel("A", address="1-1 Shinjuku")]
+    geo = FakeGeocode({"1-1 Shinjuku": _geo(35.69, 139.75)})
+    matrix = FakeMatrix(duration_fn=lambda s, d: 300.0)
+    out = _run(rank_hotels(hotels, places, "Tokyo", "JP", "mid_range",
+                           geocode=geo, matrix=matrix))
+    # centroid was NOT poisoned by (0, 0) → the hotel is within the 60km gate → placed.
+    assert out[0].geo_status == "placed"
+    # (0, 0) is not a routable destination; only the two real places are.
+    call = matrix.calls[0]
+    assert call["destinations"] == [(35.69, 139.77), (35.66, 139.74)]
+    assert "pl_zero" not in out[0].place_durations
 
 
 def test_empty_hotels_returns_empty():
@@ -354,7 +390,8 @@ def test_geocode_concurrency_uses_gather():
 
 def test_country_code_none_is_all_unresolved():
     # No trip country → the in-country gate can never pass → every hotel is honestly unresolved
-    # (Guardrail #1: no invented pins), and the Matrix is never called (no placed sources).
+    # (Guardrail #1: no invented pins). The function short-circuits BEFORE geocoding, so it fires
+    # NO Mapbox calls at all (neither geocode nor Matrix) — no wasted round-trips.
     hotels = [_hotel("A", address="1-1 Shinjuku"), _hotel("B", address="2-2 Shibuya")]
     geo = FakeGeocode({"1-1 Shinjuku": _geo(35.69, 139.75), "2-2 Shibuya": _geo(35.66, 139.70)})
     matrix = FakeMatrix(duration_fn=lambda s, d: 300.0)
@@ -364,6 +401,7 @@ def test_country_code_none_is_all_unresolved():
     assert all(h.geo_status == "unresolved" for h in out)
     assert all(h.lat is None and h.lng is None and h.rank is None for h in out)
     assert all(h.is_recommended is False and h.place_durations == {} for h in out)
+    assert geo.calls == []      # early-returned before geocoding — no wasted geocode calls
     assert matrix.calls == []   # nothing placed → no Matrix call
 
 

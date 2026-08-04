@@ -58,7 +58,11 @@ export async function getTrip(tripId: string): Promise<TripBundle | null> {
     supabase.from('trip_days').select('*').eq('trip_id', tripId).order('day_number'),
     supabase.from('transport_legs').select('*').eq('trip_id', tripId).order('leg_order'),
     supabase.from('restaurant_suggestions').select('*').eq('trip_id', tripId),
-    supabase.from('hotel_suggestions').select('*').eq('trip_id', tripId),
+    // Rank order is load-bearing: the panel lists hotels top-down, so the Recommended (rank 1)
+    // hub must come first. `nullsFirst: false` sinks placed-but-unranked (top-3 overflow) and
+    // unresolved hotels below the ranked shortlist; `.order('id')` is a deterministic tiebreak.
+    supabase.from('hotel_suggestions').select('*').eq('trip_id', tripId)
+      .order('rank', { ascending: true, nullsFirst: false }).order('id'),
     supabase.from('generation_events').select('*').eq('trip_id', tripId)
       .order('created_at').order('id'),
   ])

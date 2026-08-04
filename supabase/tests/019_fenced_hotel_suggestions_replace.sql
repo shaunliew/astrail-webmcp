@@ -13,7 +13,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(24);
+select plan(25);
 
 insert into auth.users (id, email)
 values ('00000000-0000-0000-0000-000000000902', 'hotel-fence@example.com');
@@ -199,6 +199,22 @@ select is(
   ),
   false,
   'a valid lease cannot rewrite a trip the job does not own'
+);
+
+-- The geo_status<->coords invariant (hotel_suggestions_geo_coords_consistent): a `placed` row with
+-- NULL coords is a lie the honest-failure contract forbids. The CHECK must reject it — the insert
+-- raises check_violation (SQLSTATE 23514) inside the fenced RPC (valid lease, so the fence passes
+-- and it is the CHECK, not the fence, doing the refusing). throws_ok rolls the failed call back, so
+-- the live 'Minimal Inn' row is untouched.
+select throws_ok(
+  $$ select public.replace_hotel_suggestions(
+       '96000000-0000-0000-0000-000000000001',
+       '95000000-0000-0000-0000-000000000001',
+       '97000000-0000-0000-0000-00000000000a',
+       '[{"name":"Coordless Placed","geo_status":"placed"}]'::jsonb) $$,
+  '23514',
+  NULL,
+  'a placed row with null coords is rejected by the geo/coords CHECK'
 );
 
 select * from finish();

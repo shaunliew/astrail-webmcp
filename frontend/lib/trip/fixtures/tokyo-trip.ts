@@ -179,7 +179,8 @@ const hotels: HotelSuggestion[] = [
     preference_match_json: { matched: ['central', 'mid_range'] },
     source: 'travala', status: 'suggested', searched_at: '2026-08-01T09:02:30Z',
     // Hotel-hub: geocoded + ranked #1 (the route-central recommended hub). Coords match pl_hotelbase.
-    lat: 35.6938, lng: 139.7034, geo_status: 'placed', route_score: 0.82, rank: 1, is_recommended: true,
+    // route_score is the mean route duration to the trip's places in SECONDS (not a 0-1 score).
+    lat: 35.6938, lng: 139.7034, geo_status: 'placed', route_score: 420, rank: 1, is_recommended: true,
     place_durations: { pl_senso: 4500, pl_teamlab: 6000, pl_shibuya: 2700, pl_ichiran: 2700, pl_disney: 11000 },
   },
   // Baked partial failure (PRD §17): a skipped hotel search → honest-failure: unresolved, no coords, no pin.

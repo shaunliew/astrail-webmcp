@@ -31,6 +31,7 @@ from api.errors import build_error_response, register_error_handlers
 from api.schemas import (
     AccountDeletionCancelResponse,
     AccountDeletionResponse,
+    AccountDeletionStatusResponse,
     CaptureSavedReelRequest,
     CaptureSavedReelResponse,
     GenerateTripRequest,
@@ -731,23 +732,36 @@ async def request_seat(
     return RequestSeatResponse(requested_at=stamp)
 
 
+# Bound the best-effort scheduled-email lookup+send (T6, review finding #4): the admin.get_user_by_id
+# read rides the ~30s service-role client timeout and the Resend send rides its own ~10s, so a
+# degraded GoTrue/Resend could otherwise add ~40s to the 200. wait_for caps the whole best-effort
+# side channel; a TimeoutError is swallowed like any other notice failure (the deletion is already
+# scheduled). Awaited-but-bounded is simpler + more reliable than fire-and-forget (no orphan task /
+# GC risk on a Render restart).
+_EMAIL_BUDGET_S = 6.0
+
+
 async def _send_scheduled_deletion_email(client, user_id: str, scheduled_for: str) -> None:
     """Best-effort: look up the caller's email (the JWT carries only the sub, never the address)
     and fire the "deletion scheduled" notice (plan §3.5, the safety net).
 
-    Wrapped so NOTHING here — the service-role auth.users read or the send — can raise into the
-    endpoint: an email must never fail an already-scheduled deletion. Secret-safe: logs only the
-    exception TYPE name (an auth/httpx error can embed the bearer key or the address).
+    Bounded to `_EMAIL_BUDGET_S` and wrapped so NOTHING here — the service-role auth.users read,
+    the send, or a wait_for TimeoutError — can raise into the endpoint or delay the 200 beyond the
+    budget: an email must never fail (or slow) an already-scheduled deletion. Secret-safe: logs
+    only the exception TYPE name (an auth/httpx error can embed the bearer key or the address).
     """
     from notifications import send_deletion_scheduled_email
 
-    try:
+    async def _lookup_and_send() -> None:
         # The JWT sub is the identity; read the address service-side (RPC already captured it into
         # the log, but the endpoint only got scheduled_for back). get_user_by_id is the admin read.
         resp = await client.auth.admin.get_user_by_id(user_id)
         email = getattr(getattr(resp, "user", None), "email", None)
         await send_deletion_scheduled_email(email, scheduled_for)
-    except Exception as exc:  # noqa: BLE001 — a notice must NEVER break a scheduled deletion
+
+    try:
+        await asyncio.wait_for(_lookup_and_send(), timeout=_EMAIL_BUDGET_S)
+    except Exception as exc:  # noqa: BLE001 — best-effort (incl. TimeoutError): a notice must NEVER break/slow a scheduled deletion
         logger.warning("scheduled deletion email failed: %s", type(exc).__name__)
 
 
@@ -821,6 +835,41 @@ async def cancel_account_deletion_endpoint(
     # status == "not_pending": there is no pending deletion to cancel.
     raise HTTPException(409, {"code": "no_pending_deletion",
         "message": "There is no pending account deletion to cancel."})
+
+
+@app.get("/account/deletion/status", response_model=AccountDeletionStatusResponse)
+async def account_deletion_status_endpoint(
+    user_id: str = Depends(get_current_user_id),  # token-derived: guardrails #5 + #6
+) -> AccountDeletionStatusResponse:
+    """Report the AUTHENTICATED account's deletion state so a returning user's UI can show (or
+    hide) the pending banner across sessions (the T5 gap, wired at T6).
+
+    UNGATED — a harmless read. It is NOT tied to `_DELETION_EXECUTION_READY`: while that flag is
+    False nobody is pending, so every caller simply reads 'active'. The account is ALWAYS the
+    caller's JWT sub — there is no request body or query id to supply another uuid — so this can
+    never leak a different user's status (guardrails #5/#6).
+
+    FAIL-SAFE: any read error (the columns not existing pre-migration, a missing row, a status
+    blip, an unexpected value) returns the safe default {account_status: 'active',
+    deletion_scheduled_for: null}. A returning user thus defaults to the banner HIDDEN rather than
+    a spurious pending banner or a 500 whenever the real state can't be read. Secret-safe: logs
+    only the exception TYPE name.
+    """
+    try:
+        client = await get_supabase_client()
+        res = await (client.table("users").select("account_status, deletion_scheduled_for")
+                     .eq("id", user_id).maybe_single().execute())
+        row = getattr(res, "data", None) if res is not None else None
+        if isinstance(row, dict) and row.get("account_status") in (
+            "active", "pending_deletion", "deleting"
+        ):
+            return AccountDeletionStatusResponse(
+                account_status=row["account_status"],
+                deletion_scheduled_for=row.get("deletion_scheduled_for"),
+            )
+    except Exception as exc:  # noqa: BLE001 — fail safe: never 500 (or mis-flag) a returning user's UI
+        logger.warning("account deletion status read failed: %s", type(exc).__name__)
+    return AccountDeletionStatusResponse(account_status="active", deletion_scheduled_for=None)
 
 
 class _OrganizeSavedReelsRequest(OrganizeSavedReelsRequest):

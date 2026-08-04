@@ -15,7 +15,9 @@ at the Task 6 live pgTAP gate — no local Postgres is reachable here to run it.
 """
 from __future__ import annotations
 
+import asyncio
 import re
+import time
 from pathlib import Path
 
 import httpx
@@ -248,6 +250,29 @@ async def test_request_deletion_still_200_when_the_email_send_raises(monkeypatch
     assert r.json() == {"scheduled_for": "2026-08-12T00:00:00Z"}
 
 
+async def test_request_deletion_bounds_a_slow_email_and_still_200(monkeypatch):
+    """T6 fold (#4): a degraded GoTrue/Resend must NOT add its latency to the 200. The best-effort
+    lookup+send is wait_for-bounded (`_EMAIL_BUDGET_S`); the resulting TimeoutError is swallowed
+    like any notice failure, so the request returns 200 well inside the budget, not after the send
+    would have finished. Shrinking the budget here proves the bound is load-bearing without sleeping
+    the real 6s."""
+    import main
+    monkeypatch.setattr(main, "_EMAIL_BUDGET_S", 0.1)
+
+    async def _slow_send(email, scheduled_for):
+        await asyncio.sleep(5)                          # would blow the request budget if unbounded
+        raise AssertionError("send should have been cancelled by the wait_for bound")
+
+    admin = _FakeAdmin("traveler@example.com")
+    async with _email_client(monkeypatch, uid="u1", admin=admin, send_spy=_slow_send) as c:
+        start = time.perf_counter()
+        r = await c.post("/account/deletion")
+        elapsed = time.perf_counter() - start
+    assert r.status_code == 200                         # bounded timeout is best-effort, never fatal
+    assert r.json() == {"scheduled_for": "2026-08-12T00:00:00Z"}
+    assert elapsed < 2.0, f"email was not bounded: request took {elapsed:.2f}s (send sleeps 5s)"
+
+
 # --- POST /account/deletion/cancel --------------------------------------------------------
 
 
@@ -300,6 +325,138 @@ async def test_cancel_deletion_requires_auth(monkeypatch):
         r = await c.post("/account/deletion/cancel")
     assert r.status_code == 401
     assert spy.calls == []
+
+
+# --- GET /account/deletion/status (cross-session read, T6) --------------------------------
+# Fail-safe by contract: any read error / missing row / bad value -> {active, null} so a returning
+# user defaults to the banner HIDDEN, never a 500 and never another user's status (sub only).
+
+
+class _FakeUsersQuery:
+    """Records the read chain and returns a fixed result (or raises on execute)."""
+
+    def __init__(self, box, *, raises=None, result=None):
+        self._box, self._raises, self._result = box, raises, result
+
+    def select(self, cols):
+        self._box["select"] = cols
+        return self
+
+    def eq(self, col, val):
+        self._box.setdefault("eq", []).append((col, val))
+        return self
+
+    def maybe_single(self):
+        self._box["maybe_single"] = True
+        return self
+
+    async def execute(self):
+        if self._raises is not None:
+            raise self._raises
+        return self._result
+
+
+class _FakeUsersClient:
+    def __init__(self, box, *, raises=None, result=None):
+        self._box, self._raises, self._result = box, raises, result
+
+    def table(self, name):
+        self._box["table"] = name
+        return _FakeUsersQuery(self._box, raises=self._raises, result=self._result)
+
+
+def _result(data):
+    return type("_Res", (), {"data": data})()
+
+
+def _status_client(monkeypatch, *, uid, ready=False, raises=None, result=None, box=None):
+    """ASGI client for GET /account/deletion/status: auth -> uid, the users read faked.
+
+    `ready` defaults to False (the SHIPPING posture) to prove the read is UNGATED — it works
+    regardless of `_DELETION_EXECUTION_READY`.
+    """
+    import main
+    from auth import get_current_user_id
+
+    monkeypatch.setattr(main, "_DELETION_EXECUTION_READY", ready)
+
+    async def _sb():
+        return _FakeUsersClient(box if box is not None else {}, raises=raises, result=result)
+
+    monkeypatch.setattr(main, "get_supabase_client", _sb)
+
+    async def _override() -> str:
+        return uid
+
+    main.app.dependency_overrides[get_current_user_id] = _override
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app), base_url="http://test")
+
+
+async def test_status_reports_pending_and_scheduled_for_the_jwt_sub(monkeypatch):
+    box: dict = {}
+    result = _result({"account_status": "pending_deletion",
+                      "deletion_scheduled_for": "2026-08-12T00:00:00+00:00"})
+    async with _status_client(monkeypatch, uid="u1", result=result, box=box) as c:
+        r = await c.get("/account/deletion/status")
+    assert r.status_code == 200
+    assert r.json() == {"account_status": "pending_deletion",
+                        "deletion_scheduled_for": "2026-08-12T00:00:00Z"}
+    # sub-only (guardrails #5/#6): the row read is filtered by the TOKEN's uid, never a client id.
+    assert box["eq"] == [("id", "u1")]
+    assert box["table"] == "users"
+
+
+async def test_status_reports_active_null_for_an_active_account(monkeypatch):
+    result = _result({"account_status": "active", "deletion_scheduled_for": None})
+    async with _status_client(monkeypatch, uid="u1", result=result) as c:
+        r = await c.get("/account/deletion/status")
+    assert r.status_code == 200
+    assert r.json() == {"account_status": "active", "deletion_scheduled_for": None}
+
+
+async def test_status_is_ungated_and_returns_active_while_the_flag_is_off(monkeypatch):
+    """UNGATED: the read is NOT tied to `_DELETION_EXECUTION_READY`. With the flag False (shipping)
+    every account is 'active', so the endpoint answers 200 active/null — never a 503."""
+    result = _result({"account_status": "active", "deletion_scheduled_for": None})
+    async with _status_client(monkeypatch, uid="u1", ready=False, result=result) as c:
+        r = await c.get("/account/deletion/status")
+    assert r.status_code == 200
+    assert r.json() == {"account_status": "active", "deletion_scheduled_for": None}
+
+
+async def test_status_fail_safe_when_the_read_raises(monkeypatch):
+    """FAIL-SAFE: any read error (incl. the column not existing pre-migration) -> {active, null}."""
+    async with _status_client(monkeypatch, uid="u1",
+                              raises=RuntimeError("column does not exist")) as c:
+        r = await c.get("/account/deletion/status")
+    assert r.status_code == 200
+    assert r.json() == {"account_status": "active", "deletion_scheduled_for": None}
+
+
+async def test_status_fail_safe_when_the_row_is_missing(monkeypatch):
+    """A missing users row (maybe_single -> data None) -> the safe default, never a 500."""
+    async with _status_client(monkeypatch, uid="u1", result=_result(None)) as c:
+        r = await c.get("/account/deletion/status")
+    assert r.status_code == 200
+    assert r.json() == {"account_status": "active", "deletion_scheduled_for": None}
+
+
+async def test_status_fail_safe_on_unexpected_status_value(monkeypatch):
+    """A status outside the known set (schema drift) collapses to the safe default, not a 500."""
+    result = _result({"account_status": "banned", "deletion_scheduled_for": None})
+    async with _status_client(monkeypatch, uid="u1", result=result) as c:
+        r = await c.get("/account/deletion/status")
+    assert r.status_code == 200
+    assert r.json() == {"account_status": "active", "deletion_scheduled_for": None}
+
+
+async def test_status_requires_auth(monkeypatch):
+    # No dependency override: the real auth dependency must reject an anonymous caller.
+    import main
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),
+                                 base_url="http://test") as c:
+        r = await c.get("/account/deletion/status")
+    assert r.status_code == 401
 
 
 # --- Static migration assertions (the load-bearing privilege pin + constraints) -----------

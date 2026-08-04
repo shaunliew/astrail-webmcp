@@ -74,6 +74,21 @@ class AccountDeletionCancelResponse(BaseModel):
     cancelled: Literal[True] = True
 
 
+class AccountDeletionStatusResponse(BaseModel):
+    """GET /account/deletion/status 200 body — the cross-session deletion state for the
+    AUTHENTICATED account, so a returning user's UI can show (or hide) the pending banner without
+    an in-session request (the T5 gap, wired at T6).
+
+    Fail-safe by contract: whenever the real state can't be read (the columns not existing
+    pre-migration, a missing row, any read blip) the endpoint returns the safe default
+    {account_status: 'active', deletion_scheduled_for: null} — a returning user always defaults to
+    the banner HIDDEN rather than a spurious pending banner or a 500. `deletion_scheduled_for` is
+    the grace deadline (populated only while pending/deleting). Mirrored in
+    frontend/lib/trip/backend-types.ts (guardrail #4)."""
+    account_status: Literal["active", "pending_deletion", "deleting"]
+    deletion_scheduled_for: datetime | None = None
+
+
 class CaptureSavedReelRequest(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
 

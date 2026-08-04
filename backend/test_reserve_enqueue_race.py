@@ -285,3 +285,181 @@ async def test_reserve_enqueue_race_undo_branch(lane: dict):
         await winner.close()
         await loser.close()
         await observer.close()
+
+
+# ── The EXHAUSTED-branch race (2026-08-04) ────────────────────────────────────────────────────
+# Sibling of the undo-branch test above, and the case its own lane comments deliberately excluded:
+# "trial_limit=2 so the loser RESERVES 1→2 before colliding. At limit 1 it would be rejected AT
+# reservation (trial_exhausted) and never reach the undo branch."
+#
+# That excluded path was a live bug. At limit 1 a concurrent double-submit made the loser die at
+# step 2 (reservation) instead of step 3 (index insert), so it never reached the undo/replay
+# recovery — and the user was told "your free trip is planned" while that trip was still
+# generating. Migration 20260804000000 adds the same active-job re-read at the exhausted branch.
+#
+# Why this needs two sessions, same as above: single-session the winner's job is VISIBLE, so
+# step 1's replay SELECT short-circuits and the test passes whether or not the fix exists. Only a
+# real race makes the job invisible at step 1 and visible at the re-read.
+_EXHAUSTED_LANES = [
+    pytest.param(
+        {
+            "user_id": "00000000-0000-0000-0000-0000000019b1",
+            "email": "race-trial-exhausted@example.test",
+            "plan": "trial", "charge_kind": "lifetime", "key": "race-trial-exhausted-K",
+            "trial_limit": 1, "daily_limit": 5,   # limit 1 == the real free trial
+        },
+        id="trial-lifetime-exhausted",
+    ),
+    pytest.param(
+        {
+            "user_id": "00000000-0000-0000-0000-0000000019b2",
+            "email": "race-beta-exhausted@example.test",
+            "plan": "beta", "charge_kind": "daily", "key": "race-beta-exhausted-K",
+            "trial_limit": 1, "daily_limit": 1,   # same shape on the daily counter
+        },
+        id="beta-daily-exhausted",
+    ),
+]
+
+
+@pytest.mark.skipif(not RUN, reason="set RUN_DB_INTEGRATION=1 to run against local Supabase")
+@pytest.mark.parametrize("lane", _EXHAUSTED_LANES)
+async def test_reserve_enqueue_race_exhausted_branch_replays(lane: dict):
+    """A concurrent double-submit at limit 1 must REPLAY the winner, not report exhausted.
+
+    Choreography differs from the undo-branch test in ONE load-bearing way: here the winner holds
+    the ENTITLEMENT ROW LOCK (it performs the reservation itself), so the loser blocks at step 2
+    rather than step 3. When the winner commits, the loser's reservation re-evaluates against a
+    fresh READ COMMITTED snapshot, finds the limit consumed, and falls into the exhausted branch —
+    which is exactly where the fix re-reads the now-visible active job.
+    """
+    uid = uuid.UUID(lane["user_id"])
+    key = lane["key"]
+
+    winner = await psycopg.AsyncConnection.connect(DSN, autocommit=False)
+    loser = await psycopg.AsyncConnection.connect(DSN, autocommit=False)
+    observer = await psycopg.AsyncConnection.connect(DSN, autocommit=True)
+    loser_task: asyncio.Task | None = None
+    try:
+        await _cleanup(observer, uid)
+
+        # ── 1. Seed the user with the counter at ZERO — the winner takes it to the limit ─────
+        async with observer.cursor() as cur:
+            await cur.execute(
+                "insert into auth.users (id, email) values (%s, %s)", (uid, lane["email"])
+            )
+            await cur.execute(
+                "update public.users set plan = %s where id = %s", (lane["plan"], uid)
+            )
+
+        # ── 2. winner: BEGIN, RESERVE (taking the row lock), insert its active trip+job ──────
+        async with winner.cursor() as cur:
+            await cur.execute(f"set statement_timeout = '{STATEMENT_TIMEOUT}'")
+            await cur.execute("select pg_backend_pid()")
+            winner_pid = (await cur.fetchone())[0]
+            if lane["charge_kind"] == "lifetime":
+                await cur.execute(
+                    "update public.users set lifetime_trip_count = lifetime_trip_count + 1 "
+                    "where id = %s and lifetime_trip_count < %s",
+                    (uid, lane["trial_limit"]),
+                )
+            else:
+                await cur.execute(
+                    "insert into public.user_daily_usage "
+                    "(user_id, usage_date, generated_trip_count) values (%s, current_date, 1)",
+                    (uid,),
+                )
+            assert cur.rowcount == 1, "winner must hold the reservation"
+            await cur.execute(
+                "insert into public.trips (user_id, status) values (%s, 'generating') returning id",
+                (uid,),
+            )
+            winner_trip_id = (await cur.fetchone())[0]
+            await cur.execute(
+                "insert into public.jobs (trip_id, user_id, idempotency_key, status, "
+                "charge_kind, charge_date, created_at) "
+                "values (%s, %s, %s, 'pending', %s, current_date, %s::timestamptz)",
+                (winner_trip_id, uid, key, lane["charge_kind"], WINNER_JOB_CREATED_AT),
+            )
+        # winner txn stays OPEN, holding BOTH the entitlement row lock and the K index entry.
+
+        async with loser.cursor() as cur:
+            await cur.execute(f"set statement_timeout = '{STATEMENT_TIMEOUT}'")
+            await cur.execute("select pg_backend_pid()")
+            loser_pid = (await cur.fetchone())[0]
+
+        async def _run_loser():
+            async with loser.cursor() as cur:
+                await cur.execute(
+                    "select outcome, trip_id, job_id from public.reserve_and_enqueue_trip_job("
+                    "%s::uuid, %s::text, %s::text, %s::date, %s::date, %s::text, %s::text, "
+                    "%s::text, %s::jsonb, %s::jsonb, %s::integer, %s::integer)",
+                    (
+                        uid, key, "Tokyo", "2026-09-01", "2026-09-05", "mid_range", "SFO",
+                        "loves ramen", "[]", "{}", lane["trial_limit"], lane["daily_limit"],
+                    ),
+                )
+                return await cur.fetchone()
+
+        loser_task = asyncio.create_task(_run_loser())
+
+        async def _orchestrate():
+            # Barrier: the loser is blocked by the winner => it passed step 1's replay SELECT
+            # (winner's job invisible) and is now waiting on the ENTITLEMENT row lock at step 2.
+            while True:
+                async with observer.cursor() as cur:
+                    await cur.execute(
+                        "select %s::int = any(pg_blocking_pids(%s::int))",
+                        (winner_pid, loser_pid),
+                    )
+                    blocked = (await cur.fetchone())[0]
+                if blocked:
+                    break
+                await asyncio.sleep(0.05)
+            await winner.commit()      # loser re-evaluates: limit consumed -> exhausted branch
+            return await loser_task
+
+        outcome, trip_id, job_id = await asyncio.wait_for(
+            _orchestrate(), ORCHESTRATION_TIMEOUT_S
+        )
+        await loser.commit()
+
+        # ── THE REGRESSION ASSERTION ────────────────────────────────────────────────────────
+        # Pre-fix this is 'trial_exhausted' / 'daily_exhausted'. Exact equality, never a
+        # membership check: 'not exhausted' would also pass on 'conflict_retry' or 'created'.
+        assert outcome == "replay", (
+            f"concurrent double-submit at limit 1 must replay the winner, got {outcome!r} — "
+            "the user would be told their trial is gone while their trip is generating"
+        )
+        assert trip_id == winner_trip_id, "must return the ACTIVE winner's trip"
+        assert job_id is None, "a replay creates no new job"
+
+        # Exactly ONE charge: the loser never reserved, so there is nothing to undo.
+        assert await _read_counter(observer, lane, uid) == 1, "exactly one charge must exist"
+
+        async with observer.cursor() as cur:
+            await cur.execute(
+                "select count(*) from public.jobs where idempotency_key = %s", (key,)
+            )
+            assert (await cur.fetchone())[0] == 1, "only the winner's job for K"
+            await cur.execute("select count(*) from public.trips where user_id = %s", (uid,))
+            assert (await cur.fetchone())[0] == 1, "the loser created no trip"
+    finally:
+        if loser_task is not None and not loser_task.done():
+            loser_task.cancel()
+            try:
+                await loser_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        for conn in (winner, loser):
+            try:
+                await conn.rollback()
+            except Exception:
+                pass
+        try:
+            await _cleanup(observer, uid)
+        except Exception:
+            pass
+        await winner.close()
+        await loser.close()
+        await observer.close()

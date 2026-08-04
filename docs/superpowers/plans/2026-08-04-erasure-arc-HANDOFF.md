@@ -33,6 +33,108 @@ is unchanged and still the correct first build when ZH gives the go.
 
 ---
 
+## ★★ SESSION-2 RE-REVIEW RESULTS — Rev 3 (durable capture; → Rev 4 fold list)
+
+**fable R3 (astrail-reviewer, model fable): REVISE 8/10.** No structural blocker; architecture sound; both
+R2 lists substantially folded (16 FOLDED / 4 PARTIAL / 0 MISSING). Every plan citation it relied on
+re-verified EXACT. **Task 1 CONFIRMED** build-ready (one signature nit). Fold before building T2–T4:
+
+- **[CRITICAL] C1 — fence stage name `memory_purged` is written BEFORE the purge runs** (§3.3 steps 3–4).
+  Crash between the fence CAS and `delete_all` → recovery reads `stage='memory_purged'`, a faithful
+  completed-fact resume proceeds to `auth.admin.delete_user` with **mem0 never purged**: auth user gone,
+  cascade destroys `memory_events` bookkeeping, mem0 permanently retains the user's memories, audit reads
+  `completed`, email says erased — silent, permanent, legally-false. It's the unapplied half of Codex R2's
+  "started/confirmed on every side effect" + a recurrence of the MED-5 assert-success-naming defect one
+  stage later. **Fix:** fence sets `stage='purge_started'` (or `fenced`); write `memory_purged` only AFTER
+  verify-empty+stable; recovery from `purge_started` **re-runs the purge** (delete_all+verify is idempotent).
+  Add a T4 gate line: "crash between fence and delete_all → recovery re-purges before auth delete."
+- **[IMPORTANT] I1 — `barrier_blocked` has no operator EXIT.** No resolve/ack/force-re-drain/complete-with-
+  exception action exists (§3.10 admin list = accounts/cancel/expedite/overdue-view only); case (i)
+  (lost-add, no event_id — can NEVER self-resolve) **wedges the deletion permanently**: user stuck
+  `pending_deletion`, RLS-frozen, statutory clock running, human has no lever. Unspecified: does the sweep
+  re-claim `barrier_blocked` (case ii stuck-PENDING CAN later go terminal → periodic re-drain w/
+  `next_attempt_at`; case i must NOT busy-loop); is the lease released on the flip. **Fix:** audited,
+  capability-gated admin action — "operator verified mem0 manually → resume" OR "complete with disclosed
+  exception in `barrier_blocked_reason` + completion email"; + sweep re-drain per case. **(b)** add a
+  user-facing **DELAY notice email** to §3.7 when a hold crosses the deadline (Codex R2: operator alert
+  alone is NOT a compliant response).
+- **[IMPORTANT] I2 — `create_task` reverses a documented in-repo GC-risk decision** (`runner.py:553-554`
+  says "AWAITED (not create_task → no GC risk)"). A bare `create_task` with no strong ref can be
+  GC'd mid-flight → silently loses the `event_id` (the exact loss the barrier exists to kill). **Fix,
+  spec in T2:** (1) module-level strong-ref registry (add on create, discard in done-callback); (2)
+  FastAPI lifespan shutdown **drains pending add-tasks bounded** — Render restarts on every deploy, so
+  without a drain every deploy during an add window creates a post-cutover NULL-event_id row = a future
+  `barrier_blocked`, making the "rare" case **deploy-correlated**; (3) completion callback consumes task
+  exceptions + its own DB-write failure path; (4) confirm the Supabase client singleton outlives the
+  callback. Update the `runner.py:554` comment in T2.
+- **[IMPORTANT] M1 — processor inventory assumes integrations that may not exist.** `posthog>=3.0.0` is in
+  `pyproject.toml:23` but **never imported** (zero hits); only a CSP `connect-src` entry
+  (`next.config.ts:26`). §3.9 asserts a PostHog data-flow that in-repo sends nothing → T9 must OPEN with
+  "establish whether any data flows at all, per processor"; if unused, the entry becomes "remove dep + CSP"
+  → shrinks to 4 processors. Resend "contact deletion" presumes Audiences/Contacts; transactional sends
+  create no contacts — the real PII is the sent-email LOG (retention/support path). Verify BOTH before the
+  (legally-binding) completion-email wording is drafted.
+- **[MINORS]** (M2) DELETE not frozen — §3.6 freezes INSERT/UPDATE/UPSERT `WITH CHECK`, but DELETE policies
+  have only `USING`; client deletes (`collections.ts:61/:88`) stay permitted — state as a deliberate
+  erasure-aligned carve-out or add `USING` status guards. (M3) service-role write enumeration — list the
+  concrete guarded routes (feedback path `assert_schema.py:97-98`) + generate pgTAP from `information_schema`
+  so later tables inherit the freeze. (M4) sentinel as "probeable row/function" contradicts columns-only
+  `assert_schema` — define it as a column/table probe (transactional ⇒ any column suffices). (M5) admin
+  mint drops Codex's fresh-reauth (valid JWT + passphrase only) — restore amr-fresh reauth on the mint
+  route or record the substitution in §7. (M6) T11/T12/T13 sequencing — `/privacy` self-serve copy + FE
+  delete card land before `_DELETION_EXECUTION_READY` flips (T13) → mid-arc deploy makes `/privacy`
+  advertise a 503 flow; couple privacy-copy to the flag-flip deploy + spec the delete card's honest 503.
+- **Task-1 nit:** handoff §6 signature `purge_account_memory(mem0, user_id)` is wrong — `clear_memory`
+  needs the Supabase client to arm the marker (`memory_clear.py:172`); use
+  **`purge_account_memory(client, mem0, user_id)`**, consistent with §3.3's `erase_user(client, mem0, …)`.
+
+**Codex R3 (`gpt-5.6-sol`): BLOCK 5/10 — does NOT move off its Rev-2 BLOCK.** Agrees with fable on
+substance (differ on bar, as in R2). Confirms Rev 3 is "materially stronger." **Task 1 CONFIRMED safe.**
+7 findings — 4 overlap fable (C1=Codex#2 fence-stage; I2=Codex#1 create_task; I1=Codex#3 barrier_blocked;
+M1=Codex#6 processors), plus three fable missed:
+- **[BLOCKER B5] completion-sequencing contradicts "completion = delivered".** Engine marks audit
+  `completed` + enqueues email (§3.3 step 8 / `plan:223`), but §3.7 says completion = webhook-confirmed
+  delivery (`plan:282`). Auth+data deleted, email enqueued, audit `completed`, THEN Resend permanently
+  bounces → durable truth says "completed" while the declared completion condition failed. **Fix:**
+  separate `erasure_completed` from `response_delivered`; keep the request lifecycle `awaiting_delivery`
+  until a delivered webhook or audited manual-response; capture recipient+outbox intent BEFORE auth delete
+  (the engine currently only enqueues AFTER).
+- **[HIGH H1, sharper] RLS freeze doesn't govern service-role writes + oracle + DELETE.** Service-role
+  bypasses ALL RLS (`main.py:387`); a pending user can still submit feedback via `main.py:372` unless the
+  route/RPC checks status. `account_is_active(uid)` becomes a status **oracle** through PostgREST → use a
+  **no-arg helper bound to `auth.uid()`**. Existing authenticated **DELETE** policies stay live
+  (`20260701131304:205/:242`, `20260718120000_saved_reels_foundation.sql:109`) — WITH CHECK doesn't cover
+  DELETE. Keep global caches writable; T6 needs an explicit service-role write-path inventory.
+- **[BLOCKER B4, corrected premises — legally material] processor inventory wrong/unverified.**
+  **OpenAI:** "default: no retention" is FALSE — `Runner.run` runs with **tracing ON by default**
+  (`genagents/place_extractor.py:279`, `narrator.py:106`, `restaurant.py:184`); sensitive gen/tool data
+  goes to the trace store + Responses API default retention → **disable tracing** as the primary
+  mitigation. **Resend:** 30-day email-data retention; contact deletion ≠ send-log deletion; the
+  completion email itself is a NEW disclosed exception. **Apify:** the sync call
+  (`scrape/apify_direct.py:48`) sends the Reel URL, returns dataset items, and **never persists a run/
+  dataset ID** → deletion is impossible without first persisting the id. **Render:** window is 7/14/30
+  (confirm). **PostHog:** zero in-repo calls → prove any flow or remove. The inventory must ALSO cover
+  **mem0 itself + Supabase backups + the OpenAI trace store** — not just 5 bullets. T9 opens with "does
+  any data flow at all, per processor?".
+
+Codex also flags (agreeing w/ fable minors): admin-mint dropped fresh-reauth + no signing-key rotation
+contract; capability sentinel not probeable by columns-only `assert_schema` (`scripts/assert_schema.py:9/
+:14/:232`) → define as a **table+column in REQUIRED_SCHEMA + a separate live RPC semantic smoke**;
+FE/privacy rollout (`privacy/page.tsx:131` already promises deletion) must hide the self-serve control +
+keep mail intake until the flag flips (no visible 503 button); audit schema must enumerate CCPA §7101
+request/response fields + denial basis; the installed mem0 SDK `delete_all` "blindly parses JSON"
+(`mem0/client/main.py:1324`) with no event method (`:1140`) — reinforces the §2 ⚠ 204/no-event_id verify.
+
+**Full Codex output:** `<scratchpad>/codex-r3-out.txt` (SESSION-ONLY — this capture is the durable copy).
+
+**→ WRITING Rev 4** folding all consensus must-fixes (fence-stage, create_task-durability, barrier_blocked-
+exit, completion-sequencing, RLS-service-role+DELETE+oracle, processor-premises, sentinel, mint-reauth,
+audit-fields). One genuine DECISION for ZH surfaced: **B2 create_task durability** — light (strong-ref
+registry + lifespan drain, accept process-loss→barrier_blocked residual) vs heavy (make each mem0 add its
+own durable leased work-item). Rev 4 defaults to LIGHT + flags heavy as a triggered upgrade.
+
+---
+
 ## 0. One-line status
 Plan is at **Rev 2 (full-rigor), reviewed twice**: **fable REVISE 8/10 (buildable-with-revisions)** vs
 **Codex `gpt-5.6-sol` BLOCK 4/10 (still blocked)**. **A user decision is pending (direction A/B/C below)
@@ -163,7 +265,10 @@ Also pending: **start Task 1 now in parallel?** (both reviewers say yes — see 
 - `_assert_real_uuid(u)` — F2/F3: `str(uuid.UUID(u)) == u` strict equality (NOT `_parse_uuid`'s brace-
   accepting canonicalization); **catch BOTH `ValueError` and `TypeError`** (`uuid.UUID(None)` → TypeError);
   lives OUTSIDE every try/except; raises `InvalidUserId`.
-- `purge_account_memory(mem0, user_id)` — a strict wrapper over `pipeline/memory_clear.py::clear_memory`
+- `purge_account_memory(client, mem0, user_id)` — a strict wrapper over `pipeline/memory_clear.py::clear_memory`
+  (**signature corrected R3: takes `client`** — `clear_memory` needs the Supabase client to arm its
+  clear-marker at `memory_clear.py:172`; without it every call degenerates to `MemoryBackendUnavailable`.
+  Consistent with §3.3's `erase_user(client, mem0, deletion_job)`.)
   translating its return: `"cleared"` → ok; `"unavailable"` → raise `MemoryBackendUnavailable`; `"unknown"`
   → raise `MemoryPurgeError`. (Inherits clear_memory's 4 guards; do NOT reimplement a naive delete.)
 - Exceptions: `InvalidUserId`, `MemoryBackendUnavailable`, `MemoryPurgeError`.

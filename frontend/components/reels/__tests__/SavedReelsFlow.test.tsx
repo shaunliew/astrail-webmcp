@@ -683,8 +683,7 @@ describe('SavedReelsFlow', () => {
   it('shows the card after generateTrip rejects with a 403 trial_exhausted (post-hoc catch)', async () => {
     generateTrip.mockRejectedValueOnce(new ApiError(403, 'trial_exhausted', 'Your free trip is already planned.'))
     await reachBrief()
-    fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
-    fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
+    pickTripDates()
     fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
 
     expect(await screen.findByRole('button', { name: 'Request a seat' })).toBeInTheDocument()
@@ -695,8 +694,7 @@ describe('SavedReelsFlow', () => {
     const message = 'That request is already being processed — please retry.'
     generateTrip.mockRejectedValueOnce(new ApiError(409, 'conflict_retry', message))
     await reachBrief()
-    fireEvent.change(screen.getByLabelText(/start date/i), { target: { value: '2026-08-01' } })
-    fireEvent.change(screen.getByLabelText(/end date/i), { target: { value: '2026-08-04' } })
+    pickTripDates()
     fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent(message)

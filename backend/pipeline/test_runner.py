@@ -223,6 +223,38 @@ class _ReplaceTripItineraryRpc:
         return _Result(True)
 
 
+class _ReplaceHotelSuggestionsRpc:
+    """Mirror of `public.replace_hotel_suggestions` (20260804120000).
+
+    persist_hotels now routes its delete-reinsert through this fenced RPC on the leased runner
+    path (F3/B), so the runner's fake must implement it — otherwise every leased run's hotel
+    write raises `fake does not implement rpc` (swallowed by the best-effort stage) and the
+    hotel/tradeoff-comparison properties below silently stop being tested. The fence predicate
+    mirrors the SQL exactly, `trip_id` included; each inserted row gets `trip_id` from the RPC
+    (the caller's row dicts carry none), matching the SQL's `select p_trip_id, ...`."""
+
+    def __init__(self, client, params):
+        self.client, self.params = client, params
+
+    async def execute(self):
+        params = self.params
+        job = next((row for row in self.client.db.get("jobs", [])
+                    if row.get("id") == params["p_job_id"]
+                    and row.get("trip_id") == params["p_trip_id"]
+                    and row.get("lease_token") == params["p_lease_token"]
+                    and row.get("status") == "running"), None)
+        if job is None:
+            return _Result(False)
+        trip_id = params["p_trip_id"]
+        rows = self.client.db.setdefault("hotel_suggestions", [])
+        self.client.db["hotel_suggestions"] = [r for r in rows if r.get("trip_id") != trip_id]
+        for row in params.get("p_rows") or []:
+            self.client.db["hotel_suggestions"].append(
+                {"id": f"hotel_suggestions-{len(self.client.db['hotel_suggestions']) + 1}",
+                 "trip_id": trip_id, **row})
+        return _Result(True)
+
+
 # This generation's `trips.created_at`, as Postgres stamped it at POST /generate-trip.
 # A LITERAL, never a derived offset or a wall clock: the write-back guard compares clear
 # markers against it, and a reference that moved with the fixtures would let a broken
@@ -261,6 +293,8 @@ class _Client:
             return _CompleteTripRunRpc(self, params)
         if name == "replace_trip_itinerary":
             return _ReplaceTripItineraryRpc(self, params)
+        if name == "replace_hotel_suggestions":
+            return _ReplaceHotelSuggestionsRpc(self, params)
         if name in _LEASE_RPCS:
             mirror, table = _LEASE_RPCS[name]
             return mirror(self, params, self.db.setdefault(table, []))

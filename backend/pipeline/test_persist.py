@@ -203,6 +203,37 @@ class _ReplaceTripItineraryRpc:
         return _Result(True)
 
 
+class _ReplaceHotelSuggestionsRpc:
+    """Mirror of `public.replace_hotel_suggestions` (20260804120000).
+
+    The fence and the delete-reinsert are ONE unit here for the same reason they are one
+    transaction there: a superseded worker must not delete the replacement's hotel rows. A fake
+    that ignored the lease would leave `_replace_hotel_rows`'s `LeaseLost` branch dead under
+    test. The predicate mirrors the SQL exactly, `trip_id` included: a lease on job X may only
+    rewrite job X's own trip. Each inserted row gets `trip_id` from the RPC (the row dicts the
+    caller passes carry no trip_id), matching the SQL's `select p_trip_id, ...`."""
+
+    def __init__(self, client, params): self.client, self.params = client, params
+
+    async def execute(self):
+        await asyncio.sleep(0)   # suspend once, like every real client call
+        p, db = self.params, self.client.db
+        job = next((r for r in db.get("jobs", [])
+                    if r.get("id") == p["p_job_id"] and r.get("trip_id") == p["p_trip_id"]
+                    and r.get("lease_token") == p["p_lease_token"]
+                    and r.get("status") == "running"), None)
+        if job is None:
+            return _Result(False)
+        trip_id = p["p_trip_id"]
+        rows = db.setdefault("hotel_suggestions", [])
+        db["hotel_suggestions"] = [r for r in rows if r.get("trip_id") != trip_id]
+        for row in p.get("p_rows") or []:
+            db["hotel_suggestions"].append(
+                {"id": f"hotel_suggestions-{len(db['hotel_suggestions']) + 1}",
+                 "trip_id": trip_id, **row})
+        return _Result(True)
+
+
 class _Client:
     def __init__(self, db=None): self.db = db if db is not None else {}
     def table(self, name): return _Table(name, self.db)
@@ -210,6 +241,8 @@ class _Client:
     def rpc(self, name, params):
         if name == "replace_trip_itinerary":
             return _ReplaceTripItineraryRpc(self, params)
+        if name == "replace_hotel_suggestions":
+            return _ReplaceHotelSuggestionsRpc(self, params)
         raise AssertionError(f"fake does not implement rpc {name!r}")
 
 
@@ -2302,6 +2335,170 @@ async def test_persist_hotels_retry_safe_and_star_nullsafe():
     rows = c.db["hotel_suggestions"]
     assert len(rows) == 1 and rows[0]["name"] == "No Star Inn"
     assert rows[0]["star_rating"] is None                # star=9 out of [0,5] -> NULL (CHECK-safe)
+
+
+# --- persist_hotels: geocode + rank (T5, hotel-hub map) ----------------------
+from models.geocode import GeocodeResult
+from genagents.matrix import Matrix
+
+
+def _hotel_ranking_client(*, budget_level="mid_range", extra=None):
+    """A trip with two dayed, in-country (JP) places carrying coords + city — the shape
+    rank_hotels needs to derive a centroid, a country_code filter and Matrix destinations."""
+    db = {
+        "trips": [{"id": "trip-1", "user_id": "u1", "start_date": "2026-08-01",
+                   "end_date": "2026-08-03", "adult_count": 1, "room_count": 1,
+                   "destination_hint": "Japan", "budget_level": budget_level}],
+        "places": [
+            {"id": "pa", "lat": 35.66, "lng": 139.70, "city": "Tokyo",
+             "country": "Japan", "country_code": "JP", "place_type": "attraction"},
+            {"id": "pb", "lat": 35.68, "lng": 139.75, "city": "Tokyo",
+             "country": "Japan", "country_code": "JP", "place_type": "attraction"},
+        ],
+        "trip_places": [
+            {"trip_id": "trip-1", "place_id": "pa", "day_number": 1, "sort_order": 0},
+            {"trip_id": "trip-1", "place_id": "pb", "day_number": 1, "sort_order": 1},
+        ],
+        "trip_days": [{"id": "d1", "trip_id": "trip-1", "day_number": 1}],
+    }
+    for k, v in (extra or {}).items():
+        db[k] = v
+    return _Client(db)
+
+
+async def _fetch_one_hotel(location, check_in, check_out, rooms):
+    return "sess-1", [{"name": "Central Hotel", "star": 4, "pricePerNight": 200,
+                       "currency": "USD", "hotelId": 100, "address": "1-1 Chiyoda"}]
+
+
+def _jp_geocode(*, capture=None):
+    async def geocode(query, *, types=None, country=None, proximity_lng_lat=None):
+        if capture is not None:
+            capture.update(query=query, types=types, country=country,
+                           proximity_lng_lat=proximity_lng_lat)
+        return GeocodeResult(lat=35.67, lng=139.72, country_code="JP", country_name="Japan")
+    return geocode
+
+
+async def _matrix_two_dests(sources, destinations, *, annotations=None):
+    # 1 source (the geocoded hotel) x 2 destinations (pa, pb), in submitted order.
+    return Matrix(durations=[[300.0, 600.0]], distances=[[1000.0, 2000.0]])
+
+
+@pytest.mark.asyncio
+async def test_persist_hotels_ranks_and_writes_geo_columns():
+    """The happy path: a geocode hit in-country + in-proximity + a Matrix row → the hotel is
+    written `placed` with coords, rank 1 / is_recommended, a route_score, and place_durations
+    keyed by place_id (the ids the frontend has)."""
+    c = _hotel_ranking_client()
+    written = await persist.persist_hotels(c, "trip-1", fetch=_fetch_one_hotel,
+                                           geocode=_jp_geocode(), matrix=_matrix_two_dests)
+    assert written == 1
+    h = c.db["hotel_suggestions"][0]
+    assert h["name"] == "Central Hotel" and h["geo_status"] == "placed"
+    assert h["lat"] == 35.67 and h["lng"] == 139.72
+    assert h["rank"] == 1 and h["is_recommended"] is True
+    assert h["route_score"] == pytest.approx(450.0)          # (300 + 600) / 2
+    assert h["place_durations"] == {"pa": 300.0, "pb": 600.0}   # keyed by place_id, dest order kept
+    assert h["base_place_id"] is None                        # still no places-row link (deferred)
+
+
+@pytest.mark.asyncio
+async def test_persist_hotels_all_geocode_fail_writes_unresolved():
+    """Honest-failure (Guardrail #1/#3): every geocode misses → every hotel is written
+    `unresolved` with NULL geo columns, the stage does NOT raise, and Matrix is never called
+    (no placed hotel to route)."""
+    c = _hotel_ranking_client()
+
+    async def miss(query, **kw):
+        return None
+
+    async def matrix(*a, **k):
+        raise AssertionError("Matrix must not run when no hotel is placed")
+
+    written = await persist.persist_hotels(c, "trip-1", fetch=_fetch_one_hotel,
+                                           geocode=miss, matrix=matrix)
+    assert written == 1
+    h = c.db["hotel_suggestions"][0]
+    assert h["geo_status"] == "unresolved"
+    assert h["lat"] is None and h["lng"] is None and h["rank"] is None
+    assert h["route_score"] is None and h["is_recommended"] is False
+    assert h["place_durations"] == {}
+
+
+@pytest.mark.asyncio
+async def test_persist_hotels_country_code_derived_from_places():
+    """The trip country (first non-null places.country_code) is passed to the geocoder as the
+    country filter AND drives rank_hotels' in-country gate; `types='address'` is used for the
+    street-address geocode. Without the country, a non-JP trip would silently never resolve
+    (FOLD-1)."""
+    c = _hotel_ranking_client()
+    seen: dict = {}
+    written = await persist.persist_hotels(c, "trip-1", fetch=_fetch_one_hotel,
+                                           geocode=_jp_geocode(capture=seen),
+                                           matrix=_matrix_two_dests)
+    assert written == 1
+    assert seen["country"] == "JP"          # derived from places.country_code, not hard-coded
+    assert seen["types"] == "address"
+    assert seen["query"] == "1-1 Chiyoda, Tokyo"
+
+
+@pytest.mark.asyncio
+async def test_persist_hotels_lease_fence_stale_token_leaves_live_rows():
+    """The fence, exercised: a stale lease_token makes replace_hotel_suggestions no-op → the
+    live worker's rows survive (no clobber) and persist_hotels raises LeaseLost, exactly as
+    persist_itinerary does through replace_trip_itinerary."""
+    from organizer import LeaseLost
+
+    c = _hotel_ranking_client(extra={
+        "jobs": [{"id": "job-1", "trip_id": "trip-1", "lease_token": "tok-1", "status": "running"}],
+        "hotel_suggestions": [{"id": "live", "trip_id": "trip-1", "name": "Live Hotel"}],
+    })
+
+    with pytest.raises(LeaseLost):
+        await persist.persist_hotels(c, "trip-1", fetch=_fetch_one_hotel,
+                                     geocode=_jp_geocode(), matrix=_matrix_two_dests,
+                                     job_id="job-1", lease_token="WRONG-TOKEN")
+
+    assert [h["id"] for h in c.db["hotel_suggestions"]] == ["live"]   # neither deleted nor replaced
+
+
+@pytest.mark.asyncio
+async def test_persist_hotels_lease_fence_matching_token_replaces():
+    """The lease holder writes: a matching token routes the delete-reinsert through the fenced
+    RPC, clearing the stale row and inserting the ranked row (with trip_id, added by the RPC)."""
+    c = _hotel_ranking_client(extra={
+        "jobs": [{"id": "job-1", "trip_id": "trip-1", "lease_token": "tok-1", "status": "running"}],
+        "hotel_suggestions": [{"id": "stale", "trip_id": "trip-1", "name": "old"}],
+    })
+
+    written = await persist.persist_hotels(c, "trip-1", fetch=_fetch_one_hotel,
+                                           geocode=_jp_geocode(), matrix=_matrix_two_dests,
+                                           job_id="job-1", lease_token="tok-1")
+    assert written == 1
+    rows = c.db["hotel_suggestions"]
+    assert len(rows) == 1 and rows[0]["name"] == "Central Hotel"   # stale cleared, ranked row in
+    assert rows[0]["trip_id"] == "trip-1" and rows[0]["geo_status"] == "placed"
+    assert rows[0]["rank"] == 1
+
+
+@pytest.mark.asyncio
+async def test_persist_hotels_fetch_failure_leaves_stale_rows():
+    """A failed Travala re-fetch propagates BEFORE the delete-reinsert (which now lives inside the
+    fenced replace, only after a successful fetch) — so a re-run whose fetch fails keeps its prior
+    hotel rows rather than wiping them. Stale-but-real > silently empty; the runner turns the raise
+    into one warning."""
+    c = _hotel_ranking_client(extra={
+        "hotel_suggestions": [{"id": "prior", "trip_id": "trip-1", "name": "Previously Ranked"}],
+    })
+
+    async def fetch(*a, **k):
+        raise RuntimeError("travala down")
+
+    with pytest.raises(RuntimeError, match="travala down"):
+        await persist.persist_hotels(c, "trip-1", fetch=fetch)
+
+    assert [h["id"] for h in c.db["hotel_suggestions"]] == ["prior"]   # not wiped by a failed fetch
 
 
 def test_evidence_kind_maps_source_type():

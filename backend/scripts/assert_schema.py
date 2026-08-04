@@ -92,8 +92,15 @@ REQUIRED_SCHEMA: dict[str, tuple[str, ...]] = {
     "restaurant_suggestions": ("trip_id", "trip_day_id", "restaurant_place_id", "near_place_id",
                                "cuisine", "summary", "source_url", "evidence_json",
                                "preference_match_json"),
+    # The 7 hotel-hub-map columns (20260804120000) are writer-used: persist_hotels' fenced
+    # replace writes lat/lng/geo_status/route_score/rank/is_recommended/place_durations, so the
+    # gate must probe them — code shipped ahead of that migration fails on the first hotel write
+    # (the class that bit the entitlements arc). hotel_suggestions is NOT an anchor (Guardrail #3
+    # makes hotels partial-failure-tolerant), so this only guards drift, never aborts on absence.
     "hotel_suggestions": ("trip_id", "base_place_id", "name", "area", "star_rating",
-                          "price_snapshot", "status"),
+                          "price_snapshot", "status",
+                          "lat", "lng", "geo_status", "route_score", "rank",
+                          "is_recommended", "place_durations"),
     "feedback": ("trip_id", "user_id", "artifact_type", "artifact_id", "feedback_type",
                  "rating", "comment", "source_type", "generation_stage", "preference_source"),
     # `id` and `created_at` are the clear/write-back interlock (pipeline/memory_clear.py +

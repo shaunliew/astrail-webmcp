@@ -18,6 +18,7 @@ import asyncio
 import datetime as _dt
 import logging
 import math
+import os
 from collections import defaultdict
 
 from genagents.place_extractor import is_placeholder_url   # keyless import (no network at module scope)
@@ -524,6 +525,42 @@ async def _insert_leg(client, *, trip_id: str, trip_day_id, from_id: str, to_id:
     }).execute()
 
 
+async def _trip_place_coords(client, trip_id: str) -> list[dict]:
+    """The trip's linked places, one dict per trip_places row, carrying everything both
+    enrich stages that route off place coordinates need: the trip_places link fields
+    (place_id, day_number, sort_order) merged with the joined places columns (lat, lng,
+    country, country_code, city, place_type).
+
+    Shared between `persist_transport` (which reads only the coords) and `persist_hotels`
+    (which also reads country_code/city for the hotel-ranking geocode) so the
+    `trip_places -> places(...)` join lives in exactly one place (DRY, FOLD-4). A trip_place
+    whose global place no longer exists (deleted / FK gap) is skipped — the same effect the
+    transport path's later `place_id in coord` filter had."""
+    tps = (await client.table("trip_places").select("place_id,day_number,sort_order")
+           .eq("trip_id", trip_id).execute()).data
+    if not tps:
+        return []
+    pids = list({tp["place_id"] for tp in tps})
+    places = (await client.table("places")
+              .select("id,lat,lng,country,country_code,city,place_type")
+              .in_("id", pids).execute()).data
+    by_id = {p["id"]: p for p in places}
+    rows: list[dict] = []
+    for tp in tps:
+        place = by_id.get(tp["place_id"])
+        if place is None:
+            continue
+        rows.append({
+            "place_id": tp["place_id"],
+            "day_number": tp.get("day_number"),
+            "sort_order": tp.get("sort_order"),
+            "lat": place.get("lat"), "lng": place.get("lng"),
+            "country": place.get("country"), "country_code": place.get("country_code"),
+            "city": place.get("city"), "place_type": place.get("place_type"),
+        })
+    return rows
+
+
 async def persist_transport(client, trip_id: str, *, profile: str = "walking", fetch_legs=None) -> int:
     """Additive: compute per-day route legs (Mapbox Directions) between consecutive persisted
     trip_places and INSERT them into transport_legs. MUST run AFTER persist_itinerary created
@@ -547,19 +584,17 @@ async def persist_transport(client, trip_id: str, *, profile: str = "walking", f
     # only SET NULLs trip_day_id, it does NOT cascade-delete transport_legs.)
     await client.table("transport_legs").delete().eq("trip_id", trip_id).execute()
 
-    tps = (await client.table("trip_places").select("place_id,day_number,sort_order")
-           .eq("trip_id", trip_id).execute()).data
-    if not tps:
+    place_rows = await _trip_place_coords(client, trip_id)
+    if not place_rows:
         return 0
     tds = (await client.table("trip_days").select("id,day_number").eq("trip_id", trip_id).execute()).data
     day_to_id = {d["day_number"]: d["id"] for d in tds}
-    pids = list({tp["place_id"] for tp in tps})
-    places = (await client.table("places").select("id,lat,lng").in_("id", pids).execute()).data
-    coord = {p["id"]: (p["lat"], p["lng"]) for p in places}
+    coord = {r["place_id"]: (r["lat"], r["lng"]) for r in place_rows
+             if r["lat"] is not None and r["lng"] is not None}
 
     by_day: dict[int, list] = defaultdict(list)
-    for tp in tps:
-        by_day[tp["day_number"]].append(tp)
+    for r in place_rows:
+        by_day[r["day_number"]].append(r)
 
     mode = profile_to_mode(profile)
     written = 0
@@ -798,56 +833,55 @@ def _hotel_star(star) -> float | None:
     return s if 0 <= s <= 5 else None
 
 
-async def persist_hotels(client, trip_id: str, *, fetch=None) -> int:
-    """Additive: search Travala for hotels for THIS trip (destination + dates + occupancy) and INSERT
-    into hotel_suggestions. Per-TRIP (one search), NOT per-day. Retry-safe (delete-first). Returns
-    rows written. `fetch` is injectable (defaults to the real keyless Travala call).
+async def _rank_hotels_best_effort(hotels, place_rows, city, country_code, budget_level,
+                                   *, geocode, matrix, trip_id: str):
+    """Geocode + route-rank the Travala hotels into RankedHotel records, BEST-EFFORT
+    (Guardrail #3). Returns the RankedHotel list, or None when ranking can't run at all —
+    no MAPBOX token, or an unexpected raise — in which case the caller writes every hotel
+    `unresolved` (never an invented coordinate, Guardrail #1). Never raises out of the stage.
 
-    Reads the trip row for dates/occupancy and derives the search city from the persisted places'
-    city ("Tokyo"), falling back to destination_hint. Skip-on-missing (PRD/DECISIONS LOG): if location
-    or dates are missing, return 0 WITHOUT searching — hotel search must never block trip generation.
-    base_place_id stays NULL (Travala returns no coords; place-linking deferred). No LLM, no reel
-    content. A `fetch` failure propagates -> the runner turns it into one clean warning."""
-    if fetch is None:
-        from genagents.hotel import search_hotels as fetch
+    `geocode`/`matrix` are injected for tests; when absent they are bound here from
+    `MAPBOX_SECRET_TOKEN` (imported lazily so `import pipeline.persist` stays key/SDK-free)."""
+    if not hotels:
+        return None
+    if geocode is None or matrix is None:
+        token = os.environ.get("MAPBOX_SECRET_TOKEN")
+        if not token:
+            return None   # honest degrade: no token -> ranking can't run -> all unresolved
+    try:
+        # Lazy imports live inside the try so an ImportError degrades honestly (Guardrail #3)
+        # exactly like a geocode/Matrix failure, rather than escaping this best-effort helper.
+        if geocode is None:
+            from geocode.mapbox_forward import forward_geocode
 
-    # Retry-safe: clear this trip's rows FIRST (trip_days delete only SET-NULLs trip_day_id).
-    await client.table("hotel_suggestions").delete().eq("trip_id", trip_id).execute()
+            async def geocode(query, **kwargs):
+                return await forward_geocode(query, token=token, **kwargs)
+        if matrix is None:
+            from genagents.matrix import fetch_matrix
 
-    trip_rows = (await client.table("trips")
-                 .select("start_date,end_date,adult_count,room_count,destination_hint")
-                 .eq("id", trip_id).execute()).data
-    trip = trip_rows[0] if trip_rows else None   # not .maybe_single() — the offline test fake lacks it
-    if not trip:
-        return 0
-    start_date, end_date = trip.get("start_date"), trip.get("end_date")
+            async def matrix(sources, destinations, **kwargs):
+                return await fetch_matrix(sources, destinations, token=token, **kwargs)
+        from genagents.hotel_ranking import rank_hotels
+        return await rank_hotels(hotels, place_rows, city, country_code, budget_level,
+                                 geocode=geocode, matrix=matrix)
+    except Exception as exc:
+        # Type only, never the message — a Mapbox error can carry the access token in its URL.
+        logger.warning("hotel_ranking_unavailable trip_id=%s error=%s", trip_id, type(exc).__name__)
+        return None
 
-    # Location: prefer a persisted place's city ("Tokyo"), fall back to destination_hint ("Japan").
-    tps = (await client.table("trip_places").select("place_id").eq("trip_id", trip_id).execute()).data
-    location = None
-    if tps:
-        pids = list({tp["place_id"] for tp in tps})
-        places = (await client.table("places").select("city").in_("id", pids).execute()).data
-        location = next((p.get("city") for p in places if p.get("city")), None)
-    location = location or trip.get("destination_hint")
 
-    if not location or not start_date or not end_date:
-        return 0   # skip gracefully — never block trip generation
-
-    check_out = end_date
-    if end_date <= start_date:   # single-day trip -> force >=1 night (Travala rejects 0 nights)
-        check_out = (_dt.date.fromisoformat(start_date) + _dt.timedelta(days=1)).isoformat()
-    rooms = _hotel_rooms(trip.get("adult_count"), trip.get("room_count"))
-
-    session_id, hotels = await fetch(location, start_date, check_out, rooms)   # failure -> runner warns
-
-    written = 0
-    for h in hotels:
+def _build_hotel_rows(hotels, ranked, session_id) -> list[dict]:
+    """Map the Travala hotels -> hotel_suggestions row dicts (WITHOUT trip_id — the write adds
+    it). With a RankedHotel list (ranking ran) each row carries its 7 geo columns in
+    rank order; without one (ranking degraded) every row is written `unresolved` with NULL
+    coords (Guardrail #1). A hotel with no name is skipped (hotel_suggestions.name is NOT NULL)."""
+    pairs = [(rh.hotel, rh) for rh in ranked] if ranked is not None else [(h, None) for h in hotels]
+    rows: list[dict] = []
+    for h, rh in pairs:
         name = h.get("name")
         if not name:
-            continue   # hotel_suggestions.name is NOT NULL
-        await client.table("hotel_suggestions").insert({
-            "trip_id": trip_id,
+            continue
+        rows.append({
             "base_place_id": None,            # Travala gives no coords; place-linking deferred
             "name": name,
             "area": h.get("headline") or h.get("address") or h.get("location"),
@@ -860,9 +894,110 @@ async def persist_hotels(client, trip_id: str, *, fetch=None) -> int:
             "travala_result_json": h,
             "source": "travala",
             "status": "suggested",
-        }).execute()
-        written += 1
-    return written
+            # The 7 hotel-hub-map columns (schema parity with the migration + TS type, Guardrail #4).
+            "lat": rh.lat if rh else None,
+            "lng": rh.lng if rh else None,
+            "geo_status": rh.geo_status if rh else "unresolved",
+            "route_score": rh.route_score if rh else None,
+            "rank": rh.rank if rh else None,
+            "is_recommended": rh.is_recommended if rh else False,
+            "place_durations": (rh.place_durations if rh else None) or {},
+        })
+    return rows
+
+
+async def _replace_hotel_rows(client, trip_id: str, rows: list[dict], *,
+                              job_id: str | None, lease_token: str | None) -> None:
+    """Swap this trip's hotel_suggestions for `rows` — FENCED on the job lease when present.
+
+    Mirrors `_replace_trip_rows`: with geocode + Matrix latency now inside the hotel stage, the
+    delete-first this used to do unfenced is a supersession window. The `replace_hotel_suggestions`
+    RPC re-reads the lease under a row lock in the SAME transaction as the delete-reinsert, so a
+    superseded/zombie worker writes NOTHING (not the insert, and above all not the DELETE).
+
+    Jobless callers (tests / ad-hoc) pass both None and take the raw delete+insert — no durable
+    job means nothing can supersede this run. A job_id WITHOUT a token is a bug (the token is
+    minted by the same statement that claims the job), so it is rejected rather than run unfenced."""
+    if job_id is None:
+        if lease_token is not None:
+            raise ValueError("lease_token without job_id: this run never claimed a job")
+        # Retry-safe: clear this trip's rows FIRST (trip_days delete only SET-NULLs trip_day_id).
+        await client.table("hotel_suggestions").delete().eq("trip_id", trip_id).execute()
+        for row in rows:
+            await client.table("hotel_suggestions").insert({"trip_id": trip_id, **row}).execute()
+        return
+    if lease_token is None:
+        raise ValueError(f"job {job_id} has no lease token: refusing an unfenced hotel rewrite")
+
+    fenced = await client.rpc("replace_hotel_suggestions", {
+        "p_job_id": job_id, "p_trip_id": trip_id, "p_lease_token": lease_token,
+        "p_rows": rows,
+    }).execute()
+    if not fenced.data:
+        # A zero-row fence authoritatively says a replacement owns this job. Raise the same type
+        # `_replace_trip_rows` raises; the hotel stage (best-effort) swallows it and writes nothing.
+        from organizer import LeaseLost      # local: keeps pipeline.persist off organizer's imports
+
+        raise LeaseLost(f"hotel job {job_id} lease superseded during persist")
+
+
+async def persist_hotels(client, trip_id: str, *, fetch=None, geocode=None, matrix=None,
+                         job_id: str | None = None, lease_token: str | None = None) -> int:
+    """Additive: search Travala for hotels for THIS trip (destination + dates + occupancy), geocode
+    + route-rank them into map hub candidates, and REPLACE hotel_suggestions. Per-TRIP (one search),
+    NOT per-day. Retry-safe (delete-first, now inside the fenced RPC). Returns rows written.
+    `fetch`/`geocode`/`matrix` are injectable (default to the real Travala/Mapbox calls).
+
+    Reads the trip row for dates/occupancy/budget and derives the search city + country_code from
+    the persisted places (shared `_trip_place_coords`). Skip-on-missing (PRD/DECISIONS LOG): if
+    location or dates are missing, write no hotel rows (clearing any stale ones) WITHOUT searching —
+    hotel search must never block trip generation. No LLM prompt, no reel content.
+
+    Ranking is best-effort (Guardrail #3): a geocode/Matrix outage — or an absent MAPBOX token —
+    writes every hotel `geo_status='unresolved'` with NULL coords (never an invented coordinate,
+    Guardrail #1). The lease fence and the best-effort degrade are ORTHOGONAL — a geocode failure
+    still writes (unresolved rows) through the fenced RPC; only a lost lease suppresses the write.
+
+    The write is lease-fenced when `job_id`/`lease_token` are supplied (the live runner path),
+    giving the hotel rewrite the same zombie-worker protection persist_itinerary has; a `fetch`
+    failure propagates -> the runner turns it into one clean warning. NOTE: because the delete now
+    lives INSIDE the fenced replace (after a successful fetch), a re-run whose Travala re-fetch
+    FAILS keeps its prior hotel rows rather than wiping them (stale-but-real > silently empty); a
+    pre-fetch delete would reopen the supersession window the fence exists to close."""
+    if fetch is None:
+        from genagents.hotel import search_hotels as fetch
+
+    trip_rows = (await client.table("trips")
+                 .select("start_date,end_date,adult_count,room_count,destination_hint,budget_level")
+                 .eq("id", trip_id).execute()).data
+    trip = trip_rows[0] if trip_rows else None   # not .maybe_single() — the offline test fake lacks it
+
+    rows: list[dict] = []
+    if trip:
+        start_date, end_date = trip.get("start_date"), trip.get("end_date")
+        # trip_places -> places coords + country_code + city, shared with persist_transport (FOLD-4).
+        place_rows = await _trip_place_coords(client, trip_id)
+        # Location: prefer a persisted place's city ("Tokyo"), fall back to destination_hint ("Japan").
+        location = next((p.get("city") for p in place_rows if p.get("city")), None) \
+            or trip.get("destination_hint")
+        # country_code: the trip's country (first non-null places.country_code) — the geocode
+        # country filter AND the in-country gate. None -> rank_hotels honestly no-ops (all unresolved).
+        country_code = next((p.get("country_code") for p in place_rows if p.get("country_code")), None)
+
+        if location and start_date and end_date:
+            check_out = end_date
+            if end_date <= start_date:   # single-day trip -> force >=1 night (Travala rejects 0 nights)
+                check_out = (_dt.date.fromisoformat(start_date) + _dt.timedelta(days=1)).isoformat()
+            rooms = _hotel_rooms(trip.get("adult_count"), trip.get("room_count"))
+
+            session_id, hotels = await fetch(location, start_date, check_out, rooms)   # failure -> runner warns
+            ranked = await _rank_hotels_best_effort(
+                hotels, place_rows, location, country_code, trip.get("budget_level"),
+                geocode=geocode, matrix=matrix, trip_id=trip_id)
+            rows = _build_hotel_rows(hotels, ranked, session_id)
+
+    await _replace_hotel_rows(client, trip_id, rows, job_id=job_id, lease_token=lease_token)
+    return len(rows)
 
 
 def _dump(items) -> list[dict]:

@@ -440,6 +440,21 @@ def test_the_memory_events_columns_the_clear_interlock_needs_are_pinned():
     assert {"id", "created_at"} <= set(assert_schema.REQUIRED_SCHEMA["memory_events"])
 
 
+def test_the_hotel_suggestions_geo_columns_the_hub_map_writes_are_pinned():
+    """The hotel-hub map (20260804120000) added 7 writer-used columns to hotel_suggestions —
+    persist_hotels' fenced replace writes all seven. Nothing else in this file would notice them
+    going missing: hotel_suggestions is not an anchor, and the well-formed/positive-control tests
+    only check the manifest's shape, not its contents. Drift dropping any of them ships
+    persist_hotels ahead of the migration and the first hotel write fails in production — the
+    exact class the entitlements arc was bitten by.
+
+    Same self-erasure shape as the memory_events pin above: the fake DB is derived FROM the
+    manifest (`schema_from_manifest`), so pinning them here is the only thing that reddens a
+    silent removal."""
+    assert {"lat", "lng", "geo_status", "route_score", "rank", "is_recommended",
+            "place_durations"} <= set(assert_schema.REQUIRED_SCHEMA["hotel_suggestions"])
+
+
 def test_the_shipped_manifest_passes_the_guard():
     """POSITIVE CONTROL. Without it, `return ["broken"]` unconditionally passes every negative
     test above — while aborting every deploy this gate is supposed to let through.

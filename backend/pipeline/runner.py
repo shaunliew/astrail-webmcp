@@ -466,7 +466,13 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                     try:
                         await record_event(client, trip_id, event_type="stage", stage="hotels",
                                            message="Looking for somewhere to stay")
-                        await persist_hotels(client, trip_id, fetch=hotel)
+                        # Lease-fenced write (F3/B): thread the run's job_id + lease_token so the
+                        # hotel rewrite rejects a superseded worker via replace_hotel_suggestions,
+                        # the same guarantee persist_itinerary has. A lost lease surfaces as a
+                        # swallowed LeaseLost here (best-effort stage) — the outer
+                        # `_abort_when_lease_lost` race is what actually aborts the run.
+                        await persist_hotels(client, trip_id, fetch=hotel,
+                                             job_id=job_id, lease_token=lease_token)
                     except Exception:
                         try:
                             await record_event(client, trip_id, event_type="warning", stage="hotels",

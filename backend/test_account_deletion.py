@@ -441,6 +441,17 @@ async def test_status_fail_safe_when_the_row_is_missing(monkeypatch):
     assert r.json() == {"account_status": "active", "deletion_scheduled_for": None}
 
 
+async def test_status_fail_safe_when_maybe_single_returns_bare_none(monkeypatch):
+    """postgrest 2.31.0 `maybe_single()` returns a BARE None (not an object with `.data`) on zero
+    rows — a footgun this codebase has hit before (see main.py / deletion_engine.py). The read must
+    collapse THAT shape to the safe default too, never a 500. `result=None` makes the fake's
+    execute() return bare None (vs `_result(None)`, which returns an object with `.data=None`)."""
+    async with _status_client(monkeypatch, uid="u1", result=None) as c:
+        r = await c.get("/account/deletion/status")
+    assert r.status_code == 200
+    assert r.json() == {"account_status": "active", "deletion_scheduled_for": None}
+
+
 async def test_status_fail_safe_on_unexpected_status_value(monkeypatch):
     """A status outside the known set (schema drift) collapses to the safe default, not a 500."""
     result = _result({"account_status": "banned", "deletion_scheduled_for": None})

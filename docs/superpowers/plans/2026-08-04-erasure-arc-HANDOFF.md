@@ -77,8 +77,25 @@ T4 (notifications) held for the next wave (also edits main.py). All gated OFF.
     while gated, but would fire a real call w/ a fake token under mock-auth demo); (3) silent revert on
     `no_pending_deletion` (only reachable once cross-session reads exist). Plan §4-row-5 vs §3.5 ownership
     of the clear-memory rewire → FIXED (it's Task 4; removed from the T5 row).
-- Pending: T3 result + T5 review → review each → fold the two T3 notes → T4 → hold at **T6** (live pgTAP +
-  flip the flags + wire the status read) for ZH's go-live sign-off.
+- **T3 BUILT: `5cc6fda`** (the destructive core) — `deletion_engine.py` (two-pass `erase_user`: Pass A
+  claim→quiesce→purge+verify, never hard-delete on unconfirmed purge, catch ONLY Memory*, `InvalidUserId`
+  propagates→sweep `_mark_failed`; Pass B settle-gap→re-verify→`auth.admin.delete_user(should_soft_delete=
+  False)`, 404/missing-users-row=completed crash-recovery) + `claim_account_for_deletion` CAS RPC
+  (`20260805010000`, service_role-pinned) + `_reap_loop` 3rd branch (own try, no-op when gated) + freeze
+  (`persist_trip_memory` fail-closed for pending/deleting + `generate_trip` 403). 37 engine tests + full
+  suite 1527 pass, eval anchor 6229.0 intact. Orchestrator self-read the engine+RPC: high quality; the
+  `deleting`+log-`pending` window is handled by design (claim-false re-reads status: `deleting`→retry).
+  **T3 review IN FLIGHT (opus, destructive-core).**
+  - **[→FOLD after T3 review] sweep index still missing** (T2 note #1): the T3 migration adds only the
+    claim RPC. Add a partial index for the sweep WHERE — `on account_deletion_log(scheduled_for) where
+    outcome in ('pending','deleting')` (note: `scheduled_for` is the SQL filter; `next_attempt_at` is
+    filtered in Python). Cheap; beta-scale it's a seq-scan today.
+  - Atomicity note (T2 #2): SATISFIED-BY-DESIGN (not forced atomic) — no observer is harmed by the window;
+    T3 review to confirm.
+- Pending: T3 review → fold the index (+ any findings) → **T4** (Resend scheduled/completed emails + the
+  clear-memory un-lie #2, wire the `_mark_completed` email TODO) → hold at **T6** (live pgTAP 019/020 +
+  wire the cross-session status read + flip `_DELETION_EXECUTION_READY` & `NEXT_PUBLIC_DELETION_ENABLED`)
+  for ZH's go-live sign-off. FINAL whole-branch pass (fable/opus + Codex cross-model) before any merge.
 
 **LEAN Rev 3 IS THE CURRENT PLAN (`cbb764b`=Rev2, then Rev3):** Rev 2 folded the Codex lean review; **Rev 3
 DROPPED REAUTH** (ZH — Astrail is passwordless per `privacy/page.tsx:48`, so emailed-code reauth adds ~

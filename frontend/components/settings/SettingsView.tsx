@@ -1,12 +1,14 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { getProfile, clearMemory } from '@/lib/trip/mock-api'
-import type { TravelerProfile, UserPreferenceFact } from '@/lib/trip/backend-types'
-import { memoryReceipt } from '@/lib/profile/memory'
-import EvidenceChip from '@/components/trip/EvidenceChip'
+// Profile (origin/style/interests) comes from the RLS-guarded traveler_profiles row and the
+// remembered facts come from the backend's mem0 store — the same live reads the plan sheet
+// uses, never the mock. `clearMemory` stays on mock-api pending the erasure-backend decision.
+import { getProfile, getMemoryPreferences } from '@/lib/trip/supabase-api'
+import { clearMemory } from '@/lib/trip/mock-api'
+import type { MemoryFact, MemoryStatus, TravelerProfile } from '@/lib/trip/backend-types'
 
-type ProfileData = { profile: TravelerProfile; facts: UserPreferenceFact[] }
+type ProfileData = { profile: TravelerProfile; status: MemoryStatus; facts: MemoryFact[] }
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -14,6 +16,16 @@ function Row({ label, value }: { label: string; value: string }) {
       <dt className="text-[10px] font-semibold uppercase tracking-wide text-[color:var(--text-faint)]">{label}</dt>
       <dd className="text-[14px] text-[color:var(--text)]">{value}</dd>
     </div>
+  )
+}
+
+// Static provenance tag for a remembered mem0 memory. Matches EvidenceChip's "Memory"
+// label (KIND_LABEL.memory_preference) but drops the confidence % — mem0 carries no score.
+function MemoryTag() {
+  return (
+    <span className="type-evidence inline-flex items-center gap-1.5 rounded-[var(--radius-chip)] bg-[var(--chip-bg)] px-2 py-0.5 text-[10px] tracking-wide text-[var(--muted)]">
+      <span className="font-semibold uppercase text-[var(--brass-bright)]">Memory</span>
+    </span>
   )
 }
 
@@ -27,9 +39,16 @@ export default function SettingsView() {
 
   useEffect(() => {
     activeRef.current = true
-    getProfile().then((d) => {
-      if (activeRef.current) setData(d)
-    })
+    // Profile and remembered facts are two different live sources (Supabase row vs mem0
+    // backend); fetch both, then render together once the shell has real data.
+    Promise.all([getProfile(), getMemoryPreferences()])
+      .then(([p, mem]) => {
+        if (activeRef.current) setData({ profile: p.profile, status: mem.status, facts: mem.facts })
+      })
+      .catch(() => {
+        /* A rejected profile read leaves the loading state; the page is auth-gated so a
+           signed-in user always resolves. mem0 failures degrade to status inside the read. */
+      })
     return () => {
       activeRef.current = false
     }
@@ -47,8 +66,7 @@ export default function SettingsView() {
     return <p className="text-[14px] text-[color:var(--text-muted)]">Loading your settings…</p>
   }
 
-  const { profile } = data
-  const receipt = memoryReceipt(data.facts)
+  const { profile, status, facts } = data
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-8">
@@ -79,15 +97,25 @@ export default function SettingsView() {
 
         {cleared ? (
           <p className="text-[14px] text-[color:var(--text-muted)]">Memory cleared. Astrail will infer fresh preferences next time.</p>
+        ) : status !== 'ok' ? (
+          /* Distinguish "memory is down" from "nothing saved yet" (backend api/schemas.py):
+             an empty list under a non-ok status is a failure, not an honest empty state. */
+          <p className="text-[14px] text-[color:var(--text-muted)]">
+            {status === 'disabled'
+              ? 'Preference memory is turned off for your account.'
+              : 'Couldn’t load your saved preferences right now. Try again in a moment.'}
+          </p>
+        ) : facts.length === 0 ? (
+          <p className="text-[14px] text-[color:var(--text-muted)]">Astrail hasn’t remembered anything yet. Plan a trip and your preferences start building here.</p>
         ) : (
-          /* Disclosure is a feature: every learned fact renders with its provenance —
-             Memory for what Astrail inferred, You for what the user stated (G7). Same
-             EvidenceChip as every other claim in the product (DESIGN.md §7). */
+          /* Every remembered item is a mem0 memory, so each carries the same "Memory"
+             provenance (DESIGN.md §7 disclosure). No confidence % — mem0 returns prose with
+             no score, and showing an invented number would fabricate data (guardrail #1). */
           <ul className="flex flex-col gap-2.5">
-            {receipt.map((entry) => (
-              <li key={entry.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[14px] text-[color:var(--text)]">
-                <span aria-hidden className="text-[color:var(--brass-deep)]">•</span> {entry.line}
-                <EvidenceChip evidence={entry.evidence} />
+            {facts.map((fact) => (
+              <li key={fact.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[14px] text-[color:var(--text)]">
+                <span aria-hidden className="text-[color:var(--brass-deep)]">•</span> {fact.memory}
+                <MemoryTag />
               </li>
             ))}
           </ul>

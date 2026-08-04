@@ -362,8 +362,9 @@ export type AccountDeletionCancelResponse = { cancelled: true }
 // Mirror of backend GET /account/deletion/status response. A cross-session read of the CALLER's own
 // account_status (identity from the token — never a client-supplied user id: guardrails #5/#6) so a
 // returning user lands on the pending banner / locked in-progress state without an in-session
-// request. Fail-safe by design: the backend returns ('active', null) when the real state can't be
-// read, so the read never blocks the delete UI.
+// request. Fail-safe by design: an absent/missing status reads as 'active', but a genuine backend read
+// FAILURE returns 'unknown' (the card surfaces a status-unavailable notice that preserves the cancel
+// path) — the read never blocks the delete UI, and a failure never masquerades as a safe 'active'.
 export type AccountDeletionStatusResponse = {
   account_status: AccountDeletionStatus
   deletion_scheduled_for: string | null

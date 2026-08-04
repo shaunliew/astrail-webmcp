@@ -144,16 +144,21 @@ async def _admin_hard_delete(client, user_id: str) -> None:
 
 
 async def _auth_user_absent(client, user_id: str) -> bool:
-    """True only if the auth user is CONFIRMED gone (a 404 / no user). An unknown error PROPAGATES
-    (the sweep backs off + retries) — never infer absence from a failed lookup. Secret-safe by
-    construction: raises the original exception; the sweep logs only its type."""
+    """True ONLY on a real 404 — POSITIVE proof the auth user is gone (a genuinely deleted user 404s).
+    A 200 response means the user is PRESENT, or the lookup is ambiguous (e.g. a malformed/empty body):
+    return False so Pass B backs off + flags rather than completing on anything short of a 404 — a
+    legally-binding "deleted" must not be inferred from an empty read. An unknown error PROPAGATES (the
+    sweep backs off + retries) — never infer absence from a failed lookup. Secret-safe by construction:
+    raises the original exception; the sweep logs only its type."""
     try:
-        resp = await client.auth.admin.get_user_by_id(user_id)
-    except Exception as exc:  # noqa: BLE001 — classified by status; unknown errors re-raised
+        await client.auth.admin.get_user_by_id(user_id)
+    except Exception as exc:  # noqa: BLE001 — a 404 is positive proof of deletion; others re-raised
         if getattr(exc, "status", None) == 404:
             return True
         raise
-    return getattr(getattr(resp, "user", None), "id", None) is None
+    # A 200 came back with no exception: the auth user still exists (deletion would have 404'd). Even an
+    # empty/malformed 200 is NOT proof of deletion, so never complete on it — report PRESENT.
+    return False
 
 
 def _backoff_seconds(attempts: int) -> int:

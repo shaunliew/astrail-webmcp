@@ -472,6 +472,24 @@ async def test_pass_b_missing_users_and_auth_lookup_unknown_error_propagates(mon
     assert client.log_row["outcome"] == "deleting"
 
 
+async def test_pass_b_missing_users_empty_200_lookup_is_not_proof_and_backs_off(monkeypatch):
+    # Fix 1b hardening: outcome='deleting' + public.users missing, and get_user_by_id returns a 200
+    # with NO user (an ambiguous/malformed empty body — NOT a 404). An empty read is NOT positive
+    # proof of deletion, so Pass B must NOT complete: it backs off + flags, same as a present user.
+    purge = _patch_purge(monkeypatch, None)
+    client = _FakeClient(log=[_deleting_log()], users=[],       # no public.users row
+                         auth_user_present=False)               # 200 response, but user is None
+    await deletion_engine.erase_user(client, object(), client.log_row)
+
+    assert client.get_user_calls == [_UID]        # positively probed — an empty 200 is not absence
+    assert purge.calls == []                       # never re-verified
+    assert client.deleted == []                    # NEVER completed / deleted on an unproven deletion
+    row = client.log_row
+    assert row["outcome"] == "deleting"            # not terminalized
+    assert row["attempts"] == 1                    # backed off, still retryable
+    assert "auth user present" in row["last_error"]
+
+
 # --- Exception discipline -----------------------------------------------------------------
 
 

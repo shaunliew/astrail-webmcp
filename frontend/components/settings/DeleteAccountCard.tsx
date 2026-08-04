@@ -75,8 +75,10 @@ export default function DeleteAccountCard({
   // Cross-session seed: read the caller's own account_status on mount so a returning user is placed
   // directly on the pending banner / locked in-progress state. This runs only when the card renders,
   // and the card renders only behind NEXT_PUBLIC_DELETION_ENABLED (gated at its mount in
-  // SettingsView) — so a hidden card never fetches. Fail-safe: the backend returns ('active', null)
-  // when it can't read the real state, and any transport error is swallowed (default stays).
+  // SettingsView) — so a hidden card never fetches. Fail-safe: the backend returns 'active' only for a
+  // positively-read non-pending state and 'unknown' on a genuine read FAILURE (the card then shows a
+  // status-unavailable notice that keeps the cancel path); a client-side transport error is swallowed
+  // (default stays). A read failure never masquerades as a safe 'active'.
   useEffect(() => {
     activeRef.current = true
     void (async () => {

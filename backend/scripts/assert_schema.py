@@ -60,7 +60,12 @@ _CONNECT_TIMEOUT_S = 10.0
 # and the all-zeros uuid can name no real account, so it matches no row -> 0 updates -> returns
 # false -> ZERO side effect, while still exercising the function body and the service_role grant.
 _CLAIM_RPC_LABEL = "claim_account_for_deletion (20260805010000)"
-_NIL_UUID = "00000000-0000-0000-0000-000000000000"
+# A deliberately INVALID uuid for the RPC-liveness probe (structural side-effect-freedom): PostgreSQL
+# rejects the `p_user_id uuid` cast (SQLSTATE 22P02) BEFORE the function body runs, so the probe can
+# NEVER execute the CAS UPDATE against ANY row — unlike a real (or nil) uuid, whose body DOES run and
+# merely happens to match nothing. A missing function still surfaces as PGRST202 (PostgREST can't
+# resolve the name+arg), so absence stays detectable while presence costs nothing.
+_CLAIM_RPC_PROBE_ID = "schema-probe-not-a-uuid"
 
 # ---------------------------------------------------------------------------------------------
 # THE MANIFEST — what this code version requires of production.
@@ -310,28 +315,32 @@ async def _identify_drift(client, table: str, columns: tuple[str, ...], *, attem
 async def _probe_claim_rpc(client, *, attempts: int, backoff_s: float, sleep) -> None:
     """RPC-LIVENESS probe for `claim_account_for_deletion` — the column loop cannot see an RPC.
 
-    Calls it once with the NIL uuid (side-effect-free, see `_CLAIM_RPC_LABEL`). Same retry
-    discipline as `_probe`: a transport failure is retried and then fails closed as `_Unreachable`;
-    a server ANSWER is a verdict, never retried. A `PGRST202` means the function is absent (drift);
-    any other `APIError` is a server answer that is NOT the expected boolean success (e.g. a missing
-    service_role EXECUTE grant surfaces here) and also fails closed. A boolean/empty success passes.
-    Secret-safe: names our own label + the SQLSTATE code, never the server message; transport errors
-    log the TYPE only.
+    STRUCTURALLY side-effect-free: calls the RPC once with a deliberately INVALID uuid
+    (`_CLAIM_RPC_PROBE_ID`), so PostgreSQL rejects the `p_user_id uuid` cast (SQLSTATE 22P02) BEFORE
+    the function body — the CAS UPDATE never runs, no row can ever be touched. Only a `PGRST202`
+    (PostgREST could not resolve the function name+arg → it is absent) means migration 2 has not
+    landed → abort. ANY other server ANSWER — the 22P02 cast rejection, a permission error, or even a
+    (practically impossible) success — means PostgREST RESOLVED the function, so it EXISTS → pass. Same
+    retry discipline as `_probe`: a transport failure is retried and then fails closed as
+    `_Unreachable`; a server answer is a verdict, never retried. Secret-safe: names our own label + the
+    SQLSTATE code only, never the server message; transport errors log the TYPE only.
     """
     from postgrest.exceptions import APIError
 
     last_error_type = "unknown"
     for attempt in range(attempts):
         try:
-            await client.rpc("claim_account_for_deletion", {"p_user_id": _NIL_UUID}).execute()
-            return
+            await client.rpc("claim_account_for_deletion",
+                             {"p_user_id": _CLAIM_RPC_PROBE_ID}).execute()
+            return  # PostgREST accepted the call → the function exists (unreachable with a bad uuid)
         except APIError as exc:
-            code = getattr(exc, "code", None)
-            if code == "PGRST202":
+            if getattr(exc, "code", None) == "PGRST202":
                 raise _RpcDrift(f"{_CLAIM_RPC_LABEL}: RPC NOT FOUND (PGRST202) — migration 2 has "
                                 "not landed; apply it, then redeploy") from None
-            raise _RpcDrift(f"{_CLAIM_RPC_LABEL}: unexpected error code {code} — the RPC did not "
-                            "answer the expected side-effect-free false") from None
+            # Any other server answer (22P02 cast rejection, a grant error, …) means PostgREST
+            # resolved the function → it EXISTS. Pass: the probe only asserts existence, and the
+            # invalid uuid guarantees the body never ran.
+            return
         except Exception as exc:                      # noqa: BLE001 — transport only; type name only
             last_error_type = type(exc).__name__
             if attempt + 1 < attempts:

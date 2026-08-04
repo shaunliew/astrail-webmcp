@@ -308,22 +308,30 @@ async def test_missing_claim_rpc_aborts_the_deploy_and_names_the_migration(capsy
     combined = "".join(capsys.readouterr())
     assert "claim_account_for_deletion" in combined
     assert "20260805010000" in combined
-    # Probed exactly once with the nil uuid — a definitive PGRST202 answer is not retried.
+    # Probed exactly once with the invalid-uuid sentinel — a definitive PGRST202 answer is not retried.
     assert client.rpc_calls == [
-        ("claim_account_for_deletion", {"p_user_id": assert_schema._NIL_UUID})
+        ("claim_account_for_deletion", {"p_user_id": assert_schema._CLAIM_RPC_PROBE_ID})
     ]
 
 
-async def test_live_claim_rpc_passes_and_is_probed_with_the_nil_uuid(capsys):
-    """POSITIVE CONTROL. A healthy RPC (default side-effect-free False) passes, is probed with the
-    all-zeros uuid (so no real account is ever touched), and the summary names it."""
-    client = FakeSupabase(schema_from_manifest())
+async def test_present_claim_rpc_passes_via_the_invalid_uuid_cast_rejection(capsys):
+    """POSITIVE CONTROL + the structural-safety proof. A PRESENT RPC probed with the invalid-uuid
+    sentinel rejects the `uuid` cast (SQLSTATE 22P02) BEFORE its body runs — PostgREST RESOLVED the
+    function, so the gate PASSES (code 0) and the summary names it, while the CAS UPDATE never
+    executed against any row. A wrong classification (treating a non-PGRST202 answer as drift) would
+    abort here instead."""
+    cast_rejected = APIError({
+        "code": "22P02",
+        "message": 'invalid input syntax for type uuid: "schema-probe-not-a-uuid"',
+        "hint": None, "details": None,
+    })
+    client = FakeSupabase(schema_from_manifest(), rpc_error=cast_rejected)
 
     code = await assert_schema.run(client, sleep=_no_sleep)
 
     assert code == 0
     assert client.rpc_calls == [
-        ("claim_account_for_deletion", {"p_user_id": assert_schema._NIL_UUID})
+        ("claim_account_for_deletion", {"p_user_id": assert_schema._CLAIM_RPC_PROBE_ID})
     ]
     assert "claim_account_for_deletion" in capsys.readouterr().out
 

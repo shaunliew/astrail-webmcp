@@ -25,6 +25,43 @@ deletion, not provable-exactly-once machinery.
 - **Next:** on ZH's go — one lean plan-review of the destructive T2/T3, then build Task 1 and STOP. No
   build/wire yet this session.
 
+**LEAN REVIEW DONE (Codex `gpt-5.6-sol`, on lean terms): BLOCK 4/10 — shape right, but 5 lean-level
+correctness/security bugs in the Rev-1 lean plan (none need the fortress). Task 1 re-confirmed safe.**
+Folded into **Lean Rev 2**. The 5 must-fixes:
+1. **False "cleared" is reproducible** — the plan trusted `clear_memory=="cleared"` as terminal proof, but
+   that function's in-flight check only looks back 30s (`memory_clear.py:135`), mem0 has shown a 17-min
+   queue (`:28`), and `_CLEAR_RECONCILIATION_READY` exists BECAUSE of a live repro where it said cleared
+   while queued adds later appeared (`main.py:285`). An add queued >30s → delete_all at grace-end →
+   get_all empty → "cleared" → hard-delete+"completed" → the add materializes under a deleted uuid =
+   orphaned mem0 + a false "done." **Fix (lean):** fail-closed new mem0 writes for pending/deleting
+   accounts + engine waits for job quiescence + a two-pass verify (purge on one sweep, re-verify empty on
+   a later sweep) before auth-delete. NOT the event-id barrier.
+2. **Cancel-vs-sweep race** — engine reads `pending_deletion` once, then does slow mem0 ops, then deletes;
+   a cancel that lands mid-op still gets deleted (user got "cancelled ✅", loses account). **Fix:** one
+   atomic CAS `pending_deletion → deleting` (point of no return) before external erasure; cancel then wins
+   or gets "already started." Also dedups two sweepers.
+3. **CHECK can't store `cancelled`** — log `outcome` CHECK is `pending|completed|failed` but cancel marks
+   `cancelled`. **Fix:** add `cancelled`+`deleting`; cancel must atomically mark log + **clear the
+   timestamps** so a re-request gets a fresh 7-day schedule (else the coalesce'd old deadline deletes
+   immediately).
+4. **Crash idempotency breaks post-auth-delete** — step-1 re-reads `public.users`, but auth-delete
+   cascades that row away; crash after auth-delete → next sweep finds no user row → never hits "404=
+   success" → log stuck pending forever + no email address to retry. **Fix:** recovery handles "public
+   user missing" → verify auth absent → complete log; **capture `recipient_email` BEFORE auth-delete**
+   (store short-lived, clear after send).
+5. **RPC privilege pin** — Task-2 RPCs take `p_user_id`; if `SECURITY DEFINER` with default EXECUTE grant,
+   an authenticated user can call via PostgREST to schedule/cancel ANOTHER uuid. **Fix:** explicit
+   `revoke from public/anon/authenticated; grant service_role` (mirror `20260804000000:163`) + test direct
+   anon/authenticated invocation.
+Plus: **reauth** as specified is "recent auth," not a per-action challenge — a session from a normal OTP
+login 1 min ago passes; either document honestly as "OTP within a tight window" (lean default) or add a
+one-use reauth intent that the amr must postdate; use a NEW `_decode_claims` (don't touch `_decode` —
+callers at `auth.py:127/134`). Nice-to-haves: `_reap_loop` is **120s not daily** (`main.py:78/113`) → add
+`next_attempt_at` spacing; `attempts` isn't dedup (the CAS is); "22 tables" is stale (~24 of 27 public);
+define a **retention period** for the FK-free log. §6 tradeoffs judged legit for beta EXCEPT the mem0 one
+(unsafe as paired with "never false deleted" — fixed by #1); CCPA §7101 only if actually in-scope (25-seat
+co usually below thresholds); GDPR needs no HMAC. **Full output:** `<scratchpad>/codex-lean-out.txt`.
+
 Everything below (SESSION-2 UPDATE, the A/B/C decision, the Rev-3/Rev-4 review captures) is HISTORY of the
 full-rigor track — still accurate, but the active direction is LEAN above.
 

@@ -133,8 +133,14 @@ fail-safe→active/null; + T4 latency fold `asyncio.wait_for(6s)` on the schedul
 (status fetch on mount seeds the pending/deleting banner cross-session; T5 folds: unmount `activeRef` guard,
 `MOCK_AUTH_ENABLED` short-circuit on all 3 deletion api fns, `no_pending_deletion` neutral note). Backend
 1547 pass, frontend tsc clean + 23 tests, gates NOT flipped, `NEXT_PUBLIC_DELETION_ENABLED` still off.
-**Combined review IN FLIGHT (contract-match `schemas.py`↔`backend-types.ts` + fail-safe + folds).** Remaining
-below = pure go-live switches, HELD for ZH.
+**Combined review DONE: SHIP, no Critical/Important** — verified by RUNNING: contract parity exact (incl.
+datetime `Z`-suffix ↔ FE `string`), fail-safe (even Pydantic-validation errors → safe default), structurally
+sub-only, email bound load-bearing (test: <2s w/ a 5s send; `CancelledError` still propagates), hidden card
+structurally can't fetch, all 3 folds correct, gates untouched. 2 Minors: #1 test-coverage of `maybe_single`
+bare-`None` → **FOLDED `710adc7`** (26 pass); #2 no rate-limiter on the GET status → **DEFERRED** (matches
+the repo's unrated GET-status convention — saved-reels status/stream; FE fetches once on mount; revisit if
+abuse appears). **T5's 3 minors + T4's #4 latency: all now FOLDED.** Remaining below = pure go-live switches,
+HELD for ZH.
 1. **Live DB gate:** apply the 3 migrations to a rebased local Postgres; run pgTAP `019_account_deletion.sql`
    + `020_claim_account_for_deletion.sql` (privilege-pin + CAS runtime proof, deferred here — no local PG).
 2. **Wire the cross-session `account_status` read** (T5 gap): add `account_status`+`deletion_scheduled_for`

@@ -127,6 +127,14 @@ Commits: `89b7a42`(T1) `98cc1bd`(T2) `5cc6fda`+`76b7ecb`(T3) `9fb1a59`(T5) `9d3d
 `52f2cce`(tracing-off, standalone). Backend 1539 pass, frontend green, eval 6229.0 holds.
 
 ## T6 — GO-LIVE CHECKLIST (do NOT start without ZH's explicit go)
+**★ T6 CODE PARTS DONE (2026-08-04, ZH-approved "code parts, stop before flipping flags"):** items 2 + 3
+below are BUILT (gated OFF) — backend `5fa0b33` (`GET /account/deletion/status`: ungated, sub-only,
+fail-safe→active/null; + T4 latency fold `asyncio.wait_for(6s)` on the scheduled email) + frontend `edc4393`
+(status fetch on mount seeds the pending/deleting banner cross-session; T5 folds: unmount `activeRef` guard,
+`MOCK_AUTH_ENABLED` short-circuit on all 3 deletion api fns, `no_pending_deletion` neutral note). Backend
+1547 pass, frontend tsc clean + 23 tests, gates NOT flipped, `NEXT_PUBLIC_DELETION_ENABLED` still off.
+**Combined review IN FLIGHT (contract-match `schemas.py`↔`backend-types.ts` + fail-safe + folds).** Remaining
+below = pure go-live switches, HELD for ZH.
 1. **Live DB gate:** apply the 3 migrations to a rebased local Postgres; run pgTAP `019_account_deletion.sql`
    + `020_claim_account_for_deletion.sql` (privilege-pin + CAS runtime proof, deferred here — no local PG).
 2. **Wire the cross-session `account_status` read** (T5 gap): add `account_status`+`deletion_scheduled_for`

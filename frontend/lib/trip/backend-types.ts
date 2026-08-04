@@ -352,6 +352,16 @@ export type AccountDeletionResponse = { scheduled_for: string }
 // 409 deletion_already_started (sweeper claimed it → status `deleting`) or no_pending_deletion.
 export type AccountDeletionCancelResponse = { cancelled: true }
 
+// Mirror of backend GET /account/deletion/status response. A cross-session read of the CALLER's own
+// account_status (identity from the token — never a client-supplied user id: guardrails #5/#6) so a
+// returning user lands on the pending banner / locked in-progress state without an in-session
+// request. Fail-safe by design: the backend returns ('active', null) when the real state can't be
+// read, so the read never blocks the delete UI.
+export type AccountDeletionStatusResponse = {
+  account_status: AccountStatus
+  deletion_scheduled_for: string | null
+}
+
 // Error `code` values on the {"error":{"code","message"}} envelope for the deletion endpoints
 // (backend main.py HTTPException details). The UI branches on these to react distinctly.
 export const ERROR_CODE_DELETION_UNAVAILABLE = 'deletion_unavailable' as const         // 503 — gated off / migration lag

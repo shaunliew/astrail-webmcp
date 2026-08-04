@@ -13,6 +13,14 @@ vi.mock('@/lib/trip/supabase-api', () => ({ getProfile, getMemoryPreferences }))
 const { useUser } = vi.hoisted(() => ({ useUser: vi.fn() }))
 vi.mock('@/lib/auth/use-user', () => ({ useUser }))
 
+// When the flag is ON the mounted DeleteAccountCard fires the on-mount cross-session status read;
+// stub it to a benign active state so the flag test stays deterministic (no real network call).
+const { getAccountDeletionStatus } = vi.hoisted(() => ({ getAccountDeletionStatus: vi.fn() }))
+vi.mock('@/lib/trip/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/trip/api')>()
+  return { ...actual, getAccountDeletionStatus }
+})
+
 import SettingsView from '@/components/settings/SettingsView'
 
 describe('SettingsView — self-serve deletion flag gate', () => {
@@ -20,6 +28,7 @@ describe('SettingsView — self-serve deletion flag gate', () => {
     getProfile.mockResolvedValue({ profile: DEMO_PROFILE, facts: [] })
     getMemoryPreferences.mockResolvedValue({ status: 'ok', facts: DEMO_MEMORY_FACTS })
     useUser.mockReturnValue({ user: { id: 'u1', name: 'Traveler', email: 'traveler@example.com' }, loading: false })
+    getAccountDeletionStatus.mockResolvedValue({ account_status: 'active', deletion_scheduled_for: null })
   })
 
   afterEach(() => {

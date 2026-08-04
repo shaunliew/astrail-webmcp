@@ -1,9 +1,14 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useUser } from '@/lib/auth/use-user'
 import { getAccessToken } from '@/lib/supabase/session'
-import { ApiError, cancelAccountDeletion, requestAccountDeletion } from '@/lib/trip/api'
+import {
+  ApiError,
+  cancelAccountDeletion,
+  getAccountDeletionStatus,
+  requestAccountDeletion,
+} from '@/lib/trip/api'
 import {
   ERROR_CODE_DELETION_ALREADY_STARTED,
   ERROR_CODE_DELETION_NOT_ACTIVE,
@@ -42,8 +47,9 @@ function formatScheduledDate(iso: string): string {
 }
 
 export default function DeleteAccountCard({
-  // Task-6 seam: a future account_status read seeds the pending/deleting banner across sessions.
-  // In the current build the banner appears after an in-session request; default = active.
+  // Pre-fetch default for the cross-session status seed below: the props are the state the card
+  // shows until the on-mount GET /account/deletion/status resolves and overwrites them (a returning
+  // pending/deleting user then lands directly on the banner, without an in-session request).
   initialStatus = 'active',
   initialScheduledFor = null,
 }: {
@@ -59,6 +65,35 @@ export default function DeleteAccountCard({
   const [confirmText, setConfirmText] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Neutral (non-error) note — distinct from `error` (--fail): used when a Cancel finds nothing
+  // pending, so the banner doesn't just vanish silently.
+  const [notice, setNotice] = useState<string | null>(null)
+  // Unmount guard (mirrors SettingsView) — the async handlers + status fetch setState after an
+  // await; if the card unmounts mid-request this ref short-circuits the stale update.
+  const activeRef = useRef(true)
+
+  // Cross-session seed: read the caller's own account_status on mount so a returning user is placed
+  // directly on the pending banner / locked in-progress state. This runs only when the card renders,
+  // and the card renders only behind NEXT_PUBLIC_DELETION_ENABLED (gated at its mount in
+  // SettingsView) — so a hidden card never fetches. Fail-safe: the backend returns ('active', null)
+  // when it can't read the real state, and any transport error is swallowed (default stays).
+  useEffect(() => {
+    activeRef.current = true
+    void (async () => {
+      try {
+        const token = await getAccessToken()
+        const res = await getAccountDeletionStatus(token)
+        if (!activeRef.current) return
+        setStatus(res.account_status)
+        setScheduledFor(res.deletion_scheduled_for)
+      } catch {
+        /* Leave the pre-fetch default (active) — the delete control still renders. */
+      }
+    })()
+    return () => {
+      activeRef.current = false
+    }
+  }, [])
 
   // Exact match only — the point is to make an accidental delete impossible. A near-miss
   // (case-off 'delete', trailing space, partial email) stays disabled. Empty never matches even
@@ -81,14 +116,17 @@ export default function DeleteAccountCard({
     if (!canConfirm || busy) return
     setBusy(true)
     setError(null)
+    setNotice(null)
     try {
       const token = await getAccessToken()
       const res = await requestAccountDeletion(token)
+      if (!activeRef.current) return
       setScheduledFor(res.scheduled_for)
       setStatus('pending_deletion')
       setDialogOpen(false)
       setConfirmText('')
     } catch (e) {
+      if (!activeRef.current) return
       // Never claim success on a failure. 503 = feature not available (secondary fallback to the
       // readiness flag); 409 not_active = a concurrent request already scheduled it; else generic.
       if (e instanceof ApiError && e.code === ERROR_CODE_DELETION_UNAVAILABLE) {
@@ -99,7 +137,7 @@ export default function DeleteAccountCard({
         setError('Something went wrong — your account was not scheduled for deletion.')
       }
     } finally {
-      setBusy(false)
+      if (activeRef.current) setBusy(false)
     }
   }
 
@@ -107,30 +145,41 @@ export default function DeleteAccountCard({
     if (busy) return
     setBusy(true)
     setError(null)
+    setNotice(null)
     try {
       const token = await getAccessToken()
       await cancelAccountDeletion(token)
+      if (!activeRef.current) return
       setStatus('active')
       setScheduledFor(null)
     } catch (e) {
+      if (!activeRef.current) return
       if (e instanceof ApiError && e.code === ERROR_CODE_DELETION_ALREADY_STARTED) {
         // The sweeper claimed the account (Task 3's point of no return) — reflect it, lock Cancel.
         setStatus('deleting')
       } else if (e instanceof ApiError && e.code === ERROR_CODE_NO_PENDING_DELETION) {
-        // Nothing to cancel (e.g. it was already cancelled elsewhere) — return to the delete control.
+        // Nothing to cancel (e.g. it was already cancelled elsewhere) — return to the delete control
+        // WITH a brief neutral note, so the banner doesn't disappear silently.
         setStatus('active')
         setScheduledFor(null)
+        setNotice('This account isn’t scheduled for deletion.')
       } else {
         setError('Couldn’t cancel right now. Please try again.')
       }
     } finally {
-      setBusy(false)
+      if (activeRef.current) setBusy(false)
     }
   }
 
   const errorAlert = error ? (
     <p role="alert" className="text-[13px] text-[color:var(--fail)]">
       {error}
+    </p>
+  ) : null
+
+  const noticeMessage = notice ? (
+    <p role="status" className="text-[13px] text-[color:var(--text-muted)]">
+      {notice}
     </p>
   ) : null
 
@@ -158,6 +207,7 @@ export default function DeleteAccountCard({
           {busy ? 'Cancelling…' : 'Cancel deletion'}
         </button>
         {errorAlert}
+        {noticeMessage}
       </section>
     )
   }
@@ -217,6 +267,7 @@ export default function DeleteAccountCard({
         </div>
       )}
       {errorAlert}
+      {noticeMessage}
     </section>
   )
 }

@@ -1,6 +1,7 @@
 import type {
   AccountDeletionCancelResponse,
   AccountDeletionResponse,
+  AccountDeletionStatusResponse,
   GenerateTripRequest,
   GenerateTripResponse,
   MemoryClearResponse,
@@ -90,12 +91,19 @@ export async function requestSeat(accessToken: string): Promise<RequestSeatRespo
 // Fixed stamp for the mock-auth shell — no wall-clock, so the offline flow is deterministic.
 const MOCK_SEAT_REQUESTED_AT = '2026-01-01T00:00:00.000Z'
 
+// Fixed 7-days-out schedule for the mock-auth deletion short-circuit — deterministic, no wall-clock.
+const MOCK_DELETION_SCHEDULED_FOR = '2026-01-08T00:00:00.000Z'
+
 // POST /account/deletion — enter the 7-day cancellable deletion grace for the AUTHENTICATED
 // account (self-serve; no body — the backend reads identity from the token, never a
 // client-supplied user id: guardrails #5/#6). Mirrors requestSeat's authed-POST shape. Non-ok
 // responses throw an ApiError whose `status` + `code` let the caller branch distinctly: 503
 // deletion_unavailable (gated off / not live) vs 409 deletion_not_active (already pending/deleting).
 export async function requestAccountDeletion(accessToken: string): Promise<AccountDeletionResponse> {
+  // Under the mock-auth demo shell there is no backend and the token is fake — short-circuit to a
+  // deterministic mock success instead of firing a real network call (mirrors generateTrip /
+  // requestSeat). The fixed schedule keeps the offline flow reproducible (no wall-clock).
+  if (MOCK_AUTH_ENABLED) return { scheduled_for: MOCK_DELETION_SCHEDULED_FOR }
   const res = await fetch(`${BACKEND_URL}/account/deletion`, {
     method: 'POST',
     headers: {
@@ -116,10 +124,39 @@ export async function requestAccountDeletion(accessToken: string): Promise<Accou
 // a claimed row throws ApiError(409, 'deletion_already_started'), which the UI reacts to by
 // showing the in-progress state and disabling Cancel. 503 deletion_unavailable = gated off.
 export async function cancelAccountDeletion(accessToken: string): Promise<AccountDeletionCancelResponse> {
+  // Mock-auth shell: no backend, fake token — short-circuit to a mock success (mirrors the sibling
+  // fns) so the demo never fires a real authed request.
+  if (MOCK_AUTH_ENABLED) return { cancelled: true }
   const res = await fetch(`${BACKEND_URL}/account/deletion/cancel`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+
+  if (!res.ok) {
+    throw await apiErrorFrom(res)
+  }
+
+  return res.json()
+}
+
+// GET /account/deletion/status — read the AUTHENTICATED account's deletion state (self-serve; no
+// body — identity from the token, never a client-supplied user id: guardrails #5/#6) so a returning
+// user is seeded onto the pending banner / locked in-progress state across sessions without an
+// in-session request. Fail-safe by design: the backend returns ('active', null) when it can't read
+// the real state, so this read never blocks the UI. The DeleteAccountCard fetches it on mount, and
+// that card renders only behind NEXT_PUBLIC_DELETION_ENABLED — a hidden card never calls this.
+export async function getAccountDeletionStatus(
+  accessToken: string,
+): Promise<AccountDeletionStatusResponse> {
+  // Mock-auth shell: no backend, fake token — report a benign 'active' state without a network call
+  // (mirrors the sibling deletion fns) so the demo shell never fires a real authed request.
+  if (MOCK_AUTH_ENABLED) return { account_status: 'active', deletion_scheduled_for: null }
+  const res = await fetch(`${BACKEND_URL}/account/deletion/status`, {
+    method: 'GET',
+    headers: {
       Authorization: `Bearer ${accessToken}`,
     },
   })

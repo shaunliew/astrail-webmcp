@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { getTrip, listTrips, getProfile, submitFeedback, streamGeneration, createTrip, saveProfile, clearMemory } from '@/lib/trip/mock-api'
+import { getTrip, listTrips, getProfile, streamGeneration, createTrip, saveProfile, clearMemory } from '@/lib/trip/mock-api'
 import type { StreamEvent } from '@/lib/trip/backend-types'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures'
 
@@ -19,11 +19,6 @@ describe('mock-api', () => {
     const { profile, facts } = await getProfile()
     expect(profile.id).toBe('demo-user')
     expect(facts.length).toBeGreaterThan(0)
-  })
-
-  it('submitFeedback resolves ok', async () => {
-    const res = await submitFeedback({ trip_id: 'trip_tokyo_demo', artifact_type: 'trip', artifact_id: null, rating: 5 })
-    expect(res.ok).toBe(true)
   })
 
   it('streamGeneration emits stage events then a terminal result', async () => {

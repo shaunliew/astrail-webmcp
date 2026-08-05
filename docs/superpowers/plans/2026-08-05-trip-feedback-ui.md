@@ -369,11 +369,12 @@ anchor must not move).
   both. Deployment reality for the prompts: backend live at 3/min burst, strict 422s, 404-not-403,
   append-only with no delete; UI ships unflagged on zh's next deploy.
 - Live-verify (needs ZH's go — permanent rows): Aster demo account, one composer submission per
-  shape (thumb, rating+note, bare note) **with ≥60s between each** — the shapes share the same
-  3/minute window, so back-to-back sends would 429 the smoke itself (Codex r2 #7); confirm 201s +
-  rows in Supabase. Then, in a FRESH minute: one deliberate 422 (rating on a thumbs row via curl,
-  not the UI — 422s don't write) and, last, the 429 probe (4 rapid sends). gstack `/qa` for flow
-  evidence; if browser/creds unavailable, /qa is the held human gate (hotel-arc precedent).
+  shape (thumb, rating+note, bare note) **with ≥60s between each** — the limiter allows THREE posts
+  per window (the FOURTH 429s: Codex r2 #7), so three shape-smokes fit the budget and don't self-429;
+  the spacing is good hygiene (each smoke lands in a fresh window, clear of the 429 probe below).
+  Confirm 201s + rows in Supabase. Then, in a FRESH minute: one deliberate 422 (rating on a thumbs
+  row via curl, not the UI — 422s don't write) and, last, the 429 probe (4 rapid sends). gstack
+  `/qa` for flow evidence; if browser/creds unavailable, /qa is the held human gate (hotel-arc precedent).
 
 ## Rollback
 

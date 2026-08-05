@@ -169,6 +169,16 @@ describe('TripFeedbackPanel — composer', () => {
     expect(await screen.findByText(/saved: 4 of 5 with note/i)).toBeInTheDocument()
   })
 
+  // A persisted free_text row confirms as exactly "Saved: note" — the note IS the feedback, so
+  // there is no " with note" suffix by design (documents the intentional no-suffix wording).
+  it('confirms a persisted free_text row as exactly "Saved: note" (no suffix by design)', async () => {
+    submitTripFeedback.mockResolvedValue(row({ feedback_type: 'free_text', comment: 'the route was wrong' }))
+    render(<TripFeedbackPanel tripId="trip-1" />)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'the route was wrong' } })
+    fireEvent.click(screen.getByRole('button', { name: /send feedback/i }))
+    expect(await screen.findByText('Saved: note')).toBeInTheDocument()
+  })
+
   // 6b — no-op resubmission guard (the lastSent fingerprint)
   it('disables Send after a successful send until the draft changes, then posts the NEW draft', async () => {
     render(<TripFeedbackPanel tripId="trip-1" />)
@@ -185,6 +195,55 @@ describe('TripFeedbackPanel — composer', () => {
     fireEvent.click(screen.getByRole('button', { name: /send feedback/i }))
     await waitFor(() => expect(submitTripFeedback).toHaveBeenCalledTimes(2))
     expect(draftOf(1)).toEqual({ feedback_type: 'thumbs_up', comment: 'and one more thing' })
+  })
+
+  // 6c — a NOTED send fingerprints the POST-CLEAR bare draft, so clearing the note can't re-arm
+  // Send for a permanent bare duplicate (append-only, no delete endpoint). Regression for the
+  // fix: the post-clear bare draft is fingerprinted.
+  it('keeps Send disabled after a noted thumb send (post-clear bare draft is fingerprinted), re-arming only on a real change', async () => {
+    render(<TripFeedbackPanel tripId="trip-1" />)
+    fireEvent.click(screen.getByRole('button', { name: /thumbs up/i }))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'loved it' } })
+    fireEvent.click(screen.getByRole('button', { name: /send feedback/i }))
+    await waitFor(() => expect(submitTripFeedback).toHaveBeenCalledTimes(1))
+    // note is cleared, but the bare {thumbs_up} it drops to is already the fingerprint → Send OFF
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(''))
+    const send = screen.getByRole('button', { name: /send feedback/i })
+    expect(send).toBeDisabled()
+    // the selection itself survives the success (explicit — both final reviewers asked)
+    expect(screen.getByRole('button', { name: /thumbs up/i })).toHaveAttribute('aria-pressed', 'true')
+    // typing a new note is a real change → re-armed
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'one more thing' } })
+    expect(send).toBeEnabled()
+    // clearing it back returns to the fingerprinted bare draft → disabled again (no bare duplicate)
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '' } })
+    expect(send).toBeDisabled()
+    // switching the signal is also a real change → re-armed
+    fireEvent.click(screen.getByRole('button', { name: /thumbs down/i }))
+    expect(send).toBeEnabled()
+  })
+
+  it('keeps Send disabled after a noted rating send (post-clear bare draft is fingerprinted), re-arming only on a real change', async () => {
+    render(<TripFeedbackPanel tripId="trip-1" />)
+    fireEvent.click(screen.getByRole('radio', { name: '4 stars' }))
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'great route' } })
+    fireEvent.click(screen.getByRole('button', { name: /send feedback/i }))
+    await waitFor(() => expect(submitTripFeedback).toHaveBeenCalledTimes(1))
+    // note cleared → drops to the bare {rating:4}, which is already the fingerprint → Send OFF
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(''))
+    const send = screen.getByRole('button', { name: /send feedback/i })
+    expect(send).toBeDisabled()
+    // the 4-star rating survives the success
+    expect(screen.getByRole('radio', { name: '4 stars' })).toHaveAttribute('aria-checked', 'true')
+    // typing a new note is a real change → re-armed
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'actually, one gripe' } })
+    expect(send).toBeEnabled()
+    // clearing it back returns to the fingerprinted bare rating → disabled again
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '' } })
+    expect(send).toBeDisabled()
+    // switching to a different rating is a real change → re-armed
+    fireEvent.click(screen.getByRole('radio', { name: '5 stars' }))
+    expect(send).toBeEnabled()
   })
 
   // 7a — honest pending

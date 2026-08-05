@@ -144,7 +144,12 @@ export default function TripFeedbackPanel({ tripId }: { tripId: string }) {
       const { feedback } = await submitTripFeedback(tripId, submitted, token)
       // Trust the persisted row, not the request we sent (the 201 echoes what was stored).
       setConfirmed(confirmedFromRow(feedback))
-      setLastSent(JSON.stringify(submitted))
+      // Fingerprint the POST-CLEAR draft, not the submitted one: clearing the note below drops the
+      // draft to a bare signal, and fingerprinting the *submitted* (noted) draft would leave that
+      // bare draft looking "changed" — re-arming Send for a permanent bare duplicate (append-only,
+      // no delete endpoint). buildDraft(signal, '') is that next bare draft; for a free_text send it
+      // is null → `?? draft` keeps the submitted-draft fingerprint (Send is already off via draft===null).
+      setLastSent(JSON.stringify(buildDraft(signal, '') ?? draft))
       setNote('')
       setStatus({ kind: 'ok', message: 'Noted — thanks.' })
     } catch (err) {

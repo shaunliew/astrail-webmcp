@@ -7,6 +7,7 @@ import type {
   MemoryClearResponse,
   RequestSeatResponse,
   StreamEvent,
+  TripFeedbackRequest,
   TripFeedbackResponse,
 } from './backend-types'
 // Mock-auth shell: generation runs against the offline fixture replay with zero backend
@@ -195,13 +196,21 @@ export async function clearMemory(accessToken: string): Promise<MemoryClearRespo
 }
 
 // Client-side draft union (Codex r1 #7): narrower than the TripFeedbackRequest mirror (which
-// stays 1:1 with the Pydantic model — guardrail #4), so the combinations the backend 422s
-// (rating without a rating value, rating on a thumbs row) are unrepresentable at the call site.
-// Every member is assignable to TripFeedbackRequest.
+// stays 1:1 with the Pydantic model — guardrail #4). The union prevents invalid CONSTRUCTION — a
+// fresh literal / buildDraft result can't be rating-without-a-value or rating-on-a-thumbs-row. It
+// is NOT a structural firewall: an object assigned from a wider value could still carry extra keys
+// past the union, so the real guarantee is "drafts built by buildDraft / object literals", enforced
+// by the exact-key serialization tests (lib/trip/__tests__/trip-feedback-api.test.ts). Every member
+// stays assignable to TripFeedbackRequest — pinned at compile time by _DraftAssignableToRequest below.
 export type TripFeedbackDraft =
   | { feedback_type: 'thumbs_up' | 'thumbs_down'; comment?: string }
   | { feedback_type: 'rating'; rating: 1 | 2 | 3 | 4 | 5; comment?: string }
   | { feedback_type: 'free_text'; comment: string }
+
+type _Assert<T extends true> = T
+// Compile-time pin (guardrail #4): every TripFeedbackDraft member must stay assignable to the
+// backend mirror. tsc fails here if a future mirror change breaks assignability.
+type _DraftAssignableToRequest = _Assert<TripFeedbackDraft extends TripFeedbackRequest ? true : false>
 
 // Deterministic id for the mock-auth shell — no wall-clock, no randomness.
 const MOCK_FEEDBACK_ID = 'mock-feedback-1'

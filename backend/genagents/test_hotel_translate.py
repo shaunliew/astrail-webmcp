@@ -15,13 +15,12 @@ from types import SimpleNamespace
 import pytest
 
 from genagents.hotel_translate import (
-    HotelLocalization,
-    HotelLocalizationItem,
     build_localizer_agent,
     build_localizer_input,
     localize_hotel_names,
 )
 from geocode.errors import ResolveError
+from models.enrichment import HotelLocalization, HotelLocalizationItem
 
 _JP = "JP"
 

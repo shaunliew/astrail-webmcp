@@ -290,6 +290,18 @@ async def test_name_fingerprint_mismatch_re_resolves():
     assert (result.lat, result.lng) == (9.0, 8.0)
 
 
+async def test_miss_row_fingerprint_mismatch_re_resolves():
+    """A stale cached MISS whose fingerprint no longer matches is a READ-MISS, not a served miss:
+    Travala ID-reuse / relocation must RE-RESOLVE, never serve the old negative-cached None."""
+    client = _Client({CACHE_TABLE: [_miss_row("k", "OLD")]})
+    resolver = _CountingResolver(GeocodeResult(lat=9.0, lng=8.0, country_code="JP"))
+
+    result = await resolve_cached(client, "k", resolver, expected_fingerprint="NEW")
+
+    assert resolver.calls == 1                       # the stale miss is NOT served
+    assert (result.lat, result.lng) == (9.0, 8.0)
+
+
 # ---- resolve_cached: writes + TTL -----------------------------------------------------------------
 async def test_found_write_uses_hit_ttl_and_carries_the_fingerprint():
     client = _Client()

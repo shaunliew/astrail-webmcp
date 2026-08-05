@@ -34,10 +34,10 @@ from __future__ import annotations
 import json
 import os
 import re
-
-from pydantic import BaseModel, Field
+import sys
 
 from geocode.errors import ResolveError
+from models.enrichment import HotelLocalization
 
 DEFAULT_MODEL = "gpt-5.5-2026-04-23"
 FALLBACK_MODEL = "gpt-4o"
@@ -63,22 +63,6 @@ _INJECTION_RE = re.compile(
 )
 
 _UNTRUSTED_FIELDS = ("name", "address", "location")
-
-
-class HotelLocalizationItem(BaseModel):
-    """One localized hotel name anchored to a SERVER-ASSIGNED ordinal (like RestaurantLabel.poi_index).
-    The model returns ONLY (ordinal, localized_name) — never a hotelId — so it cannot re-pair a name to
-    a different hotel: the caller snaps localized_name back to hotels[ordinal] server-side (guardrail
-    #11). No `min_length` on localized_name: a string constraint on an output_type can 400 the strict
-    Responses schema (and the gpt-4o fallback hits the same 400); blanks are dropped in code instead."""
-    ordinal: int
-    localized_name: str
-
-
-class HotelLocalization(BaseModel):
-    """Localizer output_type wrapper. NEVER a bare list — a bare list breaks the strict Responses
-    schema (LESSONS-HACKATHON)."""
-    localized: list[HotelLocalizationItem] = Field(default_factory=list)
 
 
 LOCALIZER_INSTRUCTIONS = """\
@@ -256,14 +240,24 @@ async def localize_hotel_names(
     user_input = build_localizer_input(indexed, country_code)
     valid_ordinals = {ordinal for ordinal, _ in indexed}
 
+    used = model
     try:
         try:
             result = await run(build_localizer_agent(model), user_input)
         except _model_errors():
+            used = FALLBACK_MODEL
             result = await run(build_localizer_agent(FALLBACK_MODEL), user_input)
     except _guardrail_errors():
         raise ResolveError("hotel localization input guardrail tripped") from None
     except Exception as exc:  # translator/OpenAI/infra failure — never swallow to {}
-        raise ResolveError(f"hotel localization failed: {type(exc).__name__}") from None
+        # Chain to `exc` (traceback/log only, never sent to the model) so the underlying fault is
+        # debuggable; the MESSAGE stays type-only, carrying no hotel data (token safety).
+        raise ResolveError(f"hotel localization failed: {type(exc).__name__}") from exc
 
-    return _snap_localizations(result.final_output, valid_ordinals)
+    localized = _snap_localizations(result.final_output, valid_ordinals)
+    # One-line stderr diagnostic (auditable without the OpenAI Traces dashboard), mirroring
+    # restaurant.py / place_extractor.py. TOKEN-SAFE: model name + integer counts ONLY — never a
+    # hotel name / address / location or a localized string.
+    print(f"  [hotel_localize] model={used} hotels_in={len(indexed)} localized={len(localized)}",
+          file=sys.stderr)
+    return localized

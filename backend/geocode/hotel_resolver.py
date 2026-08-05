@@ -31,6 +31,15 @@ LIVE, uncached, so it can never poison a shared cache row. A typed `ResolveError
 PROPAGATES (translator outage, malformed-2xx, cache-write failure) — never coerced to a miss — so the
 caller (persist) preserves prior hotel rows rather than clobbering good coords.
 
+Per-key translate is DELIBERATE — DO NOT re-batch it (v3 #3 / v4 #3). `translate` runs ONE localizer
+call per MISSED hotel, from inside that hotel's `resolve_cached` single-flight (`_resolve_one` calls
+`translate([hotel], ...)`, a 1-element batch); the calls run concurrently across hotels via
+`asyncio.gather`, but each is fronted by its OWN per-key lock + cache read. Hoisting translate into a
+single batch call OUTSIDE the per-key single-flight would reintroduce the cross-trip double-bill: two
+trips sharing a hotel would each pre-translate before either wrote its cache row, so the localizer bill
+(and outage blast radius) would no longer be deduplicated by the cache. A future maintainer must NOT
+"optimize" the per-key localizer call back into a pre-batch outside `resolve_cached`.
+
 LIVE-ONLY — like `genagents.hotel_translate` and `geocode.cache`, this module MUST NEVER be imported by
 the offline eval / offline_harness (T6 asserts it never enters sys.modules on the offline path). All IO
 is injected (`geocode`, `translate`, `cache_client`), so it holds no token and makes no network call.

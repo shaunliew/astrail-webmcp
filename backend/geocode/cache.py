@@ -183,7 +183,7 @@ async def lookup_many(client, keys) -> dict[str, CacheRow | None]:
     return result
 
 
-async def _read_one(client, key: str, expected_fingerprint):
+async def _read_one(client, key: str, expected_fingerprint: str | None):
     """Read the single un-expired row for `key`. Returns:
 
       * a `GeocodeResult` — a clean, fingerprint-matching FOUND hit;
@@ -213,7 +213,7 @@ async def _read_one(client, key: str, expected_fingerprint):
     return _to_geocode_result(cached) if cached.status == "found" else None
 
 
-async def _write(client, key: str, result: GeocodeResult | None, expected_fingerprint,
+async def _write(client, key: str, result: GeocodeResult | None, expected_fingerprint: str | None,
                  hit_ttl_days: int, miss_ttl_days: int) -> None:
     """Write-through upsert of the resolve outcome. RAISES `CacheError` on failure (Guardrail #7).
 
@@ -256,7 +256,7 @@ async def resolve_cached(
     key: str,
     resolver: Callable[[], Awaitable[GeocodeResult | None]],
     *,
-    expected_fingerprint,
+    expected_fingerprint: str | None,
     hit_ttl_days: int = 365,
     miss_ttl_days: int = 14,
 ) -> GeocodeResult | None:

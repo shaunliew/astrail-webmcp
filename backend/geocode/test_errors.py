@@ -5,6 +5,8 @@ consumes; the module must import with no key and no heavy SDK.
 """
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 
 
@@ -27,14 +29,23 @@ def test_errors_carry_a_message():
 
 
 def test_errors_module_is_import_light():
-    """The taxonomy is a leaf module: importing it must not drag in the Agents SDK, openai,
-    httpx, or supabase — it is imported by both geocode.* and genagents.hotel_translate."""
-    import importlib
-
-    for heavy in ("agents", "openai", "httpx", "supabase"):
-        sys.modules.pop(heavy, None)
-    import geocode.errors  # noqa: F401
-
-    importlib.reload(geocode.errors)
-    for heavy in ("agents", "openai", "httpx", "supabase"):
-        assert heavy not in sys.modules, f"geocode.errors pulled in {heavy}"
+    """The taxonomy is a leaf module: a FRESH-interpreter import must not drag in the Agents SDK,
+    openai, httpx, or supabase — it is imported by both geocode.* and genagents.hotel_translate.
+    Runs in a subprocess (not an in-process importlib.reload) so a heavy dep pulled in by another
+    test can never mask a real regression here (mirrors test_hotel_translate's fresh-interpreter check)."""
+    backend_dir = os.path.dirname(os.path.dirname(__file__))
+    code = (
+        "import sys; import geocode.errors;"
+        "assert 'agents' not in sys.modules, 'agents imported at module load';"
+        "assert 'openai' not in sys.modules, 'openai imported at module load';"
+        "assert 'httpx' not in sys.modules, 'httpx imported at module load';"
+        "assert 'supabase' not in sys.modules, 'supabase imported at module load';"
+        "print('OK')"
+    )
+    env = {k: v for k, v in os.environ.items()}
+    env.pop("OPENAI_API_KEY", None)
+    env.pop("MAPBOX_SECRET_TOKEN", None)
+    result = subprocess.run([sys.executable, "-c", code], cwd=backend_dir,
+                            capture_output=True, text=True, env=env)
+    assert result.returncode == 0, result.stderr
+    assert "OK" in result.stdout

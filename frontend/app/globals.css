@@ -564,6 +564,18 @@ button:focus-visible {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28), 0 10px 30px rgba(0, 0, 0, 0.35);
 }
 
+/* Selected-card state (hotel hub picker). A dedicated modifier — NOT a Tailwind border utility —
+   because the scoped .app-shell/.paper-scope surface rules above out-rank single-class utilities,
+   which silently swallowed a utility-only selected border. Must stay below those rules. The inset
+   999px spread tints over whichever background the scope painted without replacing it. */
+.surface.surface--selected {
+  border-color: var(--brass);
+  box-shadow:
+    inset 0 0 0 999px var(--brass-soft),
+    0 0 0 1px var(--brass),
+    0 0 14px var(--brass-glow);
+}
+
 .paper-scope .surface.trip-card:hover {
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), 0 14px 34px rgba(0, 0, 0, 0.24);
 }
@@ -630,6 +642,7 @@ button:focus-visible {
   color: #0b0f16;
   cursor: default;  /* the hub pin is a non-interactive marker (selection happens in HotelPanel) */
   display: flex;
+  font-size: 17px;
   height: 34px;
   justify-content: center;
   line-height: 1;

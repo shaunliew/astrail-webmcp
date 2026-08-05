@@ -1,17 +1,15 @@
 # Plan — Trip-level feedback UI (one-shot composer: thumbs/stars + optional note)
 
-> Status: **Rev 3 — BUILD-READY. Eng review + Codex ×2 (r1 5/10 with 2 High blockers → composer
-> redesign → r2 8/10, BLOCKERS: none, all 7 non-blocking items folded below: no-op-resubmission
-> fingerprint, failed-screen layout constraint, star radiogroup semantics + as-const tuple,
-> matrix/exclusion/key-reset test gaps, semantic "Saved:" confirmation line, live-verify cooldown
-> sequencing; the accept/override kickoff question is surfaced to ZH in the session report).** Codex r1 found 2 High
-> blockers that forced a real redesign: (1) the status gating was wrong in both directions
-> (`places_ready` leaked into the "completed-only" surface; `failed` trips — where feedback is the
-> most valuable signal, per HANDOFF.md and a deliberate backend regression test — hid the panel
-> entirely), and (2) three independently-submitting controls fought the endpoint's designed
-> one-action semantics, the 3/minute burst budget, and latest-per-user analytics. Rev 2 is a
-> single-submission composer with an explicit status matrix. Owner: frontend (Zhi Hao's lane,
-> built by this autonomous session). Base: branch `feat/trip-feedback-ui` off `zh`
+> Status: **BUILT + FULLY REVIEWED (2026-08-05) — held pre-merge on the live /qa human gate.**
+> Review trail: plan eng review + Codex r1 (5/10, 2 High blockers → composer redesign) → Codex r2
+> (8/10, no blockers, 7 folds) → T1/T2/T3 built via subagent-driven-development, each per-task
+> gate PASS with fault-injection (14 injections total, every guard proven load-bearing) → final
+> fable whole-branch SHIP-WITH-NITS + Codex cross-model (both independently converged on the
+> noted-send fingerprint hole) → fix `29a6fbd` + fix-delta re-review PASS. 521/521 frontend
+> tests, tsc clean, `npm run build` clean, eval anchor holds. **Remaining (ZH):** accept/override
+> the composer decision below; give the go for live /qa (permanent append-only rows, Aster demo
+> account); then merge into `zh`. Owner: frontend (Zhi Hao's lane, built by an autonomous
+> session). Base: branch `feat/trip-feedback-ui` off `zh`
 > (`/Users/desmondchyezhihao/Github/astrail-zh`). Board card: *"Frontend: replace mock
 > SettingsView with real data; add feedback UI + clipboard/PWA intake (PRD)"* — **feedback-UI half
 > only**. Backend half (PR #54) is Done, deployed, verified live — this arc adds its first caller,

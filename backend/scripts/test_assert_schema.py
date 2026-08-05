@@ -570,6 +570,21 @@ def test_the_hotel_suggestions_geo_columns_the_hub_map_writes_are_pinned():
             "place_durations"} <= set(assert_schema.REQUIRED_SCHEMA["hotel_suggestions"])
 
 
+def test_the_hotel_geocode_cache_columns_the_resolver_writes_are_pinned():
+    """The hotel forward-geocode cache (20260805020000) is a write-through cache the hotel resolver
+    reads before translating/geocoding and upserts into. Every column here is writer-used —
+    lookup_many selects them and the upsert writes cache_key/status/lat/lng/country_code/
+    name_fingerprint/expires_at — so code shipped ahead of the migration fails on the first cache
+    read/write. Nothing else in this file would notice them going missing: hotel_geocode_cache is
+    not an anchor, and the well-formed/positive-control tests only check the manifest's shape.
+
+    Same self-erasure shape as the hotel_suggestions/memory_events pins above: the fake DB is derived
+    FROM the manifest (`schema_from_manifest`), so pinning them here is the only thing that reddens a
+    silent removal."""
+    assert {"cache_key", "status", "lat", "lng", "country_code", "name_fingerprint",
+            "created_at", "expires_at"} <= set(assert_schema.REQUIRED_SCHEMA["hotel_geocode_cache"])
+
+
 def test_the_shipped_manifest_passes_the_guard():
     """POSITIVE CONTROL. Without it, `return ["broken"]` unconditionally passes every negative
     test above — while aborting every deploy this gate is supposed to let through.

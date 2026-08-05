@@ -422,3 +422,66 @@ def test_destinations_exceeding_cap_degrade_without_crashing():
     assert len(matrix.calls) == 1
     assert len(matrix.calls[0]["destinations"]) <= 24
     assert len(out[0].place_durations) <= 24
+
+
+# --- T5: injected resolve_hotels seam (default path stays byte-identical, above) --------------
+
+def test_injected_resolve_hotels_bypasses_default_geocode():
+    # An injected resolver replaces the default geocode path entirely: rank_hotels calls it with
+    # (hotels, proximity=(lng, lat)) and never touches the `geocode` fallback. The resolved coord
+    # still rides the UNCHANGED country + ≤60km gate + Matrix + ranking.
+    hotels = [_hotel("A", address="1-1 Shinjuku")]
+    seen: dict = {"proximity": None}
+
+    async def never_geocode(*a, **k):
+        raise AssertionError("default geocode must not run when resolve_hotels is injected")
+
+    async def resolver(hotels_arg, *, proximity):
+        seen["proximity"] = proximity
+        seen["hotels"] = list(hotels_arg)
+        return [_geo(35.69, 139.75)]
+
+    matrix = FakeMatrix(duration_fn=lambda s, d: 300.0)
+    out = _run(rank_hotels(hotels, _PLACES, "Tokyo", "JP", "mid_range",
+                           geocode=never_geocode, matrix=matrix, resolve_hotels=resolver))
+    assert out[0].geo_status == "placed"
+    assert out[0].lat == 35.69 and out[0].lng == 139.75
+    assert out[0].rank == 1 and out[0].is_recommended is True
+    assert seen["hotels"] == hotels                     # input-ordered hotels passed through
+    prox = seen["proximity"]
+    assert prox is not None and 139.5 < prox[0] < 140.0 and 35.5 < prox[1] < 35.8  # (lng, lat)
+
+
+def test_injected_resolver_result_still_passes_trip_gate():
+    # The country + ≤60km gate ALWAYS re-runs on the resolver's coords (trip-specific, never cached,
+    # v5 #2): a resolved point outside the 60km radius, or in the wrong country, is gated `unresolved`
+    # even though the resolver "found" it. No `geocode` is injected — proving it is optional when a
+    # resolver is supplied.
+    hotels = [_hotel("A", address="1-1 Faraway"), _hotel("B", address="2-2 Foreign")]
+
+    async def resolver(hotels_arg, *, proximity):
+        return [_geo(37.5, 139.75),                       # ~200km from the Tokyo centroid → gated out
+                _geo(35.68, 139.75, country_code="us")]   # wrong country → gated out
+
+    matrix = FakeMatrix(duration_fn=lambda s, d: 300.0)
+    out = _run(rank_hotels(hotels, _PLACES, "Tokyo", "JP", "mid_range",
+                           matrix=matrix, resolve_hotels=resolver))
+    assert all(r.geo_status == "unresolved" for r in out)
+    assert matrix.calls == []                            # nothing placed → no Matrix call
+
+
+def test_injected_resolver_infra_error_propagates():
+    # A typed ResolveError from the resolver is NOT swallowed to a miss — it propagates out of
+    # rank_hotels so persist can preserve prior rows (decision #7). Contrast the default path, which
+    # swallows a per-hotel geocode exception to `unresolved` (test_geocode_exception_degrades...).
+    from geocode.errors import ResolveError
+
+    hotels = [_hotel("A", address="1-1 Shinjuku")]
+
+    async def resolver(hotels_arg, *, proximity):
+        raise ResolveError("mapbox down (sanitized)")
+
+    matrix = FakeMatrix(duration_fn=lambda s, d: 300.0)
+    with pytest.raises(ResolveError):
+        _run(rank_hotels(hotels, _PLACES, "Tokyo", "JP", "mid_range",
+                         matrix=matrix, resolve_hotels=resolver))

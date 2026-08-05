@@ -172,6 +172,38 @@ def _affordability(placed: list[tuple[int, Mapping[str, Any]]], budget_level, nu
 # --- orchestration ---------------------------------------------------------------------------
 
 
+def _default_resolve_hotels(
+    geocode: Callable[..., Awaitable["GeocodeResult | None"]],
+    city: str | None,
+    country_code: str,
+):
+    """The back-compat default resolver used when `rank_hotels(resolve_hotels=None)`: the pre-T5
+    romaji `types="address"` geocode path, returning a `GeocodeResult | None` list ALIGNED WITH
+    INPUT ORDER. Byte-identical to the old inline behaviour — an address-less hotel, or a per-hotel
+    geocode that raises or misses, becomes `None` (→ unresolved). Individual geocode exceptions are
+    SWALLOWED here (`return_exceptions=True`) exactly as before, never propagated; only the LIVE T4
+    resolver (persist-bound) raises typed infra errors so persist can preserve prior rows."""
+    async def resolve(hotels: Sequence[Mapping[str, Any]], *,
+                      proximity: tuple[float, float] | None) -> list["GeocodeResult | None"]:
+        idxs: list[int] = []
+        coros = []
+        for i, h in enumerate(hotels):
+            address = h.get("address")
+            if not address:
+                continue  # no street address → cannot honestly geocode → unresolved
+            query = ", ".join(part for part in (str(address), city) if part)
+            idxs.append(i)
+            coros.append(geocode(query, types="address", country=country_code,
+                                 proximity_lng_lat=proximity))  # forward_geocode wants (lng, lat)
+        raw = await asyncio.gather(*coros, return_exceptions=True) if coros else []
+        out: list["GeocodeResult | None"] = [None] * len(hotels)
+        for i, res in zip(idxs, raw):
+            if not isinstance(res, BaseException) and res is not None:
+                out[i] = res
+        return out
+    return resolve
+
+
 async def rank_hotels(
     hotels: Sequence[Mapping[str, Any]],
     places: Sequence[Mapping[str, Any]],
@@ -179,8 +211,9 @@ async def rank_hotels(
     country_code: str | None,
     budget_level: str | None,
     *,
-    geocode: Callable[..., Awaitable["GeocodeResult | None"]],
+    geocode: Callable[..., Awaitable["GeocodeResult | None"]] | None = None,
     matrix: Callable[..., Awaitable["Matrix | None"]],
+    resolve_hotels: Callable[..., Awaitable[list["GeocodeResult | None"]]] | None = None,
 ) -> list[RankedHotel]:
     """Geocode + rank Travala hotels into `RankedHotel` records. Pure: `geocode` and `matrix` are
     injected (token pre-bound by the caller). See the module docstring for the honest-failure and
@@ -195,7 +228,13 @@ async def rank_hotels(
             gate. When None, no hotel can pass the country gate → all unresolved (honest).
         budget_level: "budget" | "mid_range" | "premium" | "luxury" | None — the price-fit target.
         geocode: async (query, *, types, country, proximity_lng_lat) -> GeocodeResult | None.
+            Used ONLY by the back-compat default resolver (selected when `resolve_hotels is None`).
         matrix: async (sources, destinations, *, annotations) -> Matrix | None. (lat, lng) points.
+        resolve_hotels: async (hotels, *, proximity) -> list[GeocodeResult | None] aligned with
+            input order. Injected by persist (the cached, country-aware, JP-localizing T4 resolver);
+            None selects a thin default that wraps `geocode` on the romaji types="address" path so
+            behaviour is byte-identical to the pre-T5 code. A typed ResolveError/CacheError from the
+            resolver PROPAGATES (persist then preserves prior rows); a genuine per-hotel miss is None.
     """
     if not hotels:
         return []
@@ -215,24 +254,22 @@ async def rank_hotels(
         return _all_unresolved(hotels)
     clat, clng = centroid
 
-    # Geocode every address-bearing hotel CONCURRENTLY (bounds added latency to ~1 RTT, not N).
-    to_geocode: list[int] = []
-    coros = []
-    for idx, h in enumerate(hotels):
-        address = h.get("address")
-        if not address:
-            continue  # no street address → cannot honestly geocode → unresolved
-        query = ", ".join(part for part in (str(address), city) if part)
-        to_geocode.append(idx)
-        coros.append(geocode(query, types="address", country=country_code,
-                             proximity_lng_lat=(clng, clat)))  # forward_geocode wants (lng, lat)
-    results = await asyncio.gather(*coros, return_exceptions=True) if coros else []
+    # Resolve every hotel to a GeocodeResult | None ALIGNED WITH INPUT ORDER (v3 #4), via the
+    # injected batch resolver. `resolve_hotels=None` → a thin default wrapping the CURRENT romaji
+    # `geocode` path, so behaviour is byte-identical when no resolver is injected (back-compat,
+    # Codex note 2). The LIVE T4 resolver (persist-bound) routes JP → localized POI and PROPAGATES a
+    # typed ResolveError/CacheError on infra failure (never coerced to a miss) so persist preserves
+    # prior rows. Either way the trip-specific country + ≤60 km gate below ALWAYS re-runs on the
+    # resolved coords — that gate is never cached (v5 #2).
+    if resolve_hotels is None:
+        resolve_hotels = _default_resolve_hotels(geocode, city, country_code)
+    results = await resolve_hotels(hotels, proximity=(clng, clat))  # forward_geocode wants (lng, lat)
 
     # Apply the honest gate: placed requires a hit, an in-country match, and an in-proximity point.
     geo_by_idx: dict[int, "GeocodeResult"] = {}
-    for idx, res in zip(to_geocode, results):
+    for idx, res in enumerate(results):
         if isinstance(res, BaseException) or res is None:
-            continue  # a raised geocode (sanitized) or a miss → unresolved (never surfaced/logged)
+            continue  # a swallowed geocode failure or a miss → unresolved (never surfaced/logged)
         if res.country_code is None:  # country_code None already returned early above
             continue
         if res.country_code.lower() != country_code.lower():

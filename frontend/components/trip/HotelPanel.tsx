@@ -85,7 +85,7 @@ export default function HotelPanel({
                 aria-pressed={selected}
                 className={[
                   'surface w-full rounded-lg p-2.5 text-left transition-colors',
-                  selected ? 'border-[var(--brass)]' : 'hover:border-[var(--brass)]',
+                  selected ? 'surface--selected' : 'hover:border-[var(--brass)]',
                 ].join(' ')}
               >
                 {body}

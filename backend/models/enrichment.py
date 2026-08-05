@@ -68,4 +68,23 @@ class NarrationResult(BaseModel):
     trip_summary: str = ""
 
 
+class HotelLocalizationItem(BaseModel):
+    """One localized hotel name anchored to a SERVER-ASSIGNED ordinal (like RestaurantLabel.poi_index).
+    The model returns ONLY (ordinal, localized_name) — never a hotelId — so it cannot control WHICH
+    server hotel a name is assigned to: the caller snaps localized_name back to hotels[ordinal]
+    server-side (guardrail #11). This prevents MODEL-CONTROLLED ID REASSIGNMENT; it does NOT prevent a
+    wrong localized NAME in a valid slot (that residual is accepted-and-watched — the poi_category gate
+    doesn't catch it either). No `min_length` on localized_name: a string constraint on an output_type
+    can 400 the strict Responses schema (and the gpt-4o fallback hits the same 400); blanks are dropped
+    in code instead."""
+    ordinal: int
+    localized_name: str
+
+
+class HotelLocalization(BaseModel):
+    """Localizer output_type wrapper. NEVER a bare list — a bare list breaks the strict Responses
+    schema (LESSONS-HACKATHON)."""
+    localized: list[HotelLocalizationItem] = Field(default_factory=list)
+
+
 # HotelSuggestion — added with its agent.

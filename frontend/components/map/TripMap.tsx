@@ -103,6 +103,7 @@ export default function TripMap({
         el.type = 'button'
         el.setAttribute('aria-label', hub.name)
         el.className = 'hotel-hub-pin'
+        el.textContent = '🏨'
         markers.push(
           new mapboxgl.Marker({ element: el }).setLngLat([hub.lng, hub.lat]).addTo(map),
         )

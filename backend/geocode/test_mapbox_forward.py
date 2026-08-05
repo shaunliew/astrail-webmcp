@@ -10,7 +10,14 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 
-from geocode.mapbox_forward import TOKYO, apply_geocode, forward_geocode, parse_forward_response
+from geocode.errors import ResolveError
+from geocode.mapbox_forward import (
+    TOKYO,
+    apply_geocode,
+    forward_geocode,
+    parse_forward_response,
+    strict_forward_geocode,
+)
 from models.geocode import GeocodeResult
 from models.place import PlaceResult
 
@@ -336,3 +343,163 @@ async def test_forward_geocode_passes_language_ja():
     assert qs.get("country") == ["jp"]
     assert qs.get("q") == ["東京タワー"]
     assert qs.get("proximity") == ["139.7671,35.6812"]
+
+
+# ---------------------------------------------------------------------------
+# parse_forward_response — keeps feature_type + poi_category (plan decision #2c/#7)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_forward_response_keeps_feature_type_and_poi_category():
+    fc = {
+        "features": [{
+            "geometry": {"coordinates": [139.77, 35.68]},
+            "properties": {
+                "name": "Hilton Tokyo Bay",
+                "feature_type": "poi",
+                "poi_category": ["lodging", "hotel"],
+            },
+        }],
+    }
+    result = parse_forward_response(fc)
+    assert result is not None
+    assert result.feature_type == "poi"
+    assert result.poi_category == ["lodging", "hotel"]
+
+
+def test_parse_forward_response_poi_category_defaults_empty_and_tolerates_junk():
+    # absent poi_category → [] ; a non-list value → [] ; non-string members filtered out.
+    assert parse_forward_response(
+        {"features": [{"geometry": {"coordinates": [139.77, 35.68]}, "properties": {}}]}
+    ).poi_category == []
+    assert parse_forward_response(
+        {"features": [{"geometry": {"coordinates": [139.77, 35.68]},
+                       "properties": {"poi_category": "lodging"}}]}
+    ).poi_category == []
+    assert parse_forward_response(
+        {"features": [{"geometry": {"coordinates": [139.77, 35.68]},
+                       "properties": {"poi_category": ["hotel", 3, None]}}]}
+    ).poi_category == ["hotel"]
+
+
+# ---------------------------------------------------------------------------
+# strict_forward_geocode — sharp taxonomy (valid-empty → miss; malformed → ResolveError)
+# ---------------------------------------------------------------------------
+
+
+async def test_strict_forward_geocode_valid_empty_is_a_miss():
+    """A valid FeatureCollection with no features is a genuine geocode MISS → None (not raise)."""
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json={"type": "FeatureCollection", "features": []})
+    ))
+    assert await strict_forward_geocode("東京タワー", token="TKN", client=client) is None
+
+
+async def test_strict_forward_geocode_hit_returns_result_with_category():
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json={"features": [{
+            "geometry": {"coordinates": [139.77, 35.68]},
+            "properties": {"feature_type": "poi", "poi_category": ["hotel"]},
+        }]})
+    ))
+    result = await strict_forward_geocode("帝国ホテル", token="TKN", client=client)
+    assert result is not None
+    assert result.poi_category == ["hotel"]
+
+
+async def test_strict_forward_geocode_malformed_2xx_body_raises_resolve_error():
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, text="<html>not json</html>")
+    ))
+    with pytest.raises(ResolveError):
+        await strict_forward_geocode("place", token="TKN", client=client)
+
+
+async def test_strict_forward_geocode_malformed_feature_shape_raises_resolve_error():
+    """A NON-EMPTY response whose feature is broken is malformed → ResolveError, NOT a miss."""
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json={"features": [{"geometry": {"coordinates": [139.77]}}]})
+    ))
+    with pytest.raises(ResolveError):
+        await strict_forward_geocode("place", token="TKN", client=client)
+
+
+async def test_strict_forward_geocode_non_2xx_raises_resolve_error_without_token():
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
+    with pytest.raises(ResolveError) as exc_info:
+        await strict_forward_geocode("place", token="SECRET", client=client)
+    assert "SECRET" not in str(exc_info.value)
+
+
+async def test_strict_forward_geocode_network_error_raises_resolve_error_without_token():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectTimeout("boom", request=request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    with pytest.raises(ResolveError) as exc_info:
+        await strict_forward_geocode("place", token="SECRET", client=client)
+    assert "SECRET" not in str(exc_info.value)
+
+
+async def test_strict_forward_geocode_fills_missing_country_from_filter():
+    """The JP types="poi", language="ja" hotel response omits `country` from context, so the parsed
+    result has country_code=None. Because the request pinned country=JP, every hit is in JP by
+    construction — strict_forward_geocode fills the missing country_code from the filter so the
+    identity gate can confirm. (Confirmed live 2026-08-05; without this, JP hotels all-miss.)"""
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json={"features": [{
+            "geometry": {"coordinates": [139.7584, 35.6725]},
+            "properties": {
+                "feature_type": "poi", "poi_category": ["トラベル>ホテル", "トラベル"],
+                "context": {"place": {"name": "東京都"}},  # NO country key — the real ja shape
+            },
+        }]})
+    ))
+    result = await strict_forward_geocode("帝国ホテル 東京", token="TKN", country="JP",
+                                          language="ja", client=client)
+    assert result is not None
+    assert result.country_code == "JP"
+
+
+async def test_strict_forward_geocode_does_not_override_returned_country():
+    """The filter-fill is a FALLBACK only — a country_code Mapbox actually returned is never
+    clobbered (even if the request filter's case differs)."""
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json={"features": [{
+            "geometry": {"coordinates": [139.77, 35.68]},
+            "properties": {"feature_type": "poi",
+                           "context": {"country": {"name": "Japan", "country_code": "jp"}}},
+        }]})
+    ))
+    result = await strict_forward_geocode("place", token="TKN", country="JP", client=client)
+    assert result is not None
+    assert result.country_code == "jp"  # Mapbox's own value, not the uppercased filter
+
+
+async def test_strict_forward_geocode_no_country_filter_leaves_country_none():
+    """With no country filter and no country in the response, country_code stays None (nothing to
+    truthfully fill it from)."""
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json={"features": [{
+            "geometry": {"coordinates": [139.77, 35.68]},
+            "properties": {"feature_type": "poi"},
+        }]})
+    ))
+    result = await strict_forward_geocode("place", token="TKN", country=None, client=client)
+    assert result is not None
+    assert result.country_code is None
+
+
+async def test_strict_forward_geocode_passes_country_and_language_kwargs():
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"type": "FeatureCollection", "features": []})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    await strict_forward_geocode("주소, 서울", token="TKN", types="address",
+                                 country="KR", language="en", client=client)
+    qs = parse_qs(urlparse(seen["url"]).query)
+    assert qs.get("country") == ["KR"]
+    assert qs.get("types") == ["address"]

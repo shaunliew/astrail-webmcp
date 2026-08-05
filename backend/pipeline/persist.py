@@ -25,6 +25,7 @@ from genagents.place_extractor import is_placeholder_url   # keyless import (no 
 from genagents.transport import (   # keyless import (no network at module scope)
     VALID_PROFILES, is_drawable_linestring, profile_to_mode,
 )
+from geocode.errors import CacheError, ResolveError  # leaf module — import-keyless, no cycle
 from grounding import _coord_cache_key, _ground_place
 from models.enrichment import WeatherReport
 from models.evidence import TripPlaceEvidence
@@ -834,36 +835,80 @@ def _hotel_star(star) -> float | None:
 
 
 async def _rank_hotels_best_effort(hotels, place_rows, city, country_code, budget_level,
-                                   *, geocode, matrix, trip_id: str):
-    """Geocode + route-rank the Travala hotels into RankedHotel records, BEST-EFFORT
-    (Guardrail #3). Returns the RankedHotel list, or None when ranking can't run at all —
-    no MAPBOX token, or an unexpected raise — in which case the caller writes every hotel
-    `unresolved` (never an invented coordinate, Guardrail #1). Never raises out of the stage.
+                                   *, geocode=None, matrix=None, resolve_hotels=None,
+                                   cache_client=None, trip_id: str):
+    """Resolve + route-rank the Travala hotels into RankedHotel records, BEST-EFFORT
+    (Guardrail #3). Returns the RankedHotel list, or None when ranking degrades to an
+    all-unresolved rewrite (an unexpected NON-infra raise) — in which case the caller writes
+    every hotel `unresolved` (never an invented coordinate, Guardrail #1).
 
-    `geocode`/`matrix` are injected for tests; when absent they are bound here from
-    `MAPBOX_SECRET_TOKEN` (imported lazily so `import pipeline.persist` stays key/SDK-free)."""
+    Preserve-on-failure (plan decision #7 / Guardrail #12): an INFRA failure — a missing MAPBOX
+    token, or a typed ResolveError/CacheError from the resolver (translator/Mapbox outage,
+    malformed 2xx, cache-write) — is RE-RAISED (never swallowed to None) so `persist_hotels`
+    preserves the prior hotel rows rather than clobbering good coords with an all-unresolved
+    rewrite. Only genuine per-hotel geocode MISSES become `unresolved` rows.
+
+    `geocode`/`matrix`/`resolve_hotels` are injected for tests. When absent, the LIVE hotel resolver
+    (`geocode.hotel_resolver.resolve_hotels`, bound with the STRICT Mapbox geocoder + the T1 name
+    localizer + the trip's `cache_client`) and Matrix are bound here from `MAPBOX_SECRET_TOKEN`
+    (imported lazily so `import pipeline.persist` stays key/SDK-free, and the LIVE-only resolver
+    modules never load on the offline path — which never reaches this helper).
+
+    TEST FOOTGUN: injecting only `geocode` does NOT stub the localizer — with `resolve_hotels=None` the
+    REAL `localize_hotel_names` is still bound as `translate`, so a JP-trip persist test that injects
+    `geocode` alone reaches the live Agents SDK. A JP-trip test MUST inject `resolve_hotels` (which
+    stands in for translate+geocode+cache together), not just `geocode`."""
     if not hotels:
         return None
-    if geocode is None or matrix is None:
+    # Uppercase the trip country: the identity cache key + the on-read CacheRow both require
+    # `^[A-Z]{2}$` (a lowercase places.country_code would silently miss the cache otherwise).
+    country_code = country_code.upper() if country_code else country_code
+
+    # A live binding (Matrix, or the real resolver) needs the MAPBOX token, but ONLY when ranking
+    # will actually attempt Mapbox — i.e. a country is known (rank_hotels short-circuits to
+    # all-unresolved without one, never touching Mapbox). A MISSING token where ranking WOULD run is
+    # an INFRA failure, not a geocode miss → raise so persist preserves prior rows (decision #7),
+    # never an all-unresolved wipe.
+    token = None
+    if country_code and (matrix is None or (resolve_hotels is None and geocode is None)):
         token = os.environ.get("MAPBOX_SECRET_TOKEN")
         if not token:
-            return None   # honest degrade: no token -> ranking can't run -> all unresolved
+            raise ResolveError("MAPBOX token unavailable for hotel ranking")
     try:
         # Lazy imports live inside the try so an ImportError degrades honestly (Guardrail #3)
         # exactly like a geocode/Matrix failure, rather than escaping this best-effort helper.
-        if geocode is None:
-            from geocode.mapbox_forward import forward_geocode
-
-            async def geocode(query, **kwargs):
-                return await forward_geocode(query, token=token, **kwargs)
         if matrix is None:
             from genagents.matrix import fetch_matrix
 
             async def matrix(sources, destinations, **kwargs):
                 return await fetch_matrix(sources, destinations, token=token, **kwargs)
+        if resolve_hotels is None:
+            from genagents.hotel_translate import localize_hotel_names
+            from geocode.hotel_resolver import resolve_hotels as _live_resolve
+            if geocode is None:
+                from geocode.mapbox_forward import strict_forward_geocode
+
+                async def geocode(query, **kwargs):
+                    return await strict_forward_geocode(query, token=token, **kwargs)
+            resolve_hotels = _live_resolve
+            translate = localize_hotel_names
+        else:
+            translate = None  # an injected resolver stands in for translate+geocode+cache
+
+        async def _resolve_bound(hotels_arg, *, proximity):
+            # Bind the trip context (country/city/proximity) + injected IO into the (hotels, *,
+            # proximity) shape rank_hotels calls; proximity is a disambiguation hint (passed, not keyed).
+            return await resolve_hotels(hotels_arg, country_code, city, proximity,
+                                        geocode=geocode, translate=translate,
+                                        cache_client=cache_client)
+
         from genagents.hotel_ranking import rank_hotels
         return await rank_hotels(hotels, place_rows, city, country_code, budget_level,
-                                 geocode=geocode, matrix=matrix)
+                                 matrix=matrix, resolve_hotels=_resolve_bound)
+    except (ResolveError, CacheError):
+        # Infra failure: PROPAGATE before the broad except so persist_hotels preserves prior hotel
+        # rows (never an all-unresolved clobber) — exactly like the Travala-fetch-failure path.
+        raise
     except Exception as exc:
         # Type only, never the message — a Mapbox error can carry the access token in its URL.
         logger.warning("hotel_ranking_unavailable trip_id=%s error=%s", trip_id, type(exc).__name__)
@@ -942,21 +987,27 @@ async def _replace_hotel_rows(client, trip_id: str, rows: list[dict], *,
 
 
 async def persist_hotels(client, trip_id: str, *, fetch=None, geocode=None, matrix=None,
+                         resolve_hotels=None,
                          job_id: str | None = None, lease_token: str | None = None) -> int:
     """Additive: search Travala for hotels for THIS trip (destination + dates + occupancy), geocode
     + route-rank them into map hub candidates, and REPLACE hotel_suggestions. Per-TRIP (one search),
     NOT per-day. Retry-safe (delete-first, now inside the fenced RPC). Returns rows written.
-    `fetch`/`geocode`/`matrix` are injectable (default to the real Travala/Mapbox calls).
+    `fetch`/`geocode`/`matrix`/`resolve_hotels` are injectable (default to the real Travala/Mapbox
+    calls + the cached, country-aware hotel resolver bound with the trip's `client` as its cache).
 
     Reads the trip row for dates/occupancy/budget and derives the search city + country_code from
     the persisted places (shared `_trip_place_coords`). Skip-on-missing (PRD/DECISIONS LOG): if
     location or dates are missing, write no hotel rows (clearing any stale ones) WITHOUT searching —
     hotel search must never block trip generation. No LLM prompt, no reel content.
 
-    Ranking is best-effort (Guardrail #3): a geocode/Matrix outage — or an absent MAPBOX token —
-    writes every hotel `geo_status='unresolved'` with NULL coords (never an invented coordinate,
-    Guardrail #1). The lease fence and the best-effort degrade are ORTHOGONAL — a geocode failure
-    still writes (unresolved rows) through the fenced RPC; only a lost lease suppresses the write.
+    Ranking is best-effort (Guardrail #3) with a SHARP failure taxonomy (decision #7): a genuine
+    per-hotel geocode MISS writes that hotel `geo_status='unresolved'` with NULL coords (never an
+    invented coordinate, Guardrail #1); but an INFRA failure — a missing MAPBOX token, or a typed
+    ResolveError/CacheError (translator/Mapbox outage, malformed 2xx, cache-write) — PROPAGATES out
+    of this function BEFORE the delete-reinsert, so the prior hotel rows are PRESERVED rather than
+    clobbered by an all-unresolved rewrite (Guardrail #12; the runner turns the raise into one
+    warning). The lease fence and the best-effort degrade are ORTHOGONAL — a geocode miss still
+    writes (unresolved rows) through the fenced RPC; only a lost lease or an infra raise suppresses it.
 
     The write is lease-fenced when `job_id`/`lease_token` are supplied (the live runner path),
     giving the hotel rewrite the same zombie-worker protection persist_itinerary has; a `fetch`
@@ -991,9 +1042,13 @@ async def persist_hotels(client, trip_id: str, *, fetch=None, geocode=None, matr
             rooms = _hotel_rooms(trip.get("adult_count"), trip.get("room_count"))
 
             session_id, hotels = await fetch(location, start_date, check_out, rooms)   # failure -> runner warns
+            # cache_client=client → the hotel geocode cache writes through the same service-role
+            # client (hotel_geocode_cache is service_role-only, T2). A ResolveError/CacheError here
+            # PROPAGATES out of persist_hotels (below), so the prior rows survive (decision #7).
             ranked = await _rank_hotels_best_effort(
                 hotels, place_rows, location, country_code, trip.get("budget_level"),
-                geocode=geocode, matrix=matrix, trip_id=trip_id)
+                geocode=geocode, matrix=matrix, resolve_hotels=resolve_hotels,
+                cache_client=client, trip_id=trip_id)
             rows = _build_hotel_rows(hotels, ranked, session_id)
 
     await _replace_hotel_rows(client, trip_id, rows, job_id=job_id, lease_token=lease_token)

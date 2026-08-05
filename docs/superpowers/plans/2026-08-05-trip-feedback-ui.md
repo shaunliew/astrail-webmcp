@@ -1,6 +1,14 @@
 # Plan — Trip-level feedback UI (one-shot composer: thumbs/stars + optional note)
 
-> Status: **BUILT + FULLY REVIEWED (2026-08-05) — held pre-merge on the live /qa human gate.**
+> Status: **BUILT + FULLY REVIEWED + LIVE-VERIFY GATE PASSED (2026-08-05, ZH approved: composer
+> kept, live test on Aster). Deployed-service probes (curl vs astrail-backend.onrender.com, real
+> Aster token): 201 persisted-row echo · 422 cross-field · 404-not-403 · 429 after exactly 3/min.
+> UI flow (local stack, remote-dev Supabase, signed in as aster@): all 3 composer shapes 201'd —
+> "Saved: 4 of 5 with note" / "Saved: thumbs up" / "Saved: note" — no-op-resubmission guard,
+> mutual exclusion, tap-to-clear, selection-survives-success all observed live; panel present on
+> complete AND saved_with_gaps. DB check: 7/7 rows persisted exactly as sent, note attached to the
+> rating row. NOT live-checked: the failed-screen mount (Aster has no failed trip; jsdom-only).
+> READY TO MERGE into `zh`.**
 > Review trail: plan eng review + Codex r1 (5/10, 2 High blockers → composer redesign) → Codex r2
 > (8/10, no blockers, 7 folds) → T1/T2/T3 built via subagent-driven-development, each per-task
 > gate PASS with fault-injection (14 injections total, every guard proven load-bearing) → final

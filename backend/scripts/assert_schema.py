@@ -137,6 +137,14 @@ REQUIRED_SCHEMA: dict[str, tuple[str, ...]] = {
                    "caption", "transcript", "expires_at"),
     "geocode_country_cache": ("coord_key", "verification_version", "country_code",
                               "country_name"),
+    # The hotel FORWARD-geocode cache (20260805020000) — the write-through cache the hotel resolver
+    # reads before translating/geocoding and upserts the found/miss result into. Every column below
+    # is writer-used (lookup_many selects them; the upsert writes cache_key/status/lat/lng/
+    # country_code/name_fingerprint/expires_at). Code shipped ahead of that migration fails on the
+    # first cache read/write. Like geocode_country_cache it is NOT an anchor (the hotel feature is
+    # partial-failure-tolerant, Guardrail #3), so this only guards drift, never aborts on absence.
+    "hotel_geocode_cache": ("cache_key", "status", "lat", "lng", "country_code",
+                            "name_fingerprint", "created_at", "expires_at"),
     # --- Saved Reels organize (web service AND the telegram-ingest worker) ---
     "saved_reels": ("id", "user_id", "normalized_url", "reel_cache_id", "analysis_status",
                     "analyzed_at", "retry_after"),

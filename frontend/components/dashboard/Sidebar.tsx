@@ -6,6 +6,8 @@ import { useEffect, useState } from 'react'
 import type { ComponentType } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { AstrailLogo } from '@/components/brand/AstrailLogo'
+import { readEntitlement, TRIAL_LIFETIME_LIMIT } from '@/lib/entitlement'
+import type { Entitlement } from '@/lib/entitlement'
 import { listTrips } from '@/lib/trip/supabase-api'
 import type { Trip } from '@/lib/trip/backend-types'
 
@@ -63,6 +65,7 @@ export default function Sidebar() {
   const router = useRouter()
   const [email, setEmail] = useState<string | null>(null)
   const [recents, setRecents] = useState<Trip[]>([])
+  const [entitlement, setEntitlement] = useState<Entitlement | null>(null)
 
   useEffect(() => {
     let active = true
@@ -84,6 +87,20 @@ export default function Sidebar() {
     listTrips()
       .then((trips) => {
         if (active) setRecents(trips.slice(0, RECENTS_LIMIT))
+      })
+      .catch(() => {})
+    return () => {
+      active = false
+    }
+  }, [])
+
+  // Advisory generations-left indicator (same own-row read the flows use). Non-critical:
+  // on any failure we render no pill — never an error, and never a blocked action.
+  useEffect(() => {
+    let active = true
+    readEntitlement()
+      .then((ent) => {
+        if (active) setEntitlement(ent)
       })
       .catch(() => {})
     return () => {
@@ -170,6 +187,22 @@ export default function Sidebar() {
 
       {/* Account section */}
       <div className="flex flex-row gap-1 sm:flex-col sm:border-t sm:border-[color:var(--line-soft)] sm:pt-3">
+        {/* Generations-left pill — advisory only (the atomic RPC is the enforcer). Desktop-only
+            like the recents; hidden entirely when the read fails rather than showing a guess. */}
+        {entitlement ? (
+          <p
+            className={`hidden sm:block rounded-lg border border-dashed border-[color:var(--line-soft)] bg-[color:var(--surface-0)] px-2.5 py-1.5 text-[11px] sm:mb-1 ${
+              entitlement.plan === 'trial' &&
+              TRIAL_LIFETIME_LIMIT - entitlement.lifetimeTripCount <= 0
+                ? 'text-[color:var(--brass-deep)]'
+                : 'text-[color:var(--text-muted)]'
+            }`}
+          >
+            {entitlement.plan === 'beta'
+              ? 'Beta · unlimited trips'
+              : `Free trial · ${Math.max(0, TRIAL_LIFETIME_LIMIT - entitlement.lifetimeTripCount)} of ${TRIAL_LIFETIME_LIMIT} trip generation${TRIAL_LIFETIME_LIMIT === 1 ? '' : 's'} left`}
+          </p>
+        ) : null}
         <Link
           href="/app/settings"
           aria-current={settingsActive ? 'page' : undefined}

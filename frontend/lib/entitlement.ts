@@ -13,7 +13,7 @@ import { ERROR_CODE_TRIAL_EXHAUSTED } from '@/lib/trip/backend-types'
 import type { RequestSeatResponse, UserPlan } from '@/lib/trip/backend-types'
 
 // A trial plan is exhausted once its lifetime trip count reaches this (backend TRIAL_LIFETIME_LIMIT).
-const TRIAL_LIFETIME_LIMIT = 1
+export const TRIAL_LIFETIME_LIMIT = 1
 
 export type Entitlement = {
   plan: UserPlan

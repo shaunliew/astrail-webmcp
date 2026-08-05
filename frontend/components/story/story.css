@@ -263,6 +263,19 @@
   .story-copy { left: 0; right: 0; padding: 0 24px; max-width: none; }
   .story-progress { display: none; }
   .story-nav { padding: 12px 16px; }
+
+  /* Hero on phones: a full-bleed 16:9 clip center-crops Aster (he lives in the
+     right third) clean out of frame. Instead, lift the copy to the top and sit
+     the character in a full-width band below, cover-cropped to him — always
+     visible, never overlapping the text, so no scrim is needed up top. */
+  .story-copy--center { top: 5rem; transform: none; }
+  .story .story-video {
+    top: auto;
+    bottom: 0;
+    height: 50%;
+    object-position: 88% bottom;
+  }
+  .story-wash-left { display: none; }
 }
 
 /* nav links (repointed to the open beta, 2026-08-03) */

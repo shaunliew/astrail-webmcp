@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { CLIPS, STILLS } from '../story-config'
 
@@ -10,19 +10,26 @@ import { CLIPS, STILLS } from '../story-config'
    crossfaded at the swap so the handoff is invisible. No scroll transforms —
    the hero is a plain section that scrolls away into the product. */
 export default function Beat0Layer() {
+  const walkRef = useRef<HTMLVideoElement | null>(null)
   const idleRef = useRef<HTMLVideoElement | null>(null)
   const [walkDone, setWalkDone] = useState(false)
 
+  useEffect(() => {
+    // Reduced-motion: hold the standing still — no walk-in, no idle loop.
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return
+    walkRef.current?.play().catch(() => {})
+  }, [])
+
   return (
     <div className="absolute inset-0">
-      {/* walk-in: plays once on load, ends on the settled standing frame */}
+      {/* walk-in: plays once (skipped under reduced-motion), ends standing */}
       <video
+        ref={walkRef}
         className="story-video"
         src={CLIPS.coldOpen}
         poster={STILLS.coldOpen}
         muted
         playsInline
-        autoPlay
         preload="auto"
         onEnded={() => {
           idleRef.current?.play().catch(() => {})

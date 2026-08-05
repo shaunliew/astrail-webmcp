@@ -19,6 +19,13 @@ class GeocodeResult(BaseModel):
     mapbox_id: str | None = None
     country_code: str | None = None
     country_name: str | None = None
+    # Structured identity signals Search Box already returns and the parser used to discard
+    # (plan decision #2c/#7): `feature_type` ("poi" | "address" | …) and `poi_category` (a list,
+    # e.g. ["lodging", "hotel"]; empty for address-type results). The hotel identity gate reads
+    # `poi_category` to confirm a JP `types="poi"` hit is a lodging (never a vending machine).
+    # Additive with safe defaults — existing callers are unaffected.
+    feature_type: str | None = None
+    poi_category: list[str] = Field(default_factory=list)
 
 
 class CountryResult(BaseModel):

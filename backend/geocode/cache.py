@@ -41,6 +41,13 @@ from models.geocode import GeocodeResult
 
 logger = logging.getLogger(__name__)
 
+# COST MODEL (why this cache exists). Mapbox bills the PERMANENT geocoding tier ($5 / 1,000 lookups,
+# no free tier, ~$5/mo block minimum — confirmed by a real invoice) because we STORE the coordinate.
+# Without a cache the bill grows LINEARLY with trips; with it we pay ONCE per unique hotel identity
+# (then re-serve for `hit_ttl_days`). Real reuse observed on remote-dev (35 trips): 149 hotel rows ->
+# 23 distinct hotels = ~85% cache reuse, so the cache is a large, cheap win. Matrix is effectively free.
+# See EMDEE `[[hotel-hub-map-feature]]` for the full cost/reuse note.
+
 # Bump to invalidate EVERY cached hotel en masse (an algorithm change) — mirrors
 # grounding's LOCATION_VERIFICATION_VERSION. Data drift (relocation / rebrand / ID-reuse) is covered
 # separately by the bounded per-row TTL, not by this version.
@@ -257,6 +264,7 @@ async def resolve_cached(
     resolver: Callable[[], Awaitable[GeocodeResult | None]],
     *,
     expected_fingerprint: str | None,
+    country_code: str | None = None,
     hit_ttl_days: int = 365,
     miss_ttl_days: int = 14,
 ) -> GeocodeResult | None:
@@ -275,6 +283,9 @@ async def resolve_cached(
     / unconfirmed miss, +miss_ttl_days); it RAISES `ResolveError` on infra failure — which is NOT cached,
     NOT a miss, and propagates untouched (nothing is written). Read/write asymmetry mirrors grounding: a
     cache READ failure -> log + treat as a miss (resolve); a cache WRITE failure -> raise `CacheError`.
+
+    `country_code` is telemetry-only (the 2-letter country the resolve is for) — NOT keyed, NOT persisted;
+    it only enriches the paid-resolve log line so an operator can slice duplicate-billing by market.
     """
     if client is None:
         return await resolver()
@@ -288,5 +299,16 @@ async def resolve_cached(
         if hit is not _NO_CACHE:
             return hit
         result = await resolver()          # ResolveError propagates: not cached, not a miss, no write
+        # Paid-geocode telemetry (plan R2 / decision #8 / v3 #11). ONE token-safe line per ACTUAL paid
+        # resolve — emitted only here, on the single-flight-guarded miss path AFTER the double-checked
+        # re-read, so a cache hit never logs it. Fields are ONLY the already-hashed identity `key` (a
+        # SHA-256 of {provider, country, hotelId} — never the hotel name / address / localized string),
+        # the 2-letter country, and the found/miss outcome. On the pinned single web instance the SAME
+        # key never appears twice; the same key logged from a SECOND instance is the cross-instance
+        # duplicate-BILLING signal that triggers a DB lease before scaling past numInstances:1.
+        logger.info(
+            "hotel_geocode_paid_resolve key=%s country=%s outcome=%s",
+            key, (country_code or "?"), ("found" if result is not None else "miss"),
+        )
         await _write(client, key, result, expected_fingerprint, hit_ttl_days, miss_ttl_days)
         return result

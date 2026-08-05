@@ -285,7 +285,8 @@ async def resolve_hotels(
         # (T4 does NOT acquire the lock — v4 #3). Bind `hotel` per-call to avoid a late-binding closure.
         return await resolve_cached(
             cache_client, key, lambda hotel=hotel: _resolve_one(hotel),
-            expected_fingerprint=fps[i], hit_ttl_days=hit_ttl_days, miss_ttl_days=miss_ttl_days,
+            expected_fingerprint=fps[i], country_code=country_cc,
+            hit_ttl_days=hit_ttl_days, miss_ttl_days=miss_ttl_days,
         )
 
     # A ResolveError / CacheError from any hotel propagates (return_exceptions=False) — never coerced

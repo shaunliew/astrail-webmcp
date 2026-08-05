@@ -11,6 +11,16 @@ services:
     branch: dev
     region: singapore
     plan: starter
+    # PINNED TO ONE INSTANCE — LOAD-BEARING, not a capacity choice. The hotel geocode cache's
+    # in-process single-flight (`backend/geocode/cache.py::resolve_cached`) dedups the PAID Mapbox
+    # PERMANENT geocode ($5/1,000, no free tier) per hotel identity, but its keyed asyncio.Lock lives in
+    # THIS process's memory. A second web instance has its own lock map, so two instances resolving the
+    # same hotel would DOUBLE-BILL the permanent geocode — the hotel-row REPLACE is lease-fenced, but the
+    # cache/geocode call is NOT. The `hotel_geocode_paid_resolve` telemetry line logs each paid resolve's
+    # identity key; the SAME key appearing from two instances is the cross-instance duplicate-billing
+    # signal. A DB claim/lease is MANDATORY before raising this above 1 (plan decision #8 / v3 #11).
+    # Mirrors the Telegram worker's pin below (that one is a 409 hazard; this one is a billing hazard).
+    numInstances: 1
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
     # AUTO-DEPLOY IS ON, AND GATED. With it on, THE MERGE IS THE DEPLOY — there is no gap in

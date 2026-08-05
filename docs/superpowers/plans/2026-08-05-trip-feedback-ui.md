@@ -200,9 +200,10 @@ Composer state:
   pending (state, disables UI) + inFlight (ref, the synchronous single-flight guard)
   status: idle | sending('Sending…') | ok('Noted — thanks.') | error(message)
 
-buildDraft(signal, note): EXPORTED pure helper (unit-tested directly — the trim/null guard
-  must have its own test, separate from the button predicate, or removing either leaves the
-  other green: the BUILD-LOOP §7 disjunctive-assertion trap).
+buildDraft(signal, note): EXPORTED pure helper, unit-tested directly. (T2 review correction:
+  the Send predicate derives from `buildDraft(...) !== null`, so there is ONE physical guard
+  with two tests over it — removing the builder guard reddens both. That is double coverage,
+  not the BUILD-LOOP §7 trap this note originally warned about; kept for the record.)
 Send enabled ⟺ !pending && draft !== null && fingerprint(draft) !== lastSent
 Draft built at submit time:
   signal=thumb   → { feedback_type: thumb, ...(note.trim() && { comment: note.trim() }) }

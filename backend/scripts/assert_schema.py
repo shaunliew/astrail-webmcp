@@ -14,6 +14,10 @@ column PostgREST cannot resolve makes the request fail, an existing one returns 
 WHAT IT CANNOT SEE. Columns only. A changed RPC signature, a dropped constraint, a renamed
 conflict key or a changed SQLSTATE (`20260720130000_organize_job_error_codes` moved P0001 ->
 AS4xx) are all invisible to a column probe. This gate narrows the window; it does not close it.
+ONE exception: `_probe_claim_rpc` additionally proves the account-deletion `claim_account_for_deletion`
+RPC (`20260805010000`) is LIVE — that migration adds only an RPC + a partial index, with no column
+proxy in `REQUIRED_SCHEMA`, so a column-only gate would pass while every deletion sweep hit a missing
+claim RPC. It proves existence + the service_role grant, still not the signature.
 
 TWO DISTINCT VERDICTS, because the on-call response differs. "SCHEMA GATE FAILED" is drift —
 production is behind this code, so apply the migration. "SCHEMA GATE MISCONFIGURED" is
@@ -47,6 +51,21 @@ RETRY_BACKOFF_S = 2.0
 
 # Bounded so an unreachable host cannot stall the rollout on a hung socket instead of failing.
 _CONNECT_TIMEOUT_S = 10.0
+
+# The account-deletion claim RPC (20260805010000). Probed for LIVENESS because that migration adds
+# only an RPC + a partial index — no column REQUIRED_SCHEMA can proxy — so migration 1 landing
+# without migration 2 would pass a column-only gate and then wedge every deletion sweep on a
+# missing claim RPC. The nil uuid is the safe probe argument: the RPC is
+#   UPDATE users SET account_status='deleting' WHERE id=p_user_id AND account_status='pending_deletion'
+# and the all-zeros uuid can name no real account, so it matches no row -> 0 updates -> returns
+# false -> ZERO side effect, while still exercising the function body and the service_role grant.
+_CLAIM_RPC_LABEL = "claim_account_for_deletion (20260805010000)"
+# A deliberately INVALID uuid for the RPC-liveness probe (structural side-effect-freedom): PostgreSQL
+# rejects the `p_user_id uuid` cast (SQLSTATE 22P02) BEFORE the function body runs, so the probe can
+# NEVER execute the CAS UPDATE against ANY row — unlike a real (or nil) uuid, whose body DOES run and
+# merely happens to match nothing. A missing function still surfaces as PGRST202 (PostgREST can't
+# resolve the name+arg), so absence stays detectable while presence costs nothing.
+_CLAIM_RPC_PROBE_ID = "schema-probe-not-a-uuid"
 
 # ---------------------------------------------------------------------------------------------
 # THE MANIFEST — what this code version requires of production.
@@ -132,8 +151,18 @@ REQUIRED_SCHEMA: dict[str, tuple[str, ...]] = {
     # beta-seat gate. Same proxy logic as the jobs charge columns above — the request_seat and
     # reserve_and_enqueue_trip_job RPC bodies are invisible to a column probe, so these columns
     # stand in for that migration having landed.
+    # `account_status`/`deletion_requested_at`/`deletion_scheduled_for` (20260805000000) are the
+    # soft-delete grace state; they are ALSO the observable proxy for that migration's two RPCs
+    # (request_/cancel_account_deletion) having landed — a column probe can't see an RPC signature,
+    # so the account-deletion endpoints would fail-closed against a DB missing them.
     "users": ("id", "daily_reel_analysis_limit", "plan", "lifetime_trip_count",
-              "seat_requested_at"),
+              "seat_requested_at", "account_status", "deletion_requested_at",
+              "deletion_scheduled_for"),
+    # FK-free audit + work-queue for account deletion (20260805000000). Task 3's sweep selects and
+    # updates every column below, so their presence is the proxy for the whole deletion migration.
+    "account_deletion_log": ("id", "user_id", "recipient_email", "requested_at", "scheduled_for",
+                             "attempts", "next_attempt_at", "last_error", "purged_verified_at",
+                             "completed_at", "outcome"),
 }
 
 # ANCHOR TABLES — the manifest's floor, and the only thing `_validate_manifest` can check
@@ -198,6 +227,12 @@ class _Unreachable(Exception):
     def __init__(self, error_type: str) -> None:
         super().__init__(error_type)
         self.error_type = error_type
+
+
+class _RpcDrift(Exception):
+    """The RPC-liveness probe got a definitive NON-success answer (function absent, or any other
+    server error such as a missing grant). Carries a pre-formatted, secret-free message: our own
+    label + the SQLSTATE code, never the server text."""
 
 
 class _MissingCredentials(Exception):
@@ -277,6 +312,53 @@ async def _identify_drift(client, table: str, columns: tuple[str, ...], *, attem
     return f"{table}: missing column(s) {', '.join(missing)}"
 
 
+async def _probe_claim_rpc(client, *, attempts: int, backoff_s: float, sleep) -> None:
+    """RPC-LIVENESS probe for `claim_account_for_deletion` — the column loop cannot see an RPC.
+
+    STRUCTURALLY side-effect-free: calls the RPC once with a deliberately INVALID uuid
+    (`_CLAIM_RPC_PROBE_ID`). PostgreSQL evaluates a function call IN ORDER — resolve the name (else
+    `PGRST202`), check the service_role EXECUTE grant (else `42501`), then CAST `p_user_id` to uuid
+    (fails `22P02` on our invalid input) — so the CAS UPDATE body NEVER runs and no row can be touched.
+    The only HEALTHY answer is therefore `22P02`: the function is present AND service_role can execute
+    it, and it rejected our bad input before the body → pass. EVERYTHING ELSE FAILS CLOSED, naming the
+    code: `PGRST202` = the function/signature is absent (migration 2 didn't land); `42501` = present
+    but service_role lacks EXECUTE (migration 2's grant didn't land, so the sweep itself couldn't
+    claim); any other code (e.g. `PGRST203` ambiguous overload) = the RPC is not present-and-callable
+    as this code needs — never wave through a half-applied migration. Same retry discipline as
+    `_probe`: a transport failure is retried and then fails closed as `_Unreachable`; a server answer
+    is a verdict, never retried. Secret-safe: names our own label + the SQLSTATE code only, never the
+    server message; transport errors log the TYPE only.
+    """
+    from postgrest.exceptions import APIError
+
+    last_error_type = "unknown"
+    for attempt in range(attempts):
+        try:
+            await client.rpc("claim_account_for_deletion",
+                             {"p_user_id": _CLAIM_RPC_PROBE_ID}).execute()
+            return  # accepted (unreachable in prod with a bad uuid, but = present + ran)
+        except APIError as exc:
+            code = getattr(exc, "code", None)
+            if code == "22P02":
+                # Healthy: present + service_role can execute it + rejected our invalid uuid at the
+                # arg cast, BEFORE the body. Structurally side-effect-free → the one passing verdict.
+                return
+            if code == "PGRST202":
+                raise _RpcDrift(f"{_CLAIM_RPC_LABEL}: RPC NOT FOUND (PGRST202) — migration 2 has "
+                                "not landed; apply it, then redeploy") from None
+            # FAIL CLOSED on every other answer — 42501 (service_role EXECUTE grant missing), a
+            # PGRST203 ambiguous overload, or anything else: the RPC is not present-and-callable as
+            # migration 2 defines it, so the sweep would break. Abort, naming the code.
+            raise _RpcDrift(f"{_CLAIM_RPC_LABEL}: NOT callable — unexpected error code {code} (e.g. a "
+                            "missing service_role EXECUTE grant); apply/repair migration 2, then "
+                            "redeploy") from None
+        except Exception as exc:                      # noqa: BLE001 — transport only; type name only
+            last_error_type = type(exc).__name__
+            if attempt + 1 < attempts:
+                await sleep(backoff_s * (attempt + 1))
+    raise _Unreachable(last_error_type)
+
+
 async def _create_client():
     """Build a one-shot service-role client. Credentials are read HERE, never at import."""
     missing = [name for name in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY")
@@ -340,10 +422,22 @@ async def run(client=None, *, schema: dict[str, tuple[str, ...]] | None = None,
             failures.append(await _identify_drift(client, table, columns, attempts=attempts,
                                                   backoff_s=backoff_s, sleep=sleep))
 
+    # RPC-liveness probe — ONLY when every column probe passed (a drifted/unreachable DB already
+    # aborts above, and there is no point probing an RPC on a database we can't read). Same retry
+    # discipline as the column loop.
+    if not failures:
+        try:
+            await _probe_claim_rpc(client, attempts=attempts, backoff_s=backoff_s, sleep=sleep)
+        except _RpcDrift as exc:
+            failures.append(str(exc))
+        except _Unreachable as exc:
+            failures.append(f"database UNREACHABLE after {attempts} attempts ({exc.error_type}) "
+                            f"while probing {_CLAIM_RPC_LABEL}")
+
     if failures:
         return _abort(failures)
     print(f"schema gate OK — verified {sum(len(c) for c in schema.values())} columns "
-          f"across {len(schema)} tables")
+          f"across {len(schema)} tables, plus the {_CLAIM_RPC_LABEL} RPC")
     return 0
 
 

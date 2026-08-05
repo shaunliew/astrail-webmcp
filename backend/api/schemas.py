@@ -57,6 +57,39 @@ class RequestSeatResponse(BaseModel):
     requested_at: datetime
 
 
+class AccountDeletionResponse(BaseModel):
+    """POST /account/deletion 200 body — when the account is scheduled to be deleted.
+
+    The account has entered a 7-day cancellable grace; `scheduled_for` is the date shown to
+    the user (and named in the "deletion scheduled" email, Task 4). Failures use the standard
+    error envelope (503 deletion_unavailable while gated, 409 deletion_not_active). TypeScript
+    mirror in frontend/lib/trip/backend-types.ts is Task 5 (guardrail #4)."""
+    scheduled_for: datetime
+
+
+class AccountDeletionCancelResponse(BaseModel):
+    """POST /account/deletion/cancel 200 body — success only. Failures use the standard error
+    envelope (503 deletion_unavailable, 409 deletion_already_started / no_pending_deletion).
+    TypeScript mirror is Task 5 (guardrail #4)."""
+    cancelled: Literal[True] = True
+
+
+class AccountDeletionStatusResponse(BaseModel):
+    """GET /account/deletion/status 200 body — the cross-session deletion state for the
+    AUTHENTICATED account, so a returning user's UI can show (or hide) the pending banner without
+    an in-session request (the T5 gap, wired at T6).
+
+    Never 500s the UI, but it separates two cases (Fix 5): a SUCCESSFUL read that is
+    legitimately-absent (a missing row / unexpected value) returns 'active' (banner HIDDEN), while a
+    genuine read FAILURE returns 'unknown' — a read-failure SENTINEL that is NOT a stored
+    `users.account_status` value. Collapsing the failure to 'active' would hide the Cancel banner
+    from a genuinely-pending user with no route to cancel; 'unknown' lets the UI preserve
+    cancellation guidance. `deletion_scheduled_for` is the grace deadline (populated only while
+    pending/deleting). Mirrored in frontend/lib/trip/backend-types.ts (guardrail #4)."""
+    account_status: Literal["active", "pending_deletion", "deleting", "unknown"]
+    deletion_scheduled_for: datetime | None = None
+
+
 class CaptureSavedReelRequest(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
 

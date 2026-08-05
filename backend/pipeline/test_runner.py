@@ -242,6 +242,10 @@ class _Client:
         self.db: dict = {
             "jobs": jobs or [],
             "trips": [{"id": "trip-1", "user_id": "user-1", "created_at": _TRIP_CREATED_AT}],
+            # persist_trip_memory reads users.account_status (the §3.6 generation freeze) before
+            # the add; seed the acting user 'active' so the freeze is inert and the write-back
+            # assertions still exercise the real add (a missing row would read as "frozen").
+            "users": [{"id": "user-1", "account_status": "active"}],
         }
         self.rpc_calls: list = []
         # The DATABASE's clock, as the organize fake documents at length: every lease instant

@@ -59,6 +59,7 @@ from typing import Any
 
 import httpx
 
+from deletion import account_is_pending_deletion
 from organizer import create_organize_job
 from saved_reels import capture_saved_reel
 from telegram_ingest.api import (
@@ -144,7 +145,18 @@ async def _ingest_url(
     `recover_organize_jobs` lists only `pending` (`organizer.py:374`), so the claim that
     the reaper guarantees it runs is false. Hence no special case for it either: an
     unexpected AS409 takes the ordinary ERROR path and costs the reaction.
+
+    GENERATION FREEZE (plan §3.6): the ingest account is the THIRD generation entrypoint. If it
+    has entered the deletion grace it must take on NO new organize work — refuse LOUDLY (the drop
+    log, costing the message its 👍) rather than burn Apify/OpenAI spend on a to-be-deleted
+    account. `account_is_pending_deletion` fails OPEN, so a status-read blip never wedges ingest.
     """
+    if await account_is_pending_deletion(db, config.ingest_user_id):
+        logger.error(
+            "telegram_reel_dropped chat_id=%d url=%s error=account_pending_deletion",
+            chat_id, url,
+        )
+        return False
     try:
         row = await capture_saved_reel(db, config.ingest_user_id, url)
         job_id = await create_organize_job(db, config.ingest_user_id, [row["id"]])

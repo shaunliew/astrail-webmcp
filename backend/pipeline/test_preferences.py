@@ -478,13 +478,19 @@ class _FakeTable:
 
 
 class _FakeClient:
-    def __init__(self, *, trips=None, memory_events=None, select_raises=(),
+    def __init__(self, *, trips=None, memory_events=None, users=None, select_raises=(),
                  insert_raises=(), insert_returns_no_row=(), update_raises=(),
                  delete_raises=(), insert_created_at=()) -> None:
         seeded_trips = [_DEFAULT_TRIP] if trips is None else trips
+        # persist_trip_memory now reads users.account_status (the §3.6 generation freeze) BEFORE
+        # the intent write. Default the acting user to 'active' so the freeze is inert and every
+        # pre-existing write-back assertion still exercises the real add path; the freeze tests
+        # pass a pending/deleting row (or omit the row) explicitly.
+        seeded_users = [{"id": "u1", "account_status": "active"}] if users is None else users
         self.db = {
             "trips": [dict(r) for r in seeded_trips],
             "memory_events": [dict(r) for r in (memory_events or [])],
+            "users": [dict(r) for r in seeded_users],
         }
         self.select_raises = frozenset(select_raises)
         self.insert_raises = frozenset(insert_raises)
@@ -611,6 +617,44 @@ def test_write_back_proceeds_when_memory_was_never_cleared():
     assert [r["event_type"] for r in client.events] == ["learned"]
 
 
+# ---------------------------------------------------------------------------------
+# GENERATION FREEZE (plan §3.6, account-deletion Task 3). persist_trip_memory must take on NO
+# new mem0 data once the account is leaving the platform — the LOAD-BEARING half of the freeze.
+# The reads above (the active positive control test_write_back_proceeds_...) redden if the freeze
+# is hard-wired to True; these redden if it is removed / hard-wired to False. Fail CLOSED: a
+# non-active status OR an unreadable one skips the add. Checked BEFORE the intent row, so a frozen
+# account writes NOTHING (ops == ["select:users"] alone, no intent, no add).
+# ---------------------------------------------------------------------------------
+
+
+def test_write_back_skipped_when_account_pending_deletion():
+    client = _FakeClient(users=[{"id": "u1", "account_status": "pending_deletion"}])
+    mem = _FakeMem0Add()
+    assert _run_write_back(client, mem) == ["loves ramen"]   # caller contract unchanged
+    assert mem.added == []                                    # nothing sent to mem0
+    assert client.events == []                                # no intent row either
+    assert client.ops == ["select:users"]                    # short-circuit at the freeze read
+
+
+def test_write_back_skipped_when_account_deleting():
+    # 'deleting' is the irreversible claim; a new add here would race the two-pass purge.
+    client = _FakeClient(users=[{"id": "u1", "account_status": "deleting"}])
+    mem = _FakeMem0Add()
+    assert _run_write_back(client, mem) == ["loves ramen"]
+    assert mem.added == []
+    assert client.ops == ["select:users"]
+
+
+def test_write_back_fails_closed_when_account_status_unreadable():
+    # No users row -> maybe_single() yields a bare None -> status unreadable. Fail CLOSED (skip):
+    # losing one learned memory is benign (D7); adding to a possibly-deleting account is the bug.
+    client = _FakeClient(users=[])
+    mem = _FakeMem0Add()
+    assert _run_write_back(client, mem) == ["loves ramen"]
+    assert mem.added == []
+    assert client.ops == ["select:users"]
+
+
 def test_write_back_skipped_when_cleared_during_this_generation():
     # THE case this guard exists for. The clear landed after trips.created_at, so re-adding
     # would silently un-clear memory the endpoint already reported as cleared.
@@ -682,9 +726,10 @@ def test_write_back_skipped_when_the_trip_row_is_absent():
     mem = _FakeMem0Add()
     _run_write_back(client, mem)
     assert mem.added == []
-    # The intent row (C11) precedes the guard and is retracted when it fires, so the guard's
-    # short-circuit is the ABSENT `select:memory_events`, not a two-op log.
-    assert client.ops == ["insert:memory_events", "select:trips", "delete:memory_events"]
+    # The §3.6 freeze read (users.account_status) is the pre-window first op; the intent row
+    # (C11) then precedes the guard and is retracted when it fires, so the guard's short-circuit
+    # is the ABSENT `select:memory_events`, not a two-op log.
+    assert client.ops == ["select:users", "insert:memory_events", "select:trips", "delete:memory_events"]
     assert [r["event_type"] for r in client.events] == ["cleared"]
 
 
@@ -695,8 +740,8 @@ def test_write_back_skipped_when_the_cleared_lookup_fails():
     mem = _FakeMem0Add()
     _run_write_back(client, mem)
     assert mem.added == []
-    assert client.ops == ["insert:memory_events", "select:trips", "select:memory_events",
-                          "delete:memory_events"]
+    assert client.ops == ["select:users", "insert:memory_events", "select:trips",
+                          "select:memory_events", "delete:memory_events"]
     assert client.events == []   # the intent row is retracted, not left behind
 
 
@@ -708,7 +753,7 @@ def test_write_back_ignores_a_trip_owned_by_another_user():
     mem = _FakeMem0Add()
     _run_write_back(client, mem)
     assert mem.added == []
-    assert client.ops == ["insert:memory_events", "select:trips", "delete:memory_events"]
+    assert client.ops == ["select:users", "insert:memory_events", "select:trips", "delete:memory_events"]
 
 
 def test_write_back_recovery_rerun_compares_against_the_original_trip_start():
@@ -763,7 +808,7 @@ def test_the_intent_row_is_written_before_the_guard_reads():
     # before that snapshot is taken.
     client, mem = _FakeClient(), _FakeMem0Add()
     _run_write_back(client, mem)
-    assert client.ops == ["insert:memory_events", "select:trips", "select:memory_events"]
+    assert client.ops == ["select:users", "insert:memory_events", "select:trips", "select:memory_events"]
 
 
 def test_intent_insert_failure_aborts_the_add():
@@ -777,7 +822,8 @@ def test_intent_insert_failure_aborts_the_add():
     assert learned == ["loves ramen"]   # caller contract unchanged; best-effort, never raises
     assert mem.added == []              # NOTHING was sent to mem0
     assert client.events == []
-    assert client.ops == ["insert:memory_events"]   # short-circuit: the guard never ran
+    # freeze read (active) then the intent insert fails — short-circuit: the guard never ran.
+    assert client.ops == ["select:users", "insert:memory_events"]
 
 
 def test_intent_insert_returning_no_row_aborts_the_add():
@@ -787,7 +833,7 @@ def test_intent_insert_returning_no_row_aborts_the_add():
     mem = _FakeMem0Add()
     assert _run_write_back(client, mem) == ["loves ramen"]
     assert mem.added == []
-    assert client.ops == ["insert:memory_events"]
+    assert client.ops == ["select:users", "insert:memory_events"]
 
 
 def test_guard_firing_retracts_the_intent_row_and_skips_the_add():
@@ -799,8 +845,8 @@ def test_guard_firing_retracts_the_intent_row_and_skips_the_add():
     _run_write_back(client, mem)
     assert mem.added == []
     assert [r["event_type"] for r in client.events] == ["cleared"]
-    assert client.ops == ["insert:memory_events", "select:trips", "select:memory_events",
-                          "delete:memory_events"]
+    assert client.ops == ["select:users", "insert:memory_events", "select:trips",
+                          "select:memory_events", "delete:memory_events"]
 
 
 def test_a_successful_add_leaves_exactly_one_learned_row_carrying_the_trip_id():
@@ -994,7 +1040,8 @@ def test_an_intent_insert_that_overruns_its_bound_skips_the_add(monkeypatch):
     assert _run_write_back(client, mem) == ["loves ramen"]   # nothing raises (guardrail #3)
     assert mem.added == []
     assert client.events == []
-    assert client.ops == []             # the insert never even reached the fake
+    # the freeze read runs (unbounded, pre-window); the intent insert then never reaches the fake.
+    assert client.ops == ["select:users"]
     assert seen == [4]
 
 
@@ -1012,7 +1059,7 @@ def test_a_trip_lookup_that_overruns_its_bound_retracts_the_intent_and_skips_the
     assert _run_write_back(client, mem) == ["loves ramen"]
     assert mem.added == []
     assert client.events == []          # the intent was retracted, not left to linger
-    assert client.ops == ["insert:memory_events", "delete:memory_events"]
+    assert client.ops == ["select:users", "insert:memory_events", "delete:memory_events"]
     assert seen == [4, 4, 4]            # intent, the expired trips read, the retraction
 
 
@@ -1029,7 +1076,7 @@ def test_a_cleared_lookup_that_overruns_its_bound_retracts_the_intent_and_skips_
     assert _run_write_back(client, mem) == ["loves ramen"]
     assert mem.added == []
     assert client.events == []
-    assert client.ops == ["insert:memory_events", "select:trips", "delete:memory_events"]
+    assert client.ops == ["select:users", "insert:memory_events", "select:trips", "delete:memory_events"]
     assert seen == [4, 4, 4, 4]         # intent, trips, the expired cleared read, retraction
 
 

@@ -474,6 +474,51 @@ async def test_active_organize_conflict_gets_no_special_case(config, monkeypatch
 
 
 # --------------------------------------------------------------------------------------
+# Fix 2 — generation freeze (plan §3.6): the ingest account is the third generation entrypoint.
+# --------------------------------------------------------------------------------------
+class _FrozenAccountDb:
+    """A `db` whose users read reports the ingest account as pending deletion. The real
+    `deletion.account_is_pending_deletion` (NOT monkeypatched) runs against this chain."""
+
+    class _Query:
+        def select(self, *_a):
+            return self
+
+        def eq(self, *_a):
+            return self
+
+        def maybe_single(self):
+            return self
+
+        async def execute(self):
+            return type("_R", (), {"data": {"account_status": "pending_deletion"}})()
+
+    def table(self, name):
+        assert name == "users"
+        return self._Query()
+
+
+async def test_a_pending_deletion_ingest_account_is_refused_before_any_spend(config, seams, caplog):
+    """Fix 2: if the ingest account has entered the deletion grace, no reel is ingested — no
+    capture, no organize job, no reaction — and the drop is logged LOUDLY (costing the 👍)."""
+    message = _message(_reel("ABC123"))
+    _precondition(message, urls=(_reel("ABC123"),), shapes=())
+
+    with caplog.at_level(logging.DEBUG):
+        await ingest.handle_update(
+            _update(message), config=config, db=_FrozenAccountDb(), http=HTTP, queue=seams.queue
+        )
+
+    assert seams.capture.calls == []          # nothing captured
+    assert seams.create_job.calls == []       # no organize job (no Apify/OpenAI spend)
+    assert seams.react.calls == []            # not durable -> no acknowledgement
+    dropped = _records(caplog, "telegram_reel_dropped")
+    assert len(dropped) == 1
+    assert "account_pending_deletion" in dropped[0].getMessage()
+    assert dropped[0].levelno == logging.ERROR
+
+
+# --------------------------------------------------------------------------------------
 # 8-10. Silence, truncation, and the reaction.
 # --------------------------------------------------------------------------------------
 async def test_ordinary_chatter_produces_no_log_records_at_all(config, seams, caplog):

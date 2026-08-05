@@ -526,6 +526,45 @@ async def test_saved_reels_organize_rejects_duplicate_ids_before_the_rpc(ctx, mo
     assert background_calls == []
 
 
+@pytest.mark.parametrize("status", ["pending_deletion", "deleting"])
+async def test_saved_reels_organize_blocked_for_a_pending_or_deleting_account(ctx, monkeypatch, status):
+    """Fix 2: organize is the THIRD generation entrypoint (plan §3.6). A pending/deleting account
+    must get a clean 403 account_pending_deletion instead of burning Apify/OpenAI — the RPC is
+    never reached and no background job is dispatched."""
+    ac, db, _calls, client = ctx
+    db["users"] = [{"id": "user-1", "account_status": status}]
+    background_calls = []
+
+    async def create_job(*_args, **_kwargs):
+        raise AssertionError("a frozen account must not reach create_organize_job")
+
+    monkeypatch.setattr(main, "create_organize_job", create_job)
+    monkeypatch.setattr(main, "run_organize_job",
+                        lambda *args, **kwargs: background_calls.append((args, kwargs)))
+
+    response = await ac.post("/saved-reels/organize", json={"saved_reel_ids": [_SAVED_REEL_ID]})
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "account_pending_deletion"
+    assert client.rpc_calls == []            # the organize RPC was never attempted
+    assert background_calls == []            # no background organize dispatched
+
+
+async def test_saved_reels_organize_allowed_for_an_active_account(ctx, monkeypatch):
+    """Positive control for Fix 2: an explicitly 'active' account still organizes (200)."""
+    ac, db, _calls, _client = ctx
+    db["users"] = [{"id": "user-1", "account_status": "active"}]
+
+    async def create_job(_client, _user_id, saved_reel_ids):
+        return "organize-1"
+
+    monkeypatch.setattr(main, "create_organize_job", create_job)
+    monkeypatch.setattr(main, "run_organize_job", lambda *args, **kwargs: None)
+
+    response = await ac.post("/saved-reels/organize", json={"saved_reel_ids": [_SAVED_REEL_ID]})
+    assert response.status_code == 200
+
+
 async def test_saved_reels_organize_active_overlap_is_a_conflict(ctx, monkeypatch):
     from organizer import ActiveOrganizeConflict
 

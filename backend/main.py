@@ -29,6 +29,9 @@ from slowapi.errors import RateLimitExceeded
 
 from api.errors import build_error_response, register_error_handlers
 from api.schemas import (
+    AccountDeletionCancelResponse,
+    AccountDeletionResponse,
+    AccountDeletionStatusResponse,
     CaptureSavedReelRequest,
     CaptureSavedReelResponse,
     GenerateTripRequest,
@@ -46,6 +49,10 @@ from api.schemas import (
 )
 from api.streaming import stream_organize_events, stream_trip_events
 from auth import get_current_user_id, get_user_id_from_query_or_header
+# Shared fail-open generation-freeze read (plan §3.6). Kept in deletion.py so all three generation
+# entrypoints (generate_trip, organize, the Telegram worker) call ONE implementation; the leading
+# underscore preserves the in-module name the existing tests reference.
+from deletion import account_is_pending_deletion as _account_is_pending_deletion
 from config_validation import validate_required_secrets
 from jobs import compute_idempotency_key, enqueue_job, reclaim_expired_jobs
 from log_redaction import install as _install_log_redaction
@@ -110,6 +117,22 @@ async def _redispatch_organize(client, job: dict) -> None:
         await run_organize_job(job["id"], job["user_id"], client=client)
 
 
+async def _run_deletion_sweep(client) -> None:
+    """The reaper's account-deletion branch. NO-OP unless the execution gate is live.
+
+    Gated OFF through Task 6: while `_DELETION_EXECUTION_READY` is False this returns before
+    importing or touching anything, so the two-pass delete engine never runs — the sweep is
+    inert until the same PR that builds notifications + the live E2E proof flips the flag.
+    Kept a separate function (called in its OWN try in `_reap_loop`) so a deletion failure can
+    never skip trip/organize job recovery, and so the gate is unit-testable in isolation.
+    """
+    if not _DELETION_EXECUTION_READY:
+        return
+    from deletion_engine import sweep_due_deletions
+
+    await sweep_due_deletions(client)
+
+
 async def _reap_loop(client) -> None:
     """Reclaim expired leases on a timer, not only at boot.
 
@@ -137,6 +160,15 @@ async def _reap_loop(client) -> None:
             # A DB blip must NEVER kill the reaper — a reaper that dies on its first
             # transient error is worse than none, because nothing after it says so.
             logger.warning("reap_loop_iteration_failed", exc_info=True)
+        # Account-deletion sweep in its OWN try: a deletion error must never skip the trip/
+        # organize recovery above (they are the load-bearing guardrail #12 path). No-op while
+        # the gate is off. Same cadence as the reclaim sweeps (this shares the 120s tick).
+        try:
+            await _run_deletion_sweep(client)
+        except Exception as exc:  # noqa: BLE001 — TYPE only: a postgrest/supabase traceback can
+            # carry connection details, so this deletion path stays on the arc's type-only
+            # discipline (never exc_info / the message). The row stays selected and retries next tick.
+            logger.warning("deletion_sweep_iteration_failed error=%s", type(exc).__name__)
 
 
 @asynccontextmanager
@@ -314,6 +346,21 @@ _CLEAR_GATED_MESSAGE = (
     "Nothing was deleted."
 )
 
+# ---------------------------------------------------------------------------------------
+# ACCOUNT-DELETION IS DELIBERATELY GATED OFF (Task 2 of the lean account-deletion arc).
+#
+# The schema, the request/cancel RPCs, and these two endpoints ship FIRST, but the delete
+# ENGINE + sweep that actually acts on `pending_deletion`/`deleting` accounts is Task 3, and
+# the notification emails are Task 4. Entering an account into a 7-day grace that nothing
+# will act on would be a lie of its own, so both endpoints fail-closed with 503 until Task 6
+# builds the rest and flips this to True IN THE SAME PR as the live E2E proof. Fail-closed:
+# a missing RPC (a migration lagging a deploy) 503s the same way.
+_DELETION_EXECUTION_READY = False
+
+_DELETION_GATED_MESSAGE = (
+    "Account deletion isn't available yet. Nothing on your account was changed."
+)
+
 
 @app.post("/settings/memory/clear", response_model=MemoryClearResponse)
 @limiter.limit(BURST_LIMIT)
@@ -448,6 +495,11 @@ async def generate_trip(
     user_id: str = Depends(get_current_user_id_stashed),  #   _inject_headers(None, ...) breaks every call.
 ) -> GenerateTripResponse:                               # (the dep stashes request.state.user_id for key_func)
     client = await get_supabase_client()
+    # Generation freeze (plan §3.6): a pending/deleting account gets a clean "scheduled for
+    # deletion" response instead of starting a trip. Ungated + inert while everyone is 'active'.
+    if await _account_is_pending_deletion(client, user_id):
+        raise HTTPException(403, {"code": "account_pending_deletion",
+            "message": "This account is scheduled for deletion. Cancel the deletion to plan new trips."})
     place_ids = [str(place_id) for place_id in req.place_ids]
     idem = compute_idempotency_key(user_id, req.reel_urls, req.start_date, req.end_date,
                                    preferences=req.preferences, pace=req.pace,
@@ -667,6 +719,160 @@ async def request_seat(
     return RequestSeatResponse(requested_at=stamp)
 
 
+# Bound the best-effort scheduled-email lookup+send (T6, review finding #4): the admin.get_user_by_id
+# read rides the ~30s service-role client timeout and the Resend send rides its own ~10s, so a
+# degraded GoTrue/Resend could otherwise add ~40s to the 200. wait_for caps the whole best-effort
+# side channel; a TimeoutError is swallowed like any other notice failure (the deletion is already
+# scheduled). Awaited-but-bounded is simpler + more reliable than fire-and-forget (no orphan task /
+# GC risk on a Render restart).
+_EMAIL_BUDGET_S = 6.0
+
+
+async def _send_scheduled_deletion_email(client, user_id: str, scheduled_for: str) -> None:
+    """Best-effort: look up the caller's email (the JWT carries only the sub, never the address)
+    and fire the "deletion scheduled" notice (plan §3.5, the safety net).
+
+    Bounded to `_EMAIL_BUDGET_S` and wrapped so NOTHING here — the service-role auth.users read,
+    the send, or a wait_for TimeoutError — can raise into the endpoint or delay the 200 beyond the
+    budget: an email must never fail (or slow) an already-scheduled deletion. Secret-safe: logs
+    only the exception TYPE name (an auth/httpx error can embed the bearer key or the address).
+    """
+    from notifications import send_deletion_scheduled_email
+
+    async def _lookup_and_send() -> None:
+        # The JWT sub is the identity; read the address service-side (RPC already captured it into
+        # the log, but the endpoint only got scheduled_for back). get_user_by_id is the admin read.
+        resp = await client.auth.admin.get_user_by_id(user_id)
+        email = getattr(getattr(resp, "user", None), "email", None)
+        await send_deletion_scheduled_email(email, scheduled_for)
+
+    try:
+        await asyncio.wait_for(_lookup_and_send(), timeout=_EMAIL_BUDGET_S)
+    except Exception as exc:  # noqa: BLE001 — best-effort (incl. TimeoutError): a notice must NEVER break/slow a scheduled deletion
+        logger.warning("scheduled deletion email failed: %s", type(exc).__name__)
+
+
+@app.post("/account/deletion", response_model=AccountDeletionResponse)
+@limiter.limit(BURST_LIMIT)
+async def request_account_deletion_endpoint(
+    request: Request,                                     # required by slowapi; must be named `request`
+    response: Response,                                   # REQUIRED with headers_enabled=True (see generate_trip)
+    user_id: str = Depends(get_current_user_id_stashed),  # token-derived: guardrails #5 + #6
+) -> AccountDeletionResponse:
+    """Enter the 7-day cancellable deletion grace for the AUTHENTICATED account.
+
+    GATED OFF until Task 6 (`_DELETION_EXECUTION_READY`): the delete engine + sweep +
+    notifications don't exist yet, so this must not schedule a deletion nothing will act on.
+    Returns 503 while gated — before any DB round-trip, so nothing is touched.
+
+    The deleted account is ALWAYS the caller's JWT sub (self-serve only) — this endpoint has
+    no request body and never accepts a client-supplied user_id. The RPC is privilege-pinned to
+    service_role, so a client cannot schedule another uuid via PostgREST either.
+    """
+    if not _DELETION_EXECUTION_READY:
+        return build_error_response(503, _DELETION_GATED_MESSAGE, code="deletion_unavailable")
+
+    from notifications import resend_configured
+    if not resend_configured():
+        # The scheduled-deletion email is the load-bearing safety net (plan §3.5). Refuse to start a
+        # grace we cannot notify — flipping execution-ready without RESEND must fail closed, not
+        # accept a silent no-notice deletion. (Transient SEND failures stay best-effort; this is
+        # CONFIG.) Pre-DB slot, like the gate above: returns before any RPC / get_supabase_client.
+        return build_error_response(503, _DELETION_GATED_MESSAGE, code="deletion_unavailable")
+
+    from deletion import DeletionRPCUnavailable, request_account_deletion
+
+    client = await get_supabase_client()
+    try:
+        scheduled_for = await request_account_deletion(client, user_id)
+    except DeletionRPCUnavailable:
+        # A migration lagging a deploy: fail CLOSED, don't 500. Returned (not raised) so the
+        # envelope carries the distinct code, matching the clear route's 503 handling.
+        return build_error_response(503, _DELETION_GATED_MESSAGE, code="deletion_unavailable")
+    if scheduled_for is None:
+        # The CAS matched nothing: the account is not 'active' (already pending/deleting).
+        raise HTTPException(409, {"code": "deletion_not_active",
+            "message": "This account can't be scheduled for deletion right now."})
+    # Fire the immediate "deletion scheduled — cancel by {date}" notice (Resend, best-effort) —
+    # the load-bearing safety net (plan §3.5). Wrapped so NEITHER the email lookup NOR the send can
+    # fail the 200 or the already-scheduled deletion.
+    await _send_scheduled_deletion_email(client, user_id, scheduled_for)
+    return AccountDeletionResponse(scheduled_for=scheduled_for)
+
+
+@app.post("/account/deletion/cancel", response_model=AccountDeletionCancelResponse)
+@limiter.limit(BURST_LIMIT)
+async def cancel_account_deletion_endpoint(
+    request: Request,                                     # required by slowapi; must be named `request`
+    response: Response,                                   # REQUIRED with headers_enabled=True
+    user_id: str = Depends(get_current_user_id_stashed),  # token-derived: guardrails #5 + #6
+) -> AccountDeletionCancelResponse:
+    """Cancel the pending deletion for the AUTHENTICATED account, reversing the grace.
+
+    GATED OFF until Task 6 (503 while gated). Only works before the sweeper claims the account
+    into 'deleting' (Task 3's point of no return) — a row already 'deleting' returns 409
+    deletion_already_started. Caller is always the JWT sub (privilege-pinned RPC)."""
+    if not _DELETION_EXECUTION_READY:
+        return build_error_response(503, _DELETION_GATED_MESSAGE, code="deletion_unavailable")
+
+    from deletion import DeletionRPCUnavailable, cancel_account_deletion
+
+    client = await get_supabase_client()
+    try:
+        status = await cancel_account_deletion(client, user_id)
+    except DeletionRPCUnavailable:
+        return build_error_response(503, _DELETION_GATED_MESSAGE, code="deletion_unavailable")
+    if status == "cancelled":
+        return AccountDeletionCancelResponse()
+    if status == "already_deleting":
+        raise HTTPException(409, {"code": "deletion_already_started",
+            "message": "Your account deletion has already started and can no longer be cancelled."})
+    # status == "not_pending": there is no pending deletion to cancel.
+    raise HTTPException(409, {"code": "no_pending_deletion",
+        "message": "There is no pending account deletion to cancel."})
+
+
+@app.get("/account/deletion/status", response_model=AccountDeletionStatusResponse)
+async def account_deletion_status_endpoint(
+    user_id: str = Depends(get_current_user_id),  # token-derived: guardrails #5 + #6
+) -> AccountDeletionStatusResponse:
+    """Report the AUTHENTICATED account's deletion state so a returning user's UI can show (or
+    hide) the pending banner across sessions (the T5 gap, wired at T6).
+
+    UNGATED — a harmless read. It is NOT tied to `_DELETION_EXECUTION_READY`: while that flag is
+    False nobody is pending, so every caller simply reads 'active'. The account is ALWAYS the
+    caller's JWT sub — there is no request body or query id to supply another uuid — so this can
+    never leak a different user's status (guardrails #5/#6).
+
+    NEVER 500s a returning user's UI, but it distinguishes two cases that used to collapse (Fix 5):
+      * a SUCCESSFUL read whose row is absent / a bare None / an unexpected value = a
+        legitimately-absent status = NO pending deletion → the safe default {account_status:
+        'active', deletion_scheduled_for: null} (banner HIDDEN); and
+      * a genuine read FAILURE (the read raised) → {account_status: 'unknown', ...null}. Collapsing
+        this to 'active' would hide the Cancel banner from a genuinely-pending user while a
+        re-request says "already scheduled" — no route to cancel. 'unknown' lets the UI preserve
+        cancellation guidance instead. Secret-safe: logs only the exception TYPE name.
+    """
+    try:
+        client = await get_supabase_client()
+        res = await (client.table("users").select("account_status, deletion_scheduled_for")
+                     .eq("id", user_id).maybe_single().execute())
+        row = getattr(res, "data", None) if res is not None else None
+        if isinstance(row, dict) and row.get("account_status") in (
+            "active", "pending_deletion", "deleting"
+        ):
+            return AccountDeletionStatusResponse(
+                account_status=row["account_status"],
+                deletion_scheduled_for=row.get("deletion_scheduled_for"),
+            )
+        # A successful read with no matching row / bare None / an unexpected value = no pending
+        # deletion. Keep the 'active' default (banner HIDDEN) — only the EXCEPTION path is 'unknown'.
+        return AccountDeletionStatusResponse(account_status="active", deletion_scheduled_for=None)
+    except Exception as exc:  # noqa: BLE001 — a genuine read FAILURE is 'unknown', never a false 'active'
+        logger.warning("account deletion status read failed: %s", type(exc).__name__)
+        return AccountDeletionStatusResponse(account_status="unknown", deletion_scheduled_for=None)
+
+
 class _OrganizeSavedReelsRequest(OrganizeSavedReelsRequest):
     model_config = ConfigDict(extra="forbid")
 
@@ -681,6 +887,12 @@ async def organize_saved_reels(
     user_id: str = Depends(get_current_user_id_stashed),
 ) -> OrganizeSavedReelsResponse:
     client = await get_supabase_client()
+    # Generation freeze (plan §3.6): organize is the THIRD generation entrypoint — a pending/
+    # deleting account gets a clean "scheduled for deletion" response instead of burning
+    # Apify/OpenAI spend (and racing the cascade). Ungated + inert while everyone is 'active'.
+    if await _account_is_pending_deletion(client, user_id):
+        raise HTTPException(403, {"code": "account_pending_deletion",
+            "message": "This account is scheduled for deletion. Cancel the deletion to organize reels."})
     saved_reel_ids = [str(saved_reel_id) for saved_reel_id in req.saved_reel_ids]
     try:
         job_id = await create_organize_job(client, user_id, saved_reel_ids)

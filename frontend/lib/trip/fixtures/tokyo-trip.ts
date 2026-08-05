@@ -175,7 +175,9 @@ const hotels: HotelSuggestion[] = [
   {
     id: 'hotel_1', trip_id: TRIP_ID, trip_day_id: null, base_place_id: 'pl_hotelbase', // single base hotel — intentionally not tied to a specific day
     name: 'Shinjuku Granbell Hotel', area: 'Shinjuku', star_rating: 4,
-    price_snapshot: { currency: 'USD', nightly: 128 }, travala_hotel_id: 'tv_12345',
+    // Snapshot keys mirror persist_hotels' real write shape (pricePerNight/totalPrice/currency) —
+    // the earlier `nightly` key was fixture drift the backend never wrote.
+    price_snapshot: { currency: 'USD', pricePerNight: 128, totalPrice: 384 }, travala_hotel_id: 'tv_12345',
     preference_match_json: { matched: ['central', 'mid_range'] },
     source: 'travala', status: 'suggested', searched_at: '2026-08-01T09:02:30Z',
     // Hotel-hub: geocoded + ranked #1 (the route-central recommended hub). Coords match pl_hotelbase.

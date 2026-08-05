@@ -297,7 +297,9 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
             All trails
           </Link>
           <OrchestratorSummary bundle={bundle} />
-          <TradeoffPanel tradeoffs={bundle.trip.tradeoffs} />
+          {/* Day-pacing notes only ("Heads up") — the hotel comparison lives with the hotel
+              list under "Where to stay" so there is ONE hotel decision surface, not two. */}
+          <TradeoffPanel tradeoffs={bundle.trip.tradeoffs} variant="notes" />
 
           <Section title="Days">
             <DaySelector days={days} activeDayNumber={activeDayNumber} onSelect={setActiveDayNumber} />
@@ -319,12 +321,17 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
           </Section>
 
           <Section title="Where to stay">
-            <HotelPanel
-              hotels={tripHotels(bundle)}
-              selectedHotelId={selectedHotelId}
-              onSelectHotel={setSelectedHotelId}
-              layerMode={layerMode}
-            />
+            <div className="flex flex-col gap-3">
+              {/* Price-vs-rating context sits WITH the hotels it compares. It is context, not a
+                  second pick — the Recommended badge on the list below stays the single pick. */}
+              <TradeoffPanel tradeoffs={bundle.trip.tradeoffs} variant="comparisons" />
+              <HotelPanel
+                hotels={tripHotels(bundle)}
+                selectedHotelId={selectedHotelId}
+                onSelectHotel={setSelectedHotelId}
+                layerMode={layerMode}
+              />
+            </div>
           </Section>
 
           <Section title="Place detail">

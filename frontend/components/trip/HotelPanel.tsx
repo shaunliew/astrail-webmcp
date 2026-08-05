@@ -7,6 +7,24 @@ const STATUS_LABEL: Record<HotelStatus, string> = {
   failed: 'Search failed',
 }
 
+// price_snapshot mirrors persist_hotels' write shape ({pricePerNight, totalPrice, currency}) but
+// is typed Record<string, unknown>, so read it defensively: anything non-finite renders no price
+// at all (never "NaN/night"). Per-night is preferred; the stay total is the fallback so SOME
+// price still shows when only totalPrice came back — same unit preference as backend tradeoffs.py.
+function priceLabel(snap: Record<string, unknown> | null | undefined): string | null {
+  // > 0: a zero or negative price is treated as missing, never rendered as "0 USD/night" (a
+  // free-hotel claim we have no evidence for; review nit 2026-08-06).
+  const num = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null
+  const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2))
+  const cur = typeof snap?.currency === 'string' ? snap.currency : ''
+  const night = num(snap?.pricePerNight)
+  if (night != null) return cur ? `${fmt(night)} ${cur}/night` : `${fmt(night)}/night`
+  const total = num(snap?.totalPrice)
+  if (total != null) return cur ? `${fmt(total)} ${cur} total` : `${fmt(total)} total`
+  return null
+}
+
 // The hotel list doubles as the hub picker (plan 2026-08-04-hotel-hub-map, T8). A hotel is a
 // selectable map hub iff it is `geo_status==='placed'` AND in the backend's top-3 shortlist
 // (`rank != null` — a placed hotel ranked 4+ carries rank===null and is NOT a hub candidate). An
@@ -40,7 +58,10 @@ export default function HotelPanel({
         const selectable =
           h.geo_status === 'placed' && h.rank != null && h.lat != null && h.lng != null
         const selected = selectable && h.id === selectedHotelId
-        const meta = [h.area, h.star_rating ? `${h.star_rating}★` : null].filter(Boolean).join(' · ')
+        // Price leads the meta line — it's the figure the user is deciding on (pre-beta fix:
+        // price_snapshot has been persisted since day one but was never rendered).
+        const meta = [priceLabel(h.price_snapshot), h.area, h.star_rating ? `${h.star_rating}★` : null]
+          .filter(Boolean).join(' · ')
 
         // Identical body whether or not the row is a selectable hub-pick button.
         const body = (

@@ -136,6 +136,17 @@ describe('TripWorkspace', () => {
     expect(await screen.findByRole('button', { name: /^hotel$/i })).toBeDisabled()
   })
 
+  // Merge-lite (2026-08-06): ONE hotel decision surface. The price-vs-rating card renders exactly
+  // once (inside "Where to stay", not also at the top), and the pacing notes render as "Heads up".
+  it('renders the price-vs-rating card once, with pacing notes under Heads up', async () => {
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    renderWorkspace(TOKYO_TRIP.trip.id)
+    await screen.findByRole('heading', { name: 'Price vs rating' })
+    expect(screen.getAllByRole('heading', { name: 'Price vs rating' })).toHaveLength(1)
+    expect(screen.getByRole('heading', { name: 'Heads up' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Tradeoffs' })).not.toBeInTheDocument()
+  })
+
   it('shows a not-found state for an unknown trip id', async () => {
     getTrip.mockResolvedValueOnce(null)
     renderWorkspace('does_not_exist')

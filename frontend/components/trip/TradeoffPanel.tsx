@@ -22,22 +22,36 @@ function OptionCard({ option }: { option: TradeoffOption }) {
   )
 }
 
+// `variant` splits the panel across its two real audiences (pre-beta merge-lite, 2026-08-06):
+// the day-pacing `notes` stay at the top of the trip panel ("Heads up"), while the hotel
+// `comparisons` render inside "Where to stay" — WITH the hotel list they're about, so the user
+// has one hotel decision surface instead of two competing sections. In the comparisons variant
+// the outer heading is dropped entirely: the Section already says "Where to stay" and each card
+// carries its own axis heading ("Price vs rating").
 export default function TradeoffPanel({
   tradeoffs,
+  variant = 'all',
 }: {
   tradeoffs: TripTradeoffs | null | undefined
+  variant?: 'all' | 'notes' | 'comparisons'
 }) {
-  const notes = tradeoffs?.notes ?? []
-  const comparisons = tradeoffs?.comparisons ?? []
+  const notes = variant === 'comparisons' ? [] : tradeoffs?.notes ?? []
+  const comparisons = variant === 'notes' ? [] : tradeoffs?.comparisons ?? []
   if (notes.length === 0 && comparisons.length === 0) {
     return null
   }
 
   return (
-    <section className="mt-4" data-testid="tradeoff-panel">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <h3 className="type-display text-[15px] text-[var(--starlight)]">Tradeoffs</h3>
-      </div>
+    // Variant-suffixed testid: both variants render simultaneously in TripWorkspace, and a
+    // shared testid is an RTL found-multiple-elements footgun (review nit 2026-08-06).
+    <section className={variant === 'comparisons' ? '' : 'mt-4'} data-testid={`tradeoff-panel-${variant}`}>
+      {variant !== 'comparisons' ? (
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <h3 className="type-display text-[15px] text-[var(--starlight)]">
+            {variant === 'notes' ? 'Heads up' : 'Tradeoffs'}
+          </h3>
+        </div>
+      ) : null}
 
       {notes.length > 0 ? (
         <ul className="flex flex-col gap-2">

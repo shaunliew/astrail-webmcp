@@ -49,6 +49,48 @@ describe('HotelPanel', () => {
     expect(screen.getByText(/recommended/i)).toBeInTheDocument()
   })
 
+  // Pre-beta fix (2026-08-06): price_snapshot has been persisted since day one but was never
+  // rendered — the meta line now leads with it.
+  it('shows the per-night price from the snapshot', () => {
+    renderPanel([placed]) // fixture: { pricePerNight: 128, totalPrice: 384, currency: 'USD' }
+    expect(screen.getByText(/128 USD\/night/)).toBeInTheDocument()
+  })
+
+  it('falls back to the stay total when only totalPrice is present', () => {
+    const totalOnly: HotelSuggestion = {
+      ...placed, id: 'hotel_totalonly',
+      price_snapshot: { totalPrice: 384, currency: 'USD' },
+    }
+    renderPanel([totalOnly])
+    expect(screen.getByText(/384 USD total/)).toBeInTheDocument()
+  })
+
+  it('renders no price when the snapshot is empty', () => {
+    renderPanel([unresolved]) // fixture hotel_2: price_snapshot {}
+    expect(screen.queryByText(/night|total/i)).not.toBeInTheDocument()
+  })
+
+  // Zero is missing, not free: a 0 price must render nothing, never "0 USD/night" (review nit).
+  it('treats a zero price as missing rather than rendering a free hotel', () => {
+    const zeroPrice: HotelSuggestion = {
+      ...placed, id: 'hotel_zeroprice',
+      price_snapshot: { pricePerNight: 0, totalPrice: 0, currency: 'USD' },
+    }
+    renderPanel([zeroPrice])
+    expect(screen.queryByText(/night|total/i)).not.toBeInTheDocument()
+  })
+
+  // Defensive-read guard: a snapshot whose price is a STRING (or any non-finite value) must render
+  // no price — never a coerced or NaN figure. Pins the typeof gate in priceLabel.
+  it('rejects a non-numeric price value instead of coercing it', () => {
+    const stringPrice: HotelSuggestion = {
+      ...placed, id: 'hotel_strprice',
+      price_snapshot: { pricePerNight: '128', currency: 'USD' },
+    }
+    renderPanel([stringPrice])
+    expect(screen.queryByText(/\/night/)).not.toBeInTheDocument()
+  })
+
   it('selecting a placed hotel calls onSelectHotel with its id', () => {
     const onSelectHotel = vi.fn()
     renderPanel([placed], { onSelectHotel })

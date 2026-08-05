@@ -31,7 +31,7 @@ export default function LiveMapDemo() {
 
         <div
           ref={ref}
-          className="mt-12 h-[70vh] min-h-[420px] overflow-hidden rounded-xl border border-[color:var(--night-line)]"
+          className="mt-12 h-[70vh] min-h-[420px] overflow-hidden rounded-xl border border-[color:var(--night-line)] shadow-[inset_0_1px_0_rgba(247,243,232,0.07),0_1px_2px_rgba(0,0,0,0.55),0_8px_28px_rgba(0,0,0,0.4)]"
         >
           {near ? (
             <StoryRevealMap className="h-full w-full" />

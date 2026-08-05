@@ -29,7 +29,15 @@ export default function ShotSlot({
         </span>
       </div>
       {src ? (
-        <img src={src} alt={alt} className="block w-full" loading="lazy" />
+        /* 1440x900 capture = 16:10. Reserving the ratio keeps the card at
+           full size before the lazy image arrives — no strip-collapse, no
+           layout jump when it lands. */
+        <img
+          src={src}
+          alt={alt}
+          className="block aspect-[16/10] w-full object-cover"
+          loading="lazy"
+        />
       ) : (
         <div
           role="img"

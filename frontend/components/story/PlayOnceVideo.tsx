@@ -21,7 +21,12 @@ export default function PlayOnceVideo({
   const inView = useInView(videoRef, { amount, once: true })
 
   useEffect(() => {
-    if (inView) videoRef.current?.play().catch(() => {})
+    if (!inView) return
+    // Reduced-motion: hold the poster (the clip's locked final frame) instead
+    // of autoplaying — mirrors the hero (Beat0Layer). Keeps the CTA still for
+    // users who asked the OS for less motion.
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return
+    videoRef.current?.play().catch(() => {})
   }, [inView])
 
   return (

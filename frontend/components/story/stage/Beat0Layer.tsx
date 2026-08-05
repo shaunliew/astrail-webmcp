@@ -51,6 +51,15 @@ export default function Beat0Layer() {
         preload="metadata"
         style={{ opacity: walkDone ? 1 : 0, transition: 'opacity 0.35s ease' }}
       />
+      {/* Phones only (CSS): a centered, full-figure Aster still. The 16:9 clip
+          crops him to a corner on portrait; this reads balanced under the copy.
+          Desktop keeps the walk-in + idle video above. */}
+      <img
+        className="story-hero-aster-mobile"
+        src="/landing/aster-hero-mobile.webp"
+        alt=""
+        aria-hidden="true"
+      />
     </div>
   )
 }

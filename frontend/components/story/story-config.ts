@@ -18,7 +18,9 @@ export const CLIPS = {
   overwhelm: '/landing/clips/beat3-overwhelm.mp4',
   rescue: '/landing/clips/beat4a-rescue.mp4',
   flyDown: '/landing/clips/beat4b-flydown.mp4',
-  cta: '/landing/clips/beat7-cta.mp4',
+  // CTA warm bookend: mech descends + waves (Higgsfield job f84b5245),
+  // 720p ~5MB, committed under /hero. No baked-in UI (clean empty left).
+  cta: '/landing/hero/cta.mp4',
 } as const
 
 /* Real app screenshots (swap-ready). Captured 2026-08-02 from the live app

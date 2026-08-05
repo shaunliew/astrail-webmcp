@@ -2,8 +2,9 @@
 
 import Link from 'next/link'
 
+import PlayOnceVideo from '../PlayOnceVideo'
 import { tallyFallbackUrl } from '@/components/landing/landing-copy'
-import { SEATS_TOTAL, STILLS } from '../story-config'
+import { CLIPS, SEATS_TOTAL, STILLS } from '../story-config'
 
 /* The warm bookend — the mech lands and waves. The message is now the open
    beta: plan free today, and the scarce thing (unlimited planning for 25
@@ -12,11 +13,21 @@ import { SEATS_TOTAL, STILLS } from '../story-config'
    "notify me" — never the main action. */
 export default function FinalCTA() {
   return (
-    <section className="relative min-h-[92vh] overflow-hidden bg-[color:var(--paper-1)]">
-      {/* The mech-wave clip isn't recovered; the warm bookend rests on its
-          still. Swap back to <PlayOnceVideo> if the CTA clip is regenerated. */}
-      <img className="story-video" src={STILLS.cta} alt="" aria-hidden="true" />
+    <section className="story-cta relative min-h-[92vh] overflow-hidden bg-[color:var(--paper-1)]">
+      {/* The warm bookend: the mech descends and waves (recovered from ZH's
+          Higgsfield acct — clean empty left, no baked-in UI). Plays once when
+          the section scrolls into view, then holds its final frame. */}
+      <PlayOnceVideo src={CLIPS.cta} poster={STILLS.cta} amount={0.35} />
       <div className="story-wash-left" />
+      {/* Phones only (CSS): the 16:9 clip composes the mech in the right
+          third, so a portrait cover-crop deletes him entirely. Swap to a
+          centered mech cutout under the copy — same pattern as the hero. */}
+      <img
+        className="story-cta-mech-mobile"
+        src="/landing/cta-mech-mobile.webp"
+        alt=""
+        aria-hidden="true"
+      />
 
       <div className="story-copy story-copy--center" style={{ zIndex: 40 }}>
         <p className="story-eyebrow text-[color:var(--story-teal-ink)]">

@@ -155,9 +155,14 @@ geocoding cost stays flat as trip volume grows.
    re-run per-trip on the cached coord; it is never cached, because proximity is trip-specific.)
 5. **Cache HIT skips the whole chain** (eng E2 / Codex #1). Order: read cache by the **hotel-identity
    key (#6)** → **translate only the cache-missed JP hotels** → geocode misses → write. Not
-   translate-all-then-cache. (The identity key + read-before-translate also means the LLM only ever runs
-   on a hotel's FIRST occurrence — later trips reuse the cached coord, so translation non-determinism
-   can't drift a hotel across trips.)
+   translate-all-then-cache. **[T4-built clarification] "Translate the misses" is PER-KEY, not one
+   batch-per-trip:** translate runs INSIDE the per-key `resolve_cached` single-flight (#8), so K missed JP
+   hotels = K single-hotel localizer calls, run CONCURRENTLY via `asyncio.gather` (latency bounded by
+   concurrency, not the sum). Batching translate OUTSIDE the lock would reintroduce the cross-trip
+   double-bill (v3 #3) — so per-key is required, not a shortcut. (The identity key + read-before-translate
+   also means the LLM only ever runs on a hotel's FIRST occurrence — later trips reuse the cached coord, so
+   translation non-determinism can't drift a hotel across trips; the 1-element batch also removes cross-hotel
+   name-slot drift, leaving only single-hotel name hallucination as the accepted residual.)
 6. **[Codex v2 #1 — BLOCKER fold] Cache key is a stable IDENTITY, not the query.** The JP Mapbox query
    is the *translated* name, which does not exist until AFTER the cache read — so the key CANNOT be the
    query. Key by the hotel's stable Travala identity: `STRATEGY_VERSION` + canonical-JSON SHA-256 of
@@ -427,7 +432,11 @@ resolve_hotels (new module):
   scaling past one web instance** (rolling-deploy overlap). Trigger: measured cross-worker duplicate paid geocodes.
 - **R3 — Schema parity deviation (Codex #3).** Feasible-first: no TS mirror for the internal cache.
   Confirm-or-override at kickoff (handoff block).
-- **R4 — LLM cost/latency.** One batched call per JP trip, only for cache-missed hotels. Bounded.
+- **R4 — LLM cost/latency.** **[corrected after T4]** Per the folded single-flight (#8/v3#3/v4#3), translate
+  runs INSIDE the per-key `resolve_cached`, so a cold JP trip with K cache-missed hotels makes **K single-hotel
+  localizer calls** (concurrent via `asyncio.gather`, each cached 365 d) — NOT one batch-per-trip. The
+  batch-outside alternative would reintroduce the cross-trip double-bill, so per-key is required. Cost delta is
+  small (~4.25 hotels/trip avg across 35 real trips; each hotel paid once-per-hotel-ever). Bounded.
 - **R5 — Eval anchor.** New modules live-only + injected; `client=None`/`runner=None`/`resolve_hotels
   =None` on the offline path keeps the eval byte-identical. T6 verifies.
 

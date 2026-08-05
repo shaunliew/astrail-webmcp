@@ -4,6 +4,22 @@ Deferred work with enough context to pick up cold. Spec-level deferrals (Realtim
 preference→agent feed, requested_places resolution, Google OAuth, custom SMTP) live in
 `docs/superpowers/specs/2026-07-07-beta-auth-to-map-wiring-design.md` § Non-goals.
 
+## Extract an `authedPost()` helper in `frontend/lib/trip/api.ts`
+
+- **What:** Collapse the five near-identical authed-POST helpers (`requestSeat`,
+  `requestAccountDeletion`, `cancelAccountDeletion`, `clearMemory`, `submitTripFeedback`) onto one
+  `authedPost(path, accessToken, body?)` that owns the fetch/headers/`apiErrorFrom` boilerplate.
+- **Why:** Each new endpoint currently copies ~15 lines of identical fetch plumbing; a sixth copy
+  landed with the trip-feedback arc (2026-08-05 eng review flagged it, DRY preference).
+- **Pros:** One place for headers/error-envelope handling; new endpoints become 3-liners.
+- **Cons:** Touches four already-reviewed, shipped helpers for zero behavior change — churn on
+  code with per-fn mock-auth short-circuits that don't fold into the shared shape trivially.
+- **Context:** Deliberately NOT done inside the trip-feedback arc (minimal-diff rule; the arc
+  copies the house pattern instead). The mock-auth short-circuits stay per-endpoint — only the
+  network half extracts cleanly. See `frontend/lib/trip/api.ts`.
+- **Depends on / blocked by:** Nothing; best bundled into the next arc that touches ≥2 of these
+  helpers anyway.
+
 ## Cookie-cache the onboarding gate query
 
 - **What:** Skip the middleware's per-request `traveler_profiles.onboarding_completed`

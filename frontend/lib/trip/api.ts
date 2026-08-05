@@ -7,6 +7,8 @@ import type {
   MemoryClearResponse,
   RequestSeatResponse,
   StreamEvent,
+  TripFeedbackRequest,
+  TripFeedbackResponse,
 } from './backend-types'
 // Mock-auth shell: generation runs against the offline fixture replay with zero backend
 // (mirrors the MOCK_AUTH_ENABLED switches in middleware.ts and use-user.ts).
@@ -184,6 +186,65 @@ export async function clearMemory(accessToken: string): Promise<MemoryClearRespo
       'Content-Type': 'application/json',
       Authorization: `Bearer ${accessToken}`,
     },
+  })
+
+  if (!res.ok) {
+    throw await apiErrorFrom(res)
+  }
+
+  return res.json()
+}
+
+// Client-side draft union (Codex r1 #7): narrower than the TripFeedbackRequest mirror (which
+// stays 1:1 with the Pydantic model — guardrail #4). The union prevents invalid CONSTRUCTION — a
+// fresh literal / buildDraft result can't be rating-without-a-value or rating-on-a-thumbs-row. It
+// is NOT a structural firewall: an object assigned from a wider value could still carry extra keys
+// past the union, so the real guarantee is "drafts built by buildDraft / object literals", enforced
+// by the exact-key serialization tests (lib/trip/__tests__/trip-feedback-api.test.ts). Every member
+// stays assignable to TripFeedbackRequest — pinned at compile time by _DraftAssignableToRequest below.
+export type TripFeedbackDraft =
+  | { feedback_type: 'thumbs_up' | 'thumbs_down'; comment?: string }
+  | { feedback_type: 'rating'; rating: 1 | 2 | 3 | 4 | 5; comment?: string }
+  | { feedback_type: 'free_text'; comment: string }
+
+type _Assert<T extends true> = T
+// Compile-time pin (guardrail #4): every TripFeedbackDraft member must stay assignable to the
+// backend mirror. tsc fails here if a future mirror change breaks assignability.
+type _DraftAssignableToRequest = _Assert<TripFeedbackDraft extends TripFeedbackRequest ? true : false>
+
+// Deterministic id for the mock-auth shell — no wall-clock, no randomness.
+const MOCK_FEEDBACK_ID = 'mock-feedback-1'
+
+// POST /trips/{tripId}/feedback — append-only trip-level feedback, ONE request per user action
+// (a thumbs/rating signal may carry the note in the same row; backend allows optional comment
+// there). Strict cross-field 422s live behind the draft union; ownership is 404-not-403; 429 =
+// BURST_LIMIT (3/min default). Resubmission inserts a new row by design (analytics take
+// latest-per-user), so callers may POST again to change a verdict.
+export async function submitTripFeedback(
+  tripId: string,
+  req: TripFeedbackDraft,
+  accessToken: string
+): Promise<TripFeedbackResponse> {
+  // Mock-auth shell: no backend — echo a deterministic persisted-row shape (mirrors requestSeat).
+  if (MOCK_AUTH_ENABLED) {
+    return {
+      feedback: {
+        id: MOCK_FEEDBACK_ID,
+        trip_id: tripId,
+        artifact_type: 'trip',
+        feedback_type: req.feedback_type,
+        rating: 'rating' in req ? req.rating : null,
+        comment: req.comment ?? null,
+      },
+    }
+  }
+  const res = await fetch(`${BACKEND_URL}/trips/${tripId}/feedback`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(req),
   })
 
   if (!res.ok) {

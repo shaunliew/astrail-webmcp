@@ -32,7 +32,7 @@ const {
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push }) }))
 vi.mock('@/lib/supabase/session', () => ({ getAccessToken }))
-vi.mock('@/lib/trip/api', () => ({ generateTrip, streamGeneration }))
+vi.mock('@/lib/trip/api', () => ({ generateTrip, streamGeneration, submitTripFeedback: vi.fn() }))
 vi.mock('@/lib/trip/supabase-api', () => ({ getTrip }))
 vi.mock('mapbox-gl', () => ({
   default: {

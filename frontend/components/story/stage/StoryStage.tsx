@@ -28,7 +28,7 @@ export default function StoryStage() {
   return (
     <main className="story">
       {/* ---- HERO: Aster walks in and idles. No metaphor transition. ---- */}
-      <section className="relative h-[100dvh] min-h-[640px] overflow-hidden bg-[color:var(--story-ivory)]">
+      <section className="story-hero relative h-[100dvh] min-h-[640px] overflow-hidden bg-[color:var(--story-ivory)]">
         <Beat0Layer />
         <div className="story-wash-left" />
 

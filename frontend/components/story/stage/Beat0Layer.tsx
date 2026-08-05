@@ -48,7 +48,7 @@ export default function Beat0Layer() {
         muted
         playsInline
         loop
-        preload="auto"
+        preload="metadata"
         style={{ opacity: walkDone ? 1 : 0, transition: 'opacity 0.35s ease' }}
       />
     </div>

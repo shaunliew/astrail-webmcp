@@ -6,10 +6,12 @@ export const SEATS_CLAIMED = 0
 export const BOARDING_OPEN = false
 
 export const CLIPS = {
-  // take 5: enters empty stage → stops right-third → SETTLES STANDING (holds)
-  coldOpen: '/landing/clips/beat0-coldopen.mp4?v=5',
-  // v4: anchored to take 5's true final standing frame (query busts stale caches)
-  coldOpenIdle: '/landing/clips/beat0-idle.mp4?v=4',
+  // Hero clips: fetched from ZH's Higgsfield account (jobs ada5890a walk-in +
+  // 7e16761e seamless idle), compressed to 720p (~4MB/3MB) and committed under
+  // /hero (the raw ~50MB /clips masters stay gitignored). Walk-in enters the
+  // empty stage → settles standing right-third; idle loops that pose forever.
+  coldOpen: '/landing/hero/coldopen.mp4',
+  coldOpenIdle: '/landing/hero/idle.mp4',
   phoneScroll: '/landing/clips/beat1-phonescroll.mp4',
   spark: '/landing/clips/beat2-spark.mp4',
   frenzy: '/landing/clips/beat25-frenzy.mp4',

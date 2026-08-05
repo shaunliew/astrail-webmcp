@@ -13,6 +13,7 @@ const STEPS = [
     src: SCREENS.createTrail,
     alt: 'Astrail create-trail form with pasted reel links',
     slotLabel: 'real screenshot — create-trail form',
+    note: 'forward reels straight to our Telegram bot and skip the copy-paste',
   },
   {
     eyebrow: 'Step 2',
@@ -62,6 +63,14 @@ export default function HowItWorks() {
                   {step.title}
                 </h3>
                 <p className="story-sub text-[color:var(--ink-600)]">{step.body}</p>
+                {'note' in step && step.note ? (
+                  <p className="mt-4 text-[14px] font-medium text-[color:var(--story-teal-ink)]">
+                    <span className="mr-2 rounded-full border border-[color:var(--story-teal-ink)] px-2 py-[2px] text-[11px] uppercase tracking-[0.12em]">
+                      Soon
+                    </span>
+                    {step.note}
+                  </p>
+                ) : null}
               </div>
               <ShotSlot
                 src={step.src}

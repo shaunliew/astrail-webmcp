@@ -49,6 +49,13 @@ export default function StoryRevealMap({ className }: { className?: string }) {
     map.on('style.load', () => {
       map.setConfigProperty('basemap', 'lightPreset', 'night')
 
+      // Declutter for a trustable "this is what you get" surface: drop the
+      // POI / transit / road-name noise (hospitals, offices, station labels),
+      // keep place labels so districts still read. Matches the landing stills.
+      map.setConfigProperty('basemap', 'showPointOfInterestLabels', false)
+      map.setConfigProperty('basemap', 'showTransitLabels', false)
+      map.setConfigProperty('basemap', 'showRoadLabels', false)
+
       // Brass route line through the ordered stops (the flight-trail, landed).
       const coordinates = STOPS.map((tp) => [tp.place!.lng, tp.place!.lat])
       map.addSource('story-route', {

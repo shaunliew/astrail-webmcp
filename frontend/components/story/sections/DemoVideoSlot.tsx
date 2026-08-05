@@ -14,7 +14,7 @@ export default function DemoVideoSlot() {
           Watch it work
         </p>
         <h2 className="story-h text-[color:var(--ink-900)]">
-          Two minutes, reels to route.
+          Sixty seconds, reels to route.
         </h2>
 
         <div className="mx-auto mt-10 overflow-hidden rounded-xl border border-[color:var(--paper-line)] shadow-[0_1px_2px_rgba(28,23,16,0.08),0_16px_40px_rgba(28,23,16,0.14)]">

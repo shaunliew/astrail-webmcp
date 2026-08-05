@@ -30,11 +30,14 @@ export default function Beat0Layer() {
         }}
         style={{ opacity: walkDone ? 0 : 1, transition: 'opacity 0.35s ease' }}
       />
-      {/* idle loop: anchored to the walk-in's actual last frame → seamless */}
+      {/* idle loop: anchored to the walk-in's actual last frame → seamless.
+          Poster mirrors the walk-in still so a missing clip degrades to the
+          standing frame, never a blank box. */}
       <video
         ref={idleRef}
         className="story-video"
         src={CLIPS.coldOpenIdle}
+        poster={STILLS.coldOpen}
         muted
         playsInline
         loop

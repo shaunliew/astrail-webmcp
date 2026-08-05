@@ -268,7 +268,16 @@ async def strict_forward_geocode(
         payload = resp.json()
     except ValueError:
         raise ResolveError(f"Mapbox forward: malformed 2xx body for {query!r}") from None
-    return _strict_parse_forward(payload)
+    result = _strict_parse_forward(payload)
+    # Mapbox Search Box omits the country from `context` on some responses — notably the JP
+    # types="poi", language="ja" hotel path, whose context carries region/place/street but no
+    # `country` entry. The identity gate needs a country to confirm. When THIS request pinned a
+    # single `country` filter, every returned feature is in that country by construction, so a
+    # missing country_code is filled from the filter (truthful; NEVER overrides a value Mapbox
+    # actually returned). Without this the JP hotel gate can never confirm country → all-miss.
+    if result is not None and result.country_code is None and country:
+        result = result.model_copy(update={"country_code": country.upper()})
+    return result
 
 
 def apply_geocode(place: PlaceResult, geo: GeocodeResult | None) -> PlaceResult:

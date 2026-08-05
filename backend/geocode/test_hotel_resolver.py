@@ -16,11 +16,32 @@ import pytest
 from geocode.cache import CACHE_TABLE, identity_key
 from geocode.errors import CacheError, ResolveError
 from geocode.hotel_resolver import (
+    _is_lodging,
     is_valid_ja_name,
     name_fingerprint,
     resolve_hotels,
 )
 from models.geocode import GeocodeResult
+
+
+# ---- _is_lodging: the identity gate's lodging check (plan decision #2c) ---------------------------
+# Live 2026-08-05: the JP language="ja" path returns Japanese, hierarchical poi_category values
+# ("トラベル>ホテル"), not the English "hotel" the allowlist was first written against.
+@pytest.mark.parametrize("poi_category, expected", [
+    (["hotel"], True),                              # en leaf
+    (["lodging"], True),
+    (["guest house"], True),                        # multi-word leaf is NOT split on spaces
+    (["トラベル>ホテル", "トラベル"], True),          # ja hierarchical → split on ">" → "ホテル" matches
+    (["トラベル>ホテル", "トラベル", "トラベル>駐車場"], True),  # extra non-lodging children don't hurt
+    (["旅館"], True),                               # ryokan
+    (["トラベル"], False),                           # the "Travel" PARENT alone is NOT lodging
+    (["トラベル>駐車場"], False),                     # Travel>Parking → not lodging
+    ([], False),                                    # empty (the wedding-venue / address case) → miss
+    (None, False),
+    (["ショッピング>自動販売機"], False),             # Shopping>Vending machine → never a lodging
+])
+def test_is_lodging_matches_en_and_ja_categories(poi_category, expected):
+    assert _is_lodging(poi_category) is expected
 
 
 # ---- honest in-memory fake supabase client (mirrors geocode/test_cache.py) -------------------------

@@ -52,6 +52,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import unicodedata
 from collections import Counter
 from typing import Any, Awaitable, Callable, Mapping, Sequence
@@ -86,13 +87,22 @@ _JA_RANGES: tuple[tuple[int, int], ...] = ((0x3040, 0x30FF), (0x4E00, 0x9FFF))
 # tokens (<system>, <|im_start|>). Parens/middle-dots in real JP names are intentionally allowed.
 _DELIMITERS = frozenset("[]{}<>|")
 
-# Mapbox Search Box `poi_category` values that confirm a lodging (plan decision #2c). The exact set is
-# tuned from the T6 /qa capture (the full enumeration is unconfirmed); UNKNOWN / ABSENT → NOT lodging →
-# miss (fail-safe: a false "couldn't place" costs recall, never a wrong pin). Canonicalized to
-# lowercase, underscores→spaces, so "bed_and_breakfast" and "bed and breakfast" both match.
+# Mapbox Search Box `poi_category` values that confirm a lodging (plan decision #2c). Tuned from the
+# T6 /qa capture; UNKNOWN / ABSENT → NOT lodging → miss (fail-safe: a false "couldn't place" costs
+# recall, never a wrong pin). Canonicalized to NFKC + lowercase, underscores→spaces, so
+# "bed_and_breakfast" and "bed and breakfast" both match.
+#
+# The JP path queries `language="ja"`, and Search Box then returns the category LOCALIZED into
+# Japanese AND hierarchical — e.g. "トラベル>ホテル" (Travel>Hotel), "トラベル" (Travel). So the
+# allowlist carries the Japanese lodging nouns too, and `_lodging_tokens` splits the hierarchy on
+# ">" / "," / "/" before matching (the "トラベル" parent alone is NOT lodging — only the "ホテル"
+# child confirms). Confirmed live 2026-08-05 across 5 Tokyo hotels.
 _LODGING_CATEGORIES = frozenset({
+    # English (non-JP address path + any en-language response).
     "lodging", "hotel", "hostel", "motel", "resort", "inn",
     "guesthouse", "guest house", "bed and breakfast", "b&b", "bnb", "ryokan",
+    # Japanese (language="ja" Search Box taxonomy leaf values).
+    "ホテル", "旅館", "ホステル", "民宿", "ゲストハウス", "モーテル", "リゾート", "宿",
 })
 
 
@@ -163,13 +173,24 @@ def name_fingerprint(hotel: Mapping[str, Any]) -> str:
 
 
 def _canon_category(value: str) -> str:
-    return value.strip().lower().replace("_", " ")
+    return unicodedata.normalize("NFKC", value).strip().lower().replace("_", " ")
+
+
+def _lodging_tokens(value: str) -> set[str]:
+    """Split ONE poi_category string into canonical leaf tokens. Search Box categories can be
+    hierarchical / list-like — "トラベル>ホテル" (ja) or "travel > lodging" (en) — so split on the
+    ">" / "," / "/" delimiters and canonicalize each part. Multi-WORD leaves ("guest house", "bed
+    and breakfast") are NOT split on spaces, so they survive intact."""
+    return {_canon_category(part) for part in re.split(r"[>,/]", value) if part.strip()}
 
 
 def _is_lodging(poi_category: Sequence[str] | None) -> bool:
     """True iff Mapbox's poi_category list contains a known lodging value. Empty / unknown → False
     (fail-safe): the JP `types="poi"` gate never confirms a non-lodging (e.g. a vending machine)."""
-    cats = {_canon_category(c) for c in (poi_category or []) if isinstance(c, str)}
+    cats: set[str] = set()
+    for c in (poi_category or []):
+        if isinstance(c, str):
+            cats |= _lodging_tokens(c)
     return bool(cats & _LODGING_CATEGORIES)
 
 

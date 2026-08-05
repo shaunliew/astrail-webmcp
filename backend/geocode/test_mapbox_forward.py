@@ -441,6 +441,55 @@ async def test_strict_forward_geocode_network_error_raises_resolve_error_without
     assert "SECRET" not in str(exc_info.value)
 
 
+async def test_strict_forward_geocode_fills_missing_country_from_filter():
+    """The JP types="poi", language="ja" hotel response omits `country` from context, so the parsed
+    result has country_code=None. Because the request pinned country=JP, every hit is in JP by
+    construction — strict_forward_geocode fills the missing country_code from the filter so the
+    identity gate can confirm. (Confirmed live 2026-08-05; without this, JP hotels all-miss.)"""
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json={"features": [{
+            "geometry": {"coordinates": [139.7584, 35.6725]},
+            "properties": {
+                "feature_type": "poi", "poi_category": ["トラベル>ホテル", "トラベル"],
+                "context": {"place": {"name": "東京都"}},  # NO country key — the real ja shape
+            },
+        }]})
+    ))
+    result = await strict_forward_geocode("帝国ホテル 東京", token="TKN", country="JP",
+                                          language="ja", client=client)
+    assert result is not None
+    assert result.country_code == "JP"
+
+
+async def test_strict_forward_geocode_does_not_override_returned_country():
+    """The filter-fill is a FALLBACK only — a country_code Mapbox actually returned is never
+    clobbered (even if the request filter's case differs)."""
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json={"features": [{
+            "geometry": {"coordinates": [139.77, 35.68]},
+            "properties": {"feature_type": "poi",
+                           "context": {"country": {"name": "Japan", "country_code": "jp"}}},
+        }]})
+    ))
+    result = await strict_forward_geocode("place", token="TKN", country="JP", client=client)
+    assert result is not None
+    assert result.country_code == "jp"  # Mapbox's own value, not the uppercased filter
+
+
+async def test_strict_forward_geocode_no_country_filter_leaves_country_none():
+    """With no country filter and no country in the response, country_code stays None (nothing to
+    truthfully fill it from)."""
+    client = httpx.AsyncClient(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json={"features": [{
+            "geometry": {"coordinates": [139.77, 35.68]},
+            "properties": {"feature_type": "poi"},
+        }]})
+    ))
+    result = await strict_forward_geocode("place", token="TKN", country=None, client=client)
+    assert result is not None
+    assert result.country_code is None
+
+
 async def test_strict_forward_geocode_passes_country_and_language_kwargs():
     seen: dict = {}
 

@@ -20,6 +20,7 @@ import PlaceIntelPanel from './PlaceIntelPanel'
 import OrchestratorSummary from './OrchestratorSummary'
 import AgentDecisionRail from './AgentDecisionRail'
 import TradeoffPanel from './TradeoffPanel'
+import TripFeedbackPanel from './TripFeedbackPanel'
 
 const TripMap = dynamic(() => import('@/components/map/TripMap'), { ssr: false })
 
@@ -133,8 +134,13 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
     )
   }
   if (bundle.trip.status === 'failed') {
+    // Failed trips are where feedback is the most valuable beta signal (HANDOFF.md — "don't hide
+    // the UI on failures"), so the composer mounts here too. min-h + overflow-y-auto (not a rigid
+    // h-[100dvh] + justify-center) so the composer never clips on short/mobile viewports with the
+    // keyboard open; the screen stays centered when the content fits. Night tokens from :root are
+    // correct here — do NOT wrap in paper-scope.
     return (
-      <main className="flex h-[100dvh] flex-col items-center justify-center gap-3 bg-[var(--void)] p-6">
+      <main className="flex min-h-[100dvh] flex-col items-center justify-center gap-3 overflow-y-auto bg-[var(--void)] p-6">
         <p className="type-display text-xl text-[var(--starlight)]">Generation failed</p>
         <p className="type-body max-w-md text-center text-sm text-[var(--muted)]">
           Astrail couldn&apos;t build this trip. Start a new one — repeat Reels are cached, so retrying is fast.
@@ -142,6 +148,12 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
         <a href="/app" className="type-label text-xs uppercase tracking-wide text-[var(--brass-bright)] underline-offset-2 hover:underline">
           Plan a new trip
         </a>
+        <p className="type-body max-w-md text-center text-sm text-[var(--muted)]">
+          Tell us what went wrong — it&apos;s the most useful feedback we get.
+        </p>
+        <div className="w-full max-w-md">
+          <TripFeedbackPanel key={bundle.trip.id} tripId={bundle.trip.id} />
+        </div>
       </main>
     )
   }
@@ -322,6 +334,16 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
           <Section title="How Astrail built this">
             <AgentDecisionRail events={bundle.events} />
           </Section>
+
+          {/* Feedback composer — explicit status allowlist (plan T3), NOT reachability:
+              places_ready falls through to this return and must NOT show the panel. `key` +
+              bundle.trip.id bind the panel to the LOADED trip and reset its state across a
+              trip-to-trip route transition. */}
+          {(bundle.trip.status === 'complete' || bundle.trip.status === 'saved_with_gaps') && (
+            <Section title="How was this trail?">
+              <TripFeedbackPanel key={bundle.trip.id} tripId={bundle.trip.id} />
+            </Section>
+          )}
         </div>
         </div>
       </aside>

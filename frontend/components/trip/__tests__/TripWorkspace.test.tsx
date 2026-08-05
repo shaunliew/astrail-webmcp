@@ -22,6 +22,12 @@ vi.mock('mapbox-gl', () => ({
   default: { Map: MapCtor, Marker: vi.fn(), LngLatBounds: vi.fn(), accessToken: '' },
 }))
 vi.mock('mapbox-gl/dist/mapbox-gl.css', () => ({}))
+// Lightweight stamp: renders the tripId it receives, so the mount tests observe both presence
+// (per the status matrix) and WHICH id flows (the loaded bundle's, never the route param). This
+// keeps the suite's existing @/lib/trip/* mocks valid — the real panel's api/session deps stay out.
+vi.mock('@/components/trip/TripFeedbackPanel', () => ({
+  default: ({ tripId }: { tripId: string }) => <div data-testid="trip-feedback-panel">{tripId}</div>,
+}))
 
 import MapProvider from '@/components/map/MapProvider'
 import TripWorkspace from '@/components/trip/TripWorkspace'
@@ -187,5 +193,63 @@ describe('TripWorkspace', () => {
     await act(async () => { settle(null) })
     await flush()
     expect(screen.getByTestId('shared-map')).not.toHaveClass('shared-map--visible')
+  })
+
+  // Feedback mount (plan T3). The panel appears ONLY on the explicit allowlist — completed
+  // surfaces plus the failed screen — never on whatever status merely reaches the main return.
+  // TOKYO_TRIP itself is `saved_with_gaps`, so `complete` has to be seeded explicitly.
+  function bundleWith(status: TripBundle['trip']['status']): TripBundle {
+    return { ...TOKYO_TRIP, trip: { ...TOKYO_TRIP.trip, status } }
+  }
+
+  it('mounts the feedback panel on complete trips', async () => {
+    getTrip.mockResolvedValueOnce(bundleWith('complete'))
+    renderWorkspace(TOKYO_TRIP.trip.id)
+    expect(await screen.findByTestId('trip-feedback-panel')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: /how was this trail/i })).toBeInTheDocument()
+  })
+
+  it('mounts the feedback panel on saved_with_gaps trips', async () => {
+    getTrip.mockResolvedValueOnce(bundleWith('saved_with_gaps'))
+    renderWorkspace(TOKYO_TRIP.trip.id)
+    expect(await screen.findByTestId('trip-feedback-panel')).toBeInTheDocument()
+  })
+
+  // places_ready falls THROUGH to the normal workspace return, so this proves the gate is an
+  // explicit allowlist, not "whatever reaches the main return".
+  it('hides the feedback panel on places_ready trips', async () => {
+    getTrip.mockResolvedValueOnce(bundleWith('places_ready'))
+    renderWorkspace(TOKYO_TRIP.trip.id)
+    await screen.findByRole('link', { name: /all trails/i })
+    expect(screen.queryByTestId('trip-feedback-panel')).not.toBeInTheDocument()
+  })
+
+  it('mounts the feedback panel on the failed screen, beside the failure copy', async () => {
+    getTrip.mockResolvedValueOnce(bundleWith('failed'))
+    renderWorkspace(TOKYO_TRIP.trip.id)
+    expect(await screen.findByText(/generation failed/i)).toBeInTheDocument()
+    expect(screen.getByText(/tell us what went wrong/i)).toBeInTheDocument()
+    expect(screen.getByTestId('trip-feedback-panel')).toBeInTheDocument()
+  })
+
+  it('hides the feedback panel while generating', async () => {
+    getTrip.mockResolvedValueOnce(bundleWith('generating'))
+    renderWorkspace(TOKYO_TRIP.trip.id)
+    await screen.findByText(/still generating/i)
+    expect(screen.queryByTestId('trip-feedback-panel')).not.toBeInTheDocument()
+  })
+
+  it('hides the feedback panel while draft', async () => {
+    getTrip.mockResolvedValueOnce(bundleWith('draft'))
+    renderWorkspace(TOKYO_TRIP.trip.id)
+    await screen.findByText(/still generating/i)
+    expect(screen.queryByTestId('trip-feedback-panel')).not.toBeInTheDocument()
+  })
+
+  // Codex r1 low: the panel binds to the LOADED bundle's trip id, never the route param.
+  it('passes the loaded bundle trip id to the panel, not the route param', async () => {
+    getTrip.mockResolvedValueOnce({ ...TOKYO_TRIP, trip: { ...TOKYO_TRIP.trip, id: 'bundle-trip-id' } })
+    renderWorkspace('route-param-id')
+    expect(await screen.findByTestId('trip-feedback-panel')).toHaveTextContent('bundle-trip-id')
   })
 })

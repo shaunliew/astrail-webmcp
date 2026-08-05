@@ -58,4 +58,4 @@ export const tallyEmbedUrl =
 export const tallyFallbackUrl = "https://tally.so/r/QKjrvk";
 
 // Inbound alias (Cloudflare Email Routing). Confirm this address is live before launch.
-export const contactEmail = "hello@astrail.xyz";
+export const contactEmail = "zhihao@astrail.xyz";

@@ -28,6 +28,8 @@ const COLUMNS: { title: string; links: FooterLink[] }[] = [
         href: `mailto:${contactEmail}?subject=Astrail%20beta%20feedback`,
         external: true,
       },
+      { label: 'Instagram', href: 'https://www.instagram.com/astrail.xyz/', external: true },
+      { label: 'X', href: 'https://x.com/astrailxyz', external: true },
       { label: '@haotobuildzip', href: 'https://x.com/haotobuildzip', external: true },
     ],
   },

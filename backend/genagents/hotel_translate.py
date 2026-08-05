@@ -22,8 +22,11 @@ Guardrail #11 (untrusted third-party content — Travala fields are untrusted, h
   3. The Agents-SDK input guardrail runs `run_in_parallel=False` (match place_extractor.py:247) as a
      backstop; a tripwire aborts the run and is surfaced as a typed ResolveError (never a silent {}).
   4. Output is snapped back by SERVER-ASSIGNED ORDINAL, not by any model-returned hotelId: an
-     allowlist proves membership, not pairing (Codex v2 #6), so the model can never re-attribute a
-     name to a different hotel — the caller maps ordinal -> hotels[ordinal] server-side.
+     allowlist proves membership, not pairing (Codex v2 #6), so the model cannot control WHICH server
+     hotel a result is assigned to — the caller maps ordinal -> hotels[ordinal] server-side. This
+     prevents MODEL-CONTROLLED ID REASSIGNMENT; it does NOT prevent a wrong localized NAME landing in a
+     valid slot (the model returning the wrong Japanese name for a real ordinal) — that residual is
+     accepted-and-watched (the downstream poi_category gate does not catch it either).
 
 Typed failure (plan decision #7): a runner/OpenAI/infra failure or a guardrail trip RAISES ResolveError
 (NOT cached, NOT a miss); a successful call that simply can't localize a given hotel OMITS that ordinal

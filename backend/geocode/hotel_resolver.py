@@ -51,12 +51,15 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import unicodedata
 from collections import Counter
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 from geocode.cache import identity_key, lookup_many, resolve_cached
 from models.geocode import GeocodeResult
+
+logger = logging.getLogger(__name__)
 
 # Countries whose POIs Mapbox indexes in the LOCAL script, so a hotel must be localized before the
 # `types="poi"` geocode. Extensible: Korea + Western markets geocode romaji-first, no LLM (Key Fact:
@@ -193,6 +196,21 @@ def _cacherow_to_result(row) -> GeocodeResult | None:
     return None
 
 
+def _log_paid_resolve(key: str | None, country_cc: str, result: GeocodeResult | None) -> None:
+    """ONE token-safe telemetry line per ACTUAL paid resolve — a real localizer and/or Mapbox call ran.
+    Emitted at the paid-call site (`_resolve_one`), NOT in the generic `resolve_cached`, so a zero-cost
+    resolve (a non-JP hotel with no address returns before any call) never logs it. Fields are ONLY the
+    already-hashed identity `key` (a SHA-256 of {provider, country, hotelId} — never a hotel name /
+    address / localized string), the 2-letter country, and the found/miss outcome; a live / uncached
+    hotel has no key and is logged as "live". On the pinned single web instance the SAME key never
+    appears twice; the same key logged from a SECOND instance is the cross-instance duplicate-BILLING
+    signal that triggers a DB lease before scaling past numInstances:1."""
+    logger.info(
+        "hotel_geocode_paid_resolve key=%s country=%s outcome=%s",
+        key or "live", country_cc or "?", ("found" if result is not None else "miss"),
+    )
+
+
 async def resolve_hotels(
     hotels: Sequence[Mapping[str, Any]],
     country_code: str,
@@ -228,16 +246,24 @@ async def resolve_hotels(
     country_cc = (country_code or "").upper()
     is_jp = country_cc in _NATIVE_SCRIPT_COUNTRIES
 
-    # Cacheability: a hotelId is a stable identity ONLY when present AND UNIQUE in this batch. A
-    # missing / duplicated id resolves LIVE (no key, no cache) so it can never poison a shared row.
-    ids = [str(h.get("hotelId")).strip() if isinstance(h, Mapping) and h.get("hotelId") else ""
+    # Cacheability: a hotelId is a stable identity ONLY when present AND UNIQUE in this batch. Presence
+    # is an EXPLICIT None/blank check — a legitimately-0 id (`0` / "0") is PRESENT (the truthiness `if
+    # hid` this replaces dropped an int 0 as "missing"); only None / blank is missing. Uniqueness is
+    # counted on the CANONICAL id (the SAME NFKC+casefold `identity_key` normalizes with), so
+    # "ABC"/"abc"/full-width variants collapse to ONE identity — counting RAW ids would treat two
+    # case/width variants as distinct yet key them to the SAME cache row (overwrite/thrash). A missing
+    # / duplicated id resolves LIVE (no key, no cache) so it can never poison a shared row.
+    ids = [str(h.get("hotelId")).strip()
+           if isinstance(h, Mapping) and h.get("hotelId") is not None
+              and str(h.get("hotelId")).strip() != ""
+           else ""
            for h in hotels]
-    id_counts = Counter(i for i in ids if i)
+    canon_counts = Counter(_norm(i) for i in ids if i)
 
     keys: list[str | None] = []
     fps: list[str | None] = []
     for hotel, hid in zip(hotels, ids):
-        if hid and id_counts[hid] == 1:
+        if hid and canon_counts[_norm(hid)] == 1:
             keys.append(identity_key(_PROVIDER, country_cc, hid))
             fps.append(name_fingerprint(hotel))
         else:
@@ -250,42 +276,49 @@ async def resolve_hotels(
     bulk = (await lookup_many(cache_client, cacheable_keys)
             if cache_client is not None and cacheable_keys else {})
 
-    async def _resolve_one(hotel: Mapping[str, Any]) -> GeocodeResult | None:
+    async def _resolve_one(hotel: Mapping[str, Any], key: str | None = None) -> GeocodeResult | None:
         """The whole miss unit for ONE hotel (translate -> validate -> geocode -> identity gate). Run
         inside `resolve_cached`'s single-flight for cacheable hotels; called directly for live ones.
         Returns a found GeocodeResult, None for a valid-empty / unconfirmed miss, or raises
-        ResolveError on an infra fault (propagated, never cached)."""
+        ResolveError on an infra fault (propagated, never cached).
+
+        Emits the ONE paid-resolve telemetry line HERE — at the real paid-call site — only when a
+        localizer and/or Mapbox call actually ran (a non-JP hotel with no address returns a ZERO-cost
+        miss BEFORE any call and never logs). `key` is the identity hash for the cross-instance
+        duplicate-billing signal (None for a live / uncached hotel, logged as "live")."""
         if is_jp:
-            localized = await translate([hotel], country_code)  # 1-element batch; T1 prefilters unsafe
+            localized = await translate([hotel], country_code)  # 1-element batch; T1 prefilters unsafe — PAID
             name = localized.get(0)
             if not is_valid_ja_name(name):
-                return None  # unlocalizable / English-or-mixed echo → miss, ZERO Mapbox call
+                _log_paid_resolve(key, country_cc, None)  # translate ran (paid); unlocalizable → miss
+                return None  # English-or-mixed echo → miss, ZERO further Mapbox call
             geo = await geocode(name, types="poi", language="ja", country=country_code,
-                                proximity_lng_lat=proximity_lng_lat)
+                                proximity_lng_lat=proximity_lng_lat)  # PAID
         else:
             address = hotel.get("address")
             if not address:
-                return None  # no street address → cannot honestly geocode → miss
+                return None  # no street address → cannot honestly geocode → ZERO-cost miss, NO telemetry
             query = ", ".join(part for part in (str(address), city) if part)
             geo = await geocode(query, types="address", country=country_code,
-                                proximity_lng_lat=proximity_lng_lat)
-        if geo is None:
-            return None  # valid-empty Mapbox → cacheable miss
-        return geo if _identity_confirmed(geo, country_cc, is_jp) else None
+                                proximity_lng_lat=proximity_lng_lat)  # PAID
+        result = geo if (geo is not None and _identity_confirmed(geo, country_cc, is_jp)) else None
+        _log_paid_resolve(key, country_cc, result)  # a real Mapbox call ran → found/miss
+        return result
 
     async def _resolve_index(i: int) -> GeocodeResult | None:
         hotel = hotels[i]
         key = keys[i]
-        if key is None:  # missing / duplicate hotelId → resolve LIVE, never cached
+        if key is None:  # missing / duplicate hotelId → resolve LIVE, never cached (key=None → "live")
             return await _resolve_one(hotel)
         row = bulk.get(key)
         if row is not None and row.name_fingerprint == fps[i]:
             return _cacherow_to_result(row)  # clean, fingerprint-matching bulk hit
         # Miss / expired / malformed / fingerprint-mismatch → resolve_cached OWNS the single-flight
-        # (T4 does NOT acquire the lock — v4 #3). Bind `hotel` per-call to avoid a late-binding closure.
+        # (T4 does NOT acquire the lock — v4 #3). Bind `hotel`/`key` per-call to avoid a late-binding
+        # closure; `key` reaches `_resolve_one` only for the paid-resolve telemetry (the identity hash).
         return await resolve_cached(
-            cache_client, key, lambda hotel=hotel: _resolve_one(hotel),
-            expected_fingerprint=fps[i], country_code=country_cc,
+            cache_client, key, lambda hotel=hotel, key=key: _resolve_one(hotel, key),
+            expected_fingerprint=fps[i],
             hit_ttl_days=hit_ttl_days, miss_ttl_days=miss_ttl_days,
         )
 

@@ -363,6 +363,40 @@ async def test_duplicate_hotel_id_both_resolve_live_and_neither_poisons():
     assert client.db.get(CACHE_TABLE, []) == []        # a duplicate id is not a stable identity
 
 
+async def test_case_variant_hotel_ids_collapse_to_one_identity_resolve_live():
+    # "ABC" and "abc" normalize (NFKC + casefold) to the SAME identity_key. Counting RAW ids would mark
+    # BOTH cacheable and thrash one shared cache row; canonical dedup collapses them → both resolve LIVE.
+    a = {"hotelId": "ABC", "name": "Hotel A", "address": "1 A St"}
+    b = {"hotelId": "abc", "name": "Hotel B", "address": "2 B St"}
+    client = _Client()
+    geocode = _Geocode(by_query={
+        "1 A St, NYC": GeocodeResult(lat=40.0, lng=-74.0, country_code="US"),
+        "2 B St, NYC": GeocodeResult(lat=41.0, lng=-75.0, country_code="US"),
+    })
+
+    out = await resolve_hotels([a, b], "US", "NYC", None,
+                               geocode=geocode, translate=_Translate(), cache_client=client)
+
+    assert (out[0].lat, out[1].lat) == (40.0, 41.0)    # both resolved, input order, distinct
+    assert client.db.get(CACHE_TABLE, []) == []        # case-collision → not a stable identity → uncached
+
+
+async def test_zero_hotel_id_is_present_not_missing_and_cacheable():
+    # A legitimately-0 hotelId (int 0) is PRESENT — the old truthiness check dropped int 0 as "missing"
+    # and forced a live, uncached resolve. It is a stable, unique identity, so it caches under key("0").
+    hotel = {"hotelId": 0, "name": "Zero Inn", "address": "1 St"}
+    client = _Client()
+    geocode = _Geocode(GeocodeResult(lat=1.0, lng=2.0, country_code="US"))
+
+    out = await resolve_hotels([hotel], "US", "NYC", None,
+                               geocode=geocode, translate=_Translate(), cache_client=client)
+
+    assert out[0] is not None and (out[0].lat, out[0].lng) == (1.0, 2.0)
+    rows = client.db.get(CACHE_TABLE, [])
+    assert len(rows) == 1                               # id 0 is a stable identity → cached (not live)
+    assert rows[0]["cache_key"] == identity_key("travala", "US", "0")
+
+
 # ==================================================================================================
 # resolve_hotels — typed failure propagation (never coerced to a miss)
 # ==================================================================================================

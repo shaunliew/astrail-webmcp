@@ -852,7 +852,12 @@ async def _rank_hotels_best_effort(hotels, place_rows, city, country_code, budge
     (`geocode.hotel_resolver.resolve_hotels`, bound with the STRICT Mapbox geocoder + the T1 name
     localizer + the trip's `cache_client`) and Matrix are bound here from `MAPBOX_SECRET_TOKEN`
     (imported lazily so `import pipeline.persist` stays key/SDK-free, and the LIVE-only resolver
-    modules never load on the offline path — which never reaches this helper)."""
+    modules never load on the offline path — which never reaches this helper).
+
+    TEST FOOTGUN: injecting only `geocode` does NOT stub the localizer — with `resolve_hotels=None` the
+    REAL `localize_hotel_names` is still bound as `translate`, so a JP-trip persist test that injects
+    `geocode` alone reaches the live Agents SDK. A JP-trip test MUST inject `resolve_hotels` (which
+    stands in for translate+geocode+cache together), not just `geocode`."""
     if not hotels:
         return None
     # Uppercase the trip country: the identity cache key + the on-read CacheRow both require

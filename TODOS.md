@@ -94,3 +94,16 @@ preference→agent feed, requested_places resolution, Google OAuth, custom SMTP)
   capping `.story-hero-aster-mobile` height a touch lower on short-width phones. ZH has
   hand-tuned this hero's mobile clamps twice (story.css history) — change with his eye on it.
 - **Depends on / blocked by:** Nothing.
+
+## story-config.ts stale pre-launch config + orphaned beat clips
+
+- **What:** `frontend/components/story/story-config.ts` still opens with the pre-launch seat
+  truth ("ZERO claimed, boarding soon, waitlist as primary CTA") while the live page is open
+  beta; `SEATS_CLAIMED`/`BOARDING_OPEN` feed only unmounted beat components; six `CLIPS`
+  entries point into gitignored, locally-absent `/landing/clips/*` (referenced only by
+  orphaned beat layers StoryStage never mounts — no live 404 today, but re-mounting any beat
+  would 404 in prod).
+- **Severity/category:** Low / hygiene. Found by the 2026-08-06 final-gate fable review.
+- **Fix sketch:** one cleanup commit — rewrite the header comment to the open-beta truth and
+  delete (or clearly quarantine) the orphaned beat layers with their CLIPS/SEATS constants.
+- **Depends on / blocked by:** Nothing.

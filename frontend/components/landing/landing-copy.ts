@@ -42,7 +42,7 @@ export const faqs = [
   {
     question: "Is it really free?",
     answer:
-      "Yes. Planning is free during the beta, and there's no card anywhere in the flow. Unlimited planning is limited to 25 seats we grant to the most active early explorers; everyone else can still sign up and plan real trips to try it out.",
+      "Yes. Planning is free during the beta, and there's no card anywhere in the flow. Unlimited planning is limited to 25 seats we grant to the most active early explorers; everyone else can still sign up and plan a real trip to try it out.",
   },
   {
     question: "How do I give feedback?",

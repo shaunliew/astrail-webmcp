@@ -21,7 +21,7 @@ const CHAPTERS = [
   {
     eyebrow: 'Chapter two · The rescue',
     title: 'Astrail is the machine that digs you out.',
-    body: 'It’s the mech Aster pilots: a crew of AI agents that bursts through the backlog for you. Feed it the reels you saved. It watches every one, pulls out each real place, verifies it on the map, and keeps the receipts. What comes out the other side is your pile of stars, turned into a trip you can follow.',
+    body: 'It’s the mech Aster pilots: a crew of AI agents that bursts through the backlog for you. Feed it the reels you saved. It reads every one, pulls out the real places, verifies them on the map, and keeps the receipts. What comes out the other side is your pile of stars, turned into a trip you can follow.',
     src: STILLS.rescueBurst,
     alt: 'A joyful Aster piloting the boxy Astrail mech as it bursts through a wall of star cushions, the star-collector jar on its back glowing',
   },

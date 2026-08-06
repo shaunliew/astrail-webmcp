@@ -42,7 +42,16 @@ export default function StoryRevealMap({ className }: { className?: string }) {
     }
     mapRef.current = map
 
+    // Construction succeeding doesn't mean the map arrives — a revoked token or a
+    // blocked api.mapbox.com fails async. Any error before the style has loaded
+    // means the reveal will never render: fall back instead of an empty dark frame.
+    let styleLoaded = false
+    map.on('error', () => {
+      if (!styleLoaded) setFailed(true)
+    })
+
     map.on('style.load', () => {
+      styleLoaded = true
       map.setConfigProperty('basemap', 'lightPreset', 'night')
 
       // Style defaults on purpose: POI / transit / road labels all render, so
@@ -141,6 +150,7 @@ export default function StoryRevealMap({ className }: { className?: string }) {
     <div
       ref={containerRef}
       className={className}
+      role="img"
       aria-label="Live Astrail itinerary map — Tokyo demo trip"
     />
   )

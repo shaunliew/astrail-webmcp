@@ -172,8 +172,6 @@ def test_subdomain_is_instagram_looking_and_query_and_fragment_never_reach_the_s
     ("url", "shape"),
     [
         ("https://www.instagram.com/share/reel/SH99/", "/share/reel/…"),
-        ("https://www.instagram.com/p/ABC123/", "/p/…"),
-        ("https://www.instagram.com/tv/XYZ/", "/tv/…"),
         ("https://www.instagram.com/reel/", "/reel"),
         ("https://www.instagram.com/stories/someone/123/", "/stories/…"),
         ("https://www.instagram.com/", "/"),
@@ -260,8 +258,10 @@ def test_repeated_share_shapes_collapse_to_one_entry():
 def test_rejected_shapes_are_capped_at_ten_entries():
     # Distinctness has to come from the keyword vocabulary: any run of unknown segments
     # collapses to a single "/…", so "12 different codes" would be one shape, not twelve.
+    # `/p/x/` and `/tv/x/` are now ACCEPTED (they normalize to reel/post URLs and never
+    # reach the sanitizer), so two distinct multi-segment keyword shapes stand in for them.
     paths = [
-        "/p/x/", "/tv/x/", "/s/x/", "/share/x/", "/stories/x/", "/reel/x/y/",
+        "/share/p/x/", "/stories/reel/x/", "/s/x/", "/share/x/", "/stories/x/", "/reel/x/y/",
         "/reels/x/y/", "/foo/bar/", "/p/x/reel/y/", "/tv/x/p/y/", "/share/reel/z/",
         "/s/x/tv/y/",
     ]
@@ -270,8 +270,8 @@ def test_rejected_shapes_are_capped_at_ten_entries():
     result = extract_reel_urls(_url_message(*urls))
 
     assert result.rejected_shapes == (
-        "/p/…", "/tv/…", "/s/…", "/share/…", "/stories/…", "/reel/…", "/reels/…", "/…",
-        "/p/…/reel/…", "/tv/…/p/…",
+        "/share/p/…", "/stories/reel/…", "/s/…", "/share/…", "/stories/…", "/reel/…",
+        "/reels/…", "/…", "/p/…/reel/…", "/tv/…/p/…",
     )
     assert len(result.rejected_shapes) == 10  # the last two shapes were dropped
 

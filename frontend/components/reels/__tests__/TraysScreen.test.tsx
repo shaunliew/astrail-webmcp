@@ -138,12 +138,29 @@ describe('TraysScreen', () => {
 
     render(<TraysScreen cards={[]} onCapture={onCapture} onOrganize={noop} onCreateTrail={noop} />)
 
-    fireEvent.change(screen.getByLabelText(/paste a reel link/i), {
+    fireEvent.change(screen.getByLabelText(/paste a reel or post link/i), {
       target: { value: 'https://www.instagram.com/reel/AAA/' },
     })
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
 
     await waitFor(() => expect(onCapture).toHaveBeenCalledWith('https://www.instagram.com/reel/AAA/'))
+  })
+
+  it('renders a captured error message (a mapped Error) in the status banner', async () => {
+    // T4: api.ts throws a friendly, already-mapped Error; TraysScreen surfaces its message verbatim
+    // in the status banner (pins the user-visible half of the graceful-capture-error change).
+    const mappedCopy = "That doesn't look like an Instagram link we can save. Paste a Reel or post URL like instagram.com/reel/… or instagram.com/p/…"
+    const onCapture = vi.fn(async () => { throw new Error(mappedCopy) })
+
+    render(<TraysScreen cards={[]} onCapture={onCapture} onOrganize={noop} onCreateTrail={noop} />)
+
+    fireEvent.change(screen.getByLabelText(/paste a reel or post link/i), {
+      target: { value: 'https://www.instagram.com/p/DQwdZ8ZCWZx/' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+
+    const banner = await screen.findByRole('status')
+    expect(banner).toHaveTextContent(mappedCopy)
   })
 
   it('shows the empty state when there are no reels and no trays', async () => {
@@ -169,7 +186,7 @@ describe('TraysScreen', () => {
     render(<TraysScreen cards={[card({ id: 'r1', caption: 'Kyoto' })]} onCapture={onCapture} onOrganize={noop} onCreateTrail={noop} />)
 
     expect(await screen.findByText(/could not load your trays/i)).toBeInTheDocument()
-    fireEvent.change(screen.getByLabelText(/paste a reel link/i), { target: { value: 'https://ig/reel/z' } })
+    fireEvent.change(screen.getByLabelText(/paste a reel or post link/i), { target: { value: 'https://ig/reel/z' } })
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
     await waitFor(() => expect(onCapture).toHaveBeenCalledWith('https://ig/reel/z'))
   })

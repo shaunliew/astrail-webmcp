@@ -19,9 +19,9 @@ const STEPS = [
     eyebrow: 'Step 2',
     title: 'Agents do the research',
     body: 'Astrail extracts every place, verifies it exists, and checks weather and routes. Each recommendation keeps its evidence: the source reel and the exact caption quote.',
-    src: SCREENS.reelLibrary,
-    alt: 'Astrail reel library with verified places and evidence',
-    slotLabel: 'real screenshot — reel library / evidence',
+    src: SCREENS.agentsResearch,
+    alt: 'Astrail agents researching the places from your Reels, over the live globe',
+    slotLabel: 'real screenshot — agents at work',
   },
   {
     eyebrow: 'Step 3',

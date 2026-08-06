@@ -46,7 +46,7 @@ export default function GenerationScene({
 
   // Night globe backdrop. Inert: this scene is a backdrop, not something to fly around.
   useEffect(() => {
-    acquire({ interactive: false, lightPreset: 'night', center: [100, 15], zoom: 1.2 })
+    acquire({ interactive: false, lightPreset: 'night', center: [100, 15], zoom: 1.4 })
     return () => release()
   }, [acquire, release])
 
@@ -83,7 +83,11 @@ export default function GenerationScene({
   }, [ready, tripId, placesReady, getMap, setMarkers])
 
   return (
-    <main className="relative min-h-[100dvh] overflow-hidden bg-[color:var(--night-900)]">
+    <main className="relative min-h-[100dvh] overflow-hidden">
+      {/* Dark base behind the shared map (fixed, z-0): keeps the space backdrop while the
+          dawn globe fades in and covers the no-token / still-loading moment — main itself
+          stays transparent so the globe shows through (see comment below). */}
+      <div aria-hidden className="fixed inset-0 -z-10 bg-[color:var(--night-900)]" />
       {/* Top progress genbar — striped brass, advancing by stage. */}
       <div className="absolute inset-x-0 top-0 z-30 h-1 bg-[color:var(--night-800)]">
         <div

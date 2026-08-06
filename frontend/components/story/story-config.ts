@@ -28,11 +28,11 @@ export const CLIPS = {
    undefined → the section renders a labeled slot instead. */
 export const SCREENS: {
   createTrail?: string
-  reelLibrary?: string
+  agentsResearch?: string
   tripWorkspace?: string
 } = {
   createTrail: '/landing/screens/create-trail.webp',
-  reelLibrary: '/landing/screens/reel-library.webp',
+  agentsResearch: '/landing/screens/agents-research.webp',
   tripWorkspace: '/landing/screens/trip-workspace.webp',
 }
 

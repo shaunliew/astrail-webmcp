@@ -99,6 +99,8 @@ mismatch this arc closes.
 | `backfill_reel_covers.py` carousel variant | carousel cards missing covers at scale |
 | `location_graph_nodes.node_type` `'carousel'` value | that table gains writers (today: none) |
 | TikTok (`source_platform` already allows it) | explicitly out; separate arc |
+| `m.instagram.com` host acceptance (trip parser canonicalizes it; capture/Telegram reject — pre-existing mismatch, now visible for posts too; Codex whole-branch P3.1) | users hit 422 pasting mobile-host links (feedback/telemetry) |
+| `EvidenceChip` renders 'Reel' for `/p/`-sourced evidence (Codex whole-branch P2.4, fable Minor#3). Corrected rationale: `evidence_json.source_url` ALREADY carries the source URL (persist.py `TripPlaceEvidence`), so a frontend-only `sourceLabel(source_url)` fix suffices — no `EvidenceKind` enum/schema change | design wants per-item source honesty in trip views |
 
 ## 4. Tasks
 
@@ -369,10 +371,16 @@ Eval-safety: no file under `evals/` or imported by it is touched; `uv run pytest
     no-ops on URLs it can't normalize (cache misses forever), organize/trip retries would hand
     `/p/` URLs to the reels-only actor, and recovered durable jobs containing `/p/` URLs can
     fail. Saved carousel cards would render but never re-organize.
-  - **Deploy order at the eventual zh→dev push: backend first.** Wait for Render rollout +
-    smoke a `/p/` capture against the deployed backend, then promote Vercel. Backend-first is
-    strictly safe because today's deployed frontend already emits `/p/` URLs (it just gets
-    422s). Frontend-first would have the new UI inviting post links an old backend rejects.
+  - **Deploy order at the eventual zh→dev push: backend first.** Wait for Render rollout, then
+    smoke a `/p/` **capture AND organize** end-to-end against the deployed backend — verify the
+    caption landed, the cache row was written, and the cover re-hosted — before promoting
+    Vercel. Capture-only is NOT a sufficient smoke (Codex whole-branch P2.2: `POST
+    /saved-reels` only normalizes + persists, so it returns 200 even when `APIFY_TOKEN` is
+    broken or the post actor rejects the request; promoting Vercel on a capture-only smoke
+    could expose `/p/` ingestion whose every organize fails, after roll-forward-only rows
+    already exist). Backend-first is strictly safe because today's deployed frontend already
+    emits `/p/` URLs (it just gets 422s). Frontend-first would have the new UI inviting post
+    links an old backend rejects.
   - If a backend rollback is ever genuinely forced post-deploy, it must ship with a fast-follow
     that stops `/p/` ingestion at capture (restore the narrow regex) AND handles queued work:
     marking `saved_reels.analysis_status='failed'` alone is NOT enough (Codex re-score P2 —

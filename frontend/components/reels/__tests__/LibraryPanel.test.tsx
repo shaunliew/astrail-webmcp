@@ -201,6 +201,23 @@ describe('LibraryPanel', () => {
     expect(screen.getByRole('button', { name: /^plan a trip$/i })).not.toBeDisabled()
   })
 
+  it('badges a reel card Reel and a /p/ post card Post in the select grid (URL-kind)', () => {
+    const reel = card({ id: 'r', caption: 'Reel one', normalized_url: 'https://www.instagram.com/reel/R1/' })
+    const post = card({ id: 'p', caption: 'Post one', normalized_url: 'https://www.instagram.com/p/POST1/' })
+
+    render(<LibraryPanel cards={[reel, post]} onClose={vi.fn()} onOpenReel={vi.fn()} onOrganize={noop} />)
+    toSelect()
+
+    expect(screen.getByText('Reel')).toBeInTheDocument()
+    expect(screen.getByText('Post')).toBeInTheDocument()
+  })
+
+  it('invites a Reel or post link in the empty state when nothing is saved', () => {
+    render(<LibraryPanel cards={[]} onClose={vi.fn()} onOpenReel={vi.fn()} onOrganize={noop} />)
+
+    expect(screen.getByText(/paste a reel or post link/i)).toBeInTheDocument()
+  })
+
   it('returns to the trays home via the back control', () => {
     const onClose = vi.fn()
     render(<LibraryPanel cards={[]} onClose={onClose} onOpenReel={vi.fn()} onOrganize={noop} />)

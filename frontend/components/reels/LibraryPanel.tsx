@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import ReelBrowseGrid from '@/components/reels/ReelBrowseGrid'
 import type { SavedReelCard } from '@/lib/reels/backend-types'
-import { reelLabel, statusLabel } from '@/lib/reels/labels'
+import { reelLabel, sourceLabel, statusLabel } from '@/lib/reels/labels'
 
 /* LibraryPanel — the full-surface "Library" reached from the Trays home banner. It browses
    every saved reel with a country filter + search, in two modes:
@@ -205,7 +205,7 @@ export default function LibraryPanel({
       {filtered.length === 0 ? (
         <p className="rounded-2xl border border-dashed border-[color:var(--line-soft)] px-6 py-16 text-center text-[14px] text-[color:var(--text-muted)]">
           {cards.length === 0
-            ? 'No saved reels yet. Paste a Reel link on your home to start your library.'
+            ? 'No saved reels yet. Paste a Reel or post link on your home to start your library.'
             : 'No saved reels match these filters.'}
         </p>
       ) : mode === 'browse' ? (
@@ -232,6 +232,9 @@ export default function LibraryPanel({
                         /* eslint-disable-next-line @next/next/no-img-element */
                         <img src={c.thumbnail_url} alt="" className="h-full w-full object-cover" />
                       ) : null}
+                      <span className="absolute left-1.5 top-1.5 rounded-full border border-[color:var(--paper-line-2)] bg-[color:var(--surface-1)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--text-faint)]">
+                        {sourceLabel(c.normalized_url)}
+                      </span>
                       <span
                         aria-hidden
                         className={`absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full border text-[11px] ${

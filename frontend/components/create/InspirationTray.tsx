@@ -6,6 +6,7 @@ import {
   buildReelItems, makeRequestedPlace, MAX_REELS,
   type DraftInspirationItem,
 } from '@/lib/trip/parse-inspiration'
+import { sourceLabel } from '@/lib/reels/labels'
 
 const STATUS_LABEL: Partial<Record<InspirationStatus, string>> = {
   valid: 'Ready',
@@ -31,7 +32,7 @@ function TypeBadge({ item }: { item: DraftInspirationItem }) {
   const isReel = item.item_type === 'reel_url'
   return (
     <span className="type-label rounded-full border border-[var(--line)] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[var(--faint)]">
-      {isReel ? 'Reel' : 'Requested'}
+      {isReel ? sourceLabel(item.normalized_reel_url ?? '') : 'Requested'}
     </span>
   )
 }
@@ -106,14 +107,14 @@ export default function InspirationTray({
     <section className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
         <label htmlFor="reel-paste" className="type-label text-[11px] uppercase tracking-wide text-[var(--muted)]">
-          Paste Instagram Reel links
+          Paste Instagram Reel or post links
         </label>
         <textarea
           id="reel-paste"
           value={paste}
           onChange={(e) => setPaste(e.target.value)}
           rows={3}
-          placeholder="https://www.instagram.com/reel/…"
+          placeholder="https://www.instagram.com/reel/… or /p/…"
           className="surface type-body rounded-lg p-3 text-sm text-[var(--starlight)] placeholder:text-[var(--faint)]"
         />
         <div className="flex items-center justify-between">
@@ -170,7 +171,7 @@ export default function InspirationTray({
         </ul>
       ) : (
         <p className="type-body text-sm text-[var(--faint)]">
-          Add at least one Reel link or a place to begin.
+          Add at least one Reel or post link or a place to begin.
         </p>
       )}
     </section>

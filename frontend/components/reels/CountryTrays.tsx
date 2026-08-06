@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import { countryDisplayLabel, type CountryTray } from '@/lib/reels/organize'
+import { sourceLabel } from '@/lib/reels/labels'
 import VerifiedPlacesMap from './VerifiedPlacesMap'
 
 /* Map-first tray: the collection over a full-bleed map (DESIGN.md — the map is the
@@ -117,7 +118,7 @@ export default function CountryTrays({
                               rel="noreferrer"
                               className="mt-2 inline-block text-[11px] font-semibold uppercase tracking-wide text-[color:var(--brass-deep)] underline underline-offset-2"
                             >
-                              Source Reel
+                              {sourceLabel(place.source_reel_url) === 'Post' ? 'Source post' : 'Source Reel'}
                             </a>
                           ) : null}
                         </span>

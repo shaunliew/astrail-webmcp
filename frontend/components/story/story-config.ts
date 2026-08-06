@@ -36,8 +36,8 @@ export const SCREENS: {
   tripWorkspace: '/landing/screens/trip-workspace.webp',
 }
 
-/* Fresh demo recording (Zhi Hao filming). Set when the file lands. */
-export const DEMO_VIDEO_SRC: string | undefined = undefined
+/* 74s beta demo screen-capture, re-encoded to 1080p/silent for web weight. */
+export const DEMO_VIDEO_SRC: string | undefined = '/landing/astrail-beta-demo.mp4'
 
 export const STILLS = {
   coldOpen: '/landing/coldopen-hero.webp',

@@ -69,6 +69,15 @@ graphify-out/
 # Machine-local Claude permissions and MCP toggles
 .claude/settings.local.json
 
+# Landing Seedance clips — NOT in git (masters live in Zhi Hao's Higgsfield
+# account; regen/fetch per docs/landing/HANDOFF-PRODUCT-FIRST.md). Compress +
+# host before production deploy (raw clips are ~55MB each).
+frontend/public/landing/clips/
+
 # Raw landing capture screenshots — working artifacts, may contain PII.
 # The app uses the clean webp finals in frontend/public/landing/screens/.
 docs/landing/screens-raw/
+
+# Raw screen-recording masters (e.g. Astrail-beta-demo.mov, ~60MB) — the site
+# serves the compressed mp4 in frontend/public/landing/; keep masters out of git.
+*.mov

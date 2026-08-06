@@ -7,7 +7,7 @@ import type { TripBundle } from '@/lib/trip/backend-types'
 import { getTrip } from '@/lib/trip/supabase-api'
 import {
   orderedDays, placesForDay, legsForDay, restaurantsForDay,
-  tripHotels, buildPlaceIndex, findTripPlace,
+  tripHotels, buildPlaceIndex, findTripPlace, recommendedHotelId,
 } from '@/lib/trip/selectors'
 import { useSharedMap } from '@/components/map/MapProvider'
 import DaySelector from './DaySelector'
@@ -20,6 +20,7 @@ import PlaceIntelPanel from './PlaceIntelPanel'
 import OrchestratorSummary from './OrchestratorSummary'
 import AgentDecisionRail from './AgentDecisionRail'
 import TradeoffPanel from './TradeoffPanel'
+import TripFeedbackPanel from './TripFeedbackPanel'
 
 const TripMap = dynamic(() => import('@/components/map/TripMap'), { ssr: false })
 
@@ -44,6 +45,15 @@ const TOGGLE_CHROME =
   'bg-[rgba(253,251,245,0.94)] text-[var(--muted)] backdrop-blur-sm ' +
   'shadow-[0_2px_12px_rgba(0,0,0,0.2)] transition-opacity duration-200 hover:text-[var(--starlight)]'
 
+// One segment of the map layer switch (Route ⇄ Hotel). The active segment gets the brass fill;
+// the rest read as a muted, tappable label — same paper palette as the panel toggles above.
+function segClass(active: boolean): string {
+  return [
+    'type-label rounded-full px-3 py-1 text-[11px] uppercase tracking-wide transition-colors',
+    active ? 'bg-[var(--brass-soft)] text-[var(--brass-bright)]' : 'text-[var(--muted)] hover:text-[var(--starlight)]',
+  ].join(' ')
+}
+
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="mt-5">
@@ -62,6 +72,11 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
   const [status, setStatus] = useState<'loading' | 'ready' | 'not_found'>('loading')
   const [activeDayNumber, setActiveDayNumber] = useState(1)
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null)
+  // Hotel-hub map (plan 2026-08-04-hotel-hub-map, T8) — ephemeral client state, no DB write.
+  // Default selection = the route-central hotel (rank 1), which is `null` when NO hotel was
+  // geocoded (honest-failure, C5); default layer = the existing itinerary route line.
+  const [selectedHotelId, setSelectedHotelId] = useState<string | null>(null)
+  const [layerMode, setLayerMode] = useState<'route' | 'hub'>('route')
   const [expanded, setExpanded] = useState(false)
   const [panelOpen, setPanelOpen] = useState(true)
 
@@ -73,6 +88,7 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
       if (!b) { setStatus('not_found'); return }
       setBundle(b)
       setActiveDayNumber(orderedDays(b)[0]?.day_number ?? 1)
+      setSelectedHotelId(recommendedHotelId(b))
       setStatus('ready')
     })
     return () => { active = false }
@@ -80,6 +96,10 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
 
   const days = useMemo(() => (bundle ? orderedDays(bundle) : []), [bundle])
   const placeIndex = useMemo(() => (bundle ? buildPlaceIndex(bundle) : new Map()), [bundle])
+  // No hotel got a coordinate ⇒ the hub layer has nothing to draw, so the Hotel toggle is
+  // disabled rather than flipping to a silently blank map (C5). Same signal that seeds the
+  // default selection above, so "toggle enabled" and "a hub is selected" never disagree.
+  const canUseHubLayer = useMemo(() => (bundle ? recommendedHotelId(bundle) !== null : false), [bundle])
   const activeDay = days.find((d) => d.day_number === activeDayNumber) ?? null
   const dayPlaces = bundle ? placesForDay(bundle, activeDayNumber) : []
   const dayLegs = bundle && activeDay ? legsForDay(bundle, activeDay.id) : []
@@ -114,8 +134,13 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
     )
   }
   if (bundle.trip.status === 'failed') {
+    // Failed trips are where feedback is the most valuable beta signal (HANDOFF.md — "don't hide
+    // the UI on failures"), so the composer mounts here too. min-h + overflow-y-auto (not a rigid
+    // h-[100dvh] + justify-center) so the composer never clips on short/mobile viewports with the
+    // keyboard open; the screen stays centered when the content fits. Night tokens from :root are
+    // correct here — do NOT wrap in paper-scope.
     return (
-      <main className="flex h-[100dvh] flex-col items-center justify-center gap-3 bg-[var(--void)] p-6">
+      <main className="flex min-h-[100dvh] flex-col items-center justify-center gap-3 overflow-y-auto bg-[var(--void)] p-6">
         <p className="type-display text-xl text-[var(--starlight)]">Generation failed</p>
         <p className="type-body max-w-md text-center text-sm text-[var(--muted)]">
           Astrail couldn&apos;t build this trip. Start a new one — repeat Reels are cached, so retrying is fast.
@@ -123,6 +148,12 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
         <a href="/app" className="type-label text-xs uppercase tracking-wide text-[var(--brass-bright)] underline-offset-2 hover:underline">
           Plan a new trip
         </a>
+        <p className="type-body max-w-md text-center text-sm text-[var(--muted)]">
+          Tell us what went wrong — it&apos;s the most useful feedback we get.
+        </p>
+        <div className="w-full max-w-md">
+          <TripFeedbackPanel key={bundle.trip.id} tripId={bundle.trip.id} />
+        </div>
       </main>
     )
   }
@@ -157,7 +188,41 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
           activeDayNumber={activeDayNumber}
           selectedPlaceId={selectedPlaceId}
           onSelectPlace={(id) => { setSelectedPlaceId(id); setExpanded(true); setPanelOpen(true) }}
+          selectedHotelId={selectedHotelId}
+          layerMode={layerMode}
         />
+      </div>
+
+      {/* Map layer switch — route line vs. hotel hub-and-spokes, never both (plan decision #3).
+          Floats over the map, clear of the left/bottom details panel. The Hotel segment is
+          disabled when no hotel could be placed, so it never flips to a blank map (C5). */}
+      <div
+        role="group"
+        aria-label="Map layer"
+        className={[
+          'paper-scope pointer-events-auto absolute z-20 left-1/2 top-4 -translate-x-1/2',
+          'flex items-center gap-0.5 rounded-full border border-[var(--line)]',
+          'bg-[rgba(253,251,245,0.94)] p-0.5 shadow-[0_2px_12px_rgba(0,0,0,0.2)] backdrop-blur-sm',
+        ].join(' ')}
+      >
+        <button
+          type="button"
+          onClick={() => setLayerMode('route')}
+          aria-pressed={layerMode === 'route'}
+          className={segClass(layerMode === 'route')}
+        >
+          Route
+        </button>
+        <button
+          type="button"
+          onClick={() => setLayerMode('hub')}
+          aria-pressed={layerMode === 'hub'}
+          disabled={!canUseHubLayer}
+          title={canUseHubLayer ? undefined : 'No hotel could be placed on the map'}
+          className={[segClass(layerMode === 'hub'), canUseHubLayer ? '' : 'cursor-not-allowed opacity-40'].join(' ')}
+        >
+          Hotel
+        </button>
       </div>
 
       <aside
@@ -232,7 +297,9 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
             All trails
           </Link>
           <OrchestratorSummary bundle={bundle} />
-          <TradeoffPanel tradeoffs={bundle.trip.tradeoffs} />
+          {/* Day-pacing notes only ("Heads up") — the hotel comparison lives with the hotel
+              list under "Where to stay" so there is ONE hotel decision surface, not two. */}
+          <TradeoffPanel tradeoffs={bundle.trip.tradeoffs} variant="notes" />
 
           <Section title="Days">
             <DaySelector days={days} activeDayNumber={activeDayNumber} onSelect={setActiveDayNumber} />
@@ -254,7 +321,17 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
           </Section>
 
           <Section title="Where to stay">
-            <HotelPanel hotels={tripHotels(bundle)} />
+            <div className="flex flex-col gap-3">
+              {/* Price-vs-rating context sits WITH the hotels it compares. It is context, not a
+                  second pick — the Recommended badge on the list below stays the single pick. */}
+              <TradeoffPanel tradeoffs={bundle.trip.tradeoffs} variant="comparisons" />
+              <HotelPanel
+                hotels={tripHotels(bundle)}
+                selectedHotelId={selectedHotelId}
+                onSelectHotel={setSelectedHotelId}
+                layerMode={layerMode}
+              />
+            </div>
           </Section>
 
           <Section title="Place detail">
@@ -264,6 +341,16 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
           <Section title="How Astrail built this">
             <AgentDecisionRail events={bundle.events} />
           </Section>
+
+          {/* Feedback composer — explicit status allowlist (plan T3), NOT reachability:
+              places_ready falls through to this return and must NOT show the panel. `key` +
+              bundle.trip.id bind the panel to the LOADED trip and reset its state across a
+              trip-to-trip route transition. */}
+          {(bundle.trip.status === 'complete' || bundle.trip.status === 'saved_with_gaps') && (
+            <Section title="How was this trail?">
+              <TripFeedbackPanel key={bundle.trip.id} tripId={bundle.trip.id} />
+            </Section>
+          )}
         </div>
         </div>
       </aside>

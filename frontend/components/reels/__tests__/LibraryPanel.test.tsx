@@ -1,13 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
-// The card-fan carousel drives its layout with gsap inside a useEffect. jsdom has no real
-// layout/RAF, so no-op gsap keeps the fan from flaking and leaves its card buttons
-// synchronously clickable for the browse-tap assertion.
-vi.mock('gsap', () => ({
-  default: { to: vi.fn(), set: vi.fn(), killTweensOf: vi.fn() },
-}))
-
 import LibraryPanel from '@/components/reels/LibraryPanel'
 import type { SavedReelCard, SavedReelPlaceProof } from '@/lib/reels/backend-types'
 
@@ -71,13 +64,13 @@ describe('LibraryPanel', () => {
     expect(screen.queryByText('Sunset above the bay')).not.toBeInTheDocument()
   })
 
-  it('fires onOpenReel with the matching card when a fan card is tapped in browse mode', () => {
+  it('fires onOpenReel with the matching card when a reel card is tapped in browse mode', () => {
     const onOpenReel = vi.fn()
     const target = card({ id: 'r7', caption: 'Osaka nights', thumbnail_url: 'https://img.test/osaka.jpg' })
 
     render(<LibraryPanel cards={[target]} onClose={vi.fn()} onOpenReel={onOpenReel} onOrganize={noop} />)
 
-    // Browse is the default mode; the fan renders the reel as a button named by its alt.
+    // Browse is the default mode; the grid renders each reel as a button labelled by reelLabel.
     fireEvent.click(screen.getByRole('button', { name: /osaka nights/i }))
 
     expect(onOpenReel).toHaveBeenCalledTimes(1)
@@ -206,6 +199,23 @@ describe('LibraryPanel', () => {
     // Guard's true branch: mounted → the catch shows the message and re-enables the button.
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not reach the planner.')
     expect(screen.getByRole('button', { name: /^plan a trip$/i })).not.toBeDisabled()
+  })
+
+  it('badges a reel card Reel and a /p/ post card Post in the select grid (URL-kind)', () => {
+    const reel = card({ id: 'r', caption: 'Reel one', normalized_url: 'https://www.instagram.com/reel/R1/' })
+    const post = card({ id: 'p', caption: 'Post one', normalized_url: 'https://www.instagram.com/p/POST1/' })
+
+    render(<LibraryPanel cards={[reel, post]} onClose={vi.fn()} onOpenReel={vi.fn()} onOrganize={noop} />)
+    toSelect()
+
+    expect(screen.getByText('Reel')).toBeInTheDocument()
+    expect(screen.getByText('Post')).toBeInTheDocument()
+  })
+
+  it('invites a Reel or post link in the empty state when nothing is saved', () => {
+    render(<LibraryPanel cards={[]} onClose={vi.fn()} onOpenReel={vi.fn()} onOrganize={noop} />)
+
+    expect(screen.getByText(/paste a reel or post link/i)).toBeInTheDocument()
   })
 
   it('returns to the trays home via the back control', () => {

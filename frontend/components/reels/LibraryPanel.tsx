@@ -1,13 +1,14 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import SocialCards, { type CardItem } from '@/components/ui/card-fan-carousel'
-import type { SavedReelAnalysisStatus, SavedReelCard } from '@/lib/reels/backend-types'
+import ReelBrowseGrid from '@/components/reels/ReelBrowseGrid'
+import type { SavedReelCard } from '@/lib/reels/backend-types'
+import { reelLabel, sourceLabel, statusLabel } from '@/lib/reels/labels'
 
 /* LibraryPanel — the full-surface "Library" reached from the Trays home banner. It browses
    every saved reel with a country filter + search, in two modes:
-   - Browse (default): the card-fan carousel; tapping a reel fires onOpenReel (P2/T2.1 opens
-     the real ReelInfoCard; the parent passes a no-op stub in P1).
+   - Browse (default): the ReelBrowseGrid (a scannable info grid; the old card-fan carousel is
+     kept at ui/card-fan-carousel.tsx for reference). Tapping a reel fires onOpenReel.
    - Select: a selectable tile grid that preserves the plan-from-loose-reels journey — pick
      up to five reels and hand them to onOrganize (the same callback DashboardHome used, per
      DECISION B). Migrated here from TraysScreen's interim libraryOpen block.
@@ -20,27 +21,6 @@ import type { SavedReelAnalysisStatus, SavedReelCard } from '@/lib/reels/backend
 const MAX_SELECTED = 5
 
 type Mode = 'browse' | 'select'
-
-// Select-mode status caption when a reel has no grounded places yet. A reel WITH places
-// always reads "Places found · N"; this map covers the place-less states (organized-but-zero
-// grounded still reads as "Places found · 0", per the T1.2 reviewer carry-over).
-const STATUS_LABELS: Record<SavedReelAnalysisStatus, string> = {
-  not_analyzed: 'Not analyzed',
-  queued: 'Queued',
-  processing: 'Analyzing…',
-  organized: 'Places found · 0',
-  location_not_found: 'No places found',
-  failed: 'Analysis failed',
-}
-
-function statusLabel(cardItem: SavedReelCard): string {
-  if (cardItem.places.length > 0) return `Places found · ${cardItem.places.length}`
-  return STATUS_LABELS[cardItem.analysis_status]
-}
-
-function reelLabel(cardItem: SavedReelCard): string {
-  return cardItem.personal_label ?? cardItem.caption ?? 'Untitled reel'
-}
 
 const BTN_PRIMARY =
   'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-[color:var(--accent)] bg-[color:var(--accent)] px-4 text-[13px] font-medium text-[color:var(--accent-text)] transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]'
@@ -80,8 +60,6 @@ export default function LibraryPanel({
     return () => { activeRef.current = false }
   }, [])
 
-  const cardById = useMemo(() => new Map(cards.map((c) => [c.id, c])), [cards])
-
   // Country chips are derived from every card's places (not the filtered list), so switching
   // the active country never removes the chip you'd switch back through. Code → display name.
   const countries = useMemo(() => {
@@ -108,21 +86,6 @@ export default function LibraryPanel({
       return true
     })
   }, [cards, country, search])
-
-  const fanCards: CardItem[] = useMemo(
-    () =>
-      filtered.map((c) => ({
-        id: c.id,
-        imgUrl: c.thumbnail_url ?? '',
-        alt: c.personal_label ?? c.caption ?? 'Saved reel',
-      })),
-    [filtered],
-  )
-
-  function openFanCard(item: CardItem) {
-    const match = item.id ? cardById.get(item.id) : undefined
-    if (match) onOpenReel(match)
-  }
 
   function toggleSelect(id: string) {
     setSelected((current) =>
@@ -167,7 +130,7 @@ export default function LibraryPanel({
               Your saved reels live here
             </h1>
             <p className="mt-1 text-[13px] text-[color:var(--text-muted)]">
-              {cards.length} saved · browse the fan or select up to {MAX_SELECTED} to plan a trip.
+              {cards.length} saved · browse your reels or select up to {MAX_SELECTED} to plan a trip.
             </p>
           </div>
 
@@ -242,11 +205,11 @@ export default function LibraryPanel({
       {filtered.length === 0 ? (
         <p className="rounded-2xl border border-dashed border-[color:var(--line-soft)] px-6 py-16 text-center text-[14px] text-[color:var(--text-muted)]">
           {cards.length === 0
-            ? 'No saved reels yet. Paste a Reel link on your home to start your library.'
+            ? 'No saved reels yet. Paste a Reel or post link on your home to start your library.'
             : 'No saved reels match these filters.'}
         </p>
       ) : mode === 'browse' ? (
-        <SocialCards cards={fanCards} onOpen={openFanCard} />
+        <ReelBrowseGrid cards={filtered} onOpenReel={onOpenReel} />
       ) : (
         <>
           <ul className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
@@ -269,6 +232,9 @@ export default function LibraryPanel({
                         /* eslint-disable-next-line @next/next/no-img-element */
                         <img src={c.thumbnail_url} alt="" className="h-full w-full object-cover" />
                       ) : null}
+                      <span className="absolute left-1.5 top-1.5 rounded-full border border-[color:var(--paper-line-2)] bg-[color:var(--surface-1)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--text-faint)]">
+                        {sourceLabel(c.normalized_url)}
+                      </span>
                       <span
                         aria-hidden
                         className={`absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full border text-[11px] ${

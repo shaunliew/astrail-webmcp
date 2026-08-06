@@ -146,6 +146,16 @@ export type HotelSuggestion = {
   source: 'travala' | 'manual' | 'agent'
   status: HotelStatus
   searched_at: string | null
+  // Hotel-hub geo + ranking (migration 20260804…_hotel_geo_ranking). Nullability mirrors the
+  // DB columns EXACTLY [CODEX-FOLD C3]: lat/lng/route_score/rank are nullable (unresolved hotels
+  // + Matrix-failure carry NULL); geo_status/is_recommended/place_durations are NOT NULL DEFAULT.
+  lat: number | null                 // NULL when geo_status='unresolved' (honest-failure, Guardrail #1)
+  lng: number | null                 // NULL when geo_status='unresolved'
+  geo_status: 'placed' | 'unresolved'  // NOT NULL DEFAULT 'unresolved'
+  route_score: number | null         // NULL when Matrix unavailable (placed, ranked by preference only)
+  rank: number | null                // 1..N among placed hotels; NULL for unresolved
+  is_recommended: boolean            // NOT NULL DEFAULT false — rank 1 (default-selected route-central hub)
+  place_durations: Record<string, number>  // NOT NULL DEFAULT '{}' — {place_id: duration_s}
 }
 
 export type TripInspirationItem = {
@@ -284,6 +294,13 @@ export type SettingsPreferencesResponse = { status: MemoryStatus; facts: MemoryF
 // `unknown` means the outcome could not be verified (do not retry blindly).
 export type MemoryClearResponse = { cleared: true }
 export type MemoryClearErrorCode = 'memory_unavailable' | 'memory_clear_unknown'
+// Stable slugs the clear-memory UI branches on (never message strings). `memory_unavailable`
+// (503) = nothing was deleted, safe to retry / couldn't reach the service; `memory_clear_unknown`
+// = attempted but the outcome could not be confirmed. While the reconciliation gate is off the
+// backend returns memory_unavailable, so the button honestly shows "couldn't reach" until go-live.
+// The UI branches only on `memory_clear_unknown` and defaults everything else (incl. the 503
+// memory_unavailable) to "couldn't reach", so only that one slug is exported.
+export const ERROR_CODE_MEMORY_CLEAR_UNKNOWN = 'memory_clear_unknown' as const
 
 // POST /trips/:tripId/feedback — mirrors backend/api/schemas.py TripFeedback*.
 // Trip-level only; artifact_type is always 'trip' in v1. The backend does NOT accept
@@ -327,3 +344,45 @@ export type RequestSeatResponse = { requested_at: string }
 
 // The `jobs` charge columns (charge_kind / charge_date / charge_refunded_at) are backend-only
 // entitlement bookkeeping (plan L813) — no frontend row mirror.
+
+// --- Account deletion: self-serve 7-day grace (mirrors backend api/schemas.py + main.py) ---
+// `users.account_status` CHECK constraint (supabase migration, Task 2). A pending/deleting
+// account is inside the 7-day cancellable grace; `deleting` is the sweeper's atomic point of no
+// return (Task 3) and can no longer be cancelled.
+export type AccountStatus = 'active' | 'pending_deletion' | 'deleting'
+
+// The GET /account/deletion/status endpoint additionally reports 'unknown' — a read-failure
+// SENTINEL, NOT a stored account_status value (backend api/schemas.py AccountDeletionStatusResponse,
+// Fix 5). The backend returns it only when it could not read the real state; the card then shows a
+// notice that PRESERVES cancellation guidance instead of falsely rendering the no-banner active
+// state (which would hide the Cancel affordance from a genuinely-pending user).
+export type AccountDeletionStatus = AccountStatus | 'unknown'
+
+// Mirror of backend AccountDeletionResponse (Pydantic: scheduled_for: datetime → ISO string on
+// the wire). POST /account/deletion success body — the account entered the grace; `scheduled_for`
+// is the date shown to the user + named in the "deletion scheduled" email (Task 4). Failures use
+// ErrorResponse: 503 deletion_unavailable (gated off / migration lag), 409 deletion_not_active.
+export type AccountDeletionResponse = { scheduled_for: string }
+
+// Mirror of backend AccountDeletionCancelResponse (Pydantic Literal[True]). POST
+// /account/deletion/cancel success body. Failures use ErrorResponse: 503 deletion_unavailable,
+// 409 deletion_already_started (sweeper claimed it → status `deleting`) or no_pending_deletion.
+export type AccountDeletionCancelResponse = { cancelled: true }
+
+// Mirror of backend GET /account/deletion/status response. A cross-session read of the CALLER's own
+// account_status (identity from the token — never a client-supplied user id: guardrails #5/#6) so a
+// returning user lands on the pending banner / locked in-progress state without an in-session
+// request. Fail-safe by design: an absent/missing status reads as 'active', but a genuine backend read
+// FAILURE returns 'unknown' (the card surfaces a status-unavailable notice that preserves the cancel
+// path) — the read never blocks the delete UI, and a failure never masquerades as a safe 'active'.
+export type AccountDeletionStatusResponse = {
+  account_status: AccountDeletionStatus
+  deletion_scheduled_for: string | null
+}
+
+// Error `code` values on the {"error":{"code","message"}} envelope for the deletion endpoints
+// (backend main.py HTTPException details). The UI branches on these to react distinctly.
+export const ERROR_CODE_DELETION_UNAVAILABLE = 'deletion_unavailable' as const         // 503 — gated off / migration lag
+export const ERROR_CODE_DELETION_NOT_ACTIVE = 'deletion_not_active' as const            // 409 — account not 'active' (already pending/deleting)
+export const ERROR_CODE_DELETION_ALREADY_STARTED = 'deletion_already_started' as const  // 409 — sweeper claimed it, can no longer cancel
+export const ERROR_CODE_NO_PENDING_DELETION = 'no_pending_deletion' as const            // 409 — nothing pending to cancel

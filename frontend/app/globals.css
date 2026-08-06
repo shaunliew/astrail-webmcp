@@ -137,6 +137,84 @@
   --color-accent:        var(--accent);
 }
 
+/* ============================================================
+   TEXTURE LAYER (pilot 2026-07-28)
+   Adds craft to the flat paper/brass system: fine paper/film grain,
+   layered + tinted shadows, tactile surface gradients, and a 1px
+   top inset edge-highlight. Self-contained inline-SVG noise — no new
+   fonts or palette hues. Codify into tokens once the look is approved.
+   ============================================================ */
+:root {
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
+}
+
+/* Paper card — warm top-light gradient + fine grain + layered warm shadow +
+   a 1px top inset highlight and a hairline inset ring (letterpress edge). */
+.paper-card {
+  position: relative;
+  background-color: var(--paper-0);
+  background-image: linear-gradient(180deg, #FFFFFF 0%, var(--paper-0) 32%, var(--paper-1) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    inset 0 0 0 1px rgba(184, 171, 144, 0.35),
+    0 1px 1px rgba(28, 23, 16, 0.04),
+    0 14px 30px -14px rgba(28, 23, 16, 0.20),
+    0 48px 74px -34px rgba(28, 23, 16, 0.24);
+}
+.paper-card::before {
+  content: '';
+  position: absolute; inset: 0; border-radius: inherit;
+  background-image: var(--grain);
+  background-size: 150px 150px;
+  opacity: 0.42;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+/* Keep real content above the grain layer. */
+.paper-card > * { position: relative; z-index: 1; }
+
+/* Space stage — the dark canvas as a grainy nebula: deep night-blue-black + a
+   warm brass light-arc + heavy film grain + a focusing vignette. Reference: the
+   grainy-gradient community textures. Stars/constellations are an SVG layer on top
+   (DoorChrome StarField). This is Astrail's space theme made tactile. */
+.space-stage {
+  background-color: #0A0D14;
+  background-image:
+    radial-gradient(135% 90% at 66% -16%, rgba(232, 182, 103, 0.55) 0%, rgba(201, 151, 78, 0.20) 22%, transparent 48%),
+    radial-gradient(85% 78% at 92% 22%, rgba(70, 92, 162, 0.42) 0%, transparent 56%),
+    radial-gradient(95% 88% at 16% 98%, rgba(138, 90, 24, 0.34) 0%, transparent 54%),
+    linear-gradient(180deg, #0C1019 0%, #090B12 60%, #0A0D14 100%);
+}
+.space-stage::before {
+  content: ''; position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  background-image: var(--grain);
+  background-size: 120px 120px;
+  opacity: 0.62;
+  mix-blend-mode: overlay;
+}
+.space-stage::after {
+  content: ''; position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  background: radial-gradient(ellipse 80% 70% at 56% 46%, transparent 26%, rgba(0, 0, 0, 0.52) 100%);
+}
+
+/* Brass control — vertical sheen + top inset highlight + brass-tinted shadow. */
+.btn-brass {
+  background-image: linear-gradient(180deg, #A8721F 0%, var(--brass-deep) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 236, 200, 0.42),
+    0 1px 2px rgba(60, 38, 8, 0.35),
+    0 8px 18px -8px rgba(138, 90, 24, 0.5);
+}
+
+/* Recessed well — inner shadow so inputs feel carved, not drawn. */
+.well {
+  box-shadow: inset 0 1px 2px rgba(28, 23, 16, 0.10), inset 0 0 0 1px rgba(184, 171, 144, 0.22);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .paper-card { transition: box-shadow 200ms ease-out; }
+}
+
 * {
   box-sizing: border-box;
 }
@@ -486,6 +564,18 @@ button:focus-visible {
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28), 0 10px 30px rgba(0, 0, 0, 0.35);
 }
 
+/* Selected-card state (hotel hub picker). A dedicated modifier — NOT a Tailwind border utility —
+   because the scoped .app-shell/.paper-scope surface rules above out-rank single-class utilities,
+   which silently swallowed a utility-only selected border. Must stay below those rules. The inset
+   999px spread tints over whichever background the scope painted without replacing it. */
+.surface.surface--selected {
+  border-color: var(--brass);
+  box-shadow:
+    inset 0 0 0 999px var(--brass-soft),
+    0 0 0 1px var(--brass),
+    0 0 14px var(--brass-glow);
+}
+
 .paper-scope .surface.trip-card:hover {
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), 0 14px 34px rgba(0, 0, 0, 0.24);
 }
@@ -537,6 +627,96 @@ button:focus-visible {
   /* `scale`, not `transform: scale()` — Mapbox positions markers via an inline
      transform, which would override a transform-based scale entirely. */
   scale: 1.15;
+}
+
+/* Landing reveal map (StoryRevealMap): always-visible place card beside each numbered
+   pin. That map is non-interactive — no hover, no tap — so the card must carry the
+   place name on its own. Side classes are chosen in the component (cards face inward
+   toward the route) so edge pins never clip out of frame. */
+.constellation-pin-card {
+  background: rgba(11, 15, 22, 0.9);
+  border: 1px solid rgba(239, 201, 141, 0.38);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px 8px;
+  pointer-events: none;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.constellation-pin-card--right {
+  left: calc(100% + 9px);
+}
+
+.constellation-pin-card--left {
+  align-items: flex-end;
+  right: calc(100% + 9px);
+  text-align: right;
+}
+
+.constellation-pin-card__day {
+  color: #EFC98D;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.constellation-pin-card__name {
+  color: var(--starlight);
+  font-family: var(--font-geist), system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  max-width: 112px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Narrow screens: side cards would collide or clip on a narrow map, so they drop
+   below the pin, centered and tighter. */
+@media (max-width: 640px) {
+  .constellation-pin-card--left,
+  .constellation-pin-card--right {
+    align-items: center;
+    left: 50%;
+    padding: 4px 6px;
+    right: auto;
+    text-align: center;
+    top: calc(100% + 8px);
+    transform: translateX(-50%);
+  }
+
+  .constellation-pin-card__name {
+    font-size: 9px;
+    max-width: 76px;
+  }
+}
+
+/* Hotel-hub map (plan 2026-08-04-hotel-hub-map, T9): the selected Travala hotel drawn as the
+   central parent "hub" pin that the spokes radiate from. Deliberately distinct from the hollow,
+   numbered constellation place pins — larger and FILLED brass so it reads as the anchor of the
+   hub-and-spoke view, not one stop among many. */
+.hotel-hub-pin {
+  align-items: center;
+  background: #EFC98D;
+  border: 2px solid #0b0f16;
+  border-radius: 9999px;
+  box-shadow: 0 0 0 6px var(--brass-glow), 0 0 22px rgba(239, 201, 141, 0.55);
+  color: #0b0f16;
+  cursor: default;  /* the hub pin is a non-interactive marker (selection happens in HotelPanel) */
+  display: flex;
+  font-size: 17px;
+  height: 34px;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+  width: 34px;
 }
 
 /* The single persistent Mapbox instance (components/map/MapProvider). Fixed to the

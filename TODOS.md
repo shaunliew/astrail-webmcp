@@ -4,6 +4,22 @@ Deferred work with enough context to pick up cold. Spec-level deferrals (Realtim
 preference→agent feed, requested_places resolution, Google OAuth, custom SMTP) live in
 `docs/superpowers/specs/2026-07-07-beta-auth-to-map-wiring-design.md` § Non-goals.
 
+## Extract an `authedPost()` helper in `frontend/lib/trip/api.ts`
+
+- **What:** Collapse the five near-identical authed-POST helpers (`requestSeat`,
+  `requestAccountDeletion`, `cancelAccountDeletion`, `clearMemory`, `submitTripFeedback`) onto one
+  `authedPost(path, accessToken, body?)` that owns the fetch/headers/`apiErrorFrom` boilerplate.
+- **Why:** Each new endpoint currently copies ~15 lines of identical fetch plumbing; a sixth copy
+  landed with the trip-feedback arc (2026-08-05 eng review flagged it, DRY preference).
+- **Pros:** One place for headers/error-envelope handling; new endpoints become 3-liners.
+- **Cons:** Touches four already-reviewed, shipped helpers for zero behavior change — churn on
+  code with per-fn mock-auth short-circuits that don't fold into the shared shape trivially.
+- **Context:** Deliberately NOT done inside the trip-feedback arc (minimal-diff rule; the arc
+  copies the house pattern instead). The mock-auth short-circuits stay per-endpoint — only the
+  network half extracts cleanly. See `frontend/lib/trip/api.ts`.
+- **Depends on / blocked by:** Nothing; best bundled into the next arc that touches ≥2 of these
+  helpers anyway.
+
 ## Cookie-cache the onboarding gate query
 
 - **What:** Skip the middleware's per-request `traveler_profiles.onboarding_completed`
@@ -66,3 +82,28 @@ preference→agent feed, requested_places resolution, Google OAuth, custom SMTP)
   writers. `RestaurantCandidate` (`backend/models/enrichment.py`) has Mapbox coordinates and a
   `mapbox_id` but no country claim.
 - **Depends on / blocked by:** beta shipped; the `country`-semantics decision above.
+
+## Landing mobile hero: scroll hint overlaps Aster's legs (QA ISSUE-002, cosmetic)
+
+- **What:** At 375x812 the "SCROLL TO BEGIN" hint (`.story-scroll-hint`, bottom 26px) renders
+  over the mobile Aster cutout's lower legs (`.story-hero-aster-mobile`, bottom 2.5%).
+- **Severity/category:** Low / visual. Found by /qa on 2026-08-06 (report
+  `.gstack/qa-reports/qa-report-astrail-zh-2026-08-06.md`, screenshot `mobile-hero.png`).
+- **Repro:** viewport 375x812 → open `/` → hero: hint text sits on the figure's feet.
+- **Fix sketch:** either lift the hint (`bottom: 8px` + smaller gap) or reserve a lane by
+  capping `.story-hero-aster-mobile` height a touch lower on short-width phones. ZH has
+  hand-tuned this hero's mobile clamps twice (story.css history) — change with his eye on it.
+- **Depends on / blocked by:** Nothing.
+
+## story-config.ts stale pre-launch config + orphaned beat clips
+
+- **What:** `frontend/components/story/story-config.ts` still opens with the pre-launch seat
+  truth ("ZERO claimed, boarding soon, waitlist as primary CTA") while the live page is open
+  beta; `SEATS_CLAIMED`/`BOARDING_OPEN` feed only unmounted beat components; six `CLIPS`
+  entries point into gitignored, locally-absent `/landing/clips/*` (referenced only by
+  orphaned beat layers StoryStage never mounts — no live 404 today, but re-mounting any beat
+  would 404 in prod).
+- **Severity/category:** Low / hygiene. Found by the 2026-08-06 final-gate fable review.
+- **Fix sketch:** one cleanup commit — rewrite the header comment to the open-beta truth and
+  delete (or clearly quarantine) the orphaned beat layers with their CLIPS/SEATS constants.
+- **Depends on / blocked by:** Nothing.

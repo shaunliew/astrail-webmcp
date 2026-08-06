@@ -41,6 +41,11 @@ export default function VerifiedPlacesMap({
       return
     }
     mapRef.current = map
+    if (process.env.NODE_ENV !== 'production') {
+      // Dev-only handle so capture/QA sessions can tune Standard config properties.
+      ;(window as unknown as { __astrailMaps?: mapboxgl.Map[] }).__astrailMaps ??= []
+      ;(window as unknown as { __astrailMaps: mapboxgl.Map[] }).__astrailMaps.push(map)
+    }
 
     const resizeObserver = new ResizeObserver(() => { mapRef.current?.resize() })
     resizeObserver.observe(containerRef.current)

@@ -183,8 +183,11 @@ def build_label_agent(model: str):
 
 async def _default_runner(agent, user_input: str):
     """Real run. Lazy-imports the Agents SDK Runner. No tool loop → few turns."""
-    from agents import Runner
+    from agents import Runner, set_tracing_disabled
 
+    # Privacy: don't export gen/tool data to OpenAI's trace store (tracing is ON by
+    # default; /privacy promises we don't retain it there). Global + idempotent.
+    set_tracing_disabled(True)
     return await Runner.run(agent, user_input, max_turns=2)
 
 

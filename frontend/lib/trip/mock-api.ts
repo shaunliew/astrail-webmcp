@@ -28,19 +28,6 @@ export async function getProfile(): Promise<{
   return { profile: DEMO_PROFILE, facts: DEMO_PREFERENCE_FACTS }
 }
 
-export type FeedbackInput = {
-  trip_id: string
-  artifact_type: string
-  artifact_id: string | null
-  rating?: number
-  comment?: string
-}
-
-export async function submitFeedback(_input: FeedbackInput): Promise<{ ok: true }> {
-  await delay(MOCK_LATENCY_MS)
-  return { ok: true }
-}
-
 // Simulates POST /trips: creates the durable trip row and returns its id (PRD §16: trip row < 2s).
 // Offline/deterministic — always resolves to the Tokyo fixture so streamGeneration can chain onto it.
 export async function createTrip(req: GenerateTripRequest): Promise<GenerateTripResponse> {

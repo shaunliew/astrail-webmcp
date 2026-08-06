@@ -10,9 +10,14 @@ from __future__ import annotations
 import httpx
 
 from models.reel import ReelData
+from scrape.reel_url import url_kind
 
 ACTOR = "apify~instagram-reel-scraper"
-_ENDPOINT = f"https://api.apify.com/v2/acts/{ACTOR}/run-sync-get-dataset-items"
+POST_ACTOR = "apify~instagram-post-scraper"
+
+
+def _endpoint(actor: str) -> str:
+    return f"https://api.apify.com/v2/acts/{actor}/run-sync-get-dataset-items"
 
 
 class ApifyScrapeError(ValueError):
@@ -45,8 +50,12 @@ async def scrape_reel(
     Raises ValueError on an empty dataset, RuntimeError on a non-2xx response.
     Error messages reference the reel URL + status only — never the token.
     """
+    kind = url_kind(reel_url)
+    actor = POST_ACTOR if kind == "post" else ACTOR
     body: dict = {"username": [reel_url], "resultsLimit": 1}
-    if include_transcript:
+    # The post-scraper does not document `includeTranscript`; never send undocumented
+    # inputs. Posts carry no transcript anyway (guardrail #10 — reels-only field).
+    if include_transcript and kind == "reel":
         body["includeTranscript"] = True
     headers = {"Authorization": f"Bearer {token}"}
     params = {"timeout": timeout_s}
@@ -54,7 +63,7 @@ async def scrape_reel(
     owns_client = client is None
     http = client or httpx.AsyncClient(timeout=timeout_s + 10)
     try:
-        resp = await http.post(_ENDPOINT, json=body, headers=headers, params=params)
+        resp = await http.post(_endpoint(actor), json=body, headers=headers, params=params)
     finally:
         if owns_client:
             await http.aclose()

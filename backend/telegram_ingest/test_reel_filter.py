@@ -18,8 +18,10 @@ import pytest
 from telegram_ingest import reel_filter
 from telegram_ingest.reel_filter import FilterResult, extract_reel_urls
 
-# The contract every string that leaves this module must satisfy.
-OUTPUT_CONTRACT = re.compile(r"^https://www\.instagram\.com/reel/[A-Za-z0-9_-]+$")
+# The contract every string that leaves this module must satisfy. Canonical output is only
+# `/reel/<code>` or `/p/<code>` — normalize_reel_url collapses /reels/→/reel/ and /tv/→/p/,
+# mirroring `reel_url._PATH_RE`'s accepted set.
+OUTPUT_CONTRACT = re.compile(r"^https://www\.instagram\.com/(?:reel|p)/[A-Za-z0-9_-]+$")
 
 
 # An unpaired UTF-16 surrogate. `str.encode("utf-16-le")` refuses it, and stdlib
@@ -79,6 +81,10 @@ def _url_message(*urls: str, lead: str = "", field: str = "text") -> dict:
 
 def _reel(code: str) -> str:
     return f"https://www.instagram.com/reel/{code}/"
+
+
+def _post(code: str) -> str:
+    return f"https://www.instagram.com/p/{code}/"
 
 
 # --------------------------------------------------------------------------------------
@@ -168,12 +174,23 @@ def test_subdomain_is_instagram_looking_and_query_and_fragment_never_reach_the_s
     assert "igsh" not in repr(result)
 
 
+def test_a_bare_post_url_is_now_accepted_not_rejected_as_a_shape():
+    """Carousel `/p/` posts widened into acceptance via the shared `normalize_reel_url` (T1). A bare
+    `www.instagram.com/p/<code>` now leaves as a canonical URL, not a `/p/…` rejected shape — the
+    inverse of the pre-widening behaviour. Query + trailing slash are stripped on the way out."""
+    result = extract_reel_urls(
+        _url_message("https://www.instagram.com/p/DQwdZ8ZCWZx/?igsh=track")
+    )
+
+    assert result.urls == ("https://www.instagram.com/p/DQwdZ8ZCWZx",)
+    assert result.rejected_shapes == ()
+    assert "igsh" not in repr(result)
+
+
 @pytest.mark.parametrize(
     ("url", "shape"),
     [
         ("https://www.instagram.com/share/reel/SH99/", "/share/reel/…"),
-        ("https://www.instagram.com/p/ABC123/", "/p/…"),
-        ("https://www.instagram.com/tv/XYZ/", "/tv/…"),
         ("https://www.instagram.com/reel/", "/reel"),
         ("https://www.instagram.com/stories/someone/123/", "/stories/…"),
         ("https://www.instagram.com/", "/"),
@@ -260,8 +277,10 @@ def test_repeated_share_shapes_collapse_to_one_entry():
 def test_rejected_shapes_are_capped_at_ten_entries():
     # Distinctness has to come from the keyword vocabulary: any run of unknown segments
     # collapses to a single "/…", so "12 different codes" would be one shape, not twelve.
+    # `/p/x/` and `/tv/x/` are now ACCEPTED (they normalize to reel/post URLs and never
+    # reach the sanitizer), so two distinct multi-segment keyword shapes stand in for them.
     paths = [
-        "/p/x/", "/tv/x/", "/s/x/", "/share/x/", "/stories/x/", "/reel/x/y/",
+        "/share/p/x/", "/stories/reel/x/", "/s/x/", "/share/x/", "/stories/x/", "/reel/x/y/",
         "/reels/x/y/", "/foo/bar/", "/p/x/reel/y/", "/tv/x/p/y/", "/share/reel/z/",
         "/s/x/tv/y/",
     ]
@@ -270,8 +289,8 @@ def test_rejected_shapes_are_capped_at_ten_entries():
     result = extract_reel_urls(_url_message(*urls))
 
     assert result.rejected_shapes == (
-        "/p/…", "/tv/…", "/s/…", "/share/…", "/stories/…", "/reel/…", "/reels/…", "/…",
-        "/p/…/reel/…", "/tv/…/p/…",
+        "/share/p/…", "/stories/reel/…", "/s/…", "/share/…", "/stories/…", "/reel/…",
+        "/reels/…", "/…", "/p/…/reel/…", "/tv/…/p/…",
     )
     assert len(result.rejected_shapes) == 10  # the last two shapes were dropped
 
@@ -688,6 +707,10 @@ def test_every_returned_url_matches_the_output_contract():
         _url_message("https://www.instagram.com/reel/QQQ777/?igsh=abcd&x=1#frag"),
         _url_message("http://instagram.com/reels/PLURAL9/"),
         _url_message(*(_reel(f"CODE{i:02d}") for i in range(11))),
+        # A carousel/photo post canonicalizes to /p/<code> and must also satisfy the contract —
+        # without this fixture the contract is vacuously green for the post shapes this arc added.
+        _url_message(_post("POST001"), "https://www.instagram.com/p/DUP001/?img_index=4"),
+        _url_message("https://www.instagram.com/tv/TVCODE9/"),  # /tv/ canonicalizes to /p/
         {
             "caption": "\U0001F4CD trip",
             "caption_entities": [
@@ -698,10 +721,13 @@ def test_every_returned_url_matches_the_output_contract():
 
     returned = [url for message in messages for url in extract_reel_urls(message).urls]
 
-    assert len(returned) == 14
+    assert len(returned) == 17
     assert all(OUTPUT_CONTRACT.fullmatch(url) for url in returned)
     assert "https://www.instagram.com/reel/QQQ777" in returned
     assert "https://www.instagram.com/reel/PLURAL9" in returned
+    assert "https://www.instagram.com/p/POST001" in returned
+    assert "https://www.instagram.com/p/DUP001" in returned
+    assert "https://www.instagram.com/p/TVCODE9" in returned
 
 
 def test_filter_result_is_immutable_and_tuple_valued():

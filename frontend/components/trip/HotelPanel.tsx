@@ -7,7 +7,40 @@ const STATUS_LABEL: Record<HotelStatus, string> = {
   failed: 'Search failed',
 }
 
-export default function HotelPanel({ hotels }: { hotels: HotelSuggestion[] }) {
+// price_snapshot mirrors persist_hotels' write shape ({pricePerNight, totalPrice, currency}) but
+// is typed Record<string, unknown>, so read it defensively: anything non-finite renders no price
+// at all (never "NaN/night"). Per-night is preferred; the stay total is the fallback so SOME
+// price still shows when only totalPrice came back — same unit preference as backend tradeoffs.py.
+function priceLabel(snap: Record<string, unknown> | null | undefined): string | null {
+  // > 0: a zero or negative price is treated as missing, never rendered as "0 USD/night" (a
+  // free-hotel claim we have no evidence for; review nit 2026-08-06).
+  const num = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : null
+  const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2))
+  const cur = typeof snap?.currency === 'string' ? snap.currency : ''
+  const night = num(snap?.pricePerNight)
+  if (night != null) return cur ? `${fmt(night)} ${cur}/night` : `${fmt(night)}/night`
+  const total = num(snap?.totalPrice)
+  if (total != null) return cur ? `${fmt(total)} ${cur} total` : `${fmt(total)} total`
+  return null
+}
+
+// The hotel list doubles as the hub picker (plan 2026-08-04-hotel-hub-map, T8). A hotel is a
+// selectable map hub iff it is `geo_status==='placed'` AND in the backend's top-3 shortlist
+// (`rank != null` — a placed hotel ranked 4+ carries rank===null and is NOT a hub candidate). An
+// unresolved hotel has no pin to select (Guardrail #1), so it renders as a plain, non-interactive
+// row with an honest "couldn't place it" note; a placed-but-unranked hotel also renders plainly but
+// WITHOUT that note (it DID place — it's just not a top-3 candidate). `layerMode` is load-bearing:
+// the picked hub is only DRAWN on the map in hub mode, so the "On map" indicator only appears there
+// (in route mode the selection is latent).
+export default function HotelPanel({
+  hotels, selectedHotelId, onSelectHotel, layerMode,
+}: {
+  hotels: HotelSuggestion[]
+  selectedHotelId: string | null
+  onSelectHotel: (id: string) => void
+  layerMode: 'route' | 'hub'
+}) {
   if (hotels.length === 0) {
     return (
       <div className="rounded-[var(--radius-card)] border border-dashed border-[var(--line)] p-3">
@@ -19,17 +52,71 @@ export default function HotelPanel({ hotels }: { hotels: HotelSuggestion[] }) {
     <ul className="flex flex-col gap-2">
       {hotels.map((h) => {
         const inactive = h.status !== 'suggested'
-        return (
-          <li key={h.id} className={['surface rounded-lg p-2.5', inactive ? 'opacity-60' : ''].join(' ')}>
+        // Selectable hub = placed AND a top-3 candidate (rank set) AND has real coords the map can
+        // draw. The coords check is defense-in-depth (Codex P2): a `placed` row with null lat/lng
+        // is a partial write we must never offer as a hub — there is no point to pin.
+        const selectable =
+          h.geo_status === 'placed' && h.rank != null && h.lat != null && h.lng != null
+        const selected = selectable && h.id === selectedHotelId
+        // Price leads the meta line — it's the figure the user is deciding on (pre-beta fix:
+        // price_snapshot has been persisted since day one but was never rendered).
+        const meta = [priceLabel(h.price_snapshot), h.area, h.star_rating ? `${h.star_rating}★` : null]
+          .filter(Boolean).join(' · ')
+
+        // Identical body whether or not the row is a selectable hub-pick button.
+        const body = (
+          <>
             <div className="flex items-center justify-between gap-2">
               <span className="type-display truncate text-sm text-[var(--starlight)]">{h.name}</span>
               <span className="type-label shrink-0 text-[10px] uppercase tracking-wide text-[var(--muted)]">
                 {STATUS_LABEL[h.status]}
               </span>
             </div>
-            <p className="type-body mt-1 text-xs text-[var(--muted)]">
-              {[h.area, h.star_rating ? `${h.star_rating}★` : null].filter(Boolean).join(' · ')}
-            </p>
+            {(h.is_recommended || (selected && layerMode === 'hub')) ? (
+              <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                {h.is_recommended ? (
+                  <span className="type-label rounded-[var(--radius-chip)] bg-[var(--brass-soft)] px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-[var(--brass-bright)]">
+                    Recommended
+                  </span>
+                ) : null}
+                {/* Only the hub actually drawn on the map (hub mode) says so — honest about state. */}
+                {selected && layerMode === 'hub' ? (
+                  <span className="type-label rounded-[var(--radius-chip)] border border-[var(--line)] px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-[var(--muted)]">
+                    On map
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+            {meta ? <p className="type-body mt-1 text-xs text-[var(--muted)]">{meta}</p> : null}
+            {/* Honest-failure (Guardrail #1): an unplaceable hotel is never pinned; say why. */}
+            {h.geo_status === 'unresolved' ? (
+              <p className="type-body mt-1 text-[11px] text-[var(--muted)]">
+                We couldn&apos;t place this hotel on the map.
+              </p>
+            ) : null}
+          </>
+        )
+
+        if (selectable) {
+          return (
+            <li key={h.id}>
+              <button
+                type="button"
+                onClick={() => onSelectHotel(h.id)}
+                aria-pressed={selected}
+                className={[
+                  'surface w-full rounded-lg p-2.5 text-left transition-colors',
+                  selected ? 'surface--selected' : 'hover:border-[var(--brass)]',
+                ].join(' ')}
+              >
+                {body}
+              </button>
+            </li>
+          )
+        }
+        return (
+          <li key={h.id} className={['surface rounded-lg p-2.5', inactive ? 'opacity-60' : ''].join(' ')}>
+            {body}
           </li>
         )
       })}

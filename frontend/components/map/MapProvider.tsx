@@ -177,6 +177,11 @@ export default function MapProvider({ children }: { children: React.ReactNode })
         applyPreset()
       })
       mapRef.current = map
+      if (process.env.NODE_ENV !== 'production') {
+        // Dev-only handle so capture/QA sessions can tune Standard config properties.
+        ;(window as unknown as { __astrailMaps?: (typeof map)[] }).__astrailMaps ??= []
+        ;(window as unknown as { __astrailMaps: (typeof map)[] }).__astrailMaps.push(map)
+      }
       applyPreset()
       applyInteractive(map, wanted.interactive)
     })

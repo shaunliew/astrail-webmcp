@@ -85,6 +85,22 @@ async def test_cache_round_trip_hit():
 
 
 @pytest.mark.asyncio
+async def test_cache_round_trip_for_a_post_url():
+    """Carousel `/p/` posts cache "for free" once the URL choke point widened (T1): both
+    `cache_places` and `get_cached_places` normalize the `/p/` URL to a canonical key and round-trip
+    it exactly like a reel. Pre-T1 both silently no-oped on `/p/` (normalize raised), so this test
+    REDDENS if `_PATH_RE` is narrowed back to reels-only — the load-bearing proof of the widening."""
+    post = "https://www.instagram.com/p/DQwdZ8ZCWZx/"
+    post_key = "https://www.instagram.com/p/DQwdZ8ZCWZx"   # normalized (no trailing slash)
+    c = _Client()
+    await cache_places(c, post, _Reel(), [_place("Shibuya Sky")], "v1")
+    row = c.db["reel_cache"][0]
+    assert row["normalized_url"] == post_key and row["extractor_version"] == "v1"
+    hit = await get_cached_places(c, post, "v1")
+    assert hit is not None and [p.name for p in hit] == ["Shibuya Sky"]
+
+
+@pytest.mark.asyncio
 async def test_cache_version_mismatch_is_miss():
     c = _Client()
     await cache_places(c, _REEL, _Reel(), [_place()], "v1")

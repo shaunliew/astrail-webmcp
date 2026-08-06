@@ -258,4 +258,20 @@ describe('TrayDetail', () => {
     ).toBeInTheDocument()
     expect(screen.getByText(/loading this tray's reels/i)).toBeInTheDocument()
   })
+
+  it('badges each member row by URL kind and titles a caption-less card kind-aware', () => {
+    setup({
+      cards: [
+        card({ id: 'p1', normalized_url: 'https://www.instagram.com/p/POST123/', caption: null, personal_label: null }),
+        card({ id: 'r1', normalized_url: 'https://www.instagram.com/reel/REEL123/', caption: null, personal_label: null }),
+      ],
+    })
+
+    // Shared sourceLabel badge on each row…
+    expect(screen.getByText('Post')).toBeInTheDocument()
+    expect(screen.getByText('Reel')).toBeInTheDocument()
+    // …and the untitled fallback follows the URL kind.
+    expect(screen.getByText('Untitled post')).toBeInTheDocument()
+    expect(screen.getByText('Untitled reel')).toBeInTheDocument()
+  })
 })

@@ -223,6 +223,38 @@ class _ReplaceTripItineraryRpc:
         return _Result(True)
 
 
+class _ReplaceHotelSuggestionsRpc:
+    """Mirror of `public.replace_hotel_suggestions` (20260804120000).
+
+    persist_hotels now routes its delete-reinsert through this fenced RPC on the leased runner
+    path (F3/B), so the runner's fake must implement it — otherwise every leased run's hotel
+    write raises `fake does not implement rpc` (swallowed by the best-effort stage) and the
+    hotel/tradeoff-comparison properties below silently stop being tested. The fence predicate
+    mirrors the SQL exactly, `trip_id` included; each inserted row gets `trip_id` from the RPC
+    (the caller's row dicts carry none), matching the SQL's `select p_trip_id, ...`."""
+
+    def __init__(self, client, params):
+        self.client, self.params = client, params
+
+    async def execute(self):
+        params = self.params
+        job = next((row for row in self.client.db.get("jobs", [])
+                    if row.get("id") == params["p_job_id"]
+                    and row.get("trip_id") == params["p_trip_id"]
+                    and row.get("lease_token") == params["p_lease_token"]
+                    and row.get("status") == "running"), None)
+        if job is None:
+            return _Result(False)
+        trip_id = params["p_trip_id"]
+        rows = self.client.db.setdefault("hotel_suggestions", [])
+        self.client.db["hotel_suggestions"] = [r for r in rows if r.get("trip_id") != trip_id]
+        for row in params.get("p_rows") or []:
+            self.client.db["hotel_suggestions"].append(
+                {"id": f"hotel_suggestions-{len(self.client.db['hotel_suggestions']) + 1}",
+                 "trip_id": trip_id, **row})
+        return _Result(True)
+
+
 # This generation's `trips.created_at`, as Postgres stamped it at POST /generate-trip.
 # A LITERAL, never a derived offset or a wall clock: the write-back guard compares clear
 # markers against it, and a reference that moved with the fixtures would let a broken
@@ -265,6 +297,8 @@ class _Client:
             return _CompleteTripRunRpc(self, params)
         if name == "replace_trip_itinerary":
             return _ReplaceTripItineraryRpc(self, params)
+        if name == "replace_hotel_suggestions":
+            return _ReplaceHotelSuggestionsRpc(self, params)
         if name in _LEASE_RPCS:
             mirror, table = _LEASE_RPCS[name]
             return mirror(self, params, self.db.setdefault(table, []))
@@ -858,6 +892,33 @@ async def test_runner_hotel_failure_is_non_critical():
     assert any(e["event_type"] == "warning" and e["stage"] == "hotels" for e in c.events)
     assert c.trip_updates[-1]["status"] == "complete"   # hotel failure does NOT degrade/fail
     assert c.db["jobs"][0]["status"] == "succeeded"
+
+
+@pytest.mark.asyncio
+async def test_runner_hotel_lease_lost_emits_no_warning(monkeypatch):
+    # A LeaseLost from the fenced hotel RPC (persist_hotels raises it when replace_hotel_suggestions
+    # returns false) means a REPLACEMENT worker owns this run. Unlike a real hotel-search failure,
+    # this superseded worker must NOT record a "couldn't find hotels" warning — that would pollute
+    # the replacement's live event stream. Contrast with the RuntimeError case above, which DOES warn.
+    from organizer import LeaseLost
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c.db["trips"] = [{"id": "trip-1", "user_id": "user-1", "start_date": "2026-08-01",
+                      "end_date": "2026-08-01", "adult_count": 1, "room_count": 1,
+                      "destination_hint": "Tokyo"}]
+    async def scrape(url): return _reel(url)
+    async def extract(reel): return [_place("A", lat=35.60, lng=139.70), _place("B", lat=35.62, lng=139.72)]
+    async def _lease_lost_persist(*_a, **_k):
+        raise LeaseLost("hotel job job-1 lease superseded during persist")
+    monkeypatch.setattr(runner, "persist_hotels", _lease_lost_persist)
+    async def hotel(location, check_in, check_out, rooms): return "sess-1", []
+    out = await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+                                      job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                      mem0=None, weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant,
+                                      narrator=_no_narrator, hotel=hotel)
+    assert out["itinerary"]["days"]                                      # the run still completed
+    assert any(e["stage"] == "hotels" and e["event_type"] == "stage" for e in c.events)  # stage ran
+    # the LeaseLost was swallowed WITHOUT a hotel warning
+    assert not any(e["event_type"] == "warning" and e["stage"] == "hotels" for e in c.events)
 
 
 @pytest.mark.asyncio

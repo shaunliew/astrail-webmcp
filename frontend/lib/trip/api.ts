@@ -1,10 +1,22 @@
-import type { GenerateTripRequest, GenerateTripResponse, RequestSeatResponse, StreamEvent } from './backend-types'
+import type {
+  AccountDeletionCancelResponse,
+  AccountDeletionResponse,
+  AccountDeletionStatusResponse,
+  GenerateTripRequest,
+  GenerateTripResponse,
+  MemoryClearResponse,
+  RequestSeatResponse,
+  StreamEvent,
+  TripFeedbackRequest,
+  TripFeedbackResponse,
+} from './backend-types'
 // Mock-auth shell: generation runs against the offline fixture replay with zero backend
 // (mirrors the MOCK_AUTH_ENABLED switches in middleware.ts and use-user.ts).
 import { MOCK_AUTH_ENABLED } from '@/lib/auth/mock-auth'
+import { resolveBackendUrl } from '@/lib/backend-url'
 import * as mockApi from '@/lib/trip/mock-api'
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? 'http://localhost:8000'
+const BACKEND_URL = resolveBackendUrl()
 
 // Thrown on any non-ok backend response. Carries the HTTP `status` and the backend error
 // `code` (from the {"error":{"code","message"}} envelope) so callers can branch on a stable
@@ -80,6 +92,167 @@ export async function requestSeat(accessToken: string): Promise<RequestSeatRespo
 
 // Fixed stamp for the mock-auth shell — no wall-clock, so the offline flow is deterministic.
 const MOCK_SEAT_REQUESTED_AT = '2026-01-01T00:00:00.000Z'
+
+// Fixed 7-days-out schedule for the mock-auth deletion short-circuit — deterministic, no wall-clock.
+const MOCK_DELETION_SCHEDULED_FOR = '2026-01-08T00:00:00.000Z'
+
+// POST /account/deletion — enter the 7-day cancellable deletion grace for the AUTHENTICATED
+// account (self-serve; no body — the backend reads identity from the token, never a
+// client-supplied user id: guardrails #5/#6). Mirrors requestSeat's authed-POST shape. Non-ok
+// responses throw an ApiError whose `status` + `code` let the caller branch distinctly: 503
+// deletion_unavailable (gated off / not live) vs 409 deletion_not_active (already pending/deleting).
+export async function requestAccountDeletion(accessToken: string): Promise<AccountDeletionResponse> {
+  // Under the mock-auth demo shell there is no backend and the token is fake — short-circuit to a
+  // deterministic mock success instead of firing a real network call (mirrors generateTrip /
+  // requestSeat). The fixed schedule keeps the offline flow reproducible (no wall-clock).
+  if (MOCK_AUTH_ENABLED) return { scheduled_for: MOCK_DELETION_SCHEDULED_FOR }
+  const res = await fetch(`${BACKEND_URL}/account/deletion`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+
+  if (!res.ok) {
+    throw await apiErrorFrom(res)
+  }
+
+  return res.json()
+}
+
+// POST /account/deletion/cancel — reverse a pending deletion for the AUTHENTICATED account.
+// Only works before the sweeper claims the account into `deleting` (Task 3's point of no return):
+// a claimed row throws ApiError(409, 'deletion_already_started'), which the UI reacts to by
+// showing the in-progress state and disabling Cancel. 503 deletion_unavailable = gated off.
+export async function cancelAccountDeletion(accessToken: string): Promise<AccountDeletionCancelResponse> {
+  // Mock-auth shell: no backend, fake token — short-circuit to a mock success (mirrors the sibling
+  // fns) so the demo never fires a real authed request.
+  if (MOCK_AUTH_ENABLED) return { cancelled: true }
+  const res = await fetch(`${BACKEND_URL}/account/deletion/cancel`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+
+  if (!res.ok) {
+    throw await apiErrorFrom(res)
+  }
+
+  return res.json()
+}
+
+// GET /account/deletion/status — read the AUTHENTICATED account's deletion state (self-serve; no
+// body — identity from the token, never a client-supplied user id: guardrails #5/#6) so a returning
+// user is seeded onto the pending banner / locked in-progress state across sessions without an
+// in-session request. Fail-safe by design: the backend returns ('active', null) when it can't read
+// the real state, so this read never blocks the UI. The DeleteAccountCard fetches it on mount, and
+// that card renders only behind NEXT_PUBLIC_DELETION_ENABLED — a hidden card never calls this.
+export async function getAccountDeletionStatus(
+  accessToken: string,
+): Promise<AccountDeletionStatusResponse> {
+  // Mock-auth shell: no backend, fake token — report a benign 'active' state without a network call
+  // (mirrors the sibling deletion fns) so the demo shell never fires a real authed request.
+  if (MOCK_AUTH_ENABLED) return { account_status: 'active', deletion_scheduled_for: null }
+  const res = await fetch(`${BACKEND_URL}/account/deletion/status`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+
+  if (!res.ok) {
+    throw await apiErrorFrom(res)
+  }
+
+  return res.json()
+}
+
+// POST /settings/memory/clear — clear the caller's remembered mem0 preferences (self-serve; no
+// body — identity from the token: guardrails #5/#6). STRICT by design (the inverse of the
+// degrading GET /settings/preferences): the backend returns 200 {"cleared":true} ONLY on a
+// verified clear, and otherwise a 503 with a DISTINCT code — memory_unavailable (nothing was
+// deleted; safe to retry / service unreachable) vs memory_clear_unknown (attempted, could not be
+// confirmed). A non-ok response throws an ApiError carrying that code so the caller surfaces each
+// state honestly — never a fake success. While the backend's reconciliation gate is off it 503s
+// memory_unavailable, so the button truthfully reports "couldn't reach" until go-live.
+export async function clearMemory(accessToken: string): Promise<MemoryClearResponse> {
+  if (MOCK_AUTH_ENABLED) return mockApi.clearMemory().then(() => ({ cleared: true }))
+  const res = await fetch(`${BACKEND_URL}/settings/memory/clear`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+  })
+
+  if (!res.ok) {
+    throw await apiErrorFrom(res)
+  }
+
+  return res.json()
+}
+
+// Client-side draft union (Codex r1 #7): narrower than the TripFeedbackRequest mirror (which
+// stays 1:1 with the Pydantic model — guardrail #4). The union prevents invalid CONSTRUCTION — a
+// fresh literal / buildDraft result can't be rating-without-a-value or rating-on-a-thumbs-row. It
+// is NOT a structural firewall: an object assigned from a wider value could still carry extra keys
+// past the union, so the real guarantee is "drafts built by buildDraft / object literals", enforced
+// by the exact-key serialization tests (lib/trip/__tests__/trip-feedback-api.test.ts). Every member
+// stays assignable to TripFeedbackRequest — pinned at compile time by _DraftAssignableToRequest below.
+export type TripFeedbackDraft =
+  | { feedback_type: 'thumbs_up' | 'thumbs_down'; comment?: string }
+  | { feedback_type: 'rating'; rating: 1 | 2 | 3 | 4 | 5; comment?: string }
+  | { feedback_type: 'free_text'; comment: string }
+
+type _Assert<T extends true> = T
+// Compile-time pin (guardrail #4): every TripFeedbackDraft member must stay assignable to the
+// backend mirror. tsc fails here if a future mirror change breaks assignability.
+type _DraftAssignableToRequest = _Assert<TripFeedbackDraft extends TripFeedbackRequest ? true : false>
+
+// Deterministic id for the mock-auth shell — no wall-clock, no randomness.
+const MOCK_FEEDBACK_ID = 'mock-feedback-1'
+
+// POST /trips/{tripId}/feedback — append-only trip-level feedback, ONE request per user action
+// (a thumbs/rating signal may carry the note in the same row; backend allows optional comment
+// there). Strict cross-field 422s live behind the draft union; ownership is 404-not-403; 429 =
+// BURST_LIMIT (3/min default). Resubmission inserts a new row by design (analytics take
+// latest-per-user), so callers may POST again to change a verdict.
+export async function submitTripFeedback(
+  tripId: string,
+  req: TripFeedbackDraft,
+  accessToken: string
+): Promise<TripFeedbackResponse> {
+  // Mock-auth shell: no backend — echo a deterministic persisted-row shape (mirrors requestSeat).
+  if (MOCK_AUTH_ENABLED) {
+    return {
+      feedback: {
+        id: MOCK_FEEDBACK_ID,
+        trip_id: tripId,
+        artifact_type: 'trip',
+        feedback_type: req.feedback_type,
+        rating: 'rating' in req ? req.rating : null,
+        comment: req.comment ?? null,
+      },
+    }
+  }
+  const res = await fetch(`${BACKEND_URL}/trips/${tripId}/feedback`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify(req),
+  })
+
+  if (!res.ok) {
+    throw await apiErrorFrom(res)
+  }
+
+  return res.json()
+}
 
 export function streamTrip(tripId: string, accessToken: string): EventSource {
   const url = new URL(`${BACKEND_URL}/generate-trip/stream/${tripId}`)

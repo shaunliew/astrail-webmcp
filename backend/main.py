@@ -413,7 +413,7 @@ async def create_saved_reel(
     try:
         saved_reel = await capture_saved_reel(client, user_id, req.url)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail="A valid Instagram Reel URL is required") from exc
+        raise HTTPException(status_code=422, detail="A valid Instagram Reel or post URL is required") from exc
     return CaptureSavedReelResponse(saved_reel=saved_reel)
 
 

@@ -111,8 +111,15 @@ REQUIRED_SCHEMA: dict[str, tuple[str, ...]] = {
     "restaurant_suggestions": ("trip_id", "trip_day_id", "restaurant_place_id", "near_place_id",
                                "cuisine", "summary", "source_url", "evidence_json",
                                "preference_match_json"),
+    # The 7 hotel-hub-map columns (20260804120000) are writer-used: persist_hotels' fenced
+    # replace writes lat/lng/geo_status/route_score/rank/is_recommended/place_durations, so the
+    # gate must probe them — code shipped ahead of that migration fails on the first hotel write
+    # (the class that bit the entitlements arc). hotel_suggestions is NOT an anchor (Guardrail #3
+    # makes hotels partial-failure-tolerant), so this only guards drift, never aborts on absence.
     "hotel_suggestions": ("trip_id", "base_place_id", "name", "area", "star_rating",
-                          "price_snapshot", "status"),
+                          "price_snapshot", "status",
+                          "lat", "lng", "geo_status", "route_score", "rank",
+                          "is_recommended", "place_durations"),
     "feedback": ("trip_id", "user_id", "artifact_type", "artifact_id", "feedback_type",
                  "rating", "comment", "source_type", "generation_stage", "preference_source"),
     # `id` and `created_at` are the clear/write-back interlock (pipeline/memory_clear.py +
@@ -130,6 +137,14 @@ REQUIRED_SCHEMA: dict[str, tuple[str, ...]] = {
                    "caption", "transcript", "expires_at"),
     "geocode_country_cache": ("coord_key", "verification_version", "country_code",
                               "country_name"),
+    # The hotel FORWARD-geocode cache (20260805020000) — the write-through cache the hotel resolver
+    # reads before translating/geocoding and upserts the found/miss result into. Every column below
+    # is writer-used (lookup_many selects them; the upsert writes cache_key/status/lat/lng/
+    # country_code/name_fingerprint/expires_at). Code shipped ahead of that migration fails on the
+    # first cache read/write. Like geocode_country_cache it is NOT an anchor (the hotel feature is
+    # partial-failure-tolerant, Guardrail #3), so this only guards drift, never aborts on absence.
+    "hotel_geocode_cache": ("cache_key", "status", "lat", "lng", "country_code",
+                            "name_fingerprint", "created_at", "expires_at"),
     # --- Saved Reels organize (web service AND the telegram-ingest worker) ---
     "saved_reels": ("id", "user_id", "normalized_url", "reel_cache_id", "analysis_status",
                     "analyzed_at", "retry_after"),

@@ -146,3 +146,74 @@ export function trailCoordinates(bundle: TripBundle): [number, number][] {
   }
   return out
 }
+
+// ---- Hotel-hub map (Travala hotels as a central parent pin; plan 2026-08-04-hotel-hub-map) ----
+
+// The default-selected hub: the route-central hotel (rank 1 / is_recommended) among hotels that
+// actually GOT a coordinate. `null` when no hotel is `placed` — the honest-failure signal (C5)
+// that drives the "disable the Hotel toggle / show an empty-state" path, never a blank map.
+export function recommendedHotelId(bundle: TripBundle): string | null {
+  const placed = bundle.hotels.filter((h) => h.geo_status === 'placed')
+  // `is_recommended` is set on rank 1 by the backend (T3), so these coincide; the rank===1
+  // fallback is defensive for a bundle where is_recommended was somehow not set.
+  const recommended = placed.find((h) => h.is_recommended) ?? placed.find((h) => h.rank === 1)
+  return recommended?.id ?? null
+}
+
+// The HotelSuggestion for an id (the ephemeral client selection), or null for a null/absent id.
+export function selectedHotel(bundle: TripBundle, id: string | null): HotelSuggestion | null {
+  if (!id) return null
+  return bundle.hotels.find((h) => h.id === id) ?? null
+}
+
+// The set of place ids that are a hotel's base — read from `hotel_suggestions.base_place_id`. A
+// destination that IS a hotel base must never be a spoke target (a hotel would spoke to itself).
+// Exported so T9's map-marker suppression reuses the SAME two-signal predicate verbatim rather
+// than reimplementing it (and risking dropping the base_place_id signal → duplicate hub pin).
+export function hotelBasePlaceIds(bundle: TripBundle): Set<string> {
+  const ids = new Set<string>()
+  for (const h of bundle.hotels) if (h.base_place_id) ids.add(h.base_place_id)
+  return ids
+}
+
+// A destination is a base-hotel place if its Place is typed `hotel` OR it is referenced by any
+// hotel's `base_place_id`. Both signals are checked because either can identify a base on its own.
+// Exported for reuse by T9 (hub-mode marker suppression) — keep the two callers in lockstep.
+export function isHotelBasePlace(tp: TripPlace, basePlaceIds: Set<string>): boolean {
+  return tp.place.place_type === 'hotel' || basePlaceIds.has(tp.place_id)
+}
+
+// The hub-and-spoke geometry for one selected hotel: a FeatureCollection of straight 2-point
+// LineStrings from the hotel's [lng,lat] to each destination place's [lng,lat]. Destinations are
+// the trip's dayed, real-coord places (reusing orderedTripPlaces) MINUS any base-hotel place, so a
+// hotel never spokes to itself (C5). Each spoke carries its `place_durations[place_id]` as a
+// `duration_s` label — but a missing/non-finite duration still draws an UNLABELED spoke; the line
+// is never dropped. An unresolved, absent, or coordinate-less hotel yields an empty collection
+// (Guardrail #1: an unlocatable hub is never pinned).
+export function hubSpokeFeatures(
+  hotel: HotelSuggestion | null,
+  bundle: TripBundle,
+): GeoJSON.FeatureCollection<GeoJSON.LineString> {
+  const empty: GeoJSON.FeatureCollection<GeoJSON.LineString> = {
+    type: 'FeatureCollection', features: [],
+  }
+  if (!hotel || hotel.geo_status === 'unresolved') return empty
+  const { lng, lat } = hotel
+  if (lng === null || lat === null || !hasRealCoords(lng, lat)) return empty
+
+  const basePlaceIds = hotelBasePlaceIds(bundle)
+  const hub: [number, number] = [lng, lat]
+  const features: GeoJSON.Feature<GeoJSON.LineString>[] = orderedTripPlaces(bundle)
+    .filter((tp) => !isHotelBasePlace(tp, basePlaceIds))
+    .map((tp) => {
+      const duration = hotel.place_durations[tp.place_id]
+      const properties: Record<string, number | string> = { place_id: tp.place_id }
+      if (Number.isFinite(duration)) properties.duration_s = duration
+      return {
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: [hub, [tp.place.lng, tp.place.lat]] },
+        properties,
+      }
+    })
+  return { type: 'FeatureCollection', features }
+}

@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { addReelsToCollection, createCollection } from '@/lib/reels/collections'
 import type { SavedReelCard } from '@/lib/reels/backend-types'
+import { reelLabel, sourceLabel } from '@/lib/reels/labels'
 
 /* CreateTrayDialog — a lightweight accessible modal to name a new tray and (optionally) pick
    reels for it, then create it via the data layer. Replaces TraysScreen's interim createOpen
@@ -17,10 +18,6 @@ import type { SavedReelCard } from '@/lib/reels/backend-types'
 
    DEFERRED, intentionally OUT of v1 (reel_collections only has name, sort_order): tray
    description, public/private visibility, and AI auto-add. */
-
-function reelLabel(card: SavedReelCard): string {
-  return card.personal_label ?? card.caption ?? 'Untitled reel'
-}
 
 // The data layer wraps a Postgres unique-violation (23505) into a friendly Error; a raw
 // PostgrestError could also leak a `code`. Detect both so the concurrent collision reads as
@@ -254,6 +251,9 @@ export default function CreateTrayDialog({
                             /* eslint-disable-next-line @next/next/no-img-element */
                             <img src={c.thumbnail_url} alt="" className="h-full w-full object-cover" />
                           ) : null}
+                          <span className="absolute left-1.5 top-1.5 rounded-full border border-[color:var(--paper-line-2)] bg-[color:var(--surface-1)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--text-faint)]">
+                            {sourceLabel(c.normalized_url)}
+                          </span>
                           <span
                             aria-hidden
                             className={`absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full border text-[11px] ${

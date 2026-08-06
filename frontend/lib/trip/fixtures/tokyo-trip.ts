@@ -175,16 +175,25 @@ const hotels: HotelSuggestion[] = [
   {
     id: 'hotel_1', trip_id: TRIP_ID, trip_day_id: null, base_place_id: 'pl_hotelbase', // single base hotel — intentionally not tied to a specific day
     name: 'Shinjuku Granbell Hotel', area: 'Shinjuku', star_rating: 4,
-    price_snapshot: { currency: 'USD', nightly: 128 }, travala_hotel_id: 'tv_12345',
+    // Snapshot keys mirror persist_hotels' real write shape (pricePerNight/totalPrice/currency) —
+    // the earlier `nightly` key was fixture drift the backend never wrote.
+    price_snapshot: { currency: 'USD', pricePerNight: 128, totalPrice: 384 }, travala_hotel_id: 'tv_12345',
     preference_match_json: { matched: ['central', 'mid_range'] },
     source: 'travala', status: 'suggested', searched_at: '2026-08-01T09:02:30Z',
+    // Hotel-hub: geocoded + ranked #1 (the route-central recommended hub). Coords match pl_hotelbase.
+    // route_score is the mean route duration to the trip's places in SECONDS (not a 0-1 score).
+    lat: 35.6938, lng: 139.7034, geo_status: 'placed', route_score: 420, rank: 1, is_recommended: true,
+    place_durations: { pl_senso: 4500, pl_teamlab: 6000, pl_shibuya: 2700, pl_ichiran: 2700, pl_disney: 11000 },
   },
-  // Baked partial failure (PRD §17): a skipped hotel search.
+  // Baked partial failure (PRD §17): a skipped hotel search → honest-failure: unresolved, no coords, no pin.
   {
     id: 'hotel_2', trip_id: TRIP_ID, trip_day_id: 'day_3', base_place_id: null,
     name: 'Near Tokyo Disneyland', area: 'Urayasu', star_rating: null,
     price_snapshot: {}, travala_hotel_id: null, preference_match_json: {},
     source: 'travala', status: 'skipped', searched_at: null,
+    // Hotel-hub: never placed on the map (Guardrail #1) — nullable geo/rank fields stay null.
+    lat: null, lng: null, geo_status: 'unresolved', route_score: null, rank: null, is_recommended: false,
+    place_durations: {},
   },
 ]
 

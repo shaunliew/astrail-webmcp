@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Fraunces, Figtree, IBM_Plex_Mono } from "next/font/google";
+import { SITE_ORIGIN } from "@/lib/site";
 import "./globals.css";
 // Locked paper design system (2026-07-26). Imported AFTER globals so its :root tokens
 // win over the retired Night & Daybreak values by source order — palette.css is
@@ -32,6 +33,7 @@ const ibmPlexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: SITE_ORIGIN,
   title: "Astrail · Plan trips from your saved travel Reels",
   description:
     "Paste your saved travel Reels. Astrail extracts the places, verifies them, and builds a day-by-day itinerary with the reasoning attached. Beta opening soon.",
@@ -45,6 +47,10 @@ export default function RootLayout({
   return (
     <html
       lang="en"
+      // globals.css sets scroll-behavior: smooth; this attribute tells Next to
+      // keep disabling it during route transitions once the auto-detect is
+      // removed (nextjs.org/docs/messages/missing-data-scroll-behavior).
+      data-scroll-behavior="smooth"
       className={`${fraunces.variable} ${figtree.variable} ${ibmPlexMono.variable}`}
     >
       <body>{children}</body>

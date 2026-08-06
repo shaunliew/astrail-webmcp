@@ -47,6 +47,10 @@ export default function RootLayout({
   return (
     <html
       lang="en"
+      // globals.css sets scroll-behavior: smooth; this attribute tells Next to
+      // keep disabling it during route transitions once the auto-detect is
+      // removed (nextjs.org/docs/messages/missing-data-scroll-behavior).
+      data-scroll-behavior="smooth"
       className={`${fraunces.variable} ${figtree.variable} ${ibmPlexMono.variable}`}
     >
       <body>{children}</body>

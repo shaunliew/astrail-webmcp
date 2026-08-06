@@ -629,6 +629,75 @@ button:focus-visible {
   scale: 1.15;
 }
 
+/* Landing reveal map (StoryRevealMap): always-visible place card beside each numbered
+   pin. That map is non-interactive — no hover, no tap — so the card must carry the
+   place name on its own. Side classes are chosen in the component (cards face inward
+   toward the route) so edge pins never clip out of frame. */
+.constellation-pin-card {
+  background: rgba(11, 15, 22, 0.9);
+  border: 1px solid rgba(239, 201, 141, 0.38);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px 8px;
+  pointer-events: none;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.constellation-pin-card--right {
+  left: calc(100% + 9px);
+}
+
+.constellation-pin-card--left {
+  align-items: flex-end;
+  right: calc(100% + 9px);
+  text-align: right;
+}
+
+.constellation-pin-card__day {
+  color: #EFC98D;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.constellation-pin-card__name {
+  color: var(--starlight);
+  font-family: var(--font-geist), system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  max-width: 112px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Narrow screens: side cards would collide or clip on a narrow map, so they drop
+   below the pin, centered and tighter. */
+@media (max-width: 640px) {
+  .constellation-pin-card--left,
+  .constellation-pin-card--right {
+    align-items: center;
+    left: 50%;
+    padding: 4px 6px;
+    right: auto;
+    text-align: center;
+    top: calc(100% + 8px);
+    transform: translateX(-50%);
+  }
+
+  .constellation-pin-card__name {
+    font-size: 9px;
+    max-width: 76px;
+  }
+}
+
 /* Hotel-hub map (plan 2026-08-04-hotel-hub-map, T9): the selected Travala hotel drawn as the
    central parent "hub" pin that the spokes radiate from. Deliberately distinct from the hollow,
    numbered constellation place pins — larger and FILLED brass so it reads as the anchor of the

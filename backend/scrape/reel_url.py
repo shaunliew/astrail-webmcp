@@ -16,7 +16,10 @@ _KIND = {"reel": "reel", "reels": "reel", "p": "post", "tv": "post"}
 
 
 def _match(url: str) -> re.Match[str] | None:
-    parsed = urlparse((url or "").strip())
+    try:
+        parsed = urlparse((url or "").strip())
+    except ValueError:  # e.g. malformed IPv6 bracket literal — urlparse raises directly
+        return None
     if parsed.scheme not in ("http", "https"):
         return None
     try:

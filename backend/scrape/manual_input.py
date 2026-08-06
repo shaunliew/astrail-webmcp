@@ -26,7 +26,7 @@ def manual_reeldata(
     `caption` is required (the pasted reel text). `location_name` is the optional
     Instagram location tag (a blank/whitespace tag is normalized to None so it can't
     become a spurious highest-confidence signal in build_extractor_input). When
-    `source_url` is a real reel URL it is normalized and used as the provenance key;
+    `source_url` is a real reel or post URL it is normalized and used as the provenance key;
     otherwise reel_url is a deterministic `manual:<digest>` sentinel so re-pasting the
     same text is idempotent (stable cache/fixture key).
 

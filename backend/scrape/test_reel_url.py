@@ -96,3 +96,15 @@ def test_valid_explicit_port_is_still_accepted():
     assert is_supported_ig_url(url) is True
     assert url_kind(url) == "reel"
     assert normalize_reel_url(url) == "https://www.instagram.com/reel/ABC123"
+
+
+def test_malformed_ipv6_literal_never_raises():
+    # urlparse() itself raises ValueError on a malformed IPv6 bracket literal; the
+    # predicate functions are contracted to never raise (only normalize does, with
+    # its own message).
+    hostile = "https://[::1/reel/CANARY-SECRET"
+    assert is_supported_ig_url(hostile) is False
+    assert url_kind(hostile) is None
+    assert short_code_of(hostile) is None
+    with pytest.raises(ValueError, match="not a supported Instagram post URL"):
+        normalize_reel_url(hostile)

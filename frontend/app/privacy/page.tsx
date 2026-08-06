@@ -141,11 +141,13 @@ export default function PrivacyPage() {
             >
               {contactEmail}
             </a>
-            . Deletion removes your account, saved reels, and generated trips,
-            and erases your remembered preferences (including your mem0 memory).
-            Depending on where you live, you may also have rights under the GDPR
-            or CCPA/CPRA, including the right to access your data and to opt out
-            of any sharing — we honor these on request.
+            . During the beta we handle deletion requests manually, and we
+            action them within 30 days of your email. Deletion removes your
+            account, saved reels, and generated trips, and erases your remembered
+            preferences (including your mem0 memory). Depending on where you live,
+            you may also have rights under the GDPR or CCPA/CPRA, including the
+            right to access your data and to opt out of any sharing — email the
+            same address and we&rsquo;ll respond within 30 days.
           </p>
         </Section>
 
@@ -159,9 +161,9 @@ export default function PrivacyPage() {
         <Section title="Data retention">
           <p>
             We keep your data while your account is active. When you ask us to
-            delete it, we remove it from our systems and instruct our processors
-            to do the same, except where we&rsquo;re legally required to retain
-            limited records.
+            delete it, we remove it from our systems within 30 days and instruct
+            our processors to do the same, except where we&rsquo;re legally
+            required to retain limited records.
           </p>
         </Section>
 

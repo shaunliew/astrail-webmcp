@@ -6,6 +6,7 @@ import '../story.css'
 
 import StoryNav from '../StoryNav'
 import Beat0Layer from './Beat0Layer'
+import AsterStory from '../sections/AsterStory'
 import HowItWorks from '../sections/HowItWorks'
 import LiveMapDemo from '../sections/LiveMapDemo'
 import DemoVideoSlot from '../sections/DemoVideoSlot'
@@ -17,8 +18,9 @@ import { SEATS_TOTAL } from '../story-config'
 
 /* PRODUCT-FIRST HYBRID, repointed to the open beta (2026-08-03).
 
-   Aster walks in and idles — the one character moment — then the page scrolls
-   straight into the real product: how it works (real screenshots), a live map,
+   Aster walks in and idles, a two-chapter story interlude says who he is and
+   why Astrail exists (ZH, 2026-08-06), then the page scrolls into the real
+   product: how it works (real screenshots), a live map,
    the demo video, the FAQ, an honest FOMO CTA, and a full footer. The primary
    action everywhere is "Start planning free" (sign up + generate), because
    signing up and being active is how you earn one of the 25 unlimited seats. */
@@ -68,6 +70,11 @@ export default function StoryStage() {
           <span aria-hidden>&darr;</span>
         </div>
       </section>
+
+      {/* ---- STORY INTERLUDE: who Aster is, why Astrail exists (the two
+           locked keyframes: overwhelm → rescue-burst), then straight into
+           the real product. ---- */}
+      <AsterStory />
 
       {/* ---- TRUST SECTIONS: the real product carries the page ---- */}
       <HowItWorks />

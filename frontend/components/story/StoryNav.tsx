@@ -18,6 +18,9 @@ export default function StoryNav() {
         <Link href="/" aria-label="Astrail home" className="flex items-center">
           <AstrailLogo variant="lockup" tone="chrome" height={22} priority />
         </Link>
+        <a href="#story" className="story-nav__link">
+          Story
+        </a>
         <a href="#how-it-works" className="story-nav__link">
           How it works
         </a>

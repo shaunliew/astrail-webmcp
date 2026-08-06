@@ -41,6 +41,12 @@ Model memory of APIs goes stale (new versions, deprecations, changed params). Gr
 
 - **Cite every external claim** with its source URL (Mapbox/OpenAI doc URL, or the installed-source file path). Paraphrase tightly; quote only when exact wording matters.
 - **Surface the Astrail-specific implications**, especially **eval-safety** for backend research: does the approach keep the offline `#16` eval credential-free and deterministic? Does it touch the pipeline↔baseline parity anchor? Is it import-keyless?
+- **Surface the release consequence** when the answer implies one. Astrail ships schema and code
+  **decoupled** (migrations by Shaun → backend → frontend by ZH → flags), so say explicitly if an
+  approach needs a migration (and therefore a rollback script), changes an RPC signature / raised
+  SQLSTATE / error envelope (which makes deploy *order* load-bearing in both directions), needs a
+  feature flag, or requires a `NEXT_PUBLIC_*` (build-time — it crosses into Zhi Hao's surface and needs
+  a redeploy, not an env edit). Full process: the `astrail-release` skill.
 - **Name the feasible-first option.** Astrail's guiding principle is "easier and lesser is better — defer every tool until a real problem forces it." Distinguish what v1-beta needs now from what's a deferred enhancement (e.g. Mapbox live calls vs offline haversine; embeddings vs name-matching).
 - **End with a one-line recommendation** — the single concrete call you'd make, and what (if anything) is overkill at the current scale (bounded N, ≤5 reels, ≤8 places).
 

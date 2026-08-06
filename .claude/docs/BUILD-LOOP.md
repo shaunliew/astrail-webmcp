@@ -76,6 +76,18 @@ backend change beyond a trivial one-line fix. When in doubt, follow the loop.
    snapshot; **never the local mirror**; the shared vault IS writable despite INFO.md's blanket note), and
    memory. Hand **Codex** the board-card update (Codex owns GitHub Project mutations).
 
+10. **Release — a SEPARATE gated process, not the tail of this loop.** Steps 0–9 end at `dev`. Production
+    is owned by the **`astrail-release`** skill: it loads the EMDEE **RELEASE SOP** + **Launch
+    Pre-Checklist** live, then enforces the pre-flight gate, the golden order
+    (**migrations → backend → frontend → flags**), the Shaun/ZH owner split, the flag choreography, and
+    rollback. Invoke it explicitly. **Never deploy as an unannounced continuation of a feature arc** — the
+    reason schema and code ship decoupled here is precisely that they are *decided* separately.
+
+    If the arc lands **dark** (merged and deployed but flag-gated) or needs the other owner's surface,
+    step 10 is not "later" — write the `docs/deploy/YYYY-MM-DD-<topic>-handoff.md` **now**, while you
+    still know what is true. Dark deploys rot silently; a handoff doc is the only thing that makes one
+    recoverable weeks later.
+
 ## Non-negotiables that hold across every step
 
 - **Eval-safety.** The frozen `#16` offline anchor `mean_intra_day_travel_m = 6229.0` must never move — run

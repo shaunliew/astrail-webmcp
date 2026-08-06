@@ -28,6 +28,7 @@ Travel MCP is **search/suggestions only** — no booking, no payments in v1.
 | Touch backend pipeline, SSE, API endpoints, or create new files | `.claude/docs/ARCHITECTURE.md` (tree, 4-phase pipeline, SSE contract, endpoints, build order) |
 | Write/review backend endpoint, rate-limit, auth, or infra code | `.claude/docs/BACKEND-PRINCIPLES.md` (SOLID · async/streaming · idempotency · caching · security/JWT/OAuth · design patterns — all applied feasible-first) |
 | Touch `.env.example`, `render.yaml`, Vercel config, or env-reading code | `.claude/docs/ENV.md` |
+| **Ship ANYTHING to production** — release, promote `dev`→`main`, apply a migration to the prod DB, deploy, flip a feature flag, repoint a deploy branch, roll back, or run the launch run-sheet | `astrail-release` skill (loads the EMDEE **RELEASE SOP** + **Launch Pre-Checklist** live) |
 | Touch `backend/genagents/` or OpenAI Agents SDK code | `.claude/docs/LESSONS-HACKATHON.md` |
 | Start sprint work | EMDEE: `astrail/SPRINTS.md` → your `astrail/team/<name>/SPRINT-N.md` → `astrail/PRD.md` |
 | Decide **what** to build | `docs/PRD.md` in this repo (also EMDEE `astrail/PRD.md`) · **why** → EMDEE `astrail/CONTEXT.md` · **how** → this file + `.claude/docs/` |
@@ -73,7 +74,9 @@ yt-dlp/ffmpeg/Whisper.
 | Web browsing | gstack `/browse` | `mcp__claude-in-chrome__*` directly |
 | After a meaningful commit | `shiplog` | — |
 | Plan an issue / review a plan or diff | `astrail-plan-and-review` (wraps gstack `/plan-eng-review`, `/review`, `/qa`, `/autoplan`) | duplicate review skills |
+| Release / deploy / migrate prod / flip a flag / hand a blocker across the owner line | `astrail-release` (golden order, pre-flight gate, flag choreography, rollback, handoff docs) | gstack `/ship`, `/land-and-deploy`, ad-hoc deploy steps |
 | What to work on next / status / board ordering | `astrail-task-tracking` (GitHub Project #1 = single source of truth) | `gh issue list`, memory, stale issue #s |
+| Capture a product/feature idea as inspiration | `astrail-task-tracking` (EMDEE first; Project only after explicit promotion) | speculative Project cards, raw ideas in PRD/decision logs |
 | Lock a sprint plan | `sprintplan` | — |
 | X posts / Reel scripts for @haotobuildzip | `haotobuild` | generic writing skills |
 
@@ -97,7 +100,8 @@ Codex) → implement task-by-task via subagent-driven-development (`astrail-deve
 `astrail-reviewer` opus whole-branch pass **AND** gstack `/review` Codex cross-model (run
 BOTH — Codex has caught real bugs the Claude reviews missed) → live-verify smoke (`/qa` for
 flow changes) → PR/merge/sync → update `.claude/docs/` + EMDEE (shared vault) + memory.
-Do not shortcut it.
+Do not shortcut it. **The build loop ends at `dev`** — shipping to production is a separate gated
+process owned by the `astrail-release` skill; never deploy as an unannounced tail of a feature.
 
 ## gstack (required per machine)
 
@@ -117,8 +121,48 @@ Do NOT track work from `gh issue list`, from memory, or from stale issue numbers
 TripCanvas numbering) — ordering follows the board's **Phase** field; the active task is
 whatever is **In progress**. Full rules: the `astrail-task-tracking` skill.
 
-- **Zhi Hao** — frontend (Next.js, Vercel, Mapbox)
-- **Shaun** — backend (FastAPI, Supabase, agents, AI pipeline)
+### EMDEE is the shared tracking layer — read it LIVE, write status BACK
+
+The board says what work exists; **EMDEE says where it stands.** Launch checklists, the
+RELEASE SOP, decision records and handoffs live in Zhi Hao's shared vault
+(`__shared__/user_3FZUjBSvk00tGcs3QmOdCFa4Kgd/astrail/`) and **both owners act from them.**
+
+1. **Load it live before any status, planning, release or "is X done" answer** —
+   `mcp__emdee__get_doc(..., full=true)`. Never answer from a summary read earlier in the
+   session, from memory, or from a local mirror of the same filename (writes go to the
+   **shared** vault; a local copy will not have them).
+2. **Write the status back the moment something lands**, with the evidence that proves it
+   (commit SHA, whether it is **pushed**, test counts, the command output). "Done" on an
+   unpushed commit is not done — the other owner's merge will not include it.
+3. **Say when you deviate from what a doc instructs**, in the doc, rather than silently
+   complying or silently not. A checklist written against an assumption the code does not
+   match is a finding, not an order.
+4. `patch_section` replaces **bodies, not headings** — a section headed `⏳` keeps reading as
+   undone to anyone skimming. Fix headings by hand or say you could not.
+
+A stale shared doc is worse than none: with no doc both owners ask each other, with a
+confident-but-wrong one neither does.
+
+### Owners — build surface AND release surface
+
+| Surface | Owner |
+|---|---|
+| Frontend (Next.js, Mapbox) · Vercel deploys · **all `NEXT_PUBLIC_*`** | **Zhi Hao** |
+| Backend (FastAPI, agents, pipeline) · Render deploys · **backend constants + Render env** | **Shaun** |
+| Supabase — schema, migrations, RLS, prod DB | **Shaun** |
+| Manual beta seat grants (`users.plan` — no code cap) | **Shaun** |
+
+**Production branch: `main`** (decided 2026-08-06). `feat/*` → `dev` (QA on Vercel preview) →
+`main` (the release). Never merge prod back down. ⚠ `render.yaml` still pins `branch: dev` — the
+repoint is a **3-step sequence, not an edit** (Render syncs the Blueprint from the branch it
+currently tracks, and `main` was 820 commits behind): see the `astrail-release` skill, §⚑1.
+
+**A flag spanning both surfaces cannot be flipped by one person.** Backend goes first and is
+*verified live* before the UI is exposed (account deletion = 3 switches in one order). Crossing the
+owner line needs a handoff doc under `docs/deploy/`, not a DM — see `astrail-release`.
+
+**Never run `git merge` / `gh pr merge` / `supabase db push` for the user.** Those denials are
+deliberate. Surface the command; never strip or work around the guard.
 
 ## Git hook
 

@@ -1,9 +1,10 @@
 """The security boundary: the ONLY code in the bot allowed to read Telegram message text.
 
-Everything downstream is typed to canonical reel URLs, and this module is what makes that
-true. Guardrail #11 — group chat content is untrusted — so the only strings that leave here
-are `https://www.instagram.com/reel/<code>` (built by `normalize_reel_url`, never guessed)
-and sanitized path SHAPES. Never `text`, `caption`, a failed slice, `from.username`,
+Everything downstream is typed to canonical reel/post URLs, and this module is what makes
+that true. Guardrail #11 — group chat content is untrusted — so the only strings that leave
+here are canonical `https://www.instagram.com/reel/<code>` or `/p/<code>` URLs (built by
+`normalize_reel_url`, never guessed) and sanitized path SHAPES. Never `text`, `caption`, a
+failed slice, `from.username`,
 `from.first_name`, or `chat.title`.
 
 Pure by construction: no network, no file I/O, no clock, no randomness, and — deliberately
@@ -38,8 +39,11 @@ _MAX_SHAPE_SEGMENTS = 4
 
 _ELLIPSIS = "…"
 # Path segments safe to echo into a log: Instagram's own vocabulary, a closed set. Anything
-# else is a code, a slug, or a username and becomes `…`. Matched AND emitted lowercased —
-# see `_path_shape`, the author's casing is content and does not leave this module.
+# else is a code, a slug, or a username and becomes `…`. `reel`/`reels`/`p`/`tv` are ACCEPTED
+# upstream now (they normalize to a canonical URL and never reach the sanitizer), so a bare
+# `/p/<code>` is no longer a rejected shape — those keywords surface here only inside rejected
+# MULTI-segment paths like `/p/…/reel/…`. Matched AND emitted lowercased — see `_path_shape`,
+# the author's casing is content and does not leave this module.
 _PATH_KEYWORDS = frozenset({"reel", "reels", "p", "tv", "share", "stories", "s"})
 
 

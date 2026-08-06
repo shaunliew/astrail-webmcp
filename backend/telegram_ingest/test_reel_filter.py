@@ -168,6 +168,19 @@ def test_subdomain_is_instagram_looking_and_query_and_fragment_never_reach_the_s
     assert "igsh" not in repr(result)
 
 
+def test_a_bare_post_url_is_now_accepted_not_rejected_as_a_shape():
+    """Carousel `/p/` posts widened into acceptance via the shared `normalize_reel_url` (T1). A bare
+    `www.instagram.com/p/<code>` now leaves as a canonical URL, not a `/p/…` rejected shape — the
+    inverse of the pre-widening behaviour. Query + trailing slash are stripped on the way out."""
+    result = extract_reel_urls(
+        _url_message("https://www.instagram.com/p/DQwdZ8ZCWZx/?igsh=track")
+    )
+
+    assert result.urls == ("https://www.instagram.com/p/DQwdZ8ZCWZx",)
+    assert result.rejected_shapes == ()
+    assert "igsh" not in repr(result)
+
+
 @pytest.mark.parametrize(
     ("url", "shape"),
     [

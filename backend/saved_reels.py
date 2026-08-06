@@ -1,11 +1,11 @@
-"""Atomic persistence seam for one user's saved Instagram Reel."""
+"""Atomic persistence seam for one user's saved Instagram Reel or post."""
 from __future__ import annotations
 
 from scrape.reel_url import normalize_reel_url
 
 
 async def capture_saved_reel(client, user_id: str, raw_url: str) -> dict:
-    """Normalize one Reel URL and atomically persist the user's Saved Reel."""
+    """Normalize one Reel or post URL and atomically persist the user's Saved Reel."""
     normalized_url = normalize_reel_url(raw_url)
     result = await client.rpc(
         "capture_saved_reel",

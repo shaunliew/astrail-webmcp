@@ -52,6 +52,11 @@ export default function FinalCTA() {
           </a>
         </div>
 
+        <p className="mt-5 text-[13px] text-[color:var(--ink-400)]">
+          Early beta &mdash; this isn&rsquo;t the final product. Expect rough
+          edges while we build in the open.
+        </p>
+
         <p className="mt-8 text-[15px] text-[color:var(--ink-600)]">
           Hotel booking (via Travala) lands with the full launch.{' '}
           <a

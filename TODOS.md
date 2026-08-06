@@ -82,3 +82,15 @@ preference→agent feed, requested_places resolution, Google OAuth, custom SMTP)
   writers. `RestaurantCandidate` (`backend/models/enrichment.py`) has Mapbox coordinates and a
   `mapbox_id` but no country claim.
 - **Depends on / blocked by:** beta shipped; the `country`-semantics decision above.
+
+## Landing mobile hero: scroll hint overlaps Aster's legs (QA ISSUE-002, cosmetic)
+
+- **What:** At 375x812 the "SCROLL TO BEGIN" hint (`.story-scroll-hint`, bottom 26px) renders
+  over the mobile Aster cutout's lower legs (`.story-hero-aster-mobile`, bottom 2.5%).
+- **Severity/category:** Low / visual. Found by /qa on 2026-08-06 (report
+  `.gstack/qa-reports/qa-report-astrail-zh-2026-08-06.md`, screenshot `mobile-hero.png`).
+- **Repro:** viewport 375x812 → open `/` → hero: hint text sits on the figure's feet.
+- **Fix sketch:** either lift the hint (`bottom: 8px` + smaller gap) or reserve a lane by
+  capping `.story-hero-aster-mobile` height a touch lower on short-width phones. ZH has
+  hand-tuned this hero's mobile clamps twice (story.css history) — change with his eye on it.
+- **Depends on / blocked by:** Nothing.

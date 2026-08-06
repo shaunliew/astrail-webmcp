@@ -4,11 +4,12 @@ import Link from 'next/link'
 
 import PlayOnceVideo from '../PlayOnceVideo'
 import { tallyFallbackUrl } from '@/components/landing/landing-copy'
+import { TALLY_NOTIFY_FORM_ID } from '@/lib/tally'
 import { CLIPS, SEATS_TOTAL, STILLS } from '../story-config'
 
 /* The warm bookend — the mech lands and waves. The message is now the open
    beta: plan free today, and the scarce thing (unlimited planning for 25
-   explorers) is earned by being active early, so the CTA IS the FOMO action.
+   explorers) is granted at our discretion to active early users, so the CTA IS the FOMO action.
    The full-launch future (hotel booking via Travala) is the subordinate
    "notify me" — never the main action. */
 export default function FinalCTA() {
@@ -38,9 +39,9 @@ export default function FinalCTA() {
         </h2>
         <p className="story-sub max-w-[32em] text-[color:var(--ink-600)]">
           We&rsquo;re self-funded, so unlimited planning goes to just{' '}
-          {SEATS_TOTAL} early explorers, chosen from whoever&rsquo;s
-          actually using Astrail. Sign up, plan a trip, tell us what broke.
-          That&rsquo;s how you earn a seat.
+          {SEATS_TOTAL} early explorers, picked at our discretion from
+          whoever&rsquo;s actually using Astrail. Sign up, plan a trip, tell
+          us what broke &mdash; that&rsquo;s how you get noticed.
         </p>
 
         <div className="mt-8 flex flex-wrap items-center gap-4">
@@ -52,12 +53,20 @@ export default function FinalCTA() {
           </a>
         </div>
 
+        <p className="mt-5 text-[13px] text-[color:var(--ink-400)]">
+          Early beta &mdash; this isn&rsquo;t the final product. Expect rough
+          edges while we build in the open.
+        </p>
+
         <p className="mt-8 text-[15px] text-[color:var(--ink-600)]">
           Hotel booking (via Travala) lands with the full launch.{' '}
           <a
             href={tallyFallbackUrl}
             target="_blank"
             rel="noreferrer"
+            data-tally-open={TALLY_NOTIFY_FORM_ID}
+            data-tally-emoji-text="✈️"
+            data-tally-emoji-animation="wave"
             className="font-semibold text-[color:var(--story-teal-ink)] underline underline-offset-4"
           >
             Notify me &rarr;

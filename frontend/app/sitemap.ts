@@ -10,7 +10,6 @@ const PUBLIC_ROUTES: ReadonlyArray<{
   priority: number
 }> = [
   { path: "/", changeFrequency: "weekly", priority: 1.0 },
-  { path: "/classic", changeFrequency: "monthly", priority: 0.5 },
 ]
 
 export default function sitemap(): MetadataRoute.Sitemap {

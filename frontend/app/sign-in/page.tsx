@@ -275,6 +275,12 @@ export default function SignInPage() {
             </form>
           </div>
 
+          <p className="mt-5 text-center text-[12px] leading-[1.5] text-[color:var(--text-faint)]">
+            By continuing with Google or email, you agree to our{' '}
+            <a href="/terms" className="underline underline-offset-2 hover:text-[color:var(--text-muted)]">Terms</a>{' '}
+            and{' '}
+            <a href="/privacy" className="underline underline-offset-2 hover:text-[color:var(--text-muted)]">Privacy&nbsp;Policy</a>.
+          </p>
           <p className="mt-6 border-t border-[color:var(--line-soft)] pt-4 text-[13px] text-[color:var(--text-muted)]">
             No account? Enter your email and we’ll make you one. We only ever send sign-in codes.
           </p>

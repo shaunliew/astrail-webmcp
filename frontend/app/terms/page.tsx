@@ -56,6 +56,14 @@ export default function TermsPage() {
           </p>
         </Section>
 
+        <Section title="Eligibility">
+          <p>
+            You must be at least 16 years old and able to form a binding
+            contract to use Astrail. Astrail isn&rsquo;t directed at children
+            under 16, and we don&rsquo;t knowingly collect their information.
+          </p>
+        </Section>
+
         <Section title="Beta access and seats">
           <p>
             Planning is <b>free during the beta</b> — there is no payment
@@ -111,6 +119,22 @@ export default function TermsPage() {
             Astrail, including its software, design, and brand, belongs to us.
             These terms don&rsquo;t give you rights to them beyond using the
             service as intended.
+          </p>
+        </Section>
+
+        <Section title="Copyright and takedowns">
+          <p>
+            Astrail plans trips from public content you link, such as Instagram
+            reels and posts, and may show a source thumbnail or a short caption
+            quote as evidence. If you are a rights holder and believe your
+            content appears in Astrail in a way it shouldn&rsquo;t, email{' '}
+            <a
+              className="font-medium text-[color:var(--ink-900,#1a1a1a)] underline"
+              href={`mailto:${contactEmail}?subject=Astrail%20copyright%20concern`}
+            >
+              {contactEmail}
+            </a>{' '}
+            and we&rsquo;ll review and remove it.
           </p>
         </Section>
 

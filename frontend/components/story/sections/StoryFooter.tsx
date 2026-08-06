@@ -105,8 +105,9 @@ export default function StoryFooter() {
       <div className="mx-auto mt-14 flex max-w-6xl flex-col gap-2 border-t border-[color:var(--night-line)] pt-6 text-xs text-[color:var(--starlight-70)] md:flex-row md:items-center md:justify-between">
         <p>&copy; 2026 Astrail &middot; Singapore &middot; Open beta</p>
         <p>
-          Astrail uses AI to generate recommendations from public content.
-          Always double-check details before you travel.
+          Astrail is an early beta, not the final product. It uses AI to
+          generate recommendations from public content &mdash; always
+          double-check details before you travel.
         </p>
       </div>
     </footer>

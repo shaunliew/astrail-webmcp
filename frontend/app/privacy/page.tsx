@@ -107,6 +107,9 @@ export default function PrivacyPage() {
               <b>Mapbox</b> — maps and geocoding
             </li>
             <li>
+              <b>Travala</b> — searching hotels near your trip&rsquo;s places
+            </li>
+            <li>
               <b>mem0</b> — storing your remembered travel preferences
             </li>
             <li>

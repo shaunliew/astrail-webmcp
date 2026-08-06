@@ -68,6 +68,15 @@ const securityHeaders = [
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  async redirects() {
+    return [
+      // /classic was the pre-pivot landing; retired for launch (its "we'll send a beta
+      // invite" copy promised a flow that never shipped, and it duplicated the Tally
+      // waitlist under a conflicting purpose — launch legal precautions A3). The page
+      // component is kept in git history but no longer served or indexed.
+      { source: "/classic", destination: "/", permanent: true },
+    ];
+  },
   async headers() {
     return [
       {

@@ -10,7 +10,7 @@ export default function FAQ() {
           Questions
         </p>
         <h2 className="story-h text-[color:var(--ink-900)]">
-          Good questions, honest answers.
+          What people ask before they sign up.
         </h2>
 
         <dl className="mt-12 border-t border-[color:var(--paper-line)]">

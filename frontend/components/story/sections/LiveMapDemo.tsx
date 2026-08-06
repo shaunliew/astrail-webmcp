@@ -24,9 +24,9 @@ export default function LiveMapDemo() {
           A real itinerary on a real map. Not another list.
         </h2>
         <p className="story-sub max-w-[38em] text-[color:var(--starlight-70)]">
-          This is the live map you&rsquo;d get — a demo Tokyo trip, every stop
-          numbered and connected. Your version comes with the evidence panel:
-          which reel, which quote, which source.
+          This is the live map you&rsquo;d get: a demo Tokyo trip, every stop
+          numbered and connected. Your version adds the evidence panel,
+          showing the reel and quote behind each stop.
         </p>
 
         <div

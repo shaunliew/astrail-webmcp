@@ -18,7 +18,7 @@ const STEPS = [
   {
     eyebrow: 'Step 2',
     title: 'Agents do the research',
-    body: 'Astrail extracts every place, verifies it exists, checks weather and routes — and shows its evidence: the source reel, the caption quote, the receipts.',
+    body: 'Astrail extracts every place, verifies it exists, and checks weather and routes. Each recommendation keeps its evidence: the source reel and the exact caption quote.',
     src: SCREENS.reelLibrary,
     alt: 'Astrail reel library with verified places and evidence',
     slotLabel: 'real screenshot — reel library / evidence',
@@ -26,7 +26,7 @@ const STEPS = [
   {
     eyebrow: 'Step 3',
     title: 'Get a route you can actually take',
-    body: 'A day-by-day itinerary on a real map — grouped by day, connected by transit, every stop traceable back to the reel it came from.',
+    body: 'A day-by-day itinerary on a real map, connected by transit, where every stop traces back to the reel it came from.',
     src: SCREENS.tripWorkspace,
     alt: 'Astrail trip workspace: itinerary beside the live map',
     slotLabel: 'real screenshot — trip workspace',

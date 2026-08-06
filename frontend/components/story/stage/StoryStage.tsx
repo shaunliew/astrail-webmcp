@@ -44,7 +44,7 @@ export default function StoryStage() {
           </h1>
           <p className="story-sub max-w-[29em] text-[color:var(--ink-600)]">
             Astrail turns scattered travel inspiration into a real itinerary on
-            a map &mdash; with the evidence attached to every stop. Plan your
+            a map, with the evidence attached to every stop. Plan your
             first trip free, in minutes.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-4">
@@ -60,7 +60,7 @@ export default function StoryStage() {
             <b className="font-bold text-[color:var(--ink-900)]">
               {SEATS_TOTAL} explorers
             </b>{' '}
-            get unlimited planning &mdash; we pick them from the most active
+            get unlimited planning. We pick them from the most active
             early users.
           </p>
         </div>

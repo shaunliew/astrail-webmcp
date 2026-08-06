@@ -79,7 +79,7 @@ export default function StoryFooter() {
           <AstrailLogo variant="lockup" tone="chrome" height={26} />
           <p className="mt-4 max-w-[30ch] text-sm leading-relaxed text-[color:var(--starlight-70)]">
             Turn the travel reels you saved into a route you&rsquo;ll actually
-            take. AI-native, evidence-backed, on a real map.
+            take. Evidence-backed planning on a real map.
           </p>
           <p className="mt-4 text-xs uppercase tracking-[0.16em] text-[color:var(--starlight-70)]">
             {SEATS_TOTAL}-seat self-funded beta

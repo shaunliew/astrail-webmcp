@@ -14,14 +14,14 @@ const CHAPTERS = [
   {
     eyebrow: 'Chapter one · The pile',
     title: 'Saved is where trips go to sleep.',
-    body: 'Every star in Aster’s pile is a saved reel — a café in Tokyo, a viewpoint you swore you’d get to. Saving feels like progress, but the pile only grows: forty reels deep, still no dates, no route, no trip. That look on his face is the moment you reopen your saved folder and don’t know where to start.',
+    body: 'Every star in his pile is a saved reel: a café in Tokyo, a viewpoint you swore you’d get to. Saving feels like progress, but the pile only grows. Forty reels deep, still no plan. That look on his face is the moment you reopen your saved folder and don’t know where to start.',
     src: STILLS.overwhelm,
     alt: 'Aster, Astrail’s shiba-astronaut navigator, buried to his chest in a glowing pile of yellow and blue star cushions, looking worn out',
   },
   {
     eyebrow: 'Chapter two · The rescue',
     title: 'Astrail is the machine that digs you out.',
-    body: 'It’s the mech Aster pilots: a crew of AI agents that bursts through the backlog for you. Feed it the reels you saved and it watches every one, pulls out each real place, verifies it on the map, and keeps the receipts — until your scattered stars come back as one route you can actually take.',
+    body: 'It’s the mech Aster pilots: a crew of AI agents that bursts through the backlog for you. Feed it the reels you saved. It watches every one, pulls out each real place, verifies it on the map, and keeps the receipts. What comes out the other side is your pile of stars, turned into a trip you can follow.',
     src: STILLS.rescueBurst,
     alt: 'A joyful Aster piloting the boxy Astrail mech as it bursts through a wall of star cushions, the star-collector jar on its back glowing',
   },
@@ -45,8 +45,8 @@ export default function AsterStory() {
           Every trip starts as a pile of saved reels.
         </h2>
         <p className="story-sub max-w-[38em] text-[color:var(--starlight-70)]">
-          This is Aster, Astrail&rsquo;s navigator &mdash; a shiba who hoards
-          travel inspiration the way we all do: one glowing save at a time.
+          This is Aster, Astrail&rsquo;s navigator. He hoards travel
+          inspiration the way we all do: one glowing save at a time.
         </p>
 
         <div className="mt-14 flex flex-col gap-20">
@@ -85,7 +85,7 @@ export default function AsterStory() {
         {/* Honest hand-off: the chapters are illustrations; the proof is the
             real product right below. */}
         <p className="story-sub mt-16 max-w-[38em] text-[color:var(--starlight-70)]">
-          That&rsquo;s the story. Below is the real thing &mdash;{' '}
+          That&rsquo;s the story. Below is the real thing:{' '}
           <a
             href="#how-it-works"
             className="font-semibold text-[color:var(--story-teal-night)] underline underline-offset-4"

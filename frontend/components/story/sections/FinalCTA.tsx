@@ -38,7 +38,7 @@ export default function FinalCTA() {
         </h2>
         <p className="story-sub max-w-[32em] text-[color:var(--ink-600)]">
           We&rsquo;re self-funded, so unlimited planning goes to just{' '}
-          {SEATS_TOTAL} early explorers &mdash; and we choose them from whoever&rsquo;s
+          {SEATS_TOTAL} early explorers, chosen from whoever&rsquo;s
           actually using Astrail. Sign up, plan a trip, tell us what broke.
           That&rsquo;s how you earn a seat.
         </p>
@@ -65,7 +65,7 @@ export default function FinalCTA() {
         </p>
 
         <p className="mt-8 text-[13px] uppercase tracking-[0.16em] text-[color:var(--ink-400)]">
-          Coming in the full launch &mdash; Compare &middot; Stay &middot; Book
+          Coming in the full launch: Compare &middot; Stay &middot; Book
         </p>
       </div>
     </section>

@@ -121,6 +121,28 @@ Do NOT track work from `gh issue list`, from memory, or from stale issue numbers
 TripCanvas numbering) — ordering follows the board's **Phase** field; the active task is
 whatever is **In progress**. Full rules: the `astrail-task-tracking` skill.
 
+### EMDEE is the shared tracking layer — read it LIVE, write status BACK
+
+The board says what work exists; **EMDEE says where it stands.** Launch checklists, the
+RELEASE SOP, decision records and handoffs live in Zhi Hao's shared vault
+(`__shared__/user_3FZUjBSvk00tGcs3QmOdCFa4Kgd/astrail/`) and **both owners act from them.**
+
+1. **Load it live before any status, planning, release or "is X done" answer** —
+   `mcp__emdee__get_doc(..., full=true)`. Never answer from a summary read earlier in the
+   session, from memory, or from a local mirror of the same filename (writes go to the
+   **shared** vault; a local copy will not have them).
+2. **Write the status back the moment something lands**, with the evidence that proves it
+   (commit SHA, whether it is **pushed**, test counts, the command output). "Done" on an
+   unpushed commit is not done — the other owner's merge will not include it.
+3. **Say when you deviate from what a doc instructs**, in the doc, rather than silently
+   complying or silently not. A checklist written against an assumption the code does not
+   match is a finding, not an order.
+4. `patch_section` replaces **bodies, not headings** — a section headed `⏳` keeps reading as
+   undone to anyone skimming. Fix headings by hand or say you could not.
+
+A stale shared doc is worse than none: with no doc both owners ask each other, with a
+confident-but-wrong one neither does.
+
 ### Owners — build surface AND release surface
 
 | Surface | Owner |

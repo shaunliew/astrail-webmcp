@@ -55,6 +55,36 @@ If the diff touches Supabase (`supabase-py`, `.table()` queries, RLS, migrations
 
 If the diff touches **FastAPI routes / deps / models or SSE**, load the **`fastapi`** skill and check against its idioms (Annotated aliases, no Ellipsis / `RootModel`, no deprecated JSON response classes, router-level deps). **SSE guardrail:** flag ANY change that migrates `backend/api/streaming.py` to `EventSourceResponse` / `ServerSentEvent`, renames the `data: [DONE]` sentinel, or alters the raw `data:` frame format as **Critical** (breaks the frontend) — the SSE contract is FROZEN (guardrail #4); it is allowed ONLY if the plan explicitly mandates it. For **Render / deploy** diffs (`render.yaml`, `Dockerfile`, scaling, env), load the relevant `render-*` skills and verify against current Render guidance. See `.claude/skills/fastapi/ASTRAIL-ADDENDUM.md`.
 
+## Release-readiness lens (distinct from lens 3 — check the ARTIFACT SET, not the logic)
+
+Lens 3 asks "is this change correct against what is running?" This asks a different question: **is the
+set of things this arc produces safe for someone else to deploy?** A diff can be flawless and still be
+unreleasable. Run this whenever the arc adds a migration, a flag, a config change, or a contract change.
+
+- **Migration ↔ rollback pairing.** Every `supabase/migrations/<version>_*.sql` needs
+  `supabase/migrations/rollback/<version>_down.sql`. Verify by listing both directories — do not take
+  the implementer's word. **Missing rollback = Important**, and Critical if the migration is destructive
+  (data loss has no forward fix). Note that `supabase test db` cannot reach `rollback/` at all, so a
+  rollback "tested" through it was not tested; a rollback test must run host-side, against the **actual
+  script**, not a copy.
+- **Flags ship OFF, and you can name who flips them.** A flag that spans backend *and* frontend
+  (`_DELETION_EXECUTION_READY` + `NEXT_PUBLIC_DELETION_ENABLED`) is flipped by two people in one order —
+  backend first, verified live, then the UI. A diff that turns a flag ON, or that exposes UI whose
+  backend is still gated, is **Critical**.
+- **`render.yaml` load-bearing fields.** `branch:` (which code IS production — and Render re-syncs the
+  Blueprint from the branch it *currently* tracks, so a change here can deploy a different commit than
+  the diff suggests), `numInstances: 1` (>1 double-bills Mapbox + Telegram `409`), `autoDeployTrigger`
+  (whether a merge is a deploy). An unexplained change to any = **Critical**. Also flag any literal env
+  value that a dashboard override is silently maintaining — a Blueprint re-sync re-asserts the file.
+- **Cross-owner changes need an artifact.** If the arc changes a shared contract
+  (`frontend/lib/trip/backend-types.ts` parity, SSE frames, the error envelope, rate-limit headers) or
+  needs the *other* owner's surface to go live, a `docs/deploy/YYYY-MM-DD-<topic>-handoff.md` must exist
+  and be accurate. Missing or stale handoff on a dark-deployed arc = **Important** — a dark deploy with
+  no doc is indistinguishable from a forgotten one a month later.
+- **Audit the implementer's `DEPLOY:` field rather than reading it.** A wrong "none" is the expensive
+  case. `grep` the diff for migration files, flag constants, `NEXT_PUBLIC_`, `RAISE`/SQLSTATE strings,
+  and RPC signatures yourself, and report the delta between what you find and what was declared.
+
 Review backend code against **`.claude/docs/BACKEND-PRINCIPLES.md`** — a violation is a finding: a live client that isn't injectable (breaks DIP + eval-keyless), mutation of an input (immutability), `threading` where async fits, a retry path that isn't idempotent, a read-cache that isn't write-through, a hand-rolled token parse instead of the JWT dependency, a secret reachable in an exception/log/print, a missing owner check, or unvalidated boundary input. Hold the feasible-first line the OTHER way too: a speculative abstraction / a pattern with no second concrete case / an ABC for one implementation is ALSO a finding (over-engineering), not praise.
 
 ## Astrail eval-safety lens (check these specifically)

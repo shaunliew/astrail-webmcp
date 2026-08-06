@@ -48,6 +48,29 @@ If your task adds/edits a **FastAPI route, dependency, request/response model, o
 
 If your task touches **Render config / deployment** (`render.yaml`, `Dockerfile`, env vars, scaling, Key Value), load the relevant **`render-*`** skills (`render-blueprints`, `render-web-services`, `render-env-vars`, `render-keyvalue`, `render-scaling`, `render-docker`) and align with current Render guidance.
 
+## Release hygiene — you BUILD the release, you never PERFORM it
+
+Production is a separate gated process (the `astrail-release` skill + the EMDEE RELEASE SOP). Your job
+is to leave it safe to run; it is never your job to run it.
+
+- **A migration ships with its rollback, in the same commit.** Every `supabase/migrations/<version>_*.sql`
+  needs a matching `supabase/migrations/rollback/<version>_down.sql`. The release pre-flight blocks on
+  this, so an unpaired migration is a task you have not finished. Test it host-side — `supabase test db`
+  cannot reach the `rollback/` directory at all.
+- **Never flip a production feature flag.** Ship the feature **gated OFF** and say so in your report.
+  Flipping is a release action with an owner and an order (backend verified live *before* the frontend
+  is exposed); it is not the last line of an implementation.
+- **Never touch `branch:`, `numInstances:`, or `autoDeployTrigger:` in `render.yaml`** unless the plan
+  explicitly mandates it. Each is load-bearing: `branch:` decides which code *is* production (and Render
+  re-syncs the Blueprint from the branch it currently tracks, so changing it can deploy a different
+  commit than you expect); `numInstances: 1` prevents double-billed Mapbox and a Telegram `409`;
+  `autoDeployTrigger` decides whether a merge is a deploy.
+- **Report anything that makes deploy ORDER matter.** If your change alters an RPC signature, a raised
+  SQLSTATE, an error envelope, a rate-limit header, or a `NEXT_PUBLIC_*` (build-time — an env edit
+  without a redeploy is a no-op), name it in `DEPLOY`. Code and schema ship decoupled here; a change
+  that is correct in the diff can still 500 production in *both* merge orderings, and the only person
+  positioned to notice is you.
+
 Apply the backend engineering principles + patterns in **`.claude/docs/BACKEND-PRINCIPLES.md`** — SOLID (SRP + DIP-injectability), immutability, async-not-threads, streaming, idempotency, write-through caching, durable-jobs-as-queue, security (JWT/OAuth reuse, owner checks, TLS / no-secret-leak, boundary validation), and the Factory / Singleton / Decorator / Observer patterns — **where they earn their place** (feasible-first; never as ceremony, and speculative abstraction is itself a defect).
 
 ## Astrail guardrails (must hold — these are repo invariants)
@@ -71,6 +94,7 @@ Report `BLOCKED` or `NEEDS_CONTEXT` (with specifics: what you tried, what you ne
 - **STATUS:** `DONE` | `DONE_WITH_CONCERNS` | `BLOCKED` | `NEEDS_CONTEXT`
 - **COMMITS:** short SHA + subject for each commit you made
 - **TESTS:** one line — the exact command(s) run + pass/skip counts + any eval (`run_eval --subject ...` OVERALL) + the keyless-import check result
+- **DEPLOY:** migration + its rollback script (or "no migration") · flag shipped OFF (name it) · anything that makes deploy order matter (RPC/SQLSTATE/envelope/header/`NEXT_PUBLIC_*` change) · "none" if genuinely none
 - **CONCERNS:** anything you noticed, or "none"
 
 Only report DONE if the verification commands the task specified actually passed.

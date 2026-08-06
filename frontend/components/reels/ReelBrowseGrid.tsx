@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import type { SavedReelCard } from '@/lib/reels/backend-types'
-import { countryLabel, reelLabel, statusLabel } from '@/lib/reels/labels'
+import { countryLabel, reelLabel, sourceLabel, statusLabel } from '@/lib/reels/labels'
 
 /* ReelBrowseGrid — the default "Browse" view of the Library. It replaced the card-fan carousel
    (kept at ui/card-fan-carousel.tsx for reference): the fan showed only bare, cropped thumbnails,
@@ -111,6 +111,9 @@ function ReelCard({
             ) : (
               <PlaceholderGlyph />
             )}
+            <span className="absolute left-2 top-2 rounded-full border border-[color:var(--paper-line-2)] bg-[color:var(--surface-1)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--text-faint)]">
+              {sourceLabel(card.normalized_url)}
+            </span>
           </div>
 
           <div className="flex flex-col gap-1 px-3 py-2.5">

@@ -23,6 +23,15 @@ describe('normalizeReelUrl', () => {
     expect(normalizeReelUrl('https://www.instagram.com/share/reel/SH99/')).toBe('https://www.instagram.com/reel/SH99/')
   })
 
+  it('collapses /tv/ (retired IGTV) into the /p/ post form, matching the backend _KIND', () => {
+    expect(normalizeReelUrl('https://www.instagram.com/tv/TV123/')).toBe('https://www.instagram.com/p/TV123/')
+    expect(normalizeReelUrl('instagram.com/tv/TVXYZ')).toBe('https://www.instagram.com/p/TVXYZ/')
+  })
+
+  it('keeps a /p/ post URL as /p/ (no cross-canonicalization into /reel/)', () => {
+    expect(normalizeReelUrl('https://www.instagram.com/p/POST1/')).toBe('https://www.instagram.com/p/POST1/')
+  })
+
   it('returns null for non-Instagram or malformed input', () => {
     expect(normalizeReelUrl('https://tiktok.com/@x/video/1')).toBeNull()
     expect(normalizeReelUrl('just some text')).toBeNull()
@@ -66,6 +75,13 @@ describe('buildReelItems', () => {
     const res = buildReelItems('https://www.instagram.com/accounts/login', [])
     expect(res.addedCount).toBe(0)
     expect(res.invalidCount).toBe(1)
+  })
+
+  it('deduplicates a /p/ post pasted twice within one batch', () => {
+    const res = buildReelItems('https://www.instagram.com/p/DUP/ https://www.instagram.com/p/DUP/', [])
+    expect(res.addedCount).toBe(1)
+    expect(res.duplicateCount).toBe(1)
+    expect(res.items.filter((i) => i.item_type === 'reel_url')).toHaveLength(1)
   })
 })
 

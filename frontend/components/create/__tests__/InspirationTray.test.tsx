@@ -39,6 +39,15 @@ describe('InspirationTray', () => {
     expect(onChange.mock.calls[0][0]).toHaveLength(1) // one item removed
   })
 
+  it('badges a saved reel as Reel and a /p/ post as Post (URL-kind badge)', () => {
+    const items = buildReelItems(
+      'https://www.instagram.com/reel/AAA/ https://www.instagram.com/p/BBB/', [],
+    ).items
+    render(<InspirationTray items={items} onChange={vi.fn()} />)
+    expect(screen.getByText('Reel')).toBeInTheDocument()
+    expect(screen.getByText('Post')).toBeInTheDocument()
+  })
+
   it('shows the max-reels notice when five reels are present', () => {
     const items = buildReelItems(
       Array.from({ length: 5 }, (_, n) => `https://www.instagram.com/reel/R${n}/`).join('\n'), [],

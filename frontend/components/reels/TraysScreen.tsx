@@ -116,7 +116,7 @@ export default function TraysScreen({
       if (!activeRef.current) return
       setUrl(''); setMessage('Saved to your library.')
     } catch (err) {
-      if (activeRef.current) setMessage(err instanceof Error ? err.message : 'Could not save that Reel.')
+      if (activeRef.current) setMessage(err instanceof Error ? err.message : 'Could not save that link.')
     } finally {
       if (activeRef.current) setBusy(false)
     }
@@ -249,13 +249,13 @@ export default function TraysScreen({
         onSubmit={(e) => { e.preventDefault(); void capture() }}
         className="mb-6 flex items-center gap-3 rounded-2xl border border-dashed border-[color:var(--line-soft)] bg-[color:var(--surface-2)] p-3"
       >
-        <label htmlFor="capture-input" className="sr-only">Paste a Reel link</label>
+        <label htmlFor="capture-input" className="sr-only">Paste a Reel or post link</label>
         <input
           id="capture-input"
           type="url"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          placeholder="Paste an Instagram Reel link to save it for later…"
+          placeholder="Paste an Instagram Reel or post link to save it for later…"
           className="min-h-11 flex-1 rounded-lg border border-[color:var(--line-soft)] bg-[color:var(--surface-1)] px-4 text-[color:var(--text)] placeholder:text-[color:var(--text-faint)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]"
         />
         <button type="submit" disabled={busy || !url.trim()} className={BTN_PRIMARY}>Save</button>

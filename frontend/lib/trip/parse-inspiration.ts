@@ -31,10 +31,15 @@ export type BriefInput = {
 // Canonical output: https://www.instagram.com/<type>/<code>/
 const IG_RE = /(?:^|\/\/|\s)(?:www\.|m\.)?instagram\.com\/(?:share\/)?(reel|reels|p|tv)\/([A-Za-z0-9_-]+)/i
 
+// Canonical path segment per accepted URL kind, mirroring the backend's _KIND
+// (backend/scrape/reel_url.py): reels collapse to reel; tv (retired IGTV, served at /p/)
+// collapses to p. Keeps this parser's output in lock-step with the backend normalizer.
+const CANONICAL_PATH: Record<string, 'reel' | 'p'> = { reel: 'reel', reels: 'reel', p: 'p', tv: 'p' }
+
 export function normalizeReelUrl(raw: string): string | null {
   const m = raw.match(IG_RE)
   if (!m) return null
-  const type = m[1].toLowerCase() === 'reels' ? 'reel' : m[1].toLowerCase()
+  const type = CANONICAL_PATH[m[1].toLowerCase()]
   return `https://www.instagram.com/${type}/${m[2]}/`
 }
 

@@ -62,6 +62,7 @@ from rate_limit import (
     BURST_LIMIT,
     DAILY_TRIP_QUOTA,
     ENTITLEMENTS_ENABLED,
+    SAVE_LIMIT,
     TRIAL_LIFETIME_LIMIT,
     check_and_increment_daily_quota,
     get_current_user_id_stashed,
@@ -401,7 +402,7 @@ async def clear_settings_memory(
 
 
 @app.post("/saved-reels", response_model=CaptureSavedReelResponse)
-@limiter.limit(BURST_LIMIT)
+@limiter.limit(SAVE_LIMIT)
 async def create_saved_reel(
     request: Request,                                     # required by slowapi; must be named `request`
     response: Response,                                   # REQUIRED with headers_enabled=True (see generate_trip)

@@ -30,6 +30,11 @@ from slowapi.util import get_remote_address
 from auth import get_current_user_id
 
 BURST_LIMIT: str = os.environ.get("BURST_LIMIT", "3/minute")
+# Saving a Reel is a pure DB insert (normalize URL + one atomic RPC) — no Apify, no
+# scraping, no OpenAI. The tight BURST_LIMIT (tuned for the Apify/OpenAI-spending routes)
+# false-positives the core "paste 1-5 Reels" flow, so the save route gets its own generous
+# ceiling. The Apify cost lives at /saved-reels/organize, which keeps BURST_LIMIT.
+SAVE_LIMIT: str = os.environ.get("SAVE_LIMIT", "30/minute")
 DAILY_TRIP_QUOTA: int = int(os.environ.get("DAILY_TRIP_QUOTA", "5"))
 TRIAL_LIFETIME_LIMIT: int = int(os.environ.get("TRIAL_LIFETIME_LIMIT", "1"))
 # Rollback switch (default on): enabled = new atomic-RPC path (reserve_and_enqueue_trip_job);

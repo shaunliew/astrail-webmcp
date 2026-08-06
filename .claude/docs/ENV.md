@@ -46,7 +46,8 @@ REEL_CACHE_TTL_DAYS=30
 DAILY_TRIP_QUOTA=5               # live per-user daily trip cap (rate_limit.py) — the durable free-tier hard cap. RETUNE 5→10 at the entitlement-arc deploy: beta seats ride the daily quota (see "Entitlement arc" below)
 TRIAL_LIFETIME_LIMIT=1           # free-trial LIFETIME generation cap (rate_limit.py) — 1 real trip per trial account; enforced by the reserve_and_enqueue_trip_job RPC, NOT this constant alone
 ENTITLEMENTS_ENABLED=true        # rollback switch (rate_limit.py): ENABLED unless set to an explicit falsy token (false/0/no/off) → legacy daily-quota path (_generate_trip_legacy, no lifetime enforcement). A bare "1"/"yes"/typo stays ENABLED (fail-safe: never silently drops enforcement)
-BURST_LIMIT=3/minute             # per-user burst throttle on POST /generate-trip (slowapi, in-memory)
+BURST_LIMIT=3/minute             # per-user burst throttle on the Apify/OpenAI-spending routes — POST /generate-trip + /saved-reels/organize (slowapi, in-memory)
+SAVE_LIMIT=30/minute             # per-user burst on POST /saved-reels only — a pure DB insert, no Apify (rate_limit.py)
 ALLOWED_ORIGINS=https://astrail.xyz,https://www.astrail.xyz   # CORS allowlist (comma-separated); add Vercel preview origins at deploy
 # MAX_TRIPS_PER_USER_PER_DAY — SUPERSEDED / never wired; the live cap is DAILY_TRIP_QUOTA above
 ```
@@ -145,6 +146,7 @@ SUPABASE_JWT_SECRET   already removed project-wide — ES256 via JWKS, no shared
 ALLOWED_ORIGINS       CORS, and a worker serves no requests
 DAILY_TRIP_QUOTA      trip-generation quota; the worker runs organize jobs, not /generate-trip
 BURST_LIMIT           slowapi throttles an HTTP endpoint the worker does not have
+SAVE_LIMIT            same — the worker serves no HTTP routes
 PORT                  nothing binds a port
 ```
 

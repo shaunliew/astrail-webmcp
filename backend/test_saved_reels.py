@@ -163,10 +163,21 @@ async def test_saved_reel_route_returns_the_exact_typed_response(monkeypatch):
     ]
 
 
-async def test_saved_reel_route_has_per_user_burst_limit(monkeypatch):
-    """Capture creates an authenticated row per call, so it carries BURST_LIMIT (3/minute)
-    like every other mutating endpoint. The 4th call in the window is rejected BEFORE the
-    handler body — `captured` proving the limiter fires ahead of the persistence seam."""
+async def test_saved_reel_route_carries_the_generous_save_limit(monkeypatch):
+    """Saving is a pure DB insert (no Apify/OpenAI), so the route carries its own generous
+    SAVE_LIMIT (30/minute) rather than the tight BURST_LIMIT the spending routes use. This
+    proves the core "paste 1-5 Reels" flow no longer false-positives a 429 at the 4th save,
+    while the ceiling still fires one call past the limit — BEFORE the handler body, with
+    `captured` proving the limiter guards the persistence seam.
+
+    The allowed count is derived from the configured SAVE_LIMIT so a default change here
+    keeps the test correct instead of silently drifting."""
+    save_limit = int(rate_limit.SAVE_LIMIT.split("/", 1)[0])
+    assert save_limit > int(rate_limit.BURST_LIMIT.split("/", 1)[0])  # generous by construction
+    # Pin the documented floor too: relative order alone would let the default silently
+    # regress toward BURST_LIMIT (e.g. 4/minute) with the loop below still passing.
+    assert save_limit >= 30
+
     captured: list[str] = []
 
     async def _stashed(request: Request):
@@ -185,7 +196,7 @@ async def test_saved_reel_route_has_per_user_burst_limit(monkeypatch):
     monkeypatch.setattr(main, "capture_saved_reel", _capture, raising=False)
     try:
         async with _route_client() as ac:
-            for _ in range(3):
+            for _ in range(save_limit):
                 allowed = await ac.post(
                     "/saved-reels", json={"url": "https://www.instagram.com/reel/ABC123"}
                 )
@@ -198,7 +209,7 @@ async def test_saved_reel_route_has_per_user_burst_limit(monkeypatch):
 
     assert limited.status_code == 429
     assert limited.json()["error"]["code"] == "rate_limited"
-    assert len(captured) == 3
+    assert len(captured) == save_limit
 
 
 async def test_saved_reel_route_rejects_invalid_url_with_the_standard_422_envelope(monkeypatch):

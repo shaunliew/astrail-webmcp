@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { ReelCollection, SavedReelCard } from '@/lib/reels/backend-types'
-import { STATUS_LABELS, reelLabel, statusLabel } from '@/lib/reels/labels'
+import { STATUS_LABELS, reelLabel, sourceLabel, statusLabel } from '@/lib/reels/labels'
 
 /* ReelInfoCard — a centered modal opened from the Library browse grid showing a saved reel's
    cover, its grounded places (name · country · evidence quote, read-only), a single header
@@ -102,6 +102,7 @@ export default function ReelInfoCard({
 
   // C1: keep showing the list once it has been ready, so a later refresh flip can't hide adds.
   const listReady = traysState === 'ready' || hasBeenReadyRef.current
+  const kind = sourceLabel(card.normalized_url) // Level-1 URL-kind: 'Reel' | 'Post'
 
   return (
     <div
@@ -144,14 +145,19 @@ export default function ReelInfoCard({
               {reelLabel(card)}
             </h2>
             <div className="mt-1 flex items-center justify-between gap-3">
-              <span className="text-[13px] text-[color:var(--text-muted)]">{statusLabel(card)}</span>
+              <span className="flex items-center gap-2 text-[13px] text-[color:var(--text-muted)]">
+                <span className="shrink-0 rounded-full border border-[color:var(--paper-line-2)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--text-faint)]">
+                  {kind}
+                </span>
+                {statusLabel(card)}
+              </span>
               <a
                 href={card.normalized_url}
                 target="_blank"
                 rel="noreferrer"
                 className="shrink-0 text-[12px] font-semibold uppercase tracking-wide text-[color:var(--brass-deep)] underline underline-offset-2"
               >
-                View Reel
+                {kind === 'Post' ? 'View post' : 'View Reel'}
               </a>
             </div>
           </div>

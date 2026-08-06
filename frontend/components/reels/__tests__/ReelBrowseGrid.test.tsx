@@ -85,6 +85,16 @@ describe('ReelBrowseGrid', () => {
     expect(screen.queryByRole('button', { name: /second sentence/i })).not.toBeInTheDocument()
   })
 
+  it('badges a reel card Reel and a /p/ post card Post (URL-kind badge)', () => {
+    const reel = card({ id: 'r', caption: 'Reel one', normalized_url: 'https://www.instagram.com/reel/R1/' })
+    const post = card({ id: 'p', caption: 'Post one', normalized_url: 'https://www.instagram.com/p/POST1/' })
+
+    render(<ReelBrowseGrid cards={[reel, post]} onOpenReel={vi.fn()} />)
+
+    expect(screen.getByText('Reel')).toBeInTheDocument()
+    expect(screen.getByText('Post')).toBeInTheDocument()
+  })
+
   it('falls back to "Untitled reel" when a card has neither a label nor a caption', () => {
     const bare = card({ id: 'bare', personal_label: null, caption: null })
 

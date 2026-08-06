@@ -12,6 +12,22 @@ const SAFE_SAVED_REEL_CARD_COLUMNS = [
   'created_at', 'updated_at', 'caption', 'thumbnail_url', 'has_current_cache', 'places',
 ].join(',')
 
+// Backend error contract is `{"error": {"code", "message"}}` on every error path (422 via
+// http_exception_handler, 429 via _rate_limit_handler as `rate_limited`, validation as
+// `validation_error`). Copy is scoped per endpoint — "You're saving fast" is only right for a
+// capture 429; an organize 429 gets the generic rate line. Map on `code` first, then
+// STATUS_TO_CODE as a REAL fallback (a proxy/CDN error page won't parse as the envelope).
+const CAPTURE_ERROR_COPY: Record<string, string> = {
+  validation_error: "That doesn't look like an Instagram link we can save. Paste a Reel or post URL like instagram.com/reel/… or instagram.com/p/…",
+  rate_limited: "You're saving fast — give it a few seconds and try again.",
+}
+const GENERIC_ERROR_COPY: Record<string, string> = {
+  rate_limited: 'Too many requests — give it a few seconds and try again.',
+  unauthorized: 'Your session has expired. Sign in again, then retry.',
+}
+const STATUS_TO_CODE: Record<number, string> = { 422: 'validation_error', 429: 'rate_limited', 401: 'unauthorized' }
+const FALLBACK_ERROR_COPY = 'Something went wrong on our side. Try again in a moment.'
+
 async function backendJson<T>(path: string, token: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(`${BACKEND_URL}${path}`, {
     ...init,
@@ -25,7 +41,18 @@ async function backendJson<T>(path: string, token: string, init: RequestInit = {
     if (response.status === 409 && path === '/saved-reels/organize') {
       throw new Error(ACTIVE_ORGANIZE_CONFLICT_MESSAGE)
     }
-    throw new Error(`Saved Reels request failed: ${response.status}`)
+    const body = await response.json().catch(() => null)
+    // An empty-string code is not a code — fall through to STATUS_TO_CODE instead of rendering
+    // a blank banner (`'' && …` short-circuits past the `??` fallbacks otherwise).
+    const code = ((typeof body?.error?.code === 'string' && body.error.code) || null)
+      ?? STATUS_TO_CODE[response.status] ?? null
+    // When no copy map covers the code, surface the backend's own envelope message rather than a
+    // false "on our side" fault — those messages are our curated strings (api/errors.py) and are
+    // often actionable (account_pending_deletion, not_found). Never for non-envelope bodies.
+    const message = (typeof body?.error?.message === 'string' && body.error.message) || null
+    const copy = (path === '/saved-reels' ? code && CAPTURE_ERROR_COPY[code] : null)
+      ?? (code && GENERIC_ERROR_COPY[code]) ?? message ?? FALLBACK_ERROR_COPY
+    throw new Error(copy)
   }
   return response.json() as Promise<T>
 }

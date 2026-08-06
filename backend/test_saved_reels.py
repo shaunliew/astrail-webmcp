@@ -98,7 +98,7 @@ async def test_capture_normalizes_and_calls_only_atomic_rpc():
 @pytest.mark.parametrize(
     "raw_url",
     [
-        "https://www.instagram.com/p/ABC123/",
+        "https://www.instagram.com/stories/someone/123/",
         "https://www.tiktok.com/@creator/video/123",
         "not a URL",
     ],
@@ -209,7 +209,7 @@ async def test_saved_reel_route_rejects_invalid_url_with_the_standard_422_envelo
     main.app.dependency_overrides[get_current_user_id_stashed] = _current_user_id
     try:
         async with _route_client() as ac:
-            response = await ac.post("/saved-reels", json={"url": "https://www.instagram.com/p/ABC123"})
+            response = await ac.post("/saved-reels", json={"url": "https://www.instagram.com/stories/someone/123/"})
     finally:
         main.app.dependency_overrides.clear()
 
@@ -217,9 +217,48 @@ async def test_saved_reel_route_rejects_invalid_url_with_the_standard_422_envelo
     assert response.json() == {
         "error": {
             "code": "validation_error",
-            "message": "A valid Instagram Reel URL is required",
+            "message": "A valid Instagram Reel or post URL is required",
         }
     }
+
+
+async def test_saved_reel_route_accepts_a_post_url_and_normalizes_it(monkeypatch):
+    """A carousel `/p/` URL is accepted end-to-end. Only the Supabase client is faked — the REAL
+    `capture_saved_reel` runs, so the RPC provably receives the canonical `/p/` URL. Faking the
+    client (not monkeypatching `capture_saved_reel`) is what keeps this acceptance non-vacuous."""
+    client = _RpcFake([_ROW])
+
+    async def _current_user_id(request: Request):
+        request.state.user_id = "authenticated-user-id"
+        return "authenticated-user-id"
+
+    async def _get_client():
+        return client
+
+    main.app.dependency_overrides[get_current_user_id_stashed] = _current_user_id
+    monkeypatch.setattr(main, "get_supabase_client", _get_client)
+    try:
+        async with _route_client() as ac:
+            response = await ac.post(
+                "/saved-reels",
+                json={"url": "https://www.instagram.com/p/DQwdZ8ZCWZx/"},
+            )
+    finally:
+        main.app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {"saved_reel": _ROW}
+    assert client.rpc_calls == [
+        (
+            "capture_saved_reel",
+            {
+                "p_user_id": "authenticated-user-id",
+                "p_normalized_url": "https://www.instagram.com/p/DQwdZ8ZCWZx",
+                "p_source_platform": "instagram",
+            },
+        )
+    ]
+    assert client.table_calls == []
 
 
 async def test_saved_reel_route_requires_authentication():

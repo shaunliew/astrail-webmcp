@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 
 from models.reel import ReelData
-from scrape.reel_url import is_reel_url, normalize_reel_url
+from scrape.reel_url import is_supported_ig_url, normalize_reel_url
 
 MANUAL_CAPTURE_STATUS: str = "MANUAL"
 
@@ -26,7 +26,7 @@ def manual_reeldata(
     `caption` is required (the pasted reel text). `location_name` is the optional
     Instagram location tag (a blank/whitespace tag is normalized to None so it can't
     become a spurious highest-confidence signal in build_extractor_input). When
-    `source_url` is a real reel URL it is normalized and used as the provenance key;
+    `source_url` is a real reel or post URL it is normalized and used as the provenance key;
     otherwise reel_url is a deterministic `manual:<digest>` sentinel so re-pasting the
     same text is idempotent (stable cache/fixture key).
 
@@ -35,7 +35,7 @@ def manual_reeldata(
     if not caption or not caption.strip():
         raise ValueError("manual capture requires non-empty caption text")
     location = (location_name or "").strip() or None  # blank tag → None
-    if source_url and is_reel_url(source_url):
+    if source_url and is_supported_ig_url(source_url):
         reel_url = normalize_reel_url(source_url)
     else:
         digest = hashlib.sha256(

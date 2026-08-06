@@ -312,8 +312,8 @@ async def test_mixed_valid_and_unsupported_url_ingests_and_withholds_the_reactio
 async def test_unsupported_url_alone_logs_error_and_writes_nothing(config, seams, caplog):
     """The `urls`-empty half of the same branch. RED if an all-rejected message returns
     silently — that is the T0 spike's blind spot vanishing into a `ValueError` swallow."""
-    message = _message("https://www.instagram.com/p/PPP/")
-    _precondition(message, urls=(), shapes=("/p/…",))
+    message = _message("https://www.instagram.com/stories/someone/123/")
+    _precondition(message, urls=(), shapes=("/stories/…",))
 
     with caplog.at_level(logging.DEBUG):
         await _run(_update(message), config, seams)

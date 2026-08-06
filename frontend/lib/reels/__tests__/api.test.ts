@@ -77,6 +77,94 @@ describe('saved reels api', () => {
     )
   })
 
+  it('maps a capture 422 envelope to the friendly capture validation copy', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { code: 'validation_error', message: 'not a valid url' } }), { status: 422 }),
+    )
+
+    await expect(captureSavedReel('not-a-url', 'jwt-token')).rejects.toThrow(
+      "That doesn't look like an Instagram link we can save. Paste a Reel or post URL like instagram.com/reel/… or instagram.com/p/…",
+    )
+  })
+
+  it('maps a capture 429 envelope to the capture-scoped rate copy', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { code: 'rate_limited', message: 'slow down' } }), { status: 429 }),
+    )
+
+    await expect(captureSavedReel('https://www.instagram.com/reel/AAA/', 'jwt-token')).rejects.toThrow(
+      "You're saving fast — give it a few seconds and try again.",
+    )
+  })
+
+  it('maps an organize 429 envelope to the GENERIC rate copy, not the capture copy (Codex P2)', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { code: 'rate_limited', message: 'slow down' } }), { status: 429 }),
+    )
+
+    const error = (await startOrganize(['saved-1'], 'jwt-token').catch((e) => e)) as Error
+    expect(error.message).toBe('Too many requests — give it a few seconds and try again.')
+    expect(error.message).not.toContain("You're saving fast")
+  })
+
+  it('falls back through STATUS_TO_CODE when a 429 body is not the JSON envelope (proxy/CDN HTML)', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response('<html><body>429 Too Many Requests</body></html>', {
+        status: 429,
+        headers: { 'Content-Type': 'text/html' },
+      }),
+    )
+
+    await expect(startOrganize(['saved-1'], 'jwt-token')).rejects.toThrow(
+      'Too many requests — give it a few seconds and try again.',
+    )
+  })
+
+  it('falls back to the generic error copy for an unknown status with a non-JSON body', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(new Response('upstream boom', { status: 500 }))
+
+    await expect(captureSavedReel('https://www.instagram.com/reel/AAA/', 'jwt-token')).rejects.toThrow(
+      'Something went wrong on our side. Try again in a moment.',
+    )
+  })
+
+  it('surfaces the backend envelope message for a code absent from both copy maps (honest, not a false server-fault)', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: {
+            code: 'account_pending_deletion',
+            message: 'Your account is scheduled for deletion. Reply CANCEL to keep it.',
+          },
+        }),
+        { status: 403 },
+      ),
+    )
+
+    const error = (await startOrganize(['saved-1'], 'jwt-token').catch((e) => e)) as Error
+    expect(error.message).toBe('Your account is scheduled for deletion. Reply CANCEL to keep it.')
+    expect(error.message).not.toBe('Something went wrong on our side. Try again in a moment.')
+  })
+
+  it('falls back to the generic copy for an unknown code that carries no message', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { code: 'account_pending_deletion' } }), { status: 403 }),
+    )
+
+    await expect(startOrganize(['saved-1'], 'jwt-token')).rejects.toThrow(
+      'Something went wrong on our side. Try again in a moment.',
+    )
+  })
+
+  it('treats an empty envelope code as absent and maps by status (organize 429 → generic rate copy)', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { code: '', message: 'slow down' } }), { status: 429 }),
+    )
+
+    const error = (await startOrganize(['saved-1'], 'jwt-token').catch((e) => e)) as Error
+    expect(error.message).toBe('Too many requests — give it a few seconds and try again.')
+  })
+
   it('reconnects the durable event stream from the last cursor', () => {
     vi.useFakeTimers()
     class FakeEventSource {

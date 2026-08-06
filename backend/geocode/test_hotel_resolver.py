@@ -532,10 +532,20 @@ def test_module_is_import_light():
     import importlib
     import sys
 
-    for heavy in ("agents", "openai", "httpx", "supabase"):
-        sys.modules.pop(heavy, None)
-    import geocode.hotel_resolver  # noqa: F401
+    heavy_names = ("agents", "openai", "httpx", "supabase")
+    # Evicting these must not leak: a later test that `import`s one of them (e.g. the
+    # notifications sender lazily `import httpx`) would otherwise get a freshly re-imported
+    # module object, breaking any monkeypatch keyed on the original. Restore in `finally`.
+    saved = {name: sys.modules.pop(name, None) for name in heavy_names}
+    try:
+        import geocode.hotel_resolver  # noqa: F401
 
-    importlib.reload(geocode.hotel_resolver)
-    for heavy in ("agents", "openai", "httpx", "supabase"):
-        assert heavy not in sys.modules, f"geocode.hotel_resolver pulled in {heavy}"
+        importlib.reload(geocode.hotel_resolver)
+        for heavy in heavy_names:
+            assert heavy not in sys.modules, f"geocode.hotel_resolver pulled in {heavy}"
+    finally:
+        for name, module in saved.items():
+            if module is not None:
+                sys.modules[name] = module
+            else:
+                sys.modules.pop(name, None)

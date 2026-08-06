@@ -1,4 +1,4 @@
-"""telegram_ingest — Telegram group bot that ingests Instagram Reel URLs.
+"""telegram_ingest — Telegram group bot that ingests Instagram Reel and post URLs.
 
 Named `telegram_ingest`, never `telegram`: `python-telegram-bot` installs as a top-level
 `telegram` module, and a local `telegram/` package would shadow it with `backend/` as cwd.

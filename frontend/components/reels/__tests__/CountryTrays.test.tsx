@@ -37,6 +37,22 @@ describe('CountryTrays', () => {
     expect(screen.queryByRole('button', { name: /back/i })).not.toBeInTheDocument()
   })
 
+  it('labels a reel place "Source Reel" and a /p/ post place "Source post" (URL-kind)', () => {
+    const mixed: CountryTray[] = [
+      {
+        country_code: 'JP', country_name: 'Japan',
+        places: [
+          place({ place_id: 'p1', name: 'Reel place', source_reel_url: 'https://www.instagram.com/reel/R1/' }),
+          place({ place_id: 'p2', name: 'Post place', source_reel_url: 'https://www.instagram.com/p/POST1/' }),
+        ],
+      },
+    ]
+    render(<CountryTrays trays={mixed} selectedPlaceIds={[]} maxSelected={5} onToggle={vi.fn()} onPlan={vi.fn()} />)
+
+    expect(screen.getByRole('link', { name: /source reel/i })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /source post/i })).toBeInTheDocument()
+  })
+
   // Regression: on desktop the collapsed sheet slides fully off-screen (grip included), so a
   // dedicated reopen tab must exist and round-trip the collapse — otherwise collapsing is a
   // dead end with no way back.

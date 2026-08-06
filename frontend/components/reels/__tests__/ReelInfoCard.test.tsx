@@ -178,6 +178,20 @@ describe('ReelInfoCard', () => {
     expect(screen.getByRole('button', { name: /New tray/i })).not.toBeDisabled()
   })
 
+  it('labels a reel card "View Reel" with a Reel kind badge', () => {
+    setup({ card: card({ normalized_url: 'https://www.instagram.com/reel/R1/' }) })
+    expect(screen.getByRole('link', { name: /view reel/i })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /view post/i })).not.toBeInTheDocument()
+    expect(screen.getByText('Reel')).toBeInTheDocument()
+  })
+
+  it('labels a /p/ post card "View post" with a Post kind badge', () => {
+    setup({ card: card({ normalized_url: 'https://www.instagram.com/p/POST1/' }) })
+    expect(screen.getByRole('link', { name: /view post/i })).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /view reel/i })).not.toBeInTheDocument()
+    expect(screen.getByText('Post')).toBeInTheDocument()
+  })
+
   it('shows the empty state for a card with no places', () => {
     setup({ card: card({ places: [], analysis_status: 'location_not_found' }) })
     expect(screen.getByText(/No places found yet/i)).toBeInTheDocument()

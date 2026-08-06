@@ -101,7 +101,7 @@ export default function PrivacyPage() {
               <b>OpenAI</b> — the AI agents that plan your trip
             </li>
             <li>
-              <b>Apify</b> — retrieving public reel content you link
+              <b>Apify</b> — retrieving public reel and post content you link
             </li>
             <li>
               <b>Mapbox</b> — maps and geocoding

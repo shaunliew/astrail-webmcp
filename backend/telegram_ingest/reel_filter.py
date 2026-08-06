@@ -57,7 +57,8 @@ class FilterResult:
     """
 
     urls: tuple[str, ...]
-    """Normalized, order-preserving, deduped `https://www.instagram.com/reel/<code>`."""
+    """Normalized, order-preserving, deduped canonical URLs —
+    `https://www.instagram.com/reel/<code>` or `.../p/<code>`."""
 
     rejected_shapes: tuple[str, ...]
     """Sanitized PATH SHAPES of Instagram-looking URLs that `normalize_reel_url` refused,

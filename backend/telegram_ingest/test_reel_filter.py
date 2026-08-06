@@ -18,8 +18,10 @@ import pytest
 from telegram_ingest import reel_filter
 from telegram_ingest.reel_filter import FilterResult, extract_reel_urls
 
-# The contract every string that leaves this module must satisfy.
-OUTPUT_CONTRACT = re.compile(r"^https://www\.instagram\.com/reel/[A-Za-z0-9_-]+$")
+# The contract every string that leaves this module must satisfy. Canonical output is only
+# `/reel/<code>` or `/p/<code>` — normalize_reel_url collapses /reels/→/reel/ and /tv/→/p/,
+# mirroring `reel_url._PATH_RE`'s accepted set.
+OUTPUT_CONTRACT = re.compile(r"^https://www\.instagram\.com/(?:reel|p)/[A-Za-z0-9_-]+$")
 
 
 # An unpaired UTF-16 surrogate. `str.encode("utf-16-le")` refuses it, and stdlib
@@ -79,6 +81,10 @@ def _url_message(*urls: str, lead: str = "", field: str = "text") -> dict:
 
 def _reel(code: str) -> str:
     return f"https://www.instagram.com/reel/{code}/"
+
+
+def _post(code: str) -> str:
+    return f"https://www.instagram.com/p/{code}/"
 
 
 # --------------------------------------------------------------------------------------
@@ -701,6 +707,10 @@ def test_every_returned_url_matches_the_output_contract():
         _url_message("https://www.instagram.com/reel/QQQ777/?igsh=abcd&x=1#frag"),
         _url_message("http://instagram.com/reels/PLURAL9/"),
         _url_message(*(_reel(f"CODE{i:02d}") for i in range(11))),
+        # A carousel/photo post canonicalizes to /p/<code> and must also satisfy the contract —
+        # without this fixture the contract is vacuously green for the post shapes this arc added.
+        _url_message(_post("POST001"), "https://www.instagram.com/p/DUP001/?img_index=4"),
+        _url_message("https://www.instagram.com/tv/TVCODE9/"),  # /tv/ canonicalizes to /p/
         {
             "caption": "\U0001F4CD trip",
             "caption_entities": [
@@ -711,10 +721,13 @@ def test_every_returned_url_matches_the_output_contract():
 
     returned = [url for message in messages for url in extract_reel_urls(message).urls]
 
-    assert len(returned) == 14
+    assert len(returned) == 17
     assert all(OUTPUT_CONTRACT.fullmatch(url) for url in returned)
     assert "https://www.instagram.com/reel/QQQ777" in returned
     assert "https://www.instagram.com/reel/PLURAL9" in returned
+    assert "https://www.instagram.com/p/POST001" in returned
+    assert "https://www.instagram.com/p/DUP001" in returned
+    assert "https://www.instagram.com/p/TVCODE9" in returned
 
 
 def test_filter_result_is_immutable_and_tuple_valued():

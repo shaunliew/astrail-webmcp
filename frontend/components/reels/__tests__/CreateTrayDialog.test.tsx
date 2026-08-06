@@ -367,4 +367,18 @@ describe('CreateTrayDialog', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(/already used/i)
     expect(onClose).not.toHaveBeenCalled()
   })
+
+  it('badges each picker card by URL kind and titles a caption-less card kind-aware', () => {
+    const post = card({ id: 'p1', normalized_url: 'https://www.instagram.com/p/POST123/', caption: null, personal_label: null })
+    const reel = card({ id: 'r1', normalized_url: 'https://www.instagram.com/reel/REEL123/', caption: null, personal_label: null })
+
+    render(<CreateTrayDialog cards={[post, reel]} existingNames={[]} onCreated={noop} onClose={vi.fn()} />)
+
+    // Shared sourceLabel badge on each card…
+    expect(screen.getByText('Post')).toBeInTheDocument()
+    expect(screen.getByText('Reel')).toBeInTheDocument()
+    // …and the untitled fallback follows the URL kind.
+    expect(screen.getByText('Untitled post')).toBeInTheDocument()
+    expect(screen.getByText('Untitled reel')).toBeInTheDocument()
+  })
 })

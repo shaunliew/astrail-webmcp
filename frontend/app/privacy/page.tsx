@@ -49,8 +49,8 @@ export default function PrivacyPage() {
               never store a password.
             </li>
             <li>
-              <b>What you give us to plan</b> — the Instagram reel links you
-              paste, your dates, budget, origin, and free-text preferences, plus
+              <b>What you give us to plan</b> — the Instagram Reel and post links
+              you paste, your dates, budget, origin, and free-text preferences, plus
               the trips and itineraries Astrail generates for you.
             </li>
             <li>
@@ -70,8 +70,8 @@ export default function PrivacyPage() {
 
         <Section title="Public content you link to">
           <p>
-            When you paste a reel link, Astrail reads the publicly available
-            content of that post to extract the places mentioned. We do not log
+            When you paste a Reel or post link, Astrail reads the publicly
+            available content of that post to extract the places mentioned. We do not log
             into Instagram as you, and we do not access private accounts or
             content that isn&rsquo;t public. Only submit links you have the right
             to share.

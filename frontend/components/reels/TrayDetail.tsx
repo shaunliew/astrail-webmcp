@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { ReelCollection, SavedReelCard } from '@/lib/reels/backend-types'
+import { reelLabel, sourceLabel } from '@/lib/reels/labels'
 
 /* TrayDetail — the full-surface view reached by Opening a tray from the "Your trays" grid
    (TraysScreen keys it by openTrayId and derives the collection from state, so a rename
@@ -19,15 +20,11 @@ import type { ReelCollection, SavedReelCard } from '@/lib/reels/backend-types'
    Rename validates client-side BEFORE the call (renameCollection does NOT trim/length-check;
    the 1–80 bound is a DB CHECK): trim + 1–80 + case-insensitive dup vs the other trays'
    names, reusing CreateTrayDialog's pattern. It is a full-page surface (early-return in the
-   parent), not a modal, so no inert/focus-trap is needed. The reel-label idiom is replicated
-   here (feasible-first, no shared abstraction until a third caller). */
+   parent), not a modal, so no inert/focus-trap is needed. Card titles + the kind badge reuse
+   the shared reelLabel/sourceLabel from lib/reels/labels. */
 
 const NAME_MAX = 80
 const DUPLICATE_HINT = "That name's already used"
-
-function reelLabel(card: SavedReelCard): string {
-  return card.personal_label ?? card.caption ?? 'Untitled reel'
-}
 
 const ImageIcon = ({ size = 18, opacity = 1 }: { size?: number; opacity?: number }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeOpacity={opacity} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -263,6 +260,9 @@ export default function TrayDetail({
                 </span>
                 <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-[color:var(--text)]">
                   {label}
+                </span>
+                <span className="shrink-0 rounded-full border border-[color:var(--paper-line-2)] bg-[color:var(--surface-1)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--text-faint)]">
+                  {sourceLabel(card.normalized_url)}
                 </span>
                 <button
                   type="button"

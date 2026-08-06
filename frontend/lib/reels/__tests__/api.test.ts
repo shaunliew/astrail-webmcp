@@ -128,6 +128,43 @@ describe('saved reels api', () => {
     )
   })
 
+  it('surfaces the backend envelope message for a code absent from both copy maps (honest, not a false server-fault)', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          error: {
+            code: 'account_pending_deletion',
+            message: 'Your account is scheduled for deletion. Reply CANCEL to keep it.',
+          },
+        }),
+        { status: 403 },
+      ),
+    )
+
+    const error = (await startOrganize(['saved-1'], 'jwt-token').catch((e) => e)) as Error
+    expect(error.message).toBe('Your account is scheduled for deletion. Reply CANCEL to keep it.')
+    expect(error.message).not.toBe('Something went wrong on our side. Try again in a moment.')
+  })
+
+  it('falls back to the generic copy for an unknown code that carries no message', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { code: 'account_pending_deletion' } }), { status: 403 }),
+    )
+
+    await expect(startOrganize(['saved-1'], 'jwt-token')).rejects.toThrow(
+      'Something went wrong on our side. Try again in a moment.',
+    )
+  })
+
+  it('treats an empty envelope code as absent and maps by status (organize 429 → generic rate copy)', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: { code: '', message: 'slow down' } }), { status: 429 }),
+    )
+
+    const error = (await startOrganize(['saved-1'], 'jwt-token').catch((e) => e)) as Error
+    expect(error.message).toBe('Too many requests — give it a few seconds and try again.')
+  })
+
   it('reconnects the durable event stream from the last cursor', () => {
     vi.useFakeTimers()
     class FakeEventSource {

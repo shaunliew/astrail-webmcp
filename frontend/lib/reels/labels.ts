@@ -21,9 +21,14 @@ export function statusLabel(card: SavedReelCard): string {
   return card.places.length > 0 ? `Places found · ${card.places.length}` : STATUS_LABELS[card.analysis_status]
 }
 
-/** Display title for a saved reel: the user's label, else its caption, else a fallback. */
+/** Display title for a saved reel: the user's label, else its caption, else a kind-aware
+   fallback ("Untitled post" for a `/p/` card, "Untitled reel" otherwise). */
 export function reelLabel(card: SavedReelCard): string {
-  return card.personal_label ?? card.caption ?? 'Untitled reel'
+  return (
+    card.personal_label ??
+    card.caption ??
+    (sourceLabel(card.normalized_url) === 'Post' ? 'Untitled post' : 'Untitled reel')
+  )
 }
 
 /** Level-1 URL-kind of a saved card: 'Post' for a photo/carousel `/p/<code>` URL, else 'Reel'.

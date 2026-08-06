@@ -23,7 +23,8 @@ import { SEATS_TOTAL } from '../story-config'
    product: how it works (real screenshots), a live map,
    the demo video, the FAQ, an honest FOMO CTA, and a full footer. The primary
    action everywhere is "Start planning free" (sign up + generate), because
-   signing up and being active is how you earn one of the 25 unlimited seats. */
+   signing up and using it puts you in the running for one of the 25 unlimited
+   seats, which we grant at our discretion. */
 export default function StoryStage() {
   useLenis()
 
@@ -60,8 +61,8 @@ export default function StoryStage() {
             <b className="font-bold text-[color:var(--ink-900)]">
               {SEATS_TOTAL} explorers
             </b>{' '}
-            get unlimited planning. We pick them from the most active
-            early users.
+            get unlimited planning. We hand-pick them at our discretion from
+            early users who actually use Astrail and tell us what breaks.
           </p>
         </div>
 

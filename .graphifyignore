@@ -1,0 +1,16 @@
+# Keep the knowledge graph scoped to the Astrail product (backend/frontend/docs/supabase).
+# These hidden meta-directories are AI-tooling/config, not product knowledge, and were
+# never part of the graph before a graphify version bump started scanning dotfolders.
+.agents/
+.claude/
+.github/
+
+# Dead hackathon code — guardrail #9 (production never imports from it); never graphed.
+legacy/
+
+# Landing/marketing assets — scroll-story art, brand sheets, demo/hero videos, and the
+# landing process docs. Not product architecture; the landing *components* (frontend/
+# components/story, frontend/components/landing) are code and stay in the graph. Keeps the
+# graph product-scoped and avoids Whisper transcription of speechless hero clips.
+docs/landing/
+frontend/public/landing/

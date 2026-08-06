@@ -10,6 +10,7 @@ import { readEntitlement, TRIAL_LIFETIME_LIMIT } from '@/lib/entitlement'
 import type { Entitlement } from '@/lib/entitlement'
 import { listTrips } from '@/lib/trip/supabase-api'
 import type { Trip } from '@/lib/trip/backend-types'
+import { TALLY_FEEDBACK_FORM_ID } from '@/lib/tally'
 
 /* Persistent paper sidebar for the /app document routes (dashboard, trails, settings).
    Connected full-bleed rail (see (shell)/layout.tsx): an identity block up top, a primary
@@ -203,6 +204,18 @@ export default function Sidebar() {
               : `Free trial · ${Math.max(0, TRIAL_LIFETIME_LIMIT - entitlement.lifetimeTripCount)} of ${TRIAL_LIFETIME_LIMIT} trip generation${TRIAL_LIFETIME_LIMIT === 1 ? '' : 's'} left`}
           </p>
         ) : null}
+        {/* Beta feedback — opens the Tally feedback form (PdNreP) as a popup. Distinct
+            from the per-trip thumbs feedback; this is the "tell us anything" channel. */}
+        <button
+          type="button"
+          data-tally-open={TALLY_FEEDBACK_FORM_ID}
+          data-tally-emoji-text="👋"
+          data-tally-emoji-animation="wave"
+          className={rowClass(false)}
+        >
+          <ChatIcon className={iconClass(false)} />
+          <span className="hidden truncate sm:inline">Feedback</span>
+        </button>
         <Link
           href="/app/settings"
           aria-current={settingsActive ? 'page' : undefined}
@@ -258,6 +271,19 @@ function SettingsIcon({ className }: IconProps) {
         stroke="currentColor"
         strokeWidth="1.6"
         strokeLinecap="round"
+      />
+    </svg>
+  )
+}
+
+function ChatIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden className={className}>
+      <path
+        d="M20 11.5a7.5 7.5 0 0 1-10.9 6.7L4.5 19.5l1.3-4.1A7.5 7.5 0 1 1 20 11.5Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
       />
     </svg>
   )

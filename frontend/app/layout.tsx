@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import { Fraunces, Figtree, IBM_Plex_Mono } from "next/font/google";
 import { SITE_ORIGIN } from "@/lib/site";
 import "./globals.css";
@@ -53,7 +54,12 @@ export default function RootLayout({
       data-scroll-behavior="smooth"
       className={`${fraunces.variable} ${figtree.variable} ${ibmPlexMono.variable}`}
     >
-      <body>{children}</body>
+      <body>
+        {children}
+        {/* Tally popup loader — powers the in-app Feedback button (PdNreP) and the
+            landing "Notify me" popup (QKjrvk). CSP already allows tally.so (script/frame). */}
+        <Script src="https://tally.so/widgets/embed.js" strategy="lazyOnload" />
+      </body>
     </html>
   );
 }

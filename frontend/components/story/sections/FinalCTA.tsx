@@ -4,6 +4,7 @@ import Link from 'next/link'
 
 import PlayOnceVideo from '../PlayOnceVideo'
 import { tallyFallbackUrl } from '@/components/landing/landing-copy'
+import { TALLY_NOTIFY_FORM_ID } from '@/lib/tally'
 import { CLIPS, SEATS_TOTAL, STILLS } from '../story-config'
 
 /* The warm bookend — the mech lands and waves. The message is now the open
@@ -63,6 +64,9 @@ export default function FinalCTA() {
             href={tallyFallbackUrl}
             target="_blank"
             rel="noreferrer"
+            data-tally-open={TALLY_NOTIFY_FORM_ID}
+            data-tally-emoji-text="✈️"
+            data-tally-emoji-animation="wave"
             className="font-semibold text-[color:var(--story-teal-ink)] underline underline-offset-4"
           >
             Notify me &rarr;

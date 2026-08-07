@@ -31,6 +31,11 @@ import ReelInfoCard from './ReelInfoCard'
 const BTN_PRIMARY =
   'inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border border-[color:var(--accent)] bg-[color:var(--accent)] px-4 text-[13px] font-medium text-[color:var(--accent-text)] transition-opacity hover:opacity-90 disabled:cursor-default disabled:opacity-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]'
 
+// Quick capture takes up to 5 links per save — the same cap as MAX_REELS on trip
+// generation, so one batch of pastes can feed a full trip. Each link still goes through
+// the one-URL capture endpoint sequentially; the backend contract is unchanged.
+const MAX_CAPTURE_LINKS = 5
+
 export default function TraysScreen({
   cards,
   cardsStatus = 'ready',
@@ -53,7 +58,7 @@ export default function TraysScreen({
   const [error, setError] = useState<string | null>(null)
   const [libraryOpen, setLibraryOpen] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
-  const [url, setUrl] = useState('')
+  const [urls, setUrls] = useState<string[]>([''])
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [viewingReel, setViewingReel] = useState<SavedReelCard | null>(null)
@@ -109,14 +114,38 @@ export default function TraysScreen({
   const cardById = useMemo(() => new Map(cards.map((card) => [card.id, card])), [cards])
 
   async function capture() {
-    if (!url.trim()) return
+    const targets = urls.map((u) => u.trim())
+    if (!targets.some(Boolean)) return
     setBusy(true); setMessage(null)
+    // Save one link per request (the capture endpoint takes a single URL). Failed links
+    // stay in their rows with the first error surfaced, so the user can fix and retry;
+    // saved and duplicate rows are cleared.
+    const kept: string[] = []
+    const failures: string[] = []
+    const seen = new Set<string>()
+    let saved = 0
     try {
-      await onCapture(url.trim())
-      if (!activeRef.current) return
-      setUrl(''); setMessage('Saved to your library.')
-    } catch (err) {
-      if (activeRef.current) setMessage(err instanceof Error ? err.message : 'Could not save that link.')
+      for (let i = 0; i < targets.length; i++) {
+        const target = targets[i]
+        if (!target || seen.has(target)) continue
+        seen.add(target)
+        try {
+          await onCapture(target)
+          saved++
+        } catch (err) {
+          kept.push(urls[i])
+          failures.push(err instanceof Error ? err.message : 'Could not save that link.')
+        }
+        if (!activeRef.current) return
+      }
+      setUrls(kept.length ? kept : [''])
+      if (!failures.length) {
+        setMessage(saved > 1 ? `Saved ${saved} links to your library.` : 'Saved to your library.')
+      } else if (saved === 0) {
+        setMessage(failures.length > 1 ? `${failures[0]} (${failures.length} links failed.)` : failures[0])
+      } else {
+        setMessage(`Saved ${saved} of ${saved + failures.length} links. ${failures[0]}`)
+      }
     } finally {
       if (activeRef.current) setBusy(false)
     }
@@ -244,21 +273,52 @@ export default function TraysScreen({
         </span>
       </header>
 
-      {/* Quick capture — always available (lifted from DashboardHome). */}
+      {/* Quick capture — always available (lifted from DashboardHome). Holds up to
+          MAX_CAPTURE_LINKS link rows; the "+" below adds a row, Save submits them all. */}
       <form
         onSubmit={(e) => { e.preventDefault(); void capture() }}
-        className="mb-6 flex items-center gap-3 rounded-2xl border border-dashed border-[color:var(--line-soft)] bg-[color:var(--surface-2)] p-3"
+        className="mb-6 flex flex-col gap-2 rounded-2xl border border-dashed border-[color:var(--line-soft)] bg-[color:var(--surface-2)] p-3"
       >
-        <label htmlFor="capture-input" className="sr-only">Paste a Reel or post link</label>
-        <input
-          id="capture-input"
-          type="url"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="Paste an Instagram Reel or post link to save it for later…"
-          className="min-h-11 flex-1 rounded-lg border border-[color:var(--line-soft)] bg-[color:var(--surface-1)] px-4 text-[color:var(--text)] placeholder:text-[color:var(--text-faint)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]"
-        />
-        <button type="submit" disabled={busy || !url.trim()} className={BTN_PRIMARY}>Save</button>
+        {urls.map((value, i) => (
+          <div key={i} className="flex items-center gap-3">
+            <label htmlFor={`capture-input-${i}`} className="sr-only">
+              {i === 0 ? 'Paste a Reel or post link' : `Paste a Reel or post link ${i + 1}`}
+            </label>
+            <input
+              id={`capture-input-${i}`}
+              type="url"
+              value={value}
+              onChange={(e) => setUrls((prev) => prev.map((u, j) => (j === i ? e.target.value : u)))}
+              placeholder={i === 0 ? 'Paste an Instagram Reel or post link to save it for later…' : 'Paste another Reel or post link…'}
+              className="min-h-11 flex-1 rounded-lg border border-[color:var(--line-soft)] bg-[color:var(--surface-1)] px-4 text-[color:var(--text)] placeholder:text-[color:var(--text-faint)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]"
+            />
+            {i === 0 ? (
+              <button type="submit" disabled={busy || !urls.some((u) => u.trim())} className={BTN_PRIMARY}>Save</button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setUrls((prev) => prev.filter((_, j) => j !== i))}
+                aria-label={`Remove link ${i + 1}`}
+                className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-[color:var(--text-faint)] transition-colors hover:text-[color:var(--text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        ))}
+        {urls.length < MAX_CAPTURE_LINKS ? (
+          <button
+            type="button"
+            onClick={() => setUrls((prev) => [...prev, ''])}
+            className="inline-flex min-h-11 items-center gap-2 self-start rounded-lg px-1 text-[13px] font-medium text-[color:var(--brass-deep)] transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]"
+          >
+            <span aria-hidden className="text-[16px] leading-none">+</span>
+            Add another link
+            <span className="font-normal text-[color:var(--text-faint)]">({urls.length}/{MAX_CAPTURE_LINKS})</span>
+          </button>
+        ) : (
+          <p className="px-1 text-[13px] text-[color:var(--text-faint)]">Max {MAX_CAPTURE_LINKS} links at a time.</p>
+        )}
       </form>
       {message ? <p role="status" className="-mt-3 mb-6 text-[13px] text-[color:var(--text-muted)]">{message}</p> : null}
       {error ? (

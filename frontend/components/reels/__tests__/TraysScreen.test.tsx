@@ -163,6 +163,76 @@ describe('TraysScreen', () => {
     expect(banner).toHaveTextContent(mappedCopy)
   })
 
+  it('adds capture rows with the + button and saves every pasted link', async () => {
+    const onCapture = vi.fn(async () => {})
+
+    render(<TraysScreen cards={[]} onCapture={onCapture} onOrganize={noop} onCreateTrail={noop} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /add another link/i }))
+    fireEvent.click(screen.getByRole('button', { name: /add another link/i }))
+
+    fireEvent.change(screen.getByLabelText('Paste a Reel or post link'), {
+      target: { value: 'https://www.instagram.com/reel/AAA/' },
+    })
+    fireEvent.change(screen.getByLabelText('Paste a Reel or post link 2'), {
+      target: { value: 'https://www.instagram.com/reel/BBB/' },
+    })
+    fireEvent.change(screen.getByLabelText('Paste a Reel or post link 3'), {
+      target: { value: 'https://www.instagram.com/p/CCC/' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+
+    await waitFor(() => expect(onCapture).toHaveBeenCalledTimes(3))
+    expect(onCapture).toHaveBeenNthCalledWith(1, 'https://www.instagram.com/reel/AAA/')
+    expect(onCapture).toHaveBeenNthCalledWith(2, 'https://www.instagram.com/reel/BBB/')
+    expect(onCapture).toHaveBeenNthCalledWith(3, 'https://www.instagram.com/p/CCC/')
+    expect(await screen.findByText(/saved 3 links to your library/i)).toBeInTheDocument()
+    // Saved rows collapse back to the single empty input.
+    expect(screen.queryByLabelText('Paste a Reel or post link 2')).not.toBeInTheDocument()
+  })
+
+  it('caps capture rows at 5 and swaps the + button for the max hint', async () => {
+    render(<TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
+
+    for (let i = 0; i < 4; i++) {
+      fireEvent.click(screen.getByRole('button', { name: /add another link/i }))
+    }
+
+    expect(screen.getByLabelText('Paste a Reel or post link 5')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /add another link/i })).not.toBeInTheDocument()
+    expect(screen.getByText(/max 5 links at a time/i)).toBeInTheDocument()
+
+    // A row can be removed again, which brings the + button back.
+    fireEvent.click(screen.getByRole('button', { name: 'Remove link 5' }))
+    expect(screen.queryByLabelText('Paste a Reel or post link 5')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /add another link/i })).toBeInTheDocument()
+  })
+
+  it('keeps the failed link in its row and reports a partial save', async () => {
+    const failCopy = "That doesn't look like an Instagram link we can save."
+    const onCapture = vi.fn(async (url: string) => {
+      if (url.includes('bad')) throw new Error(failCopy)
+    })
+
+    render(<TraysScreen cards={[]} onCapture={onCapture} onOrganize={noop} onCreateTrail={noop} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /add another link/i }))
+    fireEvent.change(screen.getByLabelText('Paste a Reel or post link'), {
+      target: { value: 'https://www.instagram.com/reel/GOOD/' },
+    })
+    fireEvent.change(screen.getByLabelText('Paste a Reel or post link 2'), {
+      target: { value: 'https://www.instagram.com/bad' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+
+    const banner = await screen.findByRole('status')
+    expect(banner).toHaveTextContent('Saved 1 of 2 links.')
+    expect(banner).toHaveTextContent(failCopy)
+    // The failed link survives (now in the first row) so it can be fixed and retried.
+    expect(screen.getByLabelText('Paste a Reel or post link')).toHaveValue('https://www.instagram.com/bad')
+    expect(screen.queryByLabelText('Paste a Reel or post link 2')).not.toBeInTheDocument()
+  })
+
   it('shows the empty state when there are no reels and no trays', async () => {
     render(<TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
 

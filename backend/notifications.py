@@ -26,9 +26,21 @@ logger = logging.getLogger(__name__)
 
 _RESEND_ENDPOINT = "https://api.resend.com/emails"
 
-# Default sender on the ``send.`` subdomain (SPF/DKIM live there — see the astrail-domain-infra
-# note). Override with RESEND_FROM_EMAIL. Only ever used when RESEND_API_KEY is set.
-_DEFAULT_FROM = "Astrail <no-reply@send.astrail.xyz>"
+# Default sender on the ROOT domain, which is the verified Resend sending identity. Override with
+# RESEND_FROM_EMAIL. Only ever used when RESEND_API_KEY is set.
+#
+# NOT the ``send.`` subdomain, despite its name. Resend runs on SES and asks for THREE records when
+# you verify a domain: DKIM at ``resend._domainkey.<domain>``, plus an MX + SPF on ``send.<domain>``
+# purely as the Return-Path/bounce address. So ``send.astrail.xyz`` is bounce plumbing for the root
+# registration, NOT a sending identity — it carries no DKIM selector of its own. This default was
+# ``no-reply@send.astrail.xyz`` until 2026-08-07; verified live against the real API, that address
+# returns:
+#     403 "The send.astrail.xyz domain is not verified."
+# which ``_send_email`` then SWALLOWS into a single ``HTTPStatusError`` line — leaving a user in a
+# 7-day deletion grace whose cancel-by notice never arrives. Prove any change here with
+# ``scripts/preflight_resend.py`` against the real API; the httpx fake in the tests accepts every
+# from-address and therefore cannot catch this class of bug.
+_DEFAULT_FROM = "Astrail <no-reply@astrail.xyz>"
 
 _CANCEL_HOWTO = "cancel any time before then from Settings, and nothing will be deleted"
 

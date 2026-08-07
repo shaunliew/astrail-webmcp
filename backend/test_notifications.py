@@ -103,14 +103,29 @@ async def test_scheduled_email_posts_the_right_resend_shape(monkeypatch, fake_ht
 
 async def test_completed_email_posts_and_reads_key_at_call_time(monkeypatch, fake_httpx):
     monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+    # HERMETIC: conftest.py does load_dotenv(), and a developer may also export RESEND_FROM_EMAIL.
+    # Either would shadow _DEFAULT_FROM and make the assertions below describe the environment
+    # rather than the code, so the regression they exist to catch could pass unnoticed on someone
+    # else's machine. Delete it so the default is genuinely what is under test.
+    monkeypatch.delenv("RESEND_FROM_EMAIL", raising=False)
     await notifications.send_deletion_completed_email("traveler@example.com")
 
     assert len(fake_httpx.posted) == 1
     sent = fake_httpx.posted[0]
     assert sent["json"]["to"] == ["traveler@example.com"]
     assert "deleted" in sent["json"]["text"].lower()
-    # A default from-address is used when RESEND_FROM_EMAIL is unset — on the send. subdomain.
-    assert "send.astrail.xyz" in sent["json"]["from"]
+    # A default from-address is used when RESEND_FROM_EMAIL is unset — on the ROOT domain, which is
+    # the verified Resend sending identity.
+    #
+    # This assertion pinned "send.astrail.xyz" until 2026-08-07, i.e. the suite was GREEN over an
+    # address the real API rejects with 403 "The send.astrail.xyz domain is not verified" (proven
+    # live). `fake_httpx` accepts any `from`, so no test at this layer can catch a wrong sending
+    # identity — only scripts/preflight_resend.py can. Asserting the ROOT domain here at least stops
+    # the broken value being re-pinned by a future edit.
+    # EXACT equality, not a substring: `"no-reply@astrail.xyz" in "…@astrail.xyz.evil>"` is True, so
+    # a containment check would accept a lookalike sending domain.
+    assert sent["json"]["from"] == "Astrail <no-reply@astrail.xyz>"
+    assert "send.astrail.xyz" not in sent["json"]["from"]
 
 
 # --- dormant / no-op branches (safe without config) ---------------------------------------

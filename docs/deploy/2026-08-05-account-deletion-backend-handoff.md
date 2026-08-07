@@ -118,7 +118,20 @@ Heads-up for when `zh` merges: its `assert_schema` manifest requires the 7 hotel
 
 Order when you go live, together:
 
-1. Set `RESEND_API_KEY` + `RESEND_FROM_EMAIL` (`Astrail <no-reply@send.astrail.xyz>`) in the Render dashboard
+1. Set `RESEND_API_KEY` + `RESEND_FROM_EMAIL` (`Astrail <no-reply@astrail.xyz>`) in the Render dashboard
+
+   > ⚠ **CORRECTED 2026-08-07 — this line previously said `no-reply@send.astrail.xyz`, which is
+   > PROVEN BROKEN.** Verified against the live Resend API that day: that address returns
+   > `403 "The send.astrail.xyz domain is not verified."` The verified sending identity is the
+   > **ROOT** domain — DKIM lives at `resend._domainkey.astrail.xyz`, while `send.astrail.xyz`
+   > carries only the SES MX + SPF that Resend uses as the Return-Path/bounce address, and is not a
+   > sending identity. `notifications.py::_send_email` swallows that 403 into a single
+   > `HTTPStatusError` log line, so pasting the old value into Render would put users into a 7-day
+   > deletion grace whose cancel-by notice never arrives — invisibly. The code default was corrected
+   > the same day. **Before setting it in Render, prove the pair end-to-end:**
+   > `cd backend && uv run python -m scripts.preflight_resend --to <inbox>`
+   > (Use a dedicated Resend **"Sending access"** key. It cannot read `/domains` and answers
+   > `401 restricted_api_key` — that is a HEALTHY key, not a broken one.)
 2. **Verify the running process actually has them** — a single-key Render env-var PUT does not reliably trigger a redeploy, and a process only picks up new env on restart
 3. The 4 fixes above + Shaun's re-review
 4. Flip `_DELETION_EXECUTION_READY=True` — **a code commit + redeploy, not a dashboard toggle**

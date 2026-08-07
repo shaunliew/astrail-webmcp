@@ -362,15 +362,30 @@ _CLEAR_GATED_MESSAGE = (
 )
 
 # ---------------------------------------------------------------------------------------
-# ACCOUNT-DELETION IS DELIBERATELY GATED OFF (Task 2 of the lean account-deletion arc).
+# ACCOUNT DELETION IS LIVE (2026-08-07 — Task 6 go-live, switch 2 of 3).
 #
-# The schema, the request/cancel RPCs, and these two endpoints ship FIRST, but the delete
-# ENGINE + sweep that actually acts on `pending_deletion`/`deleting` accounts is Task 3, and
-# the notification emails are Task 4. Entering an account into a 7-day grace that nothing
-# will act on would be a lie of its own, so both endpoints fail-closed with 503 until Task 6
-# builds the rest and flips this to True IN THE SAME PR as the live E2E proof. Fail-closed:
-# a missing RPC (a migration lagging a deploy) 503s the same way.
-_DELETION_EXECUTION_READY = False
+# History: this shipped False from 2026-08-05 so the schema, the request/cancel RPCs and the
+# endpoints could land ahead of the delete ENGINE (Task 3) and the notification emails
+# (Task 4) — entering an account into a 7-day grace that nothing would act on would have been
+# a lie of its own. It flipped only once all four PR #61 blockers landed (F1 log-write
+# outcome guard, F2 CAS-send-once, C2 durable+visible notice via `notified_at`, C5 claim gated
+# on `deletion_scheduled_for <= now()`), their two migrations were applied to prod AND verified
+# against the live objects, and pgTAP 019/020 passed.
+#
+# TURNING THIS ON ARMS A DESTRUCTIVE BACKGROUND SWEEP, not just two endpoints:
+# `_run_deletion_sweep` (:135) now runs from `_reap_loop`, and `deletion_engine` purges app
+# data (Pass A) then deletes the `auth.users` row (Pass B) for any account whose grace has
+# lapsed. That is irreversible. The 7-day grace + the "cancel by {date}" email are the only
+# things standing between a mis-click and permanent data loss.
+#
+# STILL FAIL-CLOSED BELOW THIS FLAG: the request endpoint additionally refuses (503) unless
+# `resend_configured()`, because a grace nobody can be warned about must not start; and a
+# missing RPC (a migration lagging a deploy) 503s the same way.
+#
+# TO ROLL BACK: set this False and redeploy. It is a code constant, so that is a commit —
+# `git push origin dev` deploys NOTHING since the ⚑1 repoint; `git push origin origin/dev:main`
+# is what ships. Accounts already inside a grace stay pending and simply stop being swept.
+_DELETION_EXECUTION_READY = True
 
 _DELETION_GATED_MESSAGE = (
     "Account deletion isn't available yet. Nothing on your account was changed."

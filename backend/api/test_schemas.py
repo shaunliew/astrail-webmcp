@@ -127,3 +127,52 @@ def test_valid_shapes_are_accepted():
     assert TripFeedbackRequest(feedback_type="thumbs_up").rating is None
     assert TripFeedbackRequest(feedback_type="rating", rating=1, comment="ok").comment == "ok"
     assert TripFeedbackRequest(feedback_type="free_text", comment="too much walking")
+
+
+# --- date validation + free-text/list bounds (launch pre-flight P3) ---
+
+# NB: "20260801" is deliberately NOT here — Python 3.11+ date.fromisoformat accepts the
+# separator-less ISO form as a valid date, and downstream parsing agrees, so it is not malformed.
+@pytest.mark.parametrize("bad", ["2026-13-01", "not-a-date", "2026/08/01", "", "2026-08-32"])
+def test_malformed_dates_are_rejected_as_422(bad):
+    # A malformed date used to reach the trips insert / weather fetch and surface as a Postgres
+    # 22007 -> 500; reject it at the boundary as the client error it is.
+    with pytest.raises(ValidationError):
+        GenerateTripRequest(**_base_kwargs(start_date=bad))
+    with pytest.raises(ValidationError):
+        GenerateTripRequest(**_base_kwargs(end_date=bad))
+
+
+def test_single_day_trip_is_accepted():
+    # end == start is a valid one-day trip (test_main_integration relies on this).
+    req = GenerateTripRequest(**_base_kwargs(start_date="2026-08-01", end_date="2026-08-01"))
+    assert req.start_date == req.end_date == "2026-08-01"
+
+
+def test_reversed_date_range_is_rejected():
+    with pytest.raises(ValidationError, match="on or after"):
+        GenerateTripRequest(**_base_kwargs(start_date="2026-08-05", end_date="2026-08-01"))
+
+
+def test_absurd_span_is_rejected():
+    with pytest.raises(ValidationError, match="span"):
+        GenerateTripRequest(**_base_kwargs(start_date="2026-01-01", end_date="2030-01-01"))
+
+
+def test_oversized_destination_hint_is_rejected():
+    with pytest.raises(ValidationError):
+        GenerateTripRequest(**_base_kwargs(destination_hint="x" * 201))
+
+
+def test_oversized_origin_city_is_rejected():
+    with pytest.raises(ValidationError):
+        GenerateTripRequest(**_base_kwargs(origin_city="x" * 201))
+
+
+def test_requested_places_list_and_item_bounds():
+    with pytest.raises(ValidationError):   # too many entries
+        GenerateTripRequest(**_base_kwargs(requested_places=["a"] * 51))
+    with pytest.raises(ValidationError):   # a single oversized entry
+        GenerateTripRequest(**_base_kwargs(requested_places=["x" * 501]))
+    # within bounds is fine
+    assert GenerateTripRequest(**_base_kwargs(requested_places=["Tokyo", "Kyoto"])).requested_places

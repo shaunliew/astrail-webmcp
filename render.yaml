@@ -97,6 +97,14 @@ services:
       # before_send. Web service only — the Telegram worker never calls init_sentry (see its absent list).
       - key: SENTRY_DSN
         sync: false
+      # Resend transactional email — account-deletion notices only (notifications.py). DORMANT-safe:
+      # unset RESEND_API_KEY = every notice is a logged no-op (never blocks a deletion). Declared here
+      # for provisioning visibility; `sync: false` (dashboard-entered). Web service only — the worker
+      # sends no email. RESEND_FROM_EMAIL has a code default; set to override the sender.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM_EMAIL
+        sync: false
       - key: ALLOWED_ORIGINS
         value: https://astrail.xyz,https://www.astrail.xyz
       # BETA CAPACITY. Retuned 5 -> 10 by the free-trial + beta-seat entitlement arc: a beta

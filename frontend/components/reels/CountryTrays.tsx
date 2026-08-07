@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react'
 import { countryDisplayLabel, type CountryTray } from '@/lib/reels/organize'
 import { sourceLabel } from '@/lib/reels/labels'
+import { safeHref } from '@/lib/safe-href'
 import VerifiedPlacesMap from './VerifiedPlacesMap'
 
 /* Map-first tray: the collection over a full-bleed map (DESIGN.md — the map is the
@@ -111,9 +112,9 @@ export default function CountryTrays({
                             {place.lat.toFixed(4)}, {place.lng.toFixed(4)}
                           </span>
                           <span className="mt-1.5 block text-[13px] text-[color:var(--text-muted)]">“{place.evidence_quote}”</span>
-                          {place.source_reel_url ? (
+                          {safeHref(place.source_reel_url) ? (
                             <a
-                              href={place.source_reel_url}
+                              href={safeHref(place.source_reel_url)}
                               target="_blank"
                               rel="noreferrer"
                               className="mt-2 inline-block text-[11px] font-semibold uppercase tracking-wide text-[color:var(--brass-deep)] underline underline-offset-2"

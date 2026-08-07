@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReelCollection, SavedReelCard } from '@/lib/reels/backend-types'
 import { STATUS_LABELS, reelLabel, sourceLabel, statusLabel } from '@/lib/reels/labels'
+import { safeHref } from '@/lib/safe-href'
 
 /* ReelInfoCard — a centered modal opened from the Library browse grid showing a saved reel's
    cover, its grounded places (name · country · evidence quote, read-only), a single header
@@ -152,7 +153,7 @@ export default function ReelInfoCard({
                 {statusLabel(card)}
               </span>
               <a
-                href={card.normalized_url}
+                href={safeHref(card.normalized_url)}
                 target="_blank"
                 rel="noreferrer"
                 className="shrink-0 text-[12px] font-semibold uppercase tracking-wide text-[color:var(--brass-deep)] underline underline-offset-2"

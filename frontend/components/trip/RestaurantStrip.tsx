@@ -1,4 +1,5 @@
 import type { RestaurantSuggestion, Place } from '@/lib/trip/backend-types'
+import { safeHref } from '@/lib/safe-href'
 
 export default function RestaurantStrip({
   restaurants, placeIndex,
@@ -32,9 +33,9 @@ export default function RestaurantStrip({
               ) : null}
             </div>
             <p className="type-body mt-1 text-xs text-[var(--muted)]">{r.summary}</p>
-            {r.source_url ? (
+            {safeHref(r.source_url) ? (
               <a
-                href={r.source_url}
+                href={safeHref(r.source_url)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="type-label text-[10px] text-[var(--brass-bright)] underline decoration-dotted underline-offset-2"

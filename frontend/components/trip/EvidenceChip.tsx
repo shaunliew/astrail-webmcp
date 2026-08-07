@@ -1,4 +1,5 @@
 import type { TripPlaceEvidence, EvidenceKind } from '@/lib/trip/backend-types'
+import { safeHref } from '@/lib/safe-href'
 
 const KIND_LABEL: Record<EvidenceKind, string> = {
   reel_quote: 'Reel',
@@ -19,9 +20,9 @@ export default function EvidenceChip({ evidence }: { evidence: TripPlaceEvidence
     <span className="type-evidence inline-flex items-center gap-1.5 rounded-[var(--radius-chip)] bg-[var(--chip-bg)] px-2 py-0.5 text-[10px] tracking-wide text-[var(--muted)]">
       <span className="font-semibold uppercase text-[var(--brass-bright)]">{label}</span>
       <span>{pct}</span>
-      {evidence.source_url ? (
+      {safeHref(evidence.source_url) ? (
         <a
-          href={evidence.source_url}
+          href={safeHref(evidence.source_url)}
           target="_blank"
           rel="noopener noreferrer"
           className="underline decoration-dotted underline-offset-2 hover:text-[var(--starlight)]"

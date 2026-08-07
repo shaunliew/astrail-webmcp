@@ -1,11 +1,15 @@
 """Request/response models for the generation API."""
 from __future__ import annotations
 
-from datetime import datetime
-from typing import Literal
+from datetime import date, datetime
+from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
+
+# Generous upper bound: a beta trip is days-to-weeks, so a >1-year span is a nonsense/abuse range
+# that would inflate day-count + weather scaling. Well beyond any real request (or test).
+_MAX_TRIP_SPAN_DAYS = 366
 
 
 class GenerateTripRequest(BaseModel):
@@ -13,7 +17,7 @@ class GenerateTripRequest(BaseModel):
     place_ids: list[UUID] = Field(default_factory=list, max_length=5)
     start_date: str
     end_date: str
-    destination_hint: str | None = None
+    destination_hint: str | None = Field(default=None, max_length=200)   # bounded (A5): row + prompt surface
     # Flows into LLM prompts (preference_block); bounded like
     # `preferences` (A5) -- max_length, not Literal, so an unrecognized pace value is
     # still accepted (no breaking 422 for the frontend), just capped in cost/injection surface.
@@ -23,7 +27,8 @@ class GenerateTripRequest(BaseModel):
     # Parity with frontend GenerateTripRequest (backend-types.ts, guardrail #4). The
     # frontend sends these three every request; requested_places is recorded on the
     # create_trip event but not yet resolved into the pipeline (deferred).
-    requested_places: list[str] = Field(default_factory=list)
+    requested_places: list[Annotated[str, StringConstraints(max_length=500)]] = Field(
+        default_factory=list, max_length=50)   # bounded list + per-item (A5): jsonb row bloat
     # Literal here, unlike `pace` above — deliberately asymmetric. `pace` has NO database
     # constraint, so an unrecognized value is accepted and merely flows into a prompt;
     # permissiveness costs nothing and spares the frontend a breaking 422. `budget_level`
@@ -33,7 +38,18 @@ class GenerateTripRequest(BaseModel):
     # boundary instead, as the client error it is. These four values must stay in lockstep
     # with that CHECK and with BudgetLevel in frontend/lib/trip/backend-types.ts (#4).
     budget_level: Literal["budget", "mid_range", "premium", "luxury"] | None = None
-    origin_city: str | None = None
+    origin_city: str | None = Field(default=None, max_length=200)   # bounded (A5)
+
+    @field_validator("start_date", "end_date")
+    @classmethod
+    def _valid_iso_date(cls, v: str) -> str:
+        # Reject a malformed date at the boundary as a clean 422, instead of letting it reach the
+        # trips insert / weather fetch and surface as a Postgres 22007 -> 500 (the broad handler).
+        try:
+            date.fromisoformat(v)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("must be an ISO date (YYYY-MM-DD)") from exc
+        return v
 
     @model_validator(mode="after")
     def require_reel_or_place(self):
@@ -41,6 +57,13 @@ class GenerateTripRequest(BaseModel):
             raise ValueError("At least one Reel URL or canonical place ID is required")
         if self.reel_urls and self.place_ids:
             raise ValueError("Provide either Reel URLs or canonical place IDs, not both")
+        # Dates are valid ISO here (field validators ran first). A single-day trip (end == start)
+        # is allowed; a reversed range or an absurd span is a client error, not a 500.
+        start, end = date.fromisoformat(self.start_date), date.fromisoformat(self.end_date)
+        if end < start:
+            raise ValueError("end_date must be on or after start_date")
+        if (end - start).days > _MAX_TRIP_SPAN_DAYS:
+            raise ValueError(f"trip span exceeds {_MAX_TRIP_SPAN_DAYS} days")
         return self
 
 

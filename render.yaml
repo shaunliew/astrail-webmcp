@@ -108,6 +108,20 @@ services:
         sync: false
       - key: RESEND_FROM_EMAIL
         sync: false
+      # SWEEP OWNERSHIP — which deployment executes the IRREVERSIBLE account-deletion sweep.
+      # `main._reap_loop` runs in EVERY process on this image and calls the two-pass delete
+      # engine (purge app data, then hard-delete the auth.users row) every 120s, so without
+      # this key a developer's local `uvicorn main:app` — backend/.env points at PRODUCTION
+      # Supabase — would delete real accounts, as would any second service on this image.
+      # Default is OFF in code (main.deletion_sweep_enabled): unset/blank/anything but "true"
+      # = no sweep, and the app logs a loud `deletion_sweep_disabled_for_this_process` warning
+      # at startup so the safe default cannot fail silently.
+      # THIS web service is the ONE owner. A second web service, a worker, or a preview env
+      # must OMIT this key entirely — never set it to "true" in two places at once.
+      # LITERAL value -> a Blueprint configuration sync re-asserts it, so this file is the
+      # source of truth and a dashboard-only edit gets silently reverted. Change it HERE.
+      - key: RUN_DELETION_SWEEP
+        value: "true"
       # LITERAL value -> a Blueprint configuration sync re-asserts it, so this file is the source of
       # truth and a dashboard-only edit gets silently reverted. Change it HERE.
       # `app.astrail.xyz` added 2026-08-07: a live CORS preflight proved the deployed backend

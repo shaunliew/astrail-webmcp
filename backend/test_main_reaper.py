@@ -242,6 +242,68 @@ async def test_lifespan_starts_the_reaper_and_cancels_it_on_shutdown(monkeypatch
     assert reaper.cancelled() or reaper.done()      # cancelled and awaited in the finally
 
 
+async def _enter_lifespan(monkeypatch):
+    """Enter+exit the lifespan with a fake Supabase client and a parked reaper."""
+    for name in REQUIRED_SECRETS:
+        monkeypatch.setenv(name, "set")
+    monkeypatch.setattr(main, "REAP_INTERVAL_S", 3600)     # park it in the sleep
+    client = _Client({"jobs": [], "organize_jobs": []})
+
+    async def _get_client():
+        return client
+
+    monkeypatch.setattr(main, "get_supabase_client", _get_client)
+    async with main.lifespan(main.app):
+        pass
+
+
+_ARMED_BUT_UNOWNED = "deletion_sweep_disabled_for_this_process"
+
+
+async def test_startup_warns_when_deletion_is_armed_but_this_process_will_not_sweep(
+    monkeypatch, caplog,
+):
+    """The safe default must not fail SILENTLY.
+
+    Default-OFF means a deployment that never sets RUN_DELETION_SWEEP simply stops honouring
+    the 7-day grace — accounts sit past their scheduled_for with nothing reporting it. This
+    warning is the whole difference between "recoverable misconfiguration" and "deletions
+    quietly stopped and nobody noticed"; it is the reason default-OFF is an acceptable trade.
+    """
+    monkeypatch.setattr(main, "_DELETION_EXECUTION_READY", True)
+    monkeypatch.delenv("RUN_DELETION_SWEEP", raising=False)
+
+    with caplog.at_level(logging.WARNING, logger="main"):
+        await _enter_lifespan(monkeypatch)
+
+    assert _ARMED_BUT_UNOWNED in caplog.text
+    assert "RUN_DELETION_SWEEP" in caplog.text     # names the variable an operator must set
+
+
+async def test_startup_is_silent_when_this_process_owns_the_sweep(monkeypatch, caplog):
+    """No log at all on the configured path — a warning every boot on the ONE service that is
+    correct trains the reader to ignore it, which costs the misconfigured case its signal."""
+    monkeypatch.setattr(main, "_DELETION_EXECUTION_READY", True)
+    monkeypatch.setenv("RUN_DELETION_SWEEP", "true")
+
+    with caplog.at_level(logging.WARNING, logger="main"):
+        await _enter_lifespan(monkeypatch)
+
+    assert _ARMED_BUT_UNOWNED not in caplog.text
+
+
+async def test_startup_is_silent_while_the_deletion_feature_is_off(monkeypatch, caplog):
+    """A dormant feature gate is the INTENDED state, not a misconfiguration: warning there
+    would fire on every process during any future re-gating and mean nothing."""
+    monkeypatch.setattr(main, "_DELETION_EXECUTION_READY", False)
+    monkeypatch.delenv("RUN_DELETION_SWEEP", raising=False)
+
+    with caplog.at_level(logging.WARNING, logger="main"):
+        await _enter_lifespan(monkeypatch)
+
+    assert _ARMED_BUT_UNOWNED not in caplog.text
+
+
 async def test_the_reaper_still_starts_when_the_boot_sweep_blips(monkeypatch):
     """The reaper is spawned BEFORE the boot sweeps, deliberately.
 

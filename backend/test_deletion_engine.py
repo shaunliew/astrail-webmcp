@@ -20,6 +20,8 @@ Coverage (each guard reddens ALONE via a paired positive control):
   * crash recovery (public.users missing) -> completed, no re-verify, no delete;
   * InvalidUserId propagates (not retried), terminalized by the sweep to 'failed';
   * the sweep gate: _run_deletion_sweep is a NO-OP while _DELETION_EXECUTION_READY is False;
+  * the ownership gate: a NO-OP unless RUN_DELETION_SWEEP is exactly "true" (default OFF), and
+    the feature gate is checked FIRST (proven by fault injection, not by outcome alone);
   * static SQL: the claim RPC's privilege pin + CAS predicate.
 """
 from __future__ import annotations
@@ -712,10 +714,104 @@ async def test_run_deletion_sweep_runs_when_gate_is_live(monkeypatch):
         calls.append(client)
 
     monkeypatch.setattr(main, "_DELETION_EXECUTION_READY", True)
+    monkeypatch.setenv("RUN_DELETION_SWEEP", "true")   # THIS deployment owns the sweep
     monkeypatch.setattr(deletion_engine, "sweep_due_deletions", _spy)
     sentinel = object()
     await main._run_deletion_sweep(sentinel)
     assert calls == [sentinel]                    # the positive control: it DOES run when live
+
+
+# --- The OWNERSHIP gate (RUN_DELETION_SWEEP) ----------------------------------------------
+#
+# `_DELETION_EXECUTION_READY` answers "is the feature live?"; RUN_DELETION_SWEEP answers "does
+# THIS process own the destructive sweep?". They are different questions and both must hold.
+# Without the second, every process running the image sweeps: `_reap_loop` is spawned by the
+# lifespan in EVERY instance, so a developer's `uvicorn main:app` against backend/.env (which
+# points at PRODUCTION Supabase) purges app data and hard-deletes auth.users rows every 120s.
+# Irreversible, and identically true of any second Render service on the same image.
+
+
+async def test_run_deletion_sweep_is_a_noop_when_this_deployment_does_not_own_it(monkeypatch):
+    """THE new guard, reddening alone: feature live, ownership flag UNSET -> no sweep.
+
+    Unset is the fail-safe default deliberately. A forgotten variable stops deletions (visible,
+    recoverable, and prod gets it from render.yaml so there is no dashboard step to forget);
+    defaulting ON makes every new service and every laptop destructive by default."""
+    import main
+    calls: list = []
+
+    async def _spy(client):
+        calls.append(client)
+
+    monkeypatch.setattr(main, "_DELETION_EXECUTION_READY", True)
+    monkeypatch.delenv("RUN_DELETION_SWEEP", raising=False)
+    monkeypatch.setattr(deletion_engine, "sweep_due_deletions", _spy)
+    await main._run_deletion_sweep(object())
+    assert calls == []                           # unowned -> the destructive sweep never runs
+
+
+@pytest.mark.parametrize("raw, enabled", [
+    ("true", True),        # the one accepted spelling
+    ("TRUE", True),        # case-insensitive
+    ("True", True),
+    (" true ", True),      # whitespace-stripped (a trailing space in a Render env value is easy)
+    ("false", False),
+    ("", False),           # declared-but-blank is NOT ownership
+    ("  ", False),
+    ("1", False),          # explicit-true ONLY: no truthy-string coercion for a destructive flag
+    ("yes", False),
+    ("on", False),
+    ("truthy", False),     # not a prefix match
+])
+async def test_ownership_flag_accepts_explicit_true_only(monkeypatch, raw, enabled):
+    """Exact parsing, because the cost of a false positive here is an irreversible delete.
+
+    `"1"` / `"yes"` / `"on"` are the conventional truthy spellings and they must NOT arm the
+    sweep: an operator who half-remembers the convention should get the safe outcome, not the
+    destructive one."""
+    import main
+    calls: list = []
+
+    async def _spy(client):
+        calls.append(client)
+
+    monkeypatch.setattr(main, "_DELETION_EXECUTION_READY", True)
+    monkeypatch.setenv("RUN_DELETION_SWEEP", raw)
+    monkeypatch.setattr(deletion_engine, "sweep_due_deletions", _spy)
+    await main._run_deletion_sweep(object())
+
+    assert main.deletion_sweep_enabled() is enabled
+    assert (calls != []) is enabled
+
+
+async def test_feature_gate_still_wins_over_the_ownership_flag(monkeypatch):
+    """Owning the sweep does not arm a feature that is off — the gates are AND, not OR."""
+    import main
+    calls: list = []
+
+    async def _spy(client):
+        calls.append(client)
+
+    monkeypatch.setattr(main, "_DELETION_EXECUTION_READY", False)
+    monkeypatch.setenv("RUN_DELETION_SWEEP", "true")
+    monkeypatch.setattr(deletion_engine, "sweep_due_deletions", _spy)
+    await main._run_deletion_sweep(object())
+    assert calls == []                           # feature off -> no sweep, whoever owns it
+
+
+async def test_the_feature_gate_is_checked_BEFORE_the_ownership_flag(monkeypatch):
+    """Proves the ORDER, not just the outcome — both checks return None, so order is otherwise
+    unobservable. Fault-inject the ownership check: if `_DELETION_EXECUTION_READY` is consulted
+    first the poisoned helper is never reached and this returns cleanly; if the order flipped,
+    the RuntimeError escapes."""
+    import main
+
+    def _must_not_be_reached() -> bool:
+        raise RuntimeError("ownership flag read before the feature gate")
+
+    monkeypatch.setattr(main, "_DELETION_EXECUTION_READY", False)
+    monkeypatch.setattr(main, "deletion_sweep_enabled", _must_not_be_reached)
+    await main._run_deletion_sweep(object())     # RED if the checks are reordered
 
 
 # --- C2: durable scheduled-notice retry (_retry_scheduled_notices) -------------------------

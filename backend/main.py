@@ -123,16 +123,46 @@ async def _redispatch_organize(client, job: dict) -> None:
         await run_organize_job(job["id"], job["user_id"], client=client)
 
 
-async def _run_deletion_sweep(client) -> None:
-    """The reaper's account-deletion branch. NO-OP unless the execution gate is live.
+def deletion_sweep_enabled() -> bool:
+    """True when THIS deployment owns the destructive deletion sweep (`RUN_DELETION_SWEEP=true`).
 
-    Gated OFF through Task 6: while `_DELETION_EXECUTION_READY` is False this returns before
-    importing or touching anything, so the two-pass delete engine never runs — the sweep is
-    inert until the same PR that builds notifications + the live E2E proof flips the flag.
+    Read at CALL time, never at import — matching `notifications.resend_configured()`'s
+    discipline, and keeping the flag monkeypatchable via `monkeypatch.setenv`.
+
+    DEFAULT OFF, and that direction is the whole point. `_reap_loop` is spawned by the lifespan
+    in EVERY process running this image, so ownership is not implied by "the code is running":
+    a developer's `cd backend && uv run uvicorn main:app` reads backend/.env, which points at
+    PRODUCTION Supabase, and would purge app data + hard-delete `auth.users` rows every 120s.
+    Same for any second Render service on the same image. A forgotten variable stops deletions
+    — visible (see the startup warning in `lifespan`) and recoverable, and production takes the
+    value from render.yaml so there is no dashboard step to forget. Defaulting ON would instead
+    make every new service and every laptop destructive by default, which is not recoverable.
+
+    Explicit `"true"` only (case-insensitive, whitespace-stripped): `"1"`/`"yes"`/`"on"` do NOT
+    arm it. For an irreversible action, an operator who half-remembers the convention should
+    land on the safe outcome.
+    """
+    return os.environ.get("RUN_DELETION_SWEEP", "").strip().lower() == "true"
+
+
+async def _run_deletion_sweep(client) -> None:
+    """The reaper's account-deletion branch. NO-OP unless BOTH gates hold.
+
+    The two gates answer different questions and are deliberately kept distinct:
+      * `_DELETION_EXECUTION_READY` — "is the feature live at all?" (a code-level go-live flag,
+        flipped once in the PR that shipped notifications + the live E2E proof);
+      * `deletion_sweep_enabled()`  — "does THIS process own the sweep?" (per-deployment, so
+        exactly one deployment executes the irreversible work).
+    Order matters: the feature gate is checked FIRST, so while deletion is dormant the env is
+    not consulted at all. Either way we return before importing `deletion_engine`, so the
+    two-pass delete engine is never even loaded in a process that must not run it.
+
     Kept a separate function (called in its OWN try in `_reap_loop`) so a deletion failure can
-    never skip trip/organize job recovery, and so the gate is unit-testable in isolation.
+    never skip trip/organize job recovery, and so both gates are unit-testable in isolation.
     """
     if not _DELETION_EXECUTION_READY:
+        return
+    if not deletion_sweep_enabled():
         return
     from deletion_engine import sweep_due_deletions
 
@@ -191,6 +221,21 @@ async def lifespan(app: FastAPI):
     # deterministic pre-claim retry loop that `_fail`'s token skip would otherwise open.
     validate_required_secrets()
     reaper = None
+    # OUTSIDE the Supabase try, deliberately: this says something about THIS process's
+    # configuration, which is knowable whether or not the DB is reachable — inside the try a
+    # boot-time blip would swallow the one signal that the safe default is in effect.
+    #
+    # Fires ONLY in the misconfigured shape (feature live, this process not the owner). Silent
+    # when this deployment owns the sweep (a warning on the one correct service every boot
+    # trains the reader to ignore it) and silent while the feature gate is off (that is the
+    # intended dormant state, not a misconfiguration).
+    if _DELETION_EXECUTION_READY and not deletion_sweep_enabled():
+        logger.warning(
+            "deletion_sweep_disabled_for_this_process — account deletion is ARMED but this "
+            "process will NOT run the sweep, so due accounts past their 7-day grace are not "
+            "being deleted here. Exactly ONE deployment must set RUN_DELETION_SWEEP=true "
+            "(astrail-backend, via render.yaml); every other process must leave it unset."
+        )
     try:
         client = await get_supabase_client()
         # Started BEFORE the boot sweeps: a sweep blip (the likely boot failure) must not
@@ -373,10 +418,16 @@ _CLEAR_GATED_MESSAGE = (
 # against the live objects, and pgTAP 019/020 passed.
 #
 # TURNING THIS ON ARMS A DESTRUCTIVE BACKGROUND SWEEP, not just two endpoints:
-# `_run_deletion_sweep` (:135) now runs from `_reap_loop`, and `deletion_engine` purges app
+# `_run_deletion_sweep` now runs from `_reap_loop`, and `deletion_engine` purges app
 # data (Pass A) then deletes the `auth.users` row (Pass B) for any account whose grace has
 # lapsed. That is irreversible. The 7-day grace + the "cancel by {date}" email are the only
 # things standing between a mis-click and permanent data loss.
+#
+# ARMS IT ONLY WHERE `RUN_DELETION_SWEEP=true`, and that second gate is why this flag alone is
+# no longer enough to delete anything. `_reap_loop` runs in EVERY process on this image, so
+# this flag on its own made a local `uvicorn main:app` (backend/.env -> PRODUCTION Supabase)
+# sweep prod every 120s. Ownership is now explicit and default-OFF — see
+# `deletion_sweep_enabled` and the startup warning in `lifespan`.
 #
 # STILL FAIL-CLOSED BELOW THIS FLAG: the request endpoint additionally refuses (503) unless
 # `resend_configured()`, because a grace nobody can be warned about must not start; and a

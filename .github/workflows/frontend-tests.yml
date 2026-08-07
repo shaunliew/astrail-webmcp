@@ -1,0 +1,46 @@
+name: Frontend Tests
+
+# WHY THIS EXISTS. render.yaml gates the Render backend deploy on `checksPass`, and the merge to
+# `dev` is what Vercel deploys for the frontend — but until this file the frontend vitest suite
+# and `tsc --noEmit` gated NOTHING, so a red frontend suite or a type error could merge and ship.
+# backend-tests.yml is the sibling gate for the Python suite; this is the same idea for the app.
+#
+# FOR THIS TO ACTUALLY BLOCK A MERGE, "Frontend Tests" must be added as a REQUIRED status check in
+# the GitHub branch-protection settings for main/dev. That toggle is dashboard-only, not in-repo —
+# the workflow running green is necessary but not sufficient until the check is marked required.
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+jobs:
+  frontend-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 20 LTS. Bump alongside whatever Vercel builds with so CI and production agree; a
+      # suite green on a different major than the deploy runtime is a false signal.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # `npm ci` (not `install`): reproducible, lockfile-exact, and fails if package-lock.json is
+      # out of sync — the same posture as committing uv.lock on the backend.
+      - name: Install dependencies
+        run: npm ci
+
+      # Typecheck BEFORE tests: a type error is the cheaper, faster failure and `next build` on
+      # Vercel would reject it anyway — catch it at PR time, not at deploy time.
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Run frontend test suite
+        run: npm test

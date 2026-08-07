@@ -403,6 +403,40 @@ async def erase_user(client, mem0, log_row: dict) -> None:
     # defensive no-op for a row that changed state between select and dispatch.
 
 
+async def _retry_scheduled_notices(client, now: datetime) -> None:
+    """C2: the durable backstop for the "scheduled — cancel by {date}" grace email.
+
+    The request endpoint fires that notice once up front, but the send is best-effort and can fail
+    invisibly (a 403 unverified-domain, a Resend 500, a timeout). This re-sends it every sweep tick
+    for any row that is STILL cancellable and STILL unconfirmed-sent — `outcome='pending'`,
+    `scheduled_for > now` (the grace hasn't lapsed, so "cancel by {date}" is still meaningful and
+    a due row is the erase sweep's job, not this one), `notified_at IS NULL`. The recipient is the
+    address captured on the log row at request time, so no auth lookup is needed. On a CONFIRMED 2xx
+    send it stamps `notified_at` (guarded on outcome='pending', F1 discipline) so the row is never
+    re-notified. Best-effort per row: a send never raises (the sender swallows), and a stamp-write
+    failure just leaves the row unnotified for the next tick.
+    """
+    from notifications import send_deletion_scheduled_email
+
+    rows = (
+        await client.table("account_deletion_log")
+        .select("id,recipient_email,scheduled_for")
+        .eq("outcome", "pending")
+        .is_("notified_at", "null")
+        .gt("scheduled_for", now.isoformat())
+        .execute()
+    ).data or []
+    for row in rows:
+        sent = await send_deletion_scheduled_email(row.get("recipient_email"), row.get("scheduled_for"))
+        if not sent:
+            continue  # still unnotified -> retried next tick; the failure is now logged (visibility)
+        await (
+            client.table("account_deletion_log")
+            .update({"notified_at": _now_iso()})
+            .eq("id", row["id"]).eq("outcome", "pending").execute()
+        )
+
+
 async def sweep_due_deletions(client) -> None:
     """The reaper's deletion branch body (plan §3.4). Selects due, not-in-backoff deletion-log
     rows and runs the two-pass erase_user for each. Sequential is fine for beta.
@@ -411,6 +445,15 @@ async def sweep_due_deletions(client) -> None:
     OWN try, so a deletion failure never skips trip/organize job recovery.
     """
     now = _now_utc()
+
+    # C2: durable scheduled-notice retry — a separate, disjoint set from the due-erase rows below
+    # (these are NOT yet due; the grace is still active). Best-effort: a failure here must never
+    # skip the erase sweep, so it is wrapped and logged type-only.
+    try:
+        await _retry_scheduled_notices(client, now)
+    except Exception as exc:  # noqa: BLE001 — a notice-retry failure must not skip the erase sweep
+        logger.warning("account_deletion notice-retry pass failed: %s", type(exc).__name__)
+
     rows = (
         await client.table("account_deletion_log").select("*")
         .in_("outcome", ["pending", "deleting"])

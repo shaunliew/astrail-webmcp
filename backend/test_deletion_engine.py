@@ -55,6 +55,8 @@ class _Query:
         self._eq: dict = {}
         self._in: dict = {}
         self._lte: dict = {}
+        self._gt: dict = {}
+        self._isnull: set = set()
         self._single = False
         self._limit = None
 
@@ -78,6 +80,16 @@ class _Query:
         self._lte[col] = value
         return self
 
+    def gt(self, col, value):
+        self._gt[col] = value
+        return self
+
+    def is_(self, col, value):
+        # Only IS NULL is used (notice-retry selects unnotified rows). supabase-py takes "null".
+        assert value in ("null", None), f"fake is_ only models IS NULL, got {value!r}"
+        self._isnull.add(col)
+        return self
+
     def limit(self, n):
         self._limit = n
         return self
@@ -91,9 +103,15 @@ class _Query:
             return False
         if any(row.get(c) not in vs for c, vs in self._in.items()):
             return False
+        if any(row.get(c) is not None for c in self._isnull):   # SQL: col IS NULL
+            return False
         for c, v in self._lte.items():
             cur = row.get(c)
             if cur is None or not cur <= v:   # SQL: NULL <= x is NULL -> no match
+                return False
+        for c, v in self._gt.items():
+            cur = row.get(c)
+            if cur is None or not cur > v:    # SQL: NULL > x is NULL -> no match
                 return False
         return True
 
@@ -220,7 +238,8 @@ def _log(**overrides) -> dict:
     row = {"id": "log-1", "user_id": _UID, "recipient_email": "gone@example.com",
            "requested_at": "2026-08-13T12:00:00+00:00", "scheduled_for": "2026-08-13T12:00:00+00:00",
            "attempts": 0, "next_attempt_at": None, "last_error": None,
-           "purged_verified_at": None, "completed_at": None, "outcome": "pending"}
+           "purged_verified_at": None, "completed_at": None, "outcome": "pending",
+           "notified_at": None}
     row.update(overrides)
     return row
 
@@ -678,6 +697,70 @@ async def test_run_deletion_sweep_runs_when_gate_is_live(monkeypatch):
     sentinel = object()
     await main._run_deletion_sweep(sentinel)
     assert calls == [sentinel]                    # the positive control: it DOES run when live
+
+
+# --- C2: durable scheduled-notice retry (_retry_scheduled_notices) -------------------------
+
+
+def _patch_scheduled_send(monkeypatch, *, returns=True):
+    """Monkeypatch notifications.send_deletion_scheduled_email (resolved at call time inside the
+    engine) and return the list of (email, scheduled_for) it was called with."""
+    import notifications
+    sends: list = []
+
+    async def _send(email, scheduled_for):
+        sends.append((email, scheduled_for))
+        return returns
+
+    monkeypatch.setattr(notifications, "send_deletion_scheduled_email", _send)
+    return sends
+
+
+async def test_notice_retry_sends_only_eligible_rows_and_stamps(monkeypatch):
+    # C2: the retry re-sends the "cancel by {date}" notice ONLY for a pending, still-cancellable
+    # (scheduled_for > now), unnotified row — and stamps notified_at on a confirmed 2xx so it never
+    # re-sends. A due row is the erase sweep's job; an already-notified or cancelled row is skipped.
+    sends = _patch_scheduled_send(monkeypatch, returns=True)
+    future = (_NOW + timedelta(days=5)).isoformat()
+    past = (_NOW - timedelta(days=1)).isoformat()
+    client = _FakeClient(log=[
+        _log(id="r-eligible", recipient_email="a@example.com", scheduled_for=future),
+        _log(id="r-due", recipient_email="b@example.com", scheduled_for=past),            # grace lapsed
+        _log(id="r-notified", recipient_email="c@example.com", scheduled_for=future,
+             notified_at="2026-08-19T00:00:00+00:00"),                                     # already sent
+        _log(id="r-cancelled", recipient_email="d@example.com", scheduled_for=future,
+             outcome="cancelled"),                                                         # not pending
+    ])
+    await deletion_engine._retry_scheduled_notices(client, _NOW)
+
+    assert sends == [("a@example.com", future)]                    # ONLY the eligible row
+    by_id = {r["id"]: r for r in client.db["account_deletion_log"]}
+    assert by_id["r-eligible"]["notified_at"] is not None          # stamped
+    assert by_id["r-due"]["notified_at"] is None                   # untouched
+    assert by_id["r-notified"]["notified_at"] == "2026-08-19T00:00:00+00:00"
+
+
+async def test_notice_retry_leaves_notified_at_null_on_a_failed_send(monkeypatch):
+    # A swallowed send (403/500/timeout -> False) must NOT stamp, so the row is retried next tick.
+    sends = _patch_scheduled_send(monkeypatch, returns=False)
+    future = (_NOW + timedelta(days=5)).isoformat()
+    client = _FakeClient(log=[_log(scheduled_for=future)])
+    await deletion_engine._retry_scheduled_notices(client, _NOW)
+
+    assert sends == [("gone@example.com", future)]                 # it tried
+    assert client.log_row["notified_at"] is None                  # …but did not stamp -> will retry
+
+
+async def test_sweep_wires_in_the_notice_retry(monkeypatch):
+    # Integration: sweep_due_deletions runs the notice-retry pass. A single future (not-due) pending
+    # row means the erase set is empty (no mem0 needed), isolating the retry wiring.
+    sends = _patch_scheduled_send(monkeypatch, returns=True)
+    future = (_NOW + timedelta(days=5)).isoformat()
+    client = _FakeClient(log=[_log(scheduled_for=future)])
+    await deletion_engine.sweep_due_deletions(client)
+
+    assert sends == [("gone@example.com", future)]
+    assert client.log_row["notified_at"] is not None
 
 
 # --- Generation entrypoint freeze (main._account_is_pending_deletion, plan §3.6) ----------

@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(27);
+select plan(28);
 
 -- request_/cancel_account_deletion move an account into and out of the 7-day cancellable grace.
 -- This proves, single-session and deterministically, that:
@@ -139,6 +139,10 @@ select ok(
   'PUBLIC cannot execute cancel_account_deletion');
 select ok(has_function_privilege('service_role', 'public.cancel_account_deletion(uuid)', 'EXECUTE'),
   'service_role can execute cancel_account_deletion');
+
+-- C2 (20260807000000): the durable scheduled-notice stamp the sweep's retry reads + writes.
+select has_column('account_deletion_log', 'notified_at',
+  'account_deletion_log has the notified_at durable-notice column (C2)');
 
 select * from finish();
 

@@ -585,6 +585,18 @@ def test_the_hotel_geocode_cache_columns_the_resolver_writes_are_pinned():
             "created_at", "expires_at"} <= set(assert_schema.REQUIRED_SCHEMA["hotel_geocode_cache"])
 
 
+def test_the_account_deletion_notified_at_column_the_notice_retry_needs_is_pinned():
+    """`notified_at` (20260807000000, C2) is the durable stamp the scheduled-notice retry reads and
+    writes: the request endpoint stamps it on a 2xx send, and the sweep re-sends any pending,
+    still-cancellable, unnotified row while it is NULL. Ship the notice-retry code ahead of the
+    column and the sweep's `.is_("notified_at","null")` select / its stamping update fail in
+    production — the same code-ahead-of-migration class the entitlements + hotel arcs were bitten by.
+
+    Same self-erasure shape as the pins above (the fake DB is derived FROM the manifest), so pinning
+    it here is the only thing that reddens a silent removal."""
+    assert "notified_at" in set(assert_schema.REQUIRED_SCHEMA["account_deletion_log"])
+
+
 def test_the_shipped_manifest_passes_the_guard():
     """POSITIVE CONTROL. Without it, `return ["broken"]` unconditionally passes every negative
     test above — while aborting every deploy this gate is supposed to let through.

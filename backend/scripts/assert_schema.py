@@ -175,9 +175,11 @@ REQUIRED_SCHEMA: dict[str, tuple[str, ...]] = {
               "deletion_scheduled_for"),
     # FK-free audit + work-queue for account deletion (20260805000000). Task 3's sweep selects and
     # updates every column below, so their presence is the proxy for the whole deletion migration.
+    # `notified_at` (20260807000000, C2) is the durable scheduled-notice stamp the sweep reads/writes
+    # — pinned so a deploy of the notice-retry code can never race ahead of its column.
     "account_deletion_log": ("id", "user_id", "recipient_email", "requested_at", "scheduled_for",
                              "attempts", "next_attempt_at", "last_error", "purged_verified_at",
-                             "completed_at", "outcome"),
+                             "completed_at", "outcome", "notified_at"),
 }
 
 # ANCHOR TABLES — the manifest's floor, and the only thing `_validate_manifest` can check

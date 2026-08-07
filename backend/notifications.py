@@ -66,8 +66,12 @@ def _friendly_date(scheduled_for: str) -> str:
     return f"{dt.strftime('%B')} {dt.day}, {dt.year}"
 
 
-async def send_deletion_scheduled_email(email: str | None, scheduled_for: str) -> None:
-    """Best-effort notice that a 7-day deletion grace has started (plan §3.5, the safety net)."""
+async def send_deletion_scheduled_email(email: str | None, scheduled_for: str) -> bool:
+    """Best-effort notice that a 7-day deletion grace has started (plan §3.5, the safety net).
+
+    Returns True ONLY on a confirmed 2xx send — the durable signal the request endpoint and the
+    sweep stamp `account_deletion_log.notified_at` on (C2). A no-op (no key / no recipient) and any
+    failure return False, so an unstamped row is retried until the notice genuinely lands."""
     subject = "Your Astrail account is scheduled for deletion"
     body = (
         f"Your Astrail account and its travel data are scheduled to be deleted on "
@@ -75,35 +79,41 @@ async def send_deletion_scheduled_email(email: str | None, scheduled_for: str) -
         f"If you didn't mean to do this, you can {_CANCEL_HOWTO}.\n\n"
         "After that date your account and everything Astrail remembers are permanently removed."
     )
-    await _send_email(email, subject, body)
+    return await _send_email(email, subject, body)
 
 
-async def send_deletion_completed_email(email: str | None) -> None:
-    """Best-effort notice that the account + its data have been deleted."""
+async def send_deletion_completed_email(email: str | None) -> bool:
+    """Best-effort notice that the account + its data have been deleted. Returns True on a confirmed
+    2xx send (the caller ignores it — the account is already gone; a lost notice is acceptable)."""
     subject = "Your Astrail account has been deleted"
     body = (
         "Your Astrail account and its associated travel data have been permanently deleted.\n\n"
         "Thanks for trying Astrail — you're welcome back any time with a fresh account."
     )
-    await _send_email(email, subject, body)
+    return await _send_email(email, subject, body)
 
 
-async def _send_email(email: str | None, subject: str, body: str) -> None:
-    """POST one email to Resend, swallowing EVERY failure (best-effort).
+async def _send_email(email: str | None, subject: str, body: str) -> bool:
+    """POST one email to Resend, swallowing EVERY failure (best-effort). Returns True ONLY on a
+    confirmed 2xx send; a no-op (no key / no recipient) or any failure returns False.
 
     A logged no-op when ``RESEND_API_KEY`` is unset or the recipient is missing, so the feature
-    ships safely dormant. Secret-safe: a caught exception logs only its TYPE name — never the
-    message/traceback (which can embed the bearer key or the ``?token=`` URL), the API key, or
-    the recipient address.
+    ships safely dormant. Secret-safe: the caught exception's MESSAGE/traceback is never logged
+    (httpx embeds the request URL / headers there — the bearer key), nor the API key or recipient.
+    Visibility (C2): a Resend rejection carries a response whose ``status_code`` + small JSON error
+    body ("The <domain> is not verified", 4xx/5xx) contain NEITHER the key (request header) nor the
+    recipient (request payload), so both are logged — that is exactly what was silently swallowed
+    before (Shaun's 2026-08-07 403 was invisible; fixed sender in 9862629). Transport / non-HTTP
+    errors have no response and fall back to the TYPE name only.
     """
     try:
         api_key = os.environ.get("RESEND_API_KEY")
         if not api_key:
             logger.info("deletion email skipped: RESEND_API_KEY unset (no-op)")
-            return
+            return False
         if not email:
             logger.warning("deletion email skipped: no recipient address")
-            return
+            return False
 
         import httpx  # lazy: keeps the import path key-free and network-free
 
@@ -116,7 +126,15 @@ async def _send_email(email: str | None, subject: str, body: str) -> None:
                 json=payload,
             )
             resp.raise_for_status()
+        return True
     except Exception as exc:  # noqa: BLE001 — best-effort; a notice must NEVER break a deletion
-        # TYPE name only. An httpx error message can embed the request URL / headers (the bearer
-        # key) or the recipient address — never log the message or a traceback.
-        logger.warning("deletion email send failed: %s", type(exc).__name__)
+        resp = getattr(exc, "response", None)
+        status = getattr(resp, "status_code", None)
+        if status is not None:
+            # Secret-free: status + Resend's JSON error body (never the exception message).
+            snippet = (getattr(resp, "text", "") or "")[:500]
+            logger.warning("deletion email send failed: type=%s status=%s body=%s",
+                           type(exc).__name__, status, snippet)
+        else:
+            logger.warning("deletion email send failed: %s", type(exc).__name__)
+        return False

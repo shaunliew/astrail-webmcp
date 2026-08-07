@@ -297,6 +297,72 @@ async def test_request_deletion_bounds_a_slow_email_and_still_200(monkeypatch):
     assert elapsed < 2.0, f"email was not bounded: request took {elapsed:.2f}s (send sleeps 5s)"
 
 
+# --- C2: request-time notified_at stamp (_send_scheduled_deletion_email) -------------------
+# On a CONFIRMED send the request endpoint stamps account_deletion_log.notified_at so the sweep's
+# durable retry does not re-send; a failed/false send leaves it NULL for the sweep to pick up.
+
+
+class _RecordingTable:
+    def __init__(self, sink):
+        self.sink, self._patch, self._eq = sink, None, {}
+
+    def update(self, patch):
+        self._patch = dict(patch)
+        return self
+
+    def eq(self, col, value):
+        self._eq[col] = value
+        return self
+
+    async def execute(self):
+        self.sink.append({"patch": self._patch, "eq": dict(self._eq)})
+        return type("_R", (), {"data": [{}]})()
+
+
+class _FakeClientAuthAndTable:
+    def __init__(self, admin, sink):
+        self.auth = type("_Auth", (), {"admin": admin})()
+        self._sink = sink
+
+    def table(self, _name):
+        return _RecordingTable(self._sink)
+
+
+async def test_scheduled_email_stamps_notified_at_on_a_confirmed_send(monkeypatch):
+    import main
+    import notifications
+    monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+
+    async def _send_ok(email, scheduled_for):
+        return True                                      # confirmed 2xx
+
+    monkeypatch.setattr(notifications, "send_deletion_scheduled_email", _send_ok)
+    sink: list = []
+    client = _FakeClientAuthAndTable(_FakeAdmin("traveler@example.com"), sink)
+    await main._send_scheduled_deletion_email(client, "u1", "2026-08-12T00:00:00+00:00")
+
+    assert len(sink) == 1                                # exactly one stamp write
+    assert set(sink[0]["patch"]) == {"notified_at"}
+    assert sink[0]["patch"]["notified_at"] is not None
+    assert sink[0]["eq"] == {"user_id": "u1", "outcome": "pending"}   # guarded to THIS user's pending row
+
+
+async def test_scheduled_email_does_not_stamp_when_the_send_fails(monkeypatch):
+    import main
+    import notifications
+    monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+
+    async def _send_fail(email, scheduled_for):
+        return False                                     # swallowed failure
+
+    monkeypatch.setattr(notifications, "send_deletion_scheduled_email", _send_fail)
+    sink: list = []
+    client = _FakeClientAuthAndTable(_FakeAdmin("traveler@example.com"), sink)
+    await main._send_scheduled_deletion_email(client, "u1", "2026-08-12T00:00:00+00:00")
+
+    assert sink == []                                    # NOT stamped -> the sweep retries
+
+
 # --- POST /account/deletion/cancel --------------------------------------------------------
 
 

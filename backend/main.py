@@ -751,20 +751,42 @@ async def _send_scheduled_deletion_email(client, user_id: str, scheduled_for: st
     the send, or a wait_for TimeoutError — can raise into the endpoint or delay the 200 beyond the
     budget: an email must never fail (or slow) an already-scheduled deletion. Secret-safe: logs
     only the exception TYPE name (an auth/httpx error can embed the bearer key or the address).
+
+    C2: on a CONFIRMED send, stamp `account_deletion_log.notified_at` so the sweep's durable
+    notice-retry doesn't re-send. A failed/timed-out send leaves it NULL and the sweep retries
+    within a tick — this up-front send is now the fast path, not the only path.
     """
+    from datetime import datetime, timezone
+
     from notifications import send_deletion_scheduled_email
 
-    async def _lookup_and_send() -> None:
+    async def _lookup_and_send() -> bool:
         # The JWT sub is the identity; read the address service-side (RPC already captured it into
         # the log, but the endpoint only got scheduled_for back). get_user_by_id is the admin read.
         resp = await client.auth.admin.get_user_by_id(user_id)
         email = getattr(getattr(resp, "user", None), "email", None)
-        await send_deletion_scheduled_email(email, scheduled_for)
+        return await send_deletion_scheduled_email(email, scheduled_for)
 
+    sent = False
     try:
-        await asyncio.wait_for(_lookup_and_send(), timeout=_EMAIL_BUDGET_S)
+        sent = await asyncio.wait_for(_lookup_and_send(), timeout=_EMAIL_BUDGET_S)
     except Exception as exc:  # noqa: BLE001 — best-effort (incl. TimeoutError): a notice must NEVER break/slow a scheduled deletion
         logger.warning("scheduled deletion email failed: %s", type(exc).__name__)
+
+    if not sent:
+        return  # notified_at stays NULL -> the sweep's C2 retry re-sends within a tick
+    try:
+        # Stamp the durable "notice confirmed sent" marker (guarded on outcome='pending', F1
+        # discipline). Bounded + best-effort: a stamp failure just means the sweep re-sends once
+        # (a duplicate cancel-by notice beats a silent none), so it must not raise/slow the 200.
+        await asyncio.wait_for(
+            client.table("account_deletion_log")
+            .update({"notified_at": datetime.now(timezone.utc).isoformat()})
+            .eq("user_id", user_id).eq("outcome", "pending").execute(),
+            timeout=_EMAIL_BUDGET_S,
+        )
+    except Exception as exc:  # noqa: BLE001 — a stamp failure must never break/slow a scheduled deletion
+        logger.warning("scheduled deletion notified_at stamp failed: %s", type(exc).__name__)
 
 
 @app.post("/account/deletion", response_model=AccountDeletionResponse)

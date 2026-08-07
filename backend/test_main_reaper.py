@@ -304,6 +304,92 @@ async def test_startup_is_silent_while_the_deletion_feature_is_off(monkeypatch, 
     assert _ARMED_BUT_UNOWNED not in caplog.text
 
 
+async def _enter_lifespan_with_dead_db(monkeypatch):
+    """Enter+exit the lifespan with `get_supabase_client` RAISING — a boot-time DB blip."""
+    for name in REQUIRED_SECRETS:
+        monkeypatch.setenv(name, "set")
+    monkeypatch.setattr(main, "REAP_INTERVAL_S", 3600)
+
+    async def _boom():
+        raise RuntimeError("supabase unreachable at boot")
+
+    monkeypatch.setattr(main, "get_supabase_client", _boom)
+    async with main.lifespan(main.app):     # must NOT raise: a DB blip degrades, never crashes boot
+        pass
+
+
+async def test_the_warning_survives_a_boot_time_DB_BLIP(monkeypatch, caplog):
+    """The warning sits OUTSIDE the Supabase `try` — this is the test that holds it there.
+
+    The placement is deliberate: what it reports is a fact about THIS PROCESS'S CONFIGURATION,
+    knowable whether or not Supabase answers. Inside the try, the broad `except Exception: pass`
+    that stops a boot-time blip from downing the app would ALSO swallow the one signal that
+    deletions are silently not running — losing it in precisely the degraded boot where an
+    operator most needs to know.
+
+    Found by the 2026-08-07 review as an UNTESTED design property: mutating the code to move the
+    warning inside the try left all ten tests in this file green. Without this test, a future
+    refactor reintroduces the exact failure the placement exists to prevent, silently.
+    """
+    monkeypatch.setattr(main, "_DELETION_EXECUTION_READY", True)
+    monkeypatch.delenv("RUN_DELETION_SWEEP", raising=False)
+
+    with caplog.at_level(logging.WARNING, logger="main"):
+        await _enter_lifespan_with_dead_db(monkeypatch)
+
+    assert _ARMED_BUT_UNOWNED in caplog.text, (
+        "the warning was swallowed by the boot-time DB failure — it must be emitted BEFORE the "
+        "Supabase try, not inside it"
+    )
+
+
+_SWEEP_OWNER = "deletion_sweep_owner"
+
+
+async def test_startup_logs_a_POSITIVE_confirmation_when_this_process_owns_the_sweep(
+    monkeypatch, caplog,
+):
+    """A positive grep target for the post-deploy check.
+
+    Verifying the flag by the ABSENCE of the warning is a weak signal — absence is equally
+    consistent with correct ownership, log-shipping lag, a wrong service filter, and the
+    deliberately-silent dormant state. This line is the affirmative one. INFO, not WARNING:
+    it is the correct state, and a per-boot warning on the one healthy service is exactly what
+    trains people to ignore warnings.
+    """
+    monkeypatch.setattr(main, "_DELETION_EXECUTION_READY", True)
+    monkeypatch.setenv("RUN_DELETION_SWEEP", "true")
+
+    with caplog.at_level(logging.INFO, logger="main"):
+        await _enter_lifespan(monkeypatch)
+
+    assert _SWEEP_OWNER in caplog.text
+    assert _ARMED_BUT_UNOWNED not in caplog.text     # never both
+
+
+@pytest.mark.parametrize("ready, sweep, expected", [
+    (True, None, False),      # armed but unowned -> the WARNING path, not this one
+    (False, "true", False),   # dormant feature -> nothing claims ownership of a sweep that cannot run
+    (False, None, False),
+])
+async def test_the_positive_confirmation_fires_ONLY_when_armed_AND_owned(
+    monkeypatch, caplog, ready, sweep, expected,
+):
+    """Companion to the above: the positive line must not become ambient noise, or it stops
+    being evidence. Notably it must stay silent while the feature gate is off — claiming to own
+    a sweep that cannot run would make the post-deploy check lie."""
+    monkeypatch.setattr(main, "_DELETION_EXECUTION_READY", ready)
+    if sweep is None:
+        monkeypatch.delenv("RUN_DELETION_SWEEP", raising=False)
+    else:
+        monkeypatch.setenv("RUN_DELETION_SWEEP", sweep)
+
+    with caplog.at_level(logging.INFO, logger="main"):
+        await _enter_lifespan(monkeypatch)
+
+    assert (_SWEEP_OWNER in caplog.text) is expected
+
+
 async def test_the_reaper_still_starts_when_the_boot_sweep_blips(monkeypatch):
     """The reaper is spawned BEFORE the boot sweeps, deliberately.
 

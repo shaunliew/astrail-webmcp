@@ -198,8 +198,9 @@ async def _reap_loop(client) -> None:
             logger.warning("reap_loop_iteration_failed", exc_info=True)
             _sentry_capture(exc)   # already exposed via exc_info above; scrubbed en route to Sentry
         # Account-deletion sweep in its OWN try: a deletion error must never skip the trip/
-        # organize recovery above (they are the load-bearing guardrail #12 path). No-op while
-        # the gate is off. Same cadence as the reclaim sweeps (this shares the 120s tick).
+        # organize recovery above (they are the load-bearing guardrail #12 path). No-op unless
+        # BOTH gates hold (feature live AND this process owns the sweep — see
+        # `_run_deletion_sweep`). Same cadence as the reclaim sweeps (this shares the 120s tick).
         try:
             await _run_deletion_sweep(client)
         except Exception as exc:  # noqa: BLE001 — TYPE only: a postgrest/supabase traceback can
@@ -235,6 +236,17 @@ async def lifespan(app: FastAPI):
             "process will NOT run the sweep, so due accounts past their 7-day grace are not "
             "being deleted here. Exactly ONE deployment must set RUN_DELETION_SWEEP=true "
             "(astrail-backend, via render.yaml); every other process must leave it unset."
+        )
+    elif _DELETION_EXECUTION_READY:
+        # POSITIVE confirmation, at INFO. The post-deploy check for this flag used to be "grep
+        # for the ABSENCE of the warning above" — and absence is a weak signal: it is equally
+        # consistent with correct ownership, with log-shipping lag, with a wrong service filter,
+        # and with the deliberately-silent dormant state. This line gives the deploy a positive
+        # grep target instead. INFO, not WARNING: it is the correct state, and a per-boot warning
+        # on the one healthy service is what trains people to ignore warnings.
+        logger.info(
+            "deletion_sweep_owner — this process owns the account-deletion sweep "
+            "(RUN_DELETION_SWEEP=true). Exactly one deployment may log this."
         )
     try:
         client = await get_supabase_client()

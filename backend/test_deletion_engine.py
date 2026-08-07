@@ -318,6 +318,23 @@ async def test_cancel_lost_claim_skips_without_touching_anything(monkeypatch):
     assert client.log_row["outcome"] == "pending"
 
 
+async def test_c5_claim_refused_for_an_unlapsed_account_skips_without_touching_anything(monkeypatch):
+    # C5 engine side: the claim RPC refuses (claim=False) because deletion_scheduled_for is still in
+    # the future (a freshly re-requested grace). The status re-read sees 'pending_deletion' — neither
+    # 'active' (a cancel) nor 'deleting' (our prior claim) — so the engine must skip: never purge,
+    # never delete, leave the row for the account's own fresh 7-day grace. This is the F1 re-request
+    # race closed at the root: the sweep can hold a stale, expired row, but the claim won't win.
+    purge = _patch_purge(monkeypatch, None)
+    client = _FakeClient(log=[_log()],
+                         users=[{"id": _UID, "account_status": "pending_deletion"}], claim=False)
+    await deletion_engine.erase_user(client, object(), client.log_row)
+
+    assert purge.calls == []                     # never purged
+    assert client.deleted == []                  # never deleted
+    assert client.updates == []                  # the log row is left untouched
+    assert client.log_row["outcome"] == "pending"
+
+
 async def test_claim_false_but_status_deleting_is_our_prior_claim_and_keeps_retrying(monkeypatch):
     # claim() false because WE already flipped it to 'deleting' on a prior tick; the log is still
     # 'pending' (that prior purge was unconfirmed). This must re-enter the purge, not be mistaken
@@ -788,11 +805,13 @@ async def test_generate_entrypoint_allows_active_and_fails_open():
 # --- Static migration assertions (the claim RPC's privilege pin + CAS predicate) ----------
 # A mocked RPC can't see a GRANT or the CAS predicate, so these guard the SQL directly: a
 # regression that drops the revoke/grant or broadens the CAS reds here in the keyless suite. The
-# RUNTIME proof (the claim CASes pending->deleting, a false claim on active, service-role-only
-# EXECUTE) is supabase/tests/020_claim_account_for_deletion.sql, run at the Task 6 live gate.
+# RUNTIME proof (the claim CASes pending->deleting, a false claim on active/future-scheduled,
+# service-role-only EXECUTE) is supabase/tests/020_claim_account_for_deletion.sql, run at the live
+# gate. Pointed at the C5 replace (20260807000100), which is the AUTHORITATIVE live definition of
+# claim_account_for_deletion — the original 20260805010000 body has been superseded.
 
 _MIGRATION = (Path(__file__).resolve().parents[1] / "supabase" / "migrations"
-              / "20260805010000_account_deletion_engine.sql")
+              / "20260807000100_account_deletion_claim_scheduled_guard.sql")
 
 
 def _normalized_sql() -> str:
@@ -810,13 +829,16 @@ def test_claim_rpc_is_privilege_pinned_to_service_role():
     assert "security definer set search_path = ''" in sql
 
 
-def test_claim_rpc_cas_predicate_is_pending_to_deleting():
+def test_claim_rpc_cas_predicate_is_pending_to_deleting_and_due():
     sql = _normalized_sql()
     assert "returns boolean" in sql
     assert "set account_status = 'deleting'" in sql
-    # The CAS wins ONLY from a still-'pending_deletion' row — a cancel that flipped to 'active'
-    # loses. Broadening this predicate is the load-bearing regression this guards.
-    assert "where id = p_user_id and account_status = 'pending_deletion'" in sql
+    # The CAS wins ONLY from a still-'pending_deletion' row whose grace has LAPSED
+    # (deletion_scheduled_for <= now(), C5) — a cancel that flipped to 'active' loses, and a
+    # freshly re-requested (future-scheduled) account cannot be claimed early. Dropping either
+    # conjunct is the load-bearing regression this guards.
+    assert ("where id = p_user_id and account_status = 'pending_deletion' "
+            "and deletion_scheduled_for <= now()") in sql
 
 
 # --- T3 review folds: initializing quiescence + Pass B status self-guard --------------------

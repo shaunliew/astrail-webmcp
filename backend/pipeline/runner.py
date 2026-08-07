@@ -28,6 +28,7 @@ from pipeline.offline_harness import _date_range, assemble_itinerary
 from pipeline.persist import persist_hotels, persist_itinerary, persist_narration, persist_restaurants, persist_tradeoffs, persist_transport, persist_weather
 from pipeline.tradeoffs import build_hotel_comparisons, warnings_to_notes
 from jobs import _heartbeat, mark_job_running
+from observability import capture_exception as _sentry_capture
 from organizer import LeaseLost, authorize_place_ids
 from supabase_client import get_supabase_client
 
@@ -580,8 +581,12 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
             except Exception:
                 pass   # best-effort: even the warning-write must not fail the (already-saved) trip
         return payload
-    except Exception:
+    except Exception as exc:
         # Any unexpected error → terminal result, failed status, failed job (never hang the stream).
+        # Capture the crash for monitoring (no-op unless SENTRY_DSN set) BEFORE the _fail branch, so
+        # even the client-is-None re-raise is seen. Scrubbed en route — provider error bodies that
+        # echo a token are redacted by observability._before_send.
+        _sentry_capture(exc)
         if client is None:
             raise  # never got a client → BackgroundTasks logs it; startup recovery sweep re-picks the still-pending job
         return await _fail(client, trip_id, user_id, job_id, "save", "unexpected generation error",

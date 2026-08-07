@@ -14,11 +14,11 @@ dependencies = [
     "supabase>=2.0.0",
     "mem0ai>=2.0,<3.0",
     "langfuse>=2.0.0",
-    # sentry-sdk removed (ISSUES-B1): it was staged but `sentry_sdk.init` was called nowhere.
-    # Its FastAPI integration captures full request URLs, so re-adding it would reintroduce the
-    # very `?token=<JWT>` leak log_redaction.py exists to close. Re-add ONLY with a `before_send`
-    # URL scrubber — and note NO test guards that path: Sentry ships URLs to its own backend,
-    # not through a log handler, so test_log_redaction.py cannot see it. This comment is the guard.
+    # sentry-sdk RE-ADDED (2026-08-07, launch pre-flight): error monitoring, DORMANT unless
+    # SENTRY_DSN is set. The ISSUES-B1 `?token=<JWT>` capture hole is closed by observability.py's
+    # before_send scrubber (+ send_default_pii=False, traces_sample_rate=0.0); test_observability.py
+    # is the guard the old removal comment said was missing (it exercises the scrubber directly).
+    "sentry-sdk>=2.0.0",
     "slowapi>=0.1.9",
     "posthog>=3.0.0",
 ]

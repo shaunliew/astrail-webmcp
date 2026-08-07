@@ -56,6 +56,7 @@ from deletion import account_is_pending_deletion as _account_is_pending_deletion
 from config_validation import validate_required_secrets
 from jobs import compute_idempotency_key, enqueue_job, reclaim_expired_jobs
 from log_redaction import install as _install_log_redaction
+from observability import capture_exception as _sentry_capture, init_sentry as _init_sentry
 from pipeline.runner import record_event, run_generation
 from preferences import compose_preference_summary, fetch_traveler_profile
 from rate_limit import (
@@ -91,6 +92,10 @@ logger = logging.getLogger(__name__)
 # starts uvicorn with DEFAULT access logging (no --no-access-log, no --log-config) — this filter
 # is the whole mechanism, and module import completes before the first request is served.
 _install_log_redaction()
+# ISSUES-B1 re-add: optional error monitoring, DORMANT unless SENTRY_DSN is set. The
+# before_send scrubber (observability.py) is what closes the `?token=` capture hole that
+# got Sentry removed; init here so the SDK is armed before the first request/background task.
+_init_sentry()
 
 
 def _spawn(coro) -> asyncio.Task:
@@ -157,10 +162,11 @@ async def _reap_loop(client) -> None:
                 _spawn(_redispatch(client, job))
             for job in await recover_organize_jobs(client):
                 _spawn(_redispatch_organize(client, job))
-        except Exception:
+        except Exception as exc:
             # A DB blip must NEVER kill the reaper — a reaper that dies on its first
             # transient error is worse than none, because nothing after it says so.
             logger.warning("reap_loop_iteration_failed", exc_info=True)
+            _sentry_capture(exc)   # already exposed via exc_info above; scrubbed en route to Sentry
         # Account-deletion sweep in its OWN try: a deletion error must never skip the trip/
         # organize recovery above (they are the load-bearing guardrail #12 path). No-op while
         # the gate is off. Same cadence as the reclaim sweeps (this shares the 120s tick).

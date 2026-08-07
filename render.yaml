@@ -91,6 +91,12 @@ services:
         sync: false
       - key: LANGFUSE_SECRET_KEY
         sync: false
+      # OPTIONAL error monitoring, DORMANT-safe: unset SENTRY_DSN = observability.init_sentry() is a
+      # no-op (no client, nothing ships), so leaving it blank is safe. Set it in the dashboard to go
+      # live. `sync: false` (dashboard-entered, never a literal here). Scrubbed by observability.py's
+      # before_send. Web service only — the Telegram worker never calls init_sentry (see its absent list).
+      - key: SENTRY_DSN
+        sync: false
       - key: ALLOWED_ORIGINS
         value: https://astrail.xyz,https://www.astrail.xyz
       # BETA CAPACITY. Retuned 5 -> 10 by the free-trial + beta-seat entitlement arc: a beta

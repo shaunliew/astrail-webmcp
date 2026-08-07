@@ -14,6 +14,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from observability import capture_exception as _sentry_capture
+
 logger = logging.getLogger("astrail.errors")
 
 _STATUS_CODE_SLUG = {
@@ -63,6 +65,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     # (error text carries no service-role key); the token-bearing external calls
     # (Mapbox/OpenAI/Apify) run in the background task, outside this handler.
     logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    _sentry_capture(exc)   # error monitoring (no-op unless SENTRY_DSN set); scrubbed before send
     return build_error_response(500, "Internal server error", code="internal_error")
 
 

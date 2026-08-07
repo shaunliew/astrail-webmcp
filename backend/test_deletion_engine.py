@@ -441,6 +441,21 @@ async def test_pass_b_happy_path_hard_deletes_and_completes(monkeypatch, complet
     assert row["recipient_email"] is None
 
 
+async def test_f2_mark_completed_sends_the_email_only_once(monkeypatch, completion_emails):
+    # F2 (PR #61 — both models): _mark_completed's terminal write was unconditional by id, so two
+    # overlapping sweepers each captured this 'deleting' row and both reached
+    # send_deletion_completed_email. The CAS on outcome='deleting' means only the sweeper that
+    # actually flips deleting->completed sends; the loser's write matches nothing and it stays quiet.
+    client = _FakeClient(log=[_deleting_log()])
+    row_a = dict(client.log_row)                 # sweeper A's captured copy (deleting, recipient set)
+    row_b = dict(client.log_row)                 # sweeper B's captured copy of the same row
+    await deletion_engine._mark_completed(client, row_a)
+    await deletion_engine._mark_completed(client, row_b)
+
+    assert client.log_row["outcome"] == "completed"
+    assert completion_emails == ["gone@example.com"]   # exactly ONE send, not two
+
+
 async def test_pass_b_auth_delete_404_is_success(monkeypatch):
     _patch_purge(monkeypatch, None)
     client = _FakeClient(log=[_deleting_log()],

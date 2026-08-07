@@ -226,15 +226,25 @@ async def _mark_completed(client, log_row: dict) -> None:
     from notifications import send_deletion_completed_email
 
     recipient = log_row.get("recipient_email")
-    await (
+    # F2: CAS-send-once. The write is guarded on outcome='deleting', so ONLY the sweeper that
+    # actually flips deleting->completed matches a row; a second, overlapping sweeper's write
+    # matches nothing (the row is already 'completed') and it must NOT send. Without the CAS both
+    # sweepers reached the send below and double-emailed "account deleted" (PR #61, both models).
+    res = await (
         client.table("account_deletion_log")
         .update({"outcome": "completed", "completed_at": _now_iso(),
                  "next_attempt_at": None, "last_error": None, "recipient_email": None})
-        .eq("id", log_row["id"]).execute()
+        .eq("id", log_row["id"]).eq("outcome", "deleting").execute()
     )
-    # AFTER the terminal write so a re-run can't fire it twice. Best-effort: the sender swallows
-    # every failure and no-ops without RESEND_API_KEY (notifications.py), never raising into the
-    # sweep. The account is already deleted, so a lost notice is acceptable (plan §6).
+    if not res.data:
+        # Another sweeper already completed this row (or it was terminalized underneath). The
+        # account is gone and the email has already fired once — do not double-send.
+        logger.info("account_deletion _mark_completed no-op: log_id=%s already completed by another "
+                    "sweeper — not re-sending", log_row.get("id"))
+        return
+    # AFTER the guarded terminal write so a re-run can't fire it twice. Best-effort: the sender
+    # swallows every failure and no-ops without RESEND_API_KEY (notifications.py), never raising
+    # into the sweep. The account is already deleted, so a lost notice is acceptable (plan §6).
     await send_deletion_completed_email(recipient)
 
 

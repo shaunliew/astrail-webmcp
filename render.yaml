@@ -105,8 +105,14 @@ services:
         sync: false
       - key: RESEND_FROM_EMAIL
         sync: false
+      # LITERAL value -> a Blueprint configuration sync re-asserts it, so this file is the source of
+      # truth and a dashboard-only edit gets silently reverted. Change it HERE.
+      # `app.astrail.xyz` added 2026-08-07: a live CORS preflight proved the deployed backend
+      # rejected it while the host was serving the identical Vercel build — every trip generation
+      # from that origin would have failed at launch (ZH handoff blocker S1). `www.astrail.xyz` has
+      # no DNS record today; it is retained so adding one later needs no deploy.
       - key: ALLOWED_ORIGINS
-        value: https://astrail.xyz,https://www.astrail.xyz
+        value: https://astrail.xyz,https://www.astrail.xyz,https://app.astrail.xyz
       # BETA CAPACITY. Retuned 5 -> 10 by the free-trial + beta-seat entitlement arc: a beta
       # seat's "unlimited" planning rides this daily quota, so 5 was the real ceiling on a
       # granted seat. Over the cap returns 429 `rate_limited`.

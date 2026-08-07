@@ -237,9 +237,17 @@ async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONR
 app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 register_error_handlers(app)
 
+# The fallback must list every origin the app is actually SERVED from, because it is what applies
+# when ALLOWED_ORIGINS is unset — and a missing origin here fails as a browser CORS block, i.e. trip
+# generation silently dying for users on that host. Verified live 2026-08-07: astrail.xyz and
+# app.astrail.xyz both serve the identical Vercel build; www.astrail.xyz has NO DNS record and is
+# kept only so adding that record later needs no code change.
 _allowed_origins = [
     o.strip()
-    for o in os.environ.get("ALLOWED_ORIGINS", "https://astrail.xyz,https://www.astrail.xyz").split(",")
+    for o in os.environ.get(
+        "ALLOWED_ORIGINS",
+        "https://astrail.xyz,https://www.astrail.xyz,https://app.astrail.xyz",
+    ).split(",")
     if o.strip()
 ]
 

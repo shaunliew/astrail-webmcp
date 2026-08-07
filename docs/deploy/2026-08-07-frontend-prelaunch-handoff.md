@@ -23,10 +23,38 @@
 ## Your lane — what blocks the gate (Shaun)
 
 1. **S1 — `ALLOWED_ORIGINS` must include the prod origins.** Add `https://astrail.xyz` + `https://app.astrail.xyz` to the backend env, or every frontend→backend call (trip generation) CORS-fails. A Render env PUT doesn't redeploy — verify the process restarted with the value.
+
+   ✅ **DONE 2026-08-07 (Shaun), verified live.** You were right, and it was worse than stated: a CORS preflight against the deployed backend showed the allowlist **permitted a host that does not exist and blocked one that does** — `www.astrail.xyz` has **no DNS record**, while `app.astrail.xyz` was serving the byte-identical Vercel build and was **rejected**. Fixed in `5c73dbc` in BOTH `render.yaml` (literal value — a Blueprint sync re-asserts it, so a dashboard-only edit is silently reverted) and `main.py`'s fallback, which had the same omission. Post-deploy preflight: `astrail.xyz` ✅ · `www.astrail.xyz` ✅ · `app.astrail.xyz` ✅ · `evil.example.com` blocked · `app.astrail.xyz.evil.com` blocked (matching is exact, not prefix).
 2. **S2 — Confirm Render `SUPABASE_URL` = `ngfssihvukhxxqhcudix`.** 🔒 The frontend's `NEXT_PUBLIC_SUPABASE_URL` is set to `ngfssihvukhxxqhcudix.supabase.co` (from ZH's `.env.local`). If the backend's Supabase project differs, auth silently breaks — they must be the same project.
+
+   ✅ **CONFIRMED 2026-08-07 (Shaun)** in the Render dashboard — they match. (Note for future checks: the Render API/CLI does **not** expose env vars, and `supabase/.temp/project-ref` only reflects the local CLI link, not Render's config. This has to be read in the dashboard.)
 3. **S3 — `RESEND_API_KEY` (+ `RESEND_FROM_EMAIL`)** in Render if any deletion/notification email goes live (endpoints 503 without it). Per the SOP flag choreography.
+
+   ⏳ **DELIBERATELY NOT SET — still held.** It is switch 1 of the deletion choreography and stays shut until your F1/F2/F3 + 2 regression tests are signed off. Two things changed on 2026-08-07 though: (a) the **value** was wrong everywhere and is now corrected — it is `Astrail <no-reply@astrail.xyz>`, the ROOT domain, **not** `send.astrail.xyz`, which the live API rejects with `403 "domain is not verified"` (see the RELEASE SOP note); (b) the pair is now **proven end-to-end** (4 delivered emails), so switch 1 is a paste, not a debugging session. Verify any change with `cd backend && uv run python -m scripts.preflight_resend --to <inbox>`.
 4. **S4 — Auth email deliverability.** Confirm Supabase Auth sign-in / magic-link mail actually reaches beta users (custom SMTP / Resend vs the rate-limited default). Supabase = Shaun.
+
+   ✅ **VERIFIED 2026-08-07 (Shaun) — better than assumed.** Custom SMTP is **already configured** and is Resend on the verified root domain; it is NOT the rate-limited Supabase default. A real `POST /auth/v1/otp` delivered to Gmail **Inbox, not spam**, with headers `from: Astrail <no-reply@astrail.xyz>` · `mailed-by: send.astrail.xyz` (the Return-Path/bounce channel) · `Signed by: astrail.xyz` (DKIM aligned with the From domain → DMARC passes). The email carries a **6-digit code**, which matches the UI's 6-box input and `verifyOtp({ type: 'email' })` at `sign-in/page.tsx:127`. Supabase **Auth → Rate Limits** raised the same day. ⚠ One defect found — **yours**, see the section below.
 5. **S5 — ⚑1 Render `dev`→`main` repoint** — the 3-step sequence already in the RELEASE SOP. Listed for completeness.
+
+   ❌ **NOT DONE.** `origin/main..origin/dev` is 800+ commits and `render.yaml` still pins `branch: dev` on both services — so **`dev` is currently what production runs**, and every push to `dev` is a production deploy. Unchanged from the SOP; flagged because it makes the push semantics non-obvious.
+
+## ⚠ Back to you (ZH) — the sign-in copy names a domain that cannot send mail
+
+**`frontend/app/sign-in/page.tsx:373`** tells every user:
+
+> Nothing in your inbox? Check spam. The sender is `no-reply@astrail.app`.
+
+**The real sender is `no-reply@astrail.xyz`** (proven above, from live headers). `astrail.app` is a **parked domain**: nameservers `launch1/launch2.spaceship.net`, **no MX record at all**, HTTPS times out. No mail can ever originate from it.
+
+**Why it matters more than a typo.** This is the fallback copy shown precisely when a user cannot find their code — the moment it is supposed to rescue them. Following it sends them searching for a domain that has never sent them anything, at the front door of an invite-only beta. It is a one-word fix (`app` → `xyz`) with an outsized failure mode.
+
+Not changed by Shaun: it is frontend, your surface, and the owner split says neither of us edits the other's silently. Suggested:
+
+```tsx
+<span className="whitespace-nowrap font-mono text-[color:var(--text)]">no-reply@astrail.xyz</span>.
+```
+
+Worth a grep for other user-facing `astrail.app` strings while you are in there — `sign-in/dev/DevSignInForm.tsx:12` seeds `aster@astrail.app` (dev-only, harmless) and a couple of story components render `astrail.app` as display text, which may or may not be intended branding.
 
 ## Verification performed (ZH, 2026-08-07)
 

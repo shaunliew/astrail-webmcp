@@ -237,22 +237,37 @@ async def lifespan(app: FastAPI):
             "being deleted here. Exactly ONE deployment must set RUN_DELETION_SWEEP=true "
             "(astrail-backend, via render.yaml); every other process must leave it unset."
         )
-    elif _DELETION_EXECUTION_READY:
-        # POSITIVE confirmation, at INFO. The post-deploy check for this flag used to be "grep
-        # for the ABSENCE of the warning above" — and absence is a weak signal: it is equally
-        # consistent with correct ownership, with log-shipping lag, with a wrong service filter,
-        # and with the deliberately-silent dormant state. This line gives the deploy a positive
-        # grep target instead. INFO, not WARNING: it is the correct state, and a per-boot warning
-        # on the one healthy service is what trains people to ignore warnings.
-        logger.info(
-            "deletion_sweep_owner — this process owns the account-deletion sweep "
-            "(RUN_DELETION_SWEEP=true). Exactly one deployment may log this."
-        )
+    # NOTE: the POSITIVE counterpart is deliberately NOT emitted here — see below, after the
+    # reaper is actually spawned. The two lines assert different things and cannot share a
+    # placement: this warning is a statement about CONFIGURATION (knowable with the DB down),
+    # while "this process owns the sweep" asserts the sweep will RUN, which needs the reaper.
     try:
         client = await get_supabase_client()
         # Started BEFORE the boot sweeps: a sweep blip (the likely boot failure) must not
         # cost this process its periodic reclaim for the rest of its life.
         reaper = _spawn(_reap_loop(client))
+        # POSITIVE confirmation — emitted HERE, after the reaper exists, and nowhere earlier.
+        #
+        # This is the affirmative post-deploy signal (the previous check was "grep for the
+        # ABSENCE of the warning above", and absence is weak: equally consistent with correct
+        # ownership, log-shipping lag, a wrong service filter, and the dormant state).
+        #
+        # It sits AFTER `_spawn` because of a real defect the 2026-08-07 Codex cross-model pass
+        # found in the first version of this line, which logged it beside the warning: with
+        # `get_supabase_client()` raising, the broad `except Exception: pass` below swallowed the
+        # failure, so the process logged `deletion_sweep_owner` having spawned NO reaper — a
+        # post-deploy check that reports success while nothing sweeps. Reproduced exactly:
+        # OWNER_LOG_PRESENT=True, REAPER_TASKS_SPAWNED=0. A signal that can be wrong in the
+        # direction it is trusted is worse than no signal.
+        #
+        # INFO, not WARNING: this is the correct state, and a per-boot warning on the one healthy
+        # service is what trains people to ignore warnings.
+        if _DELETION_EXECUTION_READY and deletion_sweep_enabled():
+            logger.info(
+                "deletion_sweep_owner — this process owns the account-deletion sweep "
+                "(RUN_DELETION_SWEEP=true) and its reaper is running. "
+                "Exactly one deployment may log this."
+            )
         for job in await reclaim_expired_jobs(client=client):
             _spawn(_redispatch(client, job))
         for job in await recover_organize_jobs(client):

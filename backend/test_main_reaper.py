@@ -367,6 +367,36 @@ async def test_startup_logs_a_POSITIVE_confirmation_when_this_process_owns_the_s
     assert _ARMED_BUT_UNOWNED not in caplog.text     # never both
 
 
+async def test_the_positive_confirmation_is_SILENT_when_the_reaper_never_STARTED(
+    monkeypatch, caplog,
+):
+    """The owner line must assert the sweep RUNS, not merely that the env is set.
+
+    Real defect, found by the 2026-08-07 Codex cross-model pass after two Claude reviews passed
+    the change: the first version logged this beside the armed-but-unowned warning, i.e. BEFORE
+    `get_supabase_client()`. With the DB down at boot, the broad `except Exception: pass` swallows
+    the failure — so the process logged `deletion_sweep_owner` having spawned NO reaper.
+    Reproduced exactly: OWNER_LOG_PRESENT=True, REAPER_TASKS_SPAWNED=0.
+
+    That is worse than the weak negative signal it replaced: the post-deploy check would report
+    SUCCESS while nothing swept, and the operator would have positive evidence for a false belief.
+    A signal that can be wrong in the direction it is trusted is worse than no signal at all.
+
+    Note this is the mirror of `test_the_warning_survives_a_boot_time_DB_BLIP`: the WARNING must
+    survive a dead DB (it reports configuration), and this INFO must NOT (it reports execution).
+    """
+    monkeypatch.setattr(main, "_DELETION_EXECUTION_READY", True)
+    monkeypatch.setenv("RUN_DELETION_SWEEP", "true")
+
+    with caplog.at_level(logging.INFO, logger="main"):
+        await _enter_lifespan_with_dead_db(monkeypatch)
+
+    assert _SWEEP_OWNER not in caplog.text, (
+        "claimed ownership of the sweep after the boot-time DB failure stopped the reaper from "
+        "ever starting — the owner line must be emitted AFTER _spawn(_reap_loop), not before"
+    )
+
+
 @pytest.mark.parametrize("ready, sweep, expected", [
     (True, None, False),      # armed but unowned -> the WARNING path, not this one
     (False, "true", False),   # dormant feature -> nothing claims ownership of a sweep that cannot run

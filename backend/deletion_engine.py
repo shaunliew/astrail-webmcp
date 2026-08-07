@@ -427,7 +427,14 @@ async def _retry_scheduled_notices(client, now: datetime) -> None:
         .execute()
     ).data or []
     for row in rows:
-        sent = await send_deletion_scheduled_email(row.get("recipient_email"), row.get("scheduled_for"))
+        recipient = row.get("recipient_email")
+        if not recipient:
+            # A NULL/empty recipient can never be emailed (pathological under email-OTP auth). Treat
+            # it as a PERMANENT condition and skip, not a transient resend to retry every tick for the
+            # whole 7-day grace (Codex P2). The row self-heals out of this select when scheduled_for
+            # lapses; notified_at stays NULL as the visible "never notified" flag.
+            continue
+        sent = await send_deletion_scheduled_email(recipient, row.get("scheduled_for"))
         if not sent:
             continue  # still unnotified -> retried next tick; the failure is now logged (visibility)
         await (

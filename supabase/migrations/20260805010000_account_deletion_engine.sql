@@ -1,5 +1,10 @@
 -- Lean self-serve account deletion — the point-of-no-return claim RPC (Task 3).
 --
+-- ⚠ SUPERSEDED: `claim_account_for_deletion`'s body below is NOT the live definition. It was
+-- replaced by 20260807000100_account_deletion_claim_scheduled_guard.sql (C5), which adds the
+-- `deletion_scheduled_for <= now()` conjunct. This file is kept as-is (an applied migration is
+-- immutable) for the log table + sweep index it also creates; read the C5 file for the current CAS.
+--
 -- SCHEMA-FIRST, GATED OFF. This ships the ONE privilege-pinned RPC the two-pass delete engine
 -- needs: claim_account_for_deletion atomically flips a still-pending account into 'deleting'
 -- (the irreversible claim — a concurrent cancel loses here). The engine + sweep that call it live

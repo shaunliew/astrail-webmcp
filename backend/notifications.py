@@ -130,11 +130,27 @@ async def _send_email(email: str | None, subject: str, body: str) -> bool:
     except Exception as exc:  # noqa: BLE001 — best-effort; a notice must NEVER break a deletion
         resp = getattr(exc, "response", None)
         status = getattr(resp, "status_code", None)
-        if status is not None:
-            # Secret-free: status + Resend's JSON error body (never the exception message).
-            snippet = (getattr(resp, "text", "") or "")[:500]
-            logger.warning("deletion email send failed: type=%s status=%s body=%s",
-                           type(exc).__name__, status, snippet)
-        else:
+        if status is None:
+            # Transport / non-HTTP error: no response to read. TYPE name only (the exception
+            # message embeds the request URL / headers — the bearer key).
             logger.warning("deletion email send failed: %s", type(exc).__name__)
+            return False
+        # Visibility WITHOUT dumping the free-form body (Codex P1): a proxy/provider body could pad
+        # its error with echoed request data. Parse Resend's JSON error and log ONLY the allowlisted
+        # `name`/`message` fields (bounded); a non-JSON body logs the status alone. Never the raw
+        # body, never the exception message, never the key/recipient. `message` names the config
+        # problem (e.g. "The <domain> is not verified") — the recipient is an auth.users.email so it
+        # is valid by construction and does not appear in a Resend validation message.
+        detail = ""
+        try:
+            import json
+
+            parsed = json.loads(getattr(resp, "text", "") or "")
+            if isinstance(parsed, dict):
+                detail = (f"name={str(parsed.get('name', ''))[:64]} "
+                          f"message={str(parsed.get('message', ''))[:200]}")
+        except Exception:  # noqa: BLE001 — a non-JSON error body must not break logging
+            detail = ""
+        logger.warning("deletion email send failed: type=%s status=%s %s",
+                       type(exc).__name__, status, detail)
         return False

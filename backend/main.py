@@ -756,6 +756,7 @@ async def _send_scheduled_deletion_email(client, user_id: str, scheduled_for: st
     notice-retry doesn't re-send. A failed/timed-out send leaves it NULL and the sweep retries
     within a tick — this up-front send is now the fast path, not the only path.
     """
+    import time
     from datetime import datetime, timezone
 
     from notifications import send_deletion_scheduled_email
@@ -767,6 +768,7 @@ async def _send_scheduled_deletion_email(client, user_id: str, scheduled_for: st
         email = getattr(getattr(resp, "user", None), "email", None)
         return await send_deletion_scheduled_email(email, scheduled_for)
 
+    started = time.monotonic()
     sent = False
     try:
         sent = await asyncio.wait_for(_lookup_and_send(), timeout=_EMAIL_BUDGET_S)
@@ -775,15 +777,25 @@ async def _send_scheduled_deletion_email(client, user_id: str, scheduled_for: st
 
     if not sent:
         return  # notified_at stays NULL -> the sweep's C2 retry re-sends within a tick
+    # ONE shared budget across send + stamp: the stamp gets only the time left, so a slow send plus
+    # a stalled stamp can't stack two full _EMAIL_BUDGET_S onto the request latency (Codex P2).
+    remaining = _EMAIL_BUDGET_S - (time.monotonic() - started)
+    if remaining <= 0:
+        return  # the send ate the budget; leave notified_at NULL -> the sweep re-sends + stamps
     try:
-        # Stamp the durable "notice confirmed sent" marker (guarded on outcome='pending', F1
-        # discipline). Bounded + best-effort: a stamp failure just means the sweep re-sends once
-        # (a duplicate cancel-by notice beats a silent none), so it must not raise/slow the 200.
+        # Stamp the durable "notice confirmed sent" marker. Bound the update to THIS request's row
+        # via scheduled_for (Codex P1): filtering only by user_id+outcome could stamp a DIFFERENT
+        # pending cycle if a cancel + immediate re-request raced in between the send and here —
+        # marking the fresh cycle "notified" with the old cycle's email. A re-request computes a new
+        # scheduled_for, so this binds to the row we actually notified. Guarded on outcome='pending'
+        # (F1). Best-effort: a stamp failure just means the sweep re-sends once (a duplicate cancel-by
+        # notice beats a silent none), so it must not raise/slow the 200.
         await asyncio.wait_for(
             client.table("account_deletion_log")
             .update({"notified_at": datetime.now(timezone.utc).isoformat()})
-            .eq("user_id", user_id).eq("outcome", "pending").execute(),
-            timeout=_EMAIL_BUDGET_S,
+            .eq("user_id", user_id).eq("outcome", "pending").eq("scheduled_for", scheduled_for)
+            .execute(),
+            timeout=remaining,
         )
     except Exception as exc:  # noqa: BLE001 — a stamp failure must never break/slow a scheduled deletion
         logger.warning("scheduled deletion notified_at stamp failed: %s", type(exc).__name__)

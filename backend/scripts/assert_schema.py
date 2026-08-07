@@ -59,6 +59,9 @@ _CONNECT_TIMEOUT_S = 10.0
 #   UPDATE users SET account_status='deleting' WHERE id=p_user_id AND account_status='pending_deletion'
 # and the all-zeros uuid can name no real account, so it matches no row -> 0 updates -> returns
 # false -> ZERO side effect, while still exercising the function body and the service_role grant.
+# Names the migration that INTRODUCES the claim RPC + its sweep index (what an operator must apply
+# if the liveness probe fails, and what a column-check can't proxy). C5 (20260807000100) only
+# REPLACES the body, so the introducing migration stays the right operator hint.
 _CLAIM_RPC_LABEL = "claim_account_for_deletion (20260805010000)"
 # A deliberately INVALID uuid for the RPC-liveness probe (structural side-effect-freedom): PostgreSQL
 # rejects the `p_user_id uuid` cast (SQLSTATE 22P02) BEFORE the function body runs, so the probe can

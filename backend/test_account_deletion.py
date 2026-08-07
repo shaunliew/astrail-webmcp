@@ -344,7 +344,10 @@ async def test_scheduled_email_stamps_notified_at_on_a_confirmed_send(monkeypatc
     assert len(sink) == 1                                # exactly one stamp write
     assert set(sink[0]["patch"]) == {"notified_at"}
     assert sink[0]["patch"]["notified_at"] is not None
-    assert sink[0]["eq"] == {"user_id": "u1", "outcome": "pending"}   # guarded to THIS user's pending row
+    # Bound to THIS request's row: user + pending + the exact scheduled_for the RPC returned, so a
+    # racing cancel+re-request (which gets a fresh scheduled_for) can't be stamped by this cycle.
+    assert sink[0]["eq"] == {"user_id": "u1", "outcome": "pending",
+                             "scheduled_for": "2026-08-12T00:00:00+00:00"}
 
 
 async def test_scheduled_email_does_not_stamp_when_the_send_fails(monkeypatch):

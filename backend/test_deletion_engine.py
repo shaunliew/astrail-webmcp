@@ -400,6 +400,7 @@ async def test_f1_stale_pending_row_does_not_resurrect_a_cancelled_deletion(monk
     stale = _log(outcome="pending")                                # the sweep's stale in-memory copy
     await deletion_engine.erase_user(client, object(), stale)
 
+    assert purge.calls == [_UID]                                  # purge ran, THEN _mark_purged no-op'd
     assert client.log_row["outcome"] == "cancelled"               # NOT resurrected to 'deleting'
     assert client.log_row["purged_verified_at"] is None           # nothing advanced on the DB row
     assert client.deleted == []                                   # no hard-delete
@@ -417,6 +418,7 @@ async def test_f1_stale_row_backoff_does_not_touch_a_terminalized_row(monkeypatc
     stale = _log(outcome="pending")
     await deletion_engine.erase_user(client, object(), stale)
 
+    assert purge.calls == []                                      # backed off at quiescence, never purged
     assert client.log_row["outcome"] == "cancelled"               # untouched
     assert client.log_row["attempts"] == 0                        # NOT bumped on a terminalized row
     assert client.log_row["next_attempt_at"] is None
@@ -766,6 +768,18 @@ async def test_notice_retry_leaves_notified_at_null_on_a_failed_send(monkeypatch
 
     assert sends == [("gone@example.com", future)]                 # it tried
     assert client.log_row["notified_at"] is None                  # …but did not stamp -> will retry
+
+
+async def test_notice_retry_skips_a_null_recipient_without_sending(monkeypatch):
+    # Codex P2: a pending, cancellable row with a NULL recipient can't be emailed. The retry skips it
+    # (no send attempt, no stamp) rather than resending every tick for the whole 7-day grace.
+    sends = _patch_scheduled_send(monkeypatch, returns=True)
+    future = (_NOW + timedelta(days=5)).isoformat()
+    client = _FakeClient(log=[_log(recipient_email=None, scheduled_for=future)])
+    await deletion_engine._retry_scheduled_notices(client, _NOW)
+
+    assert sends == []                                            # never attempted a send
+    assert client.log_row["notified_at"] is None                 # stays unnotified (visible), no storm
 
 
 async def test_sweep_wires_in_the_notice_retry(monkeypatch):

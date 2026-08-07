@@ -202,6 +202,23 @@ async def test_a_403_domain_not_verified_is_visible(monkeypatch, fake_httpx, cap
     assert "traveler@example.com" not in blob        # still no recipient
 
 
+async def test_a_failure_log_allowlists_the_body_and_cannot_echo_a_recipient(
+    monkeypatch, fake_httpx, caplog):
+    # Codex P1: even if a provider padded its error body with echoed request data (a `to` field), the
+    # allowlist logs only the parsed name+message, never the raw body — so no recipient can leak via
+    # the response body. Non-JSON bodies fall back to status-only (also never dumped verbatim).
+    monkeypatch.setenv("RESEND_API_KEY", "re_test_key")
+    fake_httpx.response_status = 422
+    fake_httpx.response_text = '{"name":"validation_error","message":"invalid field","to":"victim@example.com"}'
+    with caplog.at_level(logging.WARNING, logger="notifications"):
+        await notifications.send_deletion_completed_email("traveler@example.com")
+
+    blob = " ".join(r.getMessage() for r in caplog.records)
+    assert "422" in blob                             # status visible
+    assert "validation_error" in blob                # allowlisted name visible
+    assert "victim@example.com" not in blob          # the echoed `to` field is NOT logged
+
+
 async def test_send_returns_true_only_on_a_confirmed_2xx(monkeypatch, fake_httpx):
     # The bool is the durable signal notified_at is stamped on (C2): True ONLY on a real 2xx send.
     monkeypatch.setenv("RESEND_API_KEY", "re_test_key")

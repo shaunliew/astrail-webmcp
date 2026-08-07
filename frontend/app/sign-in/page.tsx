@@ -370,7 +370,7 @@ export default function SignInPage() {
 
           <p className="mt-6 border-t border-[color:var(--line-soft)] pt-4 text-[13px] text-[color:var(--text-muted)]">
             Nothing in your inbox? Check spam. The sender is{' '}
-            <span className="whitespace-nowrap font-mono text-[color:var(--text)]">no-reply@astrail.app</span>.
+            <span className="whitespace-nowrap font-mono text-[color:var(--text)]">no-reply@astrail.xyz</span>.
           </p>
         </section>
       )}

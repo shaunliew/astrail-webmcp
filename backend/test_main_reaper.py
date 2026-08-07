@@ -397,6 +397,33 @@ async def test_the_positive_confirmation_is_SILENT_when_the_reaper_never_STARTED
     )
 
 
+async def test_the_positive_confirmation_is_SILENT_when_SPAWN_itself_fails(monkeypatch, caplog):
+    """Pins the log AFTER `_spawn`, not merely after the client is acquired.
+
+    Codex's round-2 nit: the dead-DB test above proves the INFO waits for `get_supabase_client()`,
+    but a passing client with a failing `_spawn` would also leave no reaper — and that case was
+    unpinned. The property holds by construction today (the log is textually after the `_spawn`
+    call, so an exception there skips it), but "holds by construction" is exactly what the
+    warning-placement finding was, and it regressed-by-refactor risk is the same.
+    """
+    monkeypatch.setattr(main, "_DELETION_EXECUTION_READY", True)
+    monkeypatch.setenv("RUN_DELETION_SWEEP", "true")
+
+    def _spawn_boom(coro):
+        coro.close()                       # don't leak an un-awaited coroutine
+        raise RuntimeError("could not start the reaper task")
+
+    monkeypatch.setattr(main, "_spawn", _spawn_boom)
+
+    with caplog.at_level(logging.INFO, logger="main"):
+        await _enter_lifespan(monkeypatch)
+
+    assert _SWEEP_OWNER not in caplog.text, (
+        "claimed ownership although the reaper task never started — the owner line must come "
+        "after _spawn(_reap_loop) succeeds"
+    )
+
+
 @pytest.mark.parametrize("ready, sweep, expected", [
     (True, None, False),      # armed but unowned -> the WARNING path, not this one
     (False, "true", False),   # dormant feature -> nothing claims ownership of a sweep that cannot run

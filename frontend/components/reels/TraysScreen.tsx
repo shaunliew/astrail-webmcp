@@ -319,6 +319,11 @@ export default function TraysScreen({
         ) : (
           <p className="px-1 text-[13px] text-[color:var(--text-faint)]">Max {MAX_CAPTURE_LINKS} links at a time.</p>
         )}
+        {/* Honest "Soon" teaser (matches the landing's Telegram line) — no date promised. */}
+        <p className="border-t border-dashed border-[color:var(--line-soft)] px-1 pt-2.5 text-[13px] text-[color:var(--text-faint)]">
+          <span className="font-medium text-[color:var(--brass-deep)]">Coming soon:</span> share Reels to the
+          Astrail Telegram bot and they&rsquo;ll land in your library automatically — no more pasting one by one.
+        </p>
       </form>
       {message ? <p role="status" className="-mt-3 mb-6 text-[13px] text-[color:var(--text-muted)]">{message}</p> : null}
       {error ? (

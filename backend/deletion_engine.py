@@ -173,11 +173,20 @@ async def _backoff(client, log_row: dict, reason: str) -> None:
     secret-free string (only exception TYPE names ever flow in — token safety)."""
     attempts = int(log_row.get("attempts") or 0) + 1
     next_at = (_now_utc() + timedelta(seconds=_backoff_seconds(attempts))).isoformat()
-    await (
+    # F1: guard on the outcome we READ (pending in Pass A, deleting in Pass B) so a row that was
+    # cancelled / completed / re-requested between the sweep's select and this write is left alone
+    # — a terminalized row is not "stalled" and must not gain attempts (which would keep the sweep
+    # selecting a row that is no longer its concern). Never hardcode 'pending': _backoff fires from
+    # both passes.
+    res = await (
         client.table("account_deletion_log")
         .update({"attempts": attempts, "next_attempt_at": next_at, "last_error": reason})
-        .eq("id", log_row["id"]).execute()
+        .eq("id", log_row["id"]).eq("outcome", log_row["outcome"]).execute()
     )
+    if not res.data:
+        logger.info("account_deletion _backoff no-op: log_id=%s outcome changed underneath (was %s)",
+                    log_row.get("id"), log_row.get("outcome"))
+        return
     if attempts >= _MAX_ATTEMPTS:
         logger.error(
             "account_deletion_stalled log_id=%s attempts=%s reason=%s — FLAGGED for manual review",
@@ -187,13 +196,22 @@ async def _backoff(client, log_row: dict, reason: str) -> None:
 
 async def _mark_purged(client, log_row: dict) -> None:
     """Pass A confirmed clear: record the verified purge and advance outcome to 'deleting'. Clears
-    the retry fields so Pass B is not gated behind a stale backoff."""
-    await (
+    the retry fields so Pass B is not gated behind a stale backoff.
+
+    F1: guarded on outcome='pending'. If a cancel + immediate re-request flipped this row to
+    'cancelled' between the sweep's select and here, the id-only write would resurrect it to
+    'deleting' and hard-delete ~2 ticks later, bypassing the fresh 7-day grace. The guard makes it
+    a no-op — advance NOTHING when the row is no longer the 'pending' one we read."""
+    res = await (
         client.table("account_deletion_log")
         .update({"purged_verified_at": _now_iso(), "outcome": "deleting",
                  "next_attempt_at": None, "last_error": None})
-        .eq("id", log_row["id"]).execute()
+        .eq("id", log_row["id"]).eq("outcome", "pending").execute()
     )
+    if not res.data:
+        logger.info("account_deletion _mark_purged no-op: log_id=%s no longer 'pending' "
+                    "(cancelled / re-requested underneath) — not advancing to 'deleting'",
+                    log_row.get("id"))
 
 
 async def _mark_completed(client, log_row: dict) -> None:
@@ -222,12 +240,18 @@ async def _mark_completed(client, log_row: dict) -> None:
 
 async def _mark_failed(client, log_row: dict, reason: str) -> None:
     """Terminal, NON-retryable failure (e.g. a corrupted user_id). Distinct from _backoff: this
-    stops the sweep from re-selecting the row forever. `reason` is secret-free."""
-    await (
+    stops the sweep from re-selecting the row forever. `reason` is secret-free.
+
+    F1: guarded on the outcome we read, so a row cancelled / completed underneath is not clobbered
+    to 'failed' by a stale write."""
+    res = await (
         client.table("account_deletion_log")
         .update({"outcome": "failed", "last_error": reason})
-        .eq("id", log_row["id"]).execute()
+        .eq("id", log_row["id"]).eq("outcome", log_row["outcome"]).execute()
     )
+    if not res.data:
+        logger.info("account_deletion _mark_failed no-op: log_id=%s outcome changed underneath "
+                    "(was %s)", log_row.get("id"), log_row.get("outcome"))
 
 
 def _settle_gap_elapsed(purged_verified_at: str | None) -> bool:

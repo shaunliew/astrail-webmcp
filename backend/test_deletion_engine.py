@@ -351,6 +351,41 @@ async def test_quiescence_also_checks_organize_jobs(monkeypatch):
     assert client.log_row["attempts"] == 1
 
 
+async def test_f1_stale_pending_row_does_not_resurrect_a_cancelled_deletion(monkeypatch):
+    # F1 (PR #61 — both models found it): the sweep holds a 'pending' log_row in memory; between
+    # its select and its claim a cancel + immediate re-request flips the DB row to 'cancelled'.
+    # With a live claim + a confirmed purge, the id-only _mark_purged write would overwrite the
+    # 'cancelled' row back to 'deleting' and hard-delete ~2 ticks later, bypassing the fresh 7-day
+    # grace. The outcome guard makes the write a NO-OP once the row is no longer 'pending'.
+    purge = _patch_purge(monkeypatch, None)                        # confirmed clear
+    client = _FakeClient(log=[_log(outcome="cancelled")],          # DB row cancelled underneath
+                         users=[{"id": _UID, "account_status": "pending_deletion"}],
+                         claim=True)
+    stale = _log(outcome="pending")                                # the sweep's stale in-memory copy
+    await deletion_engine.erase_user(client, object(), stale)
+
+    assert client.log_row["outcome"] == "cancelled"               # NOT resurrected to 'deleting'
+    assert client.log_row["purged_verified_at"] is None           # nothing advanced on the DB row
+    assert client.deleted == []                                   # no hard-delete
+
+
+async def test_f1_stale_row_backoff_does_not_touch_a_terminalized_row(monkeypatch):
+    # F1 sibling: _backoff must also no-op when the row was terminalized underneath — a cancelled
+    # row is not "stalled", so it must not gain attempts/next_attempt_at (which would keep the sweep
+    # selecting a row that is no longer its concern). Backs off via the quiescence path.
+    purge = _patch_purge(monkeypatch, None)
+    client = _FakeClient(log=[_log(outcome="cancelled")],
+                         users=[{"id": _UID, "account_status": "pending_deletion"}],
+                         claim=True,
+                         jobs=[{"id": "j1", "user_id": _UID, "status": "running"}])  # forces backoff
+    stale = _log(outcome="pending")
+    await deletion_engine.erase_user(client, object(), stale)
+
+    assert client.log_row["outcome"] == "cancelled"               # untouched
+    assert client.log_row["attempts"] == 0                        # NOT bumped on a terminalized row
+    assert client.log_row["next_attempt_at"] is None
+
+
 # --- Pass B -------------------------------------------------------------------------------
 
 

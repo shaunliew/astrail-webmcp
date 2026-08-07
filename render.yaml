@@ -4,11 +4,14 @@ services:
     name: astrail-backend
     runtime: docker
     repo: https://github.com/MalaysiaKaki/astrail
-    # Pins what the Render dashboard already says, so it is a no-op against the running
-    # service. Without it, a Blueprint CONFIGURATION SYNC — which applies to every service
-    # the Blueprint names and is not governed by `autoDeployTrigger` — falls back to the
-    # repository default (main) and silently retargets this service.
-    branch: dev
+    # PRODUCTION TRACKS `main` (⚑1 repoint, 2026-08-07). Keep this key explicit: a Blueprint
+    # CONFIGURATION SYNC applies to every service the Blueprint names and is NOT governed by
+    # `autoDeployTrigger`, so an omitted branch silently retargets the service to the repo
+    # default. Changing this line retargets production the moment it is synced — which is why
+    # the repoint was a SEQUENCE, not an edit: `main` was promoted to equal `dev` FIRST
+    # (verified `git rev-list --count origin/main..origin/dev` == 0), so this sync deploys the
+    # identical commit rather than the 837-commits-stale `main` that existed before.
+    branch: main
     region: singapore
     plan: starter
     # PINNED TO ONE INSTANCE — LOAD-BEARING, not a capacity choice. The hotel geocode cache's
@@ -157,9 +160,10 @@ services:
     name: astrail-telegram-ingest
     runtime: docker
     repo: https://github.com/MalaysiaKaki/astrail
-    branch: dev                 # REQUIRED — an omitted branch defaults to the repo default
-                                # (main), whose image may lack telegram_ingest. The web
-                                # service's dev tracking lives in the dashboard, not here.
+    branch: main                # REQUIRED and explicit — an omitted branch defaults to the
+                                # repo default and silently retargets. Moved dev -> main with
+                                # the web service in the ⚑1 repoint (2026-08-07); both services
+                                # must track the SAME branch or one ships a different image.
     region: singapore
     plan: starter
     numInstances: 1             # two getUpdates consumers is a hard 409

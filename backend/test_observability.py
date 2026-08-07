@@ -34,6 +34,11 @@ def test_before_send_redacts_jwt_pg_dsn_and_api_keys_anywhere():
             "openai": "sk-abcdEFGH1234567890",
             "resend": "re_abcdEFGH1234",
             "apify": "apify_api_ABCDEFGH12345678",
+            # Supabase's CURRENT service-role (RLS-bypass) + anon key format, and Mapbox's SECRET
+            # token — none are eyJ-JWTs, so they must be caught by _APIKEY_RE (review P2).
+            "supabase_service": "sb_secret_AbCdEfGh12345678xyz",
+            "supabase_anon": "sb_publishable_AbCdEfGh12345678",
+            "mapbox": "sk.eyJ1IjoibWFwYm94Ijoic2VjcmV0In0.abcdefghijklmnop",
         },
         "breadcrumbs": [{"message": "GET https://x?token=eyJ.a.b"}],
     }
@@ -45,6 +50,9 @@ def test_before_send_redacts_jwt_pg_dsn_and_api_keys_anywhere():
     assert "sk-abcdEFGH1234567890" not in flat
     assert "re_abcdEFGH1234" not in flat
     assert "apify_api_ABCDEFGH12345678" not in flat
+    assert "sb_secret_AbCdEfGh12345678xyz" not in flat        # Supabase service-role key gone
+    assert "sb_publishable_AbCdEfGh12345678" not in flat
+    assert "sk.eyJ1IjoibWFwYm94" not in flat                  # Mapbox secret token gone
 
 
 def test_before_send_drops_headers_cookies_and_query_string():

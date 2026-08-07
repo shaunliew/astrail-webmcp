@@ -26,9 +26,15 @@ logger = logging.getLogger(__name__)
 
 # Credential shapes a Sentry event/traceback can carry that log_redaction never sees (it only
 # guards uvicorn.access URLs). Redacting a value that merely LOOKS like one of these is safe.
-_JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")   # user JWT + service-role key
+_JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")   # legacy user JWT + HS256 keys
 _PG_DSN_RE = re.compile(r"(postgres(?:ql)?://[^:/@\s]+:)[^@\s]+(@)")          # redact the DSN password only
-_APIKEY_RE = re.compile(r"(sk-[A-Za-z0-9_-]{8,}|re_[A-Za-z0-9_-]{8,}|apify_api_[A-Za-z0-9]{8,})")
+# Provider key shapes. sb_secret_ is the CURRENT Supabase service-role key (RLS-bypass — the highest-
+# value secret in the system) and sb_publishable_ its anon counterpart; sk./pk. are Mapbox tokens.
+# These are NOT eyJ-JWTs, so _JWT_RE misses them — they must be enumerated here (review P2).
+_APIKEY_RE = re.compile(
+    r"(sk-[A-Za-z0-9_-]{8,}|sk\.[A-Za-z0-9._-]{20,}"          # OpenAI + Mapbox SECRET token
+    r"|sb_secret_[A-Za-z0-9_-]{8,}|sb_publishable_[A-Za-z0-9_-]{8,}"   # Supabase service-role + anon
+    r"|re_[A-Za-z0-9_-]{8,}|apify_api_[A-Za-z0-9]{8,})")      # Resend + Apify
 
 _enabled = False
 

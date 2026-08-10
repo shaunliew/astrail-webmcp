@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { withSentryConfig } from "@sentry/nextjs";
 
 // Backend origin for POST /generate-trip and the SSE stream (connect-src also
 // governs EventSource). Dev defaults to localhost:8000; deploys set
@@ -23,7 +24,7 @@ const contentSecurityPolicy = [
   "style-src 'self' 'unsafe-inline'",
   `img-src 'self' data: blob: https://img.youtube.com https://i.ytimg.com https://*.cdninstagram.com https://*.fbcdn.net ${supabaseUrl}`,
   "font-src 'self' data:",
-  `connect-src 'self' ${backendUrl} ${supabaseUrl} https://tally.so https://*.supabase.co https://api.mapbox.com https://events.mapbox.com https://us.i.posthog.com`,
+  `connect-src 'self' ${backendUrl} ${supabaseUrl} https://tally.so https://*.supabase.co https://api.mapbox.com https://events.mapbox.com https://us.i.posthog.com https://*.ingest.sentry.io https://*.ingest.us.sentry.io https://*.ingest.de.sentry.io`,
   "frame-src https://tally.so https://www.youtube.com https://www.youtube-nocookie.com",
   "worker-src 'self' blob:",
   "media-src 'self' blob:",
@@ -87,4 +88,21 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+export default withSentryConfig(nextConfig, {
+  org: process.env.SENTRY_ORG,
+  project: process.env.SENTRY_PROJECT,
+  authToken: process.env.SENTRY_AUTH_TOKEN,
+  telemetry: false,
+  silent: !process.env.CI,
+  widenClientFileUpload: false,
+  sourcemaps: {
+    deleteSourcemapsAfterUpload: true,
+  },
+  webpack: {
+    automaticVercelMonitors: false,
+    treeshake: {
+      removeDebugLogging: true,
+      removeTracing: true,
+    },
+  },
+});

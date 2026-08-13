@@ -4,7 +4,7 @@ These are operator-run, read-only queries for the live beta growth loop. They do
 
 ## Metric definitions
 
-- A successful generated trip is a `public.trips` row whose status is `complete` or `saved_with_gaps`. Draft, generating, places-ready, failed, and refunded attempts do not activate a user.
+- A successful generated trip is a `public.trips` row whose status is `complete` or `saved_with_gaps`. Draft, generating, places_ready, and failed attempts do not activate a user (a refund is recorded as `status='failed'` plus `charge_refunded_at`, not a separate status).
 - Activation is a user's first successful generated trip.
 - A repeat generator is an activated user who reaches a second distinct successful trip.
 - Feedback reporting keeps thumbs and each rating value separate. It deliberately does not invent a rule such as “4–5 stars are positive”; the founders must define the quality goal first.

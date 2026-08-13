@@ -159,7 +159,14 @@ NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN  # pk — URL-restricted
 NEXT_PUBLIC_POSTHOG_KEY
 NEXT_PUBLIC_POSTHOG_HOST=https://us.i.posthog.com
 NEXT_PUBLIC_BACKEND_URL          # REQUIRED in prod (NODE_ENV=production) — resolveBackendUrl() throws at module load if unset/empty; defaults to http://localhost:8000 in local dev only
+NEXT_PUBLIC_SENTRY_DSN           # optional browser-visible Sentry DSN; blank/unset keeps frontend error reporting dormant
 ```
+
+Frontend Sentry also reads four **private Vercel build/server variables**: `SENTRY_DSN`
+(server/edge event DSN), `SENTRY_ORG`, `SENTRY_PROJECT`, and `SENTRY_AUTH_TOKEN` (source-map
+upload only). Never prefix the auth token with `NEXT_PUBLIC_`. All frontend runtimes set
+`sendDefaultPii=false`, disable tracing, and pass events/breadcrumbs through the recursive
+credential scrubber in `frontend/sentry.shared.ts` before sending.
 
 ## Removed — do not reintroduce
 

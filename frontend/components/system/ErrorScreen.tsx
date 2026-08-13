@@ -10,6 +10,7 @@
 // is motion telling a lie (globals.css).
 
 import { useEffect } from 'react'
+import * as Sentry from '@sentry/nextjs'
 import Astronaut from '@/components/mascot/Astronaut'
 
 type ErrorScreenProps = {
@@ -19,7 +20,10 @@ type ErrorScreenProps = {
 
 export default function ErrorScreen({ error, reset }: ErrorScreenProps) {
   // Full detail belongs in the console, not the UI.
-  useEffect(() => { console.error(error) }, [error])
+  useEffect(() => {
+    Sentry.captureException(error)
+    console.error(error)
+  }, [error])
 
   return (
     <main className="app-shell flex min-h-[100dvh] flex-col items-center justify-center gap-4 p-6 text-center">

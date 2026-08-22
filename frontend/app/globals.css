@@ -636,6 +636,16 @@ button:focus-visible {
   width: 30px;
 }
 
+/* A receding pin (unnumbered — the undayed base hotel, unresolved coords) stays small
+   even while selected: 16px × the same 1.15 growth ≈ 18px, so selection reads as the
+   glow, not a jump to full 30px prominence the pin's role never earned. Keeps the
+   pre-fix visual hierarchy (scale 1.15 on a 16px pin) without the anchoring bug. */
+.constellation-pin--receding.constellation-pin--selected {
+  font-size: 0;
+  height: 18px;
+  width: 18px;
+}
+
 /* Landing reveal map (StoryRevealMap): always-visible place card beside each numbered
    pin. That map is non-interactive — no hover, no tap — so the card must carry the
    place name on its own. Side classes are chosen in the component (cards face inward

@@ -596,7 +596,8 @@ button:focus-visible {
   justify-content: center;
   line-height: 1;
   padding: 0;
-  transition: opacity 200ms ease-out, scale 200ms ease-out, box-shadow 200ms ease-out;
+  transition: opacity 200ms ease-out, width 200ms ease-out, height 200ms ease-out,
+    font-size 200ms ease-out, box-shadow 200ms ease-out;
   width: 26px;
 }
 
@@ -624,9 +625,25 @@ button:focus-visible {
 
 .constellation-pin--selected {
   box-shadow: 0 0 0 7px rgba(239, 201, 141, 0.22), 0 0 24px rgba(239, 201, 141, 0.55);
-  /* `scale`, not `transform: scale()` — Mapbox positions markers via an inline
-     transform, which would override a transform-based scale entirely. */
-  scale: 1.15;
+  /* Grown via width/height (26px × 1.15 ≈ 30px), NEVER scale/transform: Mapbox
+     positions the marker through an inline transform (translate(pos)
+     translate(-50%,-50%)), and the individual `scale` property composes OUTSIDE
+     that transform — multiplying the pixel translation and dragging the pin off
+     its anchor. Size changes keep the -50% self-relative centering intact.
+     Contract-tested in components/map/__tests__/marker-css-contract.test.ts. */
+  font-size: 13px;
+  height: 30px;
+  width: 30px;
+}
+
+/* A receding pin (unnumbered — the undayed base hotel, unresolved coords) stays small
+   even while selected: 16px × the same 1.15 growth ≈ 18px, so selection reads as the
+   glow, not a jump to full 30px prominence the pin's role never earned. Keeps the
+   pre-fix visual hierarchy (scale 1.15 on a 16px pin) without the anchoring bug. */
+.constellation-pin--receding.constellation-pin--selected {
+  font-size: 0;
+  height: 18px;
+  width: 18px;
 }
 
 /* Landing reveal map (StoryRevealMap): always-visible place card beside each numbered

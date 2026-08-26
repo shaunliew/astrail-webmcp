@@ -78,3 +78,15 @@ cd backend && uv run pytest -q                        -> 1897 passed, 13 skipped
 - 4 WebMCP tools registering in the `/app` shell; 2 backend endpoints, flag-gated **off**.
 - Frontend **633 tests / 85 files** · backend **1897 passed, 13 skipped** · `tsc` clean · production build green.
 - Working tree clean apart from pre-existing untracked skill files that predate this branch.
+
+## Batch 3 — reel ingestion
+
+| # | Task | Gate | Result |
+|---|---|---|---|
+| 3.1 | `save_reels` tool — validates via the existing `normalizeReelUrl` before any request | `npx vitest run lib/webmcp/__tests__/reels.test.ts` | ✅ **9/9**, incl. rejecting `instagram.com.evil.example` and non-Instagram hosts *before* `save` is reached |
+| 3.2 | Registered in the tool index; `GlobalTools` wired to `captureSavedReel` | `tsc --noEmit` | ✅ clean — typecheck caught the missing dep before tests did |
+| 3.3 | Full frontend suite | `npx vitest run` | ✅ **646 tests / 86 files** |
+| 3.4 | Production build | `npm run build` | ✅ green |
+
+**Batch 3 verdict: PASS.** 5 tools now registering (`get_app_state`, `list_trips`, `save_reels`
+globally; `get_itinerary`, `get_place_evidence` on a trip page).

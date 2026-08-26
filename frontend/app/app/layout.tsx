@@ -6,11 +6,21 @@
 // and the trip workspace — the two sides of the router.push handoff that the night->dawn
 // relight has to survive. It builds nothing until a route actually asks for a map.
 import MapProvider from '@/components/map/MapProvider'
+import { WebMcpRegistryProvider } from '@/components/webmcp/WebMcpRegistry'
+import GlobalTools from '@/components/webmcp/GlobalTools'
+import WebMcpStatus from '@/components/webmcp/WebMcpStatus'
 
+// The WebMCP layer sits beside MapProvider for the same reason MapProvider is here: the shell is
+// the only common ancestor of every /app route, so a tool registered here survives client-side
+// navigation while a tool registered on a page correctly disappears with it.
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="app-shell">
-      <MapProvider>{children}</MapProvider>
+      <WebMcpRegistryProvider>
+        <MapProvider>{children}</MapProvider>
+        <GlobalTools />
+        <WebMcpStatus />
+      </WebMcpRegistryProvider>
     </div>
   )
 }

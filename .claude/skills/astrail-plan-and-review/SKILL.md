@@ -72,7 +72,20 @@ Include exact assumptions (reference the interview), non-goals, files likely tou
 - Frontend or visual work → gstack `/plan-design-review`.
 - Full automatic multi-lens review → gstack `/autoplan`.
 
-Then run the Codex peer review as the second, adversarial pass — the standard backend loop is **gstack `/plan-eng-review` + Codex** (`/codex:rescue Review this implementation plan and score it: <plan path>`). Pass criteria: overall >= 7.0 and no dimension <= 3.
+Then run the Codex peer review as the second, adversarial pass — the standard backend loop is **gstack `/plan-eng-review` + Codex**. Pass criteria: overall >= 7.0 and no dimension <= 3.
+
+**Dispatch this pass through Herdr by default.** Check `test "${HERDR_ENV:-}" = 1`; when it passes, prompt a named pane and read the reply back — no stdin hang, no zombie hunt, and the user can watch the review:
+
+```bash
+herdr agent list                                    # read pane_id, agent (the vendor), agent_status
+herdr agent rename <pane-id> <name>                 # once — a fresh pane has no name to target
+herdr agent prompt <name> "Review this implementation plan and score it: <plan path>" --wait --timeout 1800000
+herdr agent read <name> --source recent-unwrapped --lines 200
+```
+
+**Target a pane running a DIFFERENT vendor than the agent doing the planning** — that is what makes it a cross-model pass. From a Claude session that means a Codex (or Gemini) pane; from a Codex session it means a Claude pane. Two Codex contexts are not cross-vendor review. `herdr agent list` reports each pane's `agent` kind — check it rather than assuming the pane is Codex.
+
+Full contract and safety rules: `.claude/docs/HERDR.md`. When the check fails, say so and fall back to `/codex:rescue Review this implementation plan and score it: <plan path>` or the `codex exec` invocation in `.claude/docs/BUILD-LOOP.md`. Note this applies to a **direct** dispatch. gstack `/plan-eng-review` and `/autoplan` run their own Codex internally: invoke them as-is and read the `CODEX_MODE:` line they print. `ready` means their Codex already **was** the cross-model pass — do not dispatch a second one. Any other value (`under_codex`, `not_installed`, `not_authed`, `model_unusable`, `disabled`) means they skipped it and you still owe one; `under_codex` means the main agent is Codex, so that pass needs a **Claude** pane. With no differing-vendor pane available, say plainly that cross-model coverage is unavailable rather than recording the plan as reviewed.
 
 Fix every blocking finding in the plan file before handoff, and re-run the gstack review after any material change. Do not hand a plan to an implementer (Codex or the `astrail-developer` subagent) that has not passed gstack review.
 

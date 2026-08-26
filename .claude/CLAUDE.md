@@ -24,6 +24,7 @@ Travel MCP is **search/suggestions only** — no booking, no payments in v1.
 | Before you… | Read first |
 |---|---|
 | **Build/implement ANY backend feature** (plan or code; or the user says "build X" / "implement X") | `.claude/docs/BUILD-LOOP.md` (the MANDATORY end-to-end feature workflow — always follow it) |
+| **Delegate to Codex, or run any long/parallel task the user should watch** | `.claude/docs/HERDR.md` (the default delegation surface when `HERDR_ENV=1`; gate, commands, safety rules, fallback) |
 | Add/remove/substitute ANY dependency, service, or tool | `.claude/docs/STACK.md` (locked stack, banned list, v2 triggers) |
 | Touch backend pipeline, SSE, API endpoints, or create new files | `.claude/docs/ARCHITECTURE.md` (tree, 4-phase pipeline, SSE contract, endpoints, build order) |
 | Write/review backend endpoint, rate-limit, auth, or infra code | `.claude/docs/BACKEND-PRINCIPLES.md` (SOLID · async/streaming · idempotency · caching · security/JWT/OAuth · design patterns — all applied feasible-first) |
@@ -72,6 +73,8 @@ yt-dlp/ffmpeg/Whisper.
 | Task | Use | Ignore |
 |---|---|---|
 | Web browsing | gstack `/browse` | `mcp__claude-in-chrome__*` directly |
+| Dispatch Codex **yourself** / any long delegated task, **when `HERDR_ENV=1`** | `herdr` skill + `.claude/docs/HERDR.md` (named pane, `agent prompt --wait`, `agent read`) | bare `codex exec`, `ps`-grepping for zombies |
+| Run a gstack skill that spawns its own Codex (`/review`, `/autoplan`, every `/plan-*-review`) | the skill as-is, then read its `CODEX_MODE:` line | wrapping it in a Herdr pane, or adding your own pass when it printed `ready` — both double-spawn |
 | After a meaningful commit | `shiplog` | — |
 | Plan an issue / review a plan or diff | `astrail-plan-and-review` (wraps gstack `/plan-eng-review`, `/review`, `/qa`, `/autoplan`) | duplicate review skills |
 | Release / deploy / migrate prod / flip a flag / hand a blocker across the owner line | `astrail-release` (golden order, pre-flight gate, flag choreography, rollback, handoff docs) | gstack `/ship`, `/land-and-deploy`, ad-hoc deploy steps |
@@ -86,12 +89,24 @@ than chaining into another. A wrapper skill plus the sub-skills it documents (e.
 `astrail-plan-and-review` invoking gstack `/plan-eng-review`, `/review`, `/qa`,
 `/autoplan`) counts as one.
 
+**Delegation surface — check `test "${HERDR_ENV:-}" = 1` first.** When it passes, **Herdr is the
+default** for Codex dispatches **you** send directly and for any long/parallel work the user should
+watch: named pane, `herdr agent rename` once, `herdr agent prompt <name> "…" --wait`,
+`herdr agent read`. Full contract in `.claude/docs/HERDR.md`. When it fails, say so and use the
+documented fallbacks. Two things are **not** Herdr's: gstack skills that spawn their own Codex
+(`/review`, `/autoplan`) run as-is, and per-task review gates + research stay on **Task subagents**
+regardless of how long they run (7+ passes an arc, and they need the per-dispatch model tiering).
+A cross-model pass must cross vendors — check the pane's `agent` kind, don't assume. Never control a
+Herdr session from outside Herdr.
+
 **Subagent orchestration, delegation templates, judgment rubrics:** follow
 `~/.claude/playbook/ORCHESTRATION.md` for when/how to delegate to subagents (Zhi Hao's
 machines; if that file is absent, use your own judgment — do not block on it). Repo-local
 subagents: `astrail-developer`, `astrail-researcher`, `astrail-reviewer` (see
 `.claude/agents/`; dispatch by `subagent_type`, `model: fable` for the hard
-adversarial/final review — the BUILD-LOOP.md model table is authoritative).
+adversarial/final review — the BUILD-LOOP.md model table is authoritative). These are
+**Task-tool** agents; a CLI agent hosted in a Herdr pane is a different surface with different
+mechanics (no `SendMessage` handoff — you read the pane).
 **Standard Feature Build Loop (MANDATORY — full detail in `.claude/docs/BUILD-LOOP.md`;
 read it before building any feature):** research (`astrail-researcher`, if an unfamiliar
 API/algorithm) → plan (`astrail-plan-and-review`) → review the plan (`/plan-eng-review` +

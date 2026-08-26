@@ -10,6 +10,23 @@
 Trigger: the user says "build X" / "implement X" / "add feature Y", or you're about to plan or code any
 backend change beyond a trivial one-line fix. When in doubt, follow the loop.
 
+## Delegation surface (check this before step 1)
+
+```bash
+test "${HERDR_ENV:-}" = 1
+```
+
+**Passes → Herdr is the default** for **direct** Codex dispatch and for long or parallel work the
+user should be able to watch. Read `.claude/docs/HERDR.md` before dispatching. **The gstack review
+skills are the exception:** `/review`, `/autoplan` and every `/plan-*-review` spawn their own Codex
+and are run as-is. Each prints a `CODEX_MODE:` line — `ready` means it already did the cross-model
+pass (dispatching your own on top double-spawns); anything else means it skipped, and you owe one
+from a **differing-vendor** pane. See steps 3 and 6.
+**Fails → say so, then use the documented fallbacks** (`codex exec` for Codex, Task subagents as
+below). Per-task review gates (step 4) and research (step 1) stay on **Task subagents** either way —
+they run 7+ times an arc and depend on the per-dispatch model tiering in the table at the end of
+this file.
+
 ## The loop — do these in order
 
 0. **Task from the board.** Confirm *what* you're building against **GitHub Project #1** (the
@@ -26,8 +43,20 @@ backend change beyond a trivial one-line fix. When in doubt, follow the loop.
    files / tests; **list every deferral with a concrete trigger**; map each task to the guardrails + contracts.
 
 3. **Review the plan — REQUIRED before any code.** Run gstack **`/plan-eng-review`** (it logs the review
-   report teammates read) **AND** the **Codex** outside voice (`/codex:rescue Review this plan …` or the
-   skill's `codex exec` pass). Fold every blocking finding into the plan file. A plan is not "ready" until it
+   report teammates read). **It already runs the Codex outside voice itself** — it probes and prints
+   `CODEX_MODE:` before deciding. **Read that line; it tells you whether you still owe a cross-model pass:**
+
+   - `CODEX_MODE: ready` → gstack's own `codex exec` **is** the outside voice. **Do not dispatch a second
+     one** — that is a double spawn on the same plan, paying twice for one opinion.
+   - `under_codex` / `not_installed` / `not_authed` / `model_unusable` / `disabled` → gstack **skipped** its
+     cross-model pass. You still owe one. **Supply it via Herdr when `HERDR_ENV=1`** (`.claude/docs/HERDR.md`),
+     targeting a pane of a **different vendor than the agent doing the planning** — note `under_codex` means
+     the main agent *is* Codex, so that pass needs a **Claude** pane, not a Codex one.
+   - No differing-vendor pane and no Herdr → **say plainly that cross-model coverage is unavailable.**
+     Do not mark the plan reviewed on same-vendor review alone; an unreviewed plan you know about beats one
+     you believe was checked.
+
+   Fold every blocking finding into the plan file. A plan is not "ready" until it
    passes (overall ≥ 7, no dimension ≤ 3). This routinely catches P1s at zero cost — the mem0 plan review
    caught 3 (idempotency, hang-timeouts, GC'd write-back) before a line of code.
 
@@ -48,6 +77,17 @@ backend change beyond a trivial one-line fix. When in doubt, follow the loop.
    `|`-join collision (wrong-trip replay) and a `mark_job_done` failure flipping a completed trip to `failed`.
    Fix its findings + re-verify. **Run BOTH step 5 and step 6** — they have different blind spots; one is not a
    substitute for the other.
+
+   **`/review` spawns its own Codex** (it probes the `codex` CLI, checks auth, and prints `CODEX_MODE:`) —
+   so **Herdr does not transport this pass; you cannot route it through a pane.** Run `/review` as-is,
+   then apply the same `CODEX_MODE` rule as step 3:
+
+   - `ready` → `/review`'s own Codex is the cross-model pass. Done.
+   - anything else (notably **`under_codex`**, i.e. the main agent is Codex) → `/review` **silently
+     skipped** the cross-model pass, and the step's whole value with it. Supply it yourself: a Herdr
+     pane of a **different vendor** (from a Codex host that means a **Claude** pane), or say plainly
+     that cross-model coverage is unavailable for this diff. **Do not report step 6 as done on a
+     `/review` run that skipped its Codex** — that is the failure mode this step exists to prevent.
 
    **Why it works, and how to prompt it (learned 2026-07-20 — it returned DO-NOT-MERGE on two arcs that
    three Claude reviewers had already passed).** The value is not extra reasoning depth. Every Claude pass
@@ -145,7 +185,28 @@ Nothing is lost; the old SHA stays in the reflog.
 Related: check `git status --short` before committing. A file you did not touch appearing there is
 the tell that a subagent is mid-write.
 
-## Calling Codex without hanging (learned 2026-07-19 — cost ~20 min twice)
+## Calling Codex — Herdr first, `codex exec` as the fallback
+
+**Default (2026-08-26): dispatch Codex through Herdr.** This governs Codex calls **you** make
+directly. It does **not** apply to gstack skills that run their own Codex internally — `/review`,
+`/autoplan`, and every `/plan-*-review` — run those as-is and read their `CODEX_MODE:` line. When `test "${HERDR_ENV:-}" = 1` passes, use a named pane and skip
+this entire section — none of the traps below can occur, and the user can watch the review:
+
+```bash
+herdr agent list                                    # read pane_id, agent (the VENDOR), agent_status
+herdr agent rename <pane-id> <name>                 # once, for a stable target; name the ROLE, not the vendor
+herdr agent prompt <name> "<prompt>" --wait --timeout 1800000
+herdr agent read <name> --source recent-unwrapped --lines 200
+```
+
+Choose the pane by its `agent` (vendor) field — it must differ from the agent doing the asking, or it
+is not a cross-model pass. Do not hardcode a target called `codex`.
+
+Full contract, including the alternate-screen read fallback and the safety rules:
+`.claude/docs/HERDR.md`. **Everything below is the no-Herdr fallback path.** Keep it — CI, the other
+owner's machine, and plain terminals still need it.
+
+### Fallback: `codex exec` without hanging (learned 2026-07-19 — cost ~20 min twice)
 
 `codex exec "<prompt>"` **hangs** when stdin is a non-TTY pipe with nothing written to it: it
 prints `Reading additional input from stdin...` and waits forever. This is NOT the shared-runtime
@@ -165,6 +226,10 @@ timeout 1500 codex exec -m gpt-5.6-sol -c model_reasoning_effort="high" \
 - **Exit code 0 does not mean it did the work.** A hung-then-killed run exits 0 with an empty or
   header-only file. Check the output, not the status.
 
+**Under Herdr, none of this applies — `herdr agent list` reports only Herdr-managed agents**, so
+there is nothing to grep for and nothing of the user's to misidentify. The rest of this subsection
+is for the fallback path only.
+
 **Do NOT zombie-check with `ps aux | grep -i codex | wc -l`.** That pattern counts the user's
 running **ChatGPT.app desktop application** (~14 helper processes: renderers, GPU, network,
 Sparkle updater, computer-use service) plus the VS Code ChatGPT extension. On 2026-07-20 it
@@ -181,6 +246,11 @@ to the user's environment — **never kill it.** A genuine leftover is a `codex 
 time exceeds the `timeout` you wrapped it in.
 
 ## Subagent result delivery (learned 2026-07-19 — cost ~5 wasted round-trips in one session)
+
+**This section is about Task-tool subagents only.** An agent running in a **Herdr pane** has no
+handoff step and therefore none of this failure mode — you read its output directly with
+`herdr agent read <name> --source recent-unwrapped`. That is a large part of why Herdr is the
+default for the Codex passes and for any long delegated task.
 
 **A background subagent's plain final text is NOT delivered to the orchestrator.** It must call
 `SendMessage` with `to: "main"`. Without that the agent finishes its work, produces a report nobody
@@ -278,7 +348,7 @@ Current tiering (**revised 2026-07-19**; supersedes the earlier opus-implements/
 | Per-task review gate (step 4, `astrail-reviewer`) | **sonnet** | ~7+ passes per arc. Never spend fable here — it exhausts the quota before step 5. |
 | Final whole-branch review (step 5) | **fable** | The single review with the most to catch. Fable replaces opus for this pass. |
 | Research (step 1) | **sonnet** | Read-only fan-out; cheap. |
-| Cross-model outside voice (steps 3 + 6) | **`gpt-5.6-sol`** via Codex | Different-vendor blind spots. Call `codex exec -m gpt-5.6-sol` directly (NOT the shared runtime — it hangs on long reviews); raise `-c model_reasoning_effort="high"` for reviews, since the user's `~/.codex/config.toml` defaults to `low`. |
+| Cross-model outside voice (steps 3 + 6) | **Any vendor OTHER than the agent doing the asking** — from Claude that is Codex (`gpt-5.6-sol`); **from Codex it must be Claude** | Different-vendor blind spots — the *difference* is the point, not the brand. **First read the gstack skill's `CODEX_MODE:` line:** `ready` means it already ran the pass, so dispatch nothing. Only when it skipped do you owe one — **via Herdr when `HERDR_ENV=1`** (`.claude/docs/HERDR.md`), targeting a differing-vendor pane. **You cannot choose or verify a running pane's model from the CLI** — `herdr agent read` returns terminal output, not model metadata (a footer line often shows it, but that is the agent's own rendering, not a guarantee). To pin the model, start the pane yourself with native flags after `--`; otherwise ask the user what the pane is running. No-Herdr fallback, **and only from a non-Codex host**: `codex exec -m gpt-5.6-sol` directly (NOT the shared runtime — it hangs on long reviews), raising `-c model_reasoning_effort="high"`, since the user's `~/.codex/config.toml` defaults to `low`. From a Codex host with no Claude surface reachable, there is no valid fallback — **report that cross-model coverage is unavailable** rather than running Codex against itself. |
 
 **Fable budget discipline:** roughly 3 fable passes per arc (plan, merged-diff review if any, final review).
 If an arc needs more, batch harder — merge related issues into one plan — rather than raising the count.

@@ -2,6 +2,7 @@ import type { Trip, TripBundle } from '@/lib/trip/backend-types'
 import type { ToolSpec } from '../types'
 import { getAppStateTool, type AppStateSnapshot } from './app-state'
 import { getItineraryTool, getPlaceEvidenceTool, listTripsTool } from './trips'
+import { saveReelsTool } from './reels'
 
 /**
  * Every tool, assembled from plain readers.
@@ -14,11 +15,17 @@ export type ToolContext = {
   readAppState: () => AppStateSnapshot
   loadTrips: () => Promise<Trip[]>
   readBundle: () => TripBundle | null
+  /** Saves one already-validated Instagram Reel URL. Validation stays in the tool. */
+  saveReel: (url: string) => Promise<unknown>
 }
 
 /** Live for the whole /app shell. */
 export function globalTools(ctx: ToolContext): ToolSpec[] {
-  return [getAppStateTool(ctx.readAppState), listTripsTool(ctx.loadTrips)]
+  return [
+    getAppStateTool(ctx.readAppState),
+    listTripsTool(ctx.loadTrips),
+    saveReelsTool({ save: ctx.saveReel }),
+  ]
 }
 
 /** Registered only on a trip page; unregistered on navigation away. */

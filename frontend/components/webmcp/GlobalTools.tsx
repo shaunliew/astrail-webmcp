@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import type { Trip } from '@/lib/trip/backend-types'
 import { listTrips } from '@/lib/trip/supabase-api'
+import { captureSavedReel } from '@/lib/reels/api'
+import { getAccessToken } from '@/lib/supabase/session'
 import { globalTools } from '@/lib/webmcp/tools'
 import type { AppStateSnapshot } from '@/lib/webmcp/tools/app-state'
 import { RegisterTools } from './RegisterTools'
@@ -77,9 +79,17 @@ export default function GlobalTools() {
     return fresh
   }, [])
 
+  // The JWT is fetched at call time and never crosses the tool boundary in either direction:
+  // no tool accepts a token argument, and none returns one.
+  const saveReel = useCallback(async (url: string) => {
+    const token = await getAccessToken()
+    return captureSavedReel(url, token)
+  }, [])
+
   const specs = globalTools({
     readAppState,
     loadTrips,
+    saveReel,
     readBundle: () => null, // trip tools register on the trip page, not here
   })
 

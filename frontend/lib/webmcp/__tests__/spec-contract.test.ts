@@ -28,13 +28,14 @@ const ctx: ToolContext = {
   }),
   loadTrips: async () => [TOKYO_TRIP.trip],
   readBundle: () => TOKYO_TRIP,
+  saveReel: async () => ({}),
 }
 
 const specs = allTools(ctx)
 
 describe('tool spec contract', () => {
   it('registers at least the tools built so far', () => {
-    expect(specs.length).toBeGreaterThanOrEqual(4)
+    expect(specs.length).toBeGreaterThanOrEqual(5)
   })
 
   it('has globally unique names — a duplicate is REJECTED at registration, silently', () => {
@@ -82,7 +83,10 @@ describe('tool spec contract', () => {
 
   it('every tool output fits the serialized budget', async () => {
     for (const spec of specs) {
-      const args = spec.inputSchema?.required?.includes('place') ? { place: '1' } : {}
+      const req = spec.inputSchema?.required ?? []
+      const args: Record<string, unknown> = {}
+      if (req.includes('place')) args.place = '1'
+      if (req.includes('urls')) args.urls = ['https://www.instagram.com/reel/Cabc123/']
       const out = await spec.execute(args)
       const text = typeof out === 'string' ? out : JSON.stringify(out)
       expect(envelopeLength(text), `${spec.name} exceeded the output budget`).toBeLessThanOrEqual(OUTPUT_LIMIT)

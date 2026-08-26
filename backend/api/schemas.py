@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 # Generous upper bound: a beta trip is days-to-weeks, so a >1-year span is a nonsense/abuse range
 # that would inflate day-count + weather scaling. Well beyond any real request (or test).
@@ -257,3 +257,41 @@ class TripFeedback(BaseModel):
 class TripFeedbackResponse(BaseModel):
     """201 body. Wraps the row to match CaptureSavedReelResponse's shape."""
     feedback: TripFeedback
+
+
+class TripPlaceEditRequest(BaseModel):
+    """PATCH /trips/{trip_id}/places/{trip_place_id} body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    day_number: int | None = Field(default=None, ge=1, strict=True)
+    sort_order: int | None = Field(default=None, ge=0, strict=True)
+
+    @model_validator(mode="after")
+    def require_at_least_one_edit(self):
+        if self.day_number is None and self.sort_order is None:
+            raise ValueError("At least one of day_number or sort_order is required")
+        return self
+
+
+class TripPlaceRow(BaseModel):
+    """The persisted trip_places row returned after an itinerary edit."""
+
+    id: str
+    trip_id: str
+    place_id: str
+    source_type: Literal["reel_extracted", "user_requested", "agent_suggested"]
+    evidence_json: dict[str, Any]
+    day_number: int | None
+    sort_order: int | None
+    created_at: datetime
+
+
+class TripPlaceEditResponse(BaseModel):
+    trip_place: TripPlaceRow
+    days_touched: list[int]
+
+
+class TripPlaceDeleteResponse(BaseModel):
+    removed_id: str
+    days_touched: list[int]

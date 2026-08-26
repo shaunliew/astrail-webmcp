@@ -46,6 +46,10 @@ from api.schemas import (
     TripFeedback,
     TripFeedbackRequest,
     TripFeedbackResponse,
+    TripPlaceDeleteResponse,
+    TripPlaceEditRequest,
+    TripPlaceEditResponse,
+    TripPlaceRow,
 )
 from api.streaming import stream_organize_events, stream_trip_events
 from auth import get_current_user_id, get_user_id_from_query_or_header
@@ -87,6 +91,11 @@ _RECOVERY_SEM = asyncio.Semaphore(3)   # bound boot fan-out so a backlog doesn't
 REAP_INTERVAL_S = 120
 
 logger = logging.getLogger(__name__)
+
+WEBMCP_EDITS_ENABLED: bool = (
+    os.environ.get("WEBMCP_EDITS_ENABLED", "false").strip().lower()
+    not in ("false", "0", "no", "off")
+)
 
 # ISSUES-B1: strip `?token=<JWT>` out of uvicorn's access log. At import, because Dockerfile:25
 # starts uvicorn with DEFAULT access logging (no --no-access-log, no --log-config) — this filter
@@ -524,6 +533,120 @@ async def create_saved_reel(
     return CaptureSavedReelResponse(saved_reel=saved_reel)
 
 
+def _require_webmcp_edits_enabled() -> None:
+    """Hide the write surface unless this deployment explicitly enables it."""
+    if not WEBMCP_EDITS_ENABLED:
+        raise HTTPException(status_code=404, detail="Not found")
+
+
+async def _require_trip_owner(client, trip_id: str, user_id: str) -> None:
+    owner = await client.table("trips").select("user_id").eq("id", trip_id).maybe_single().execute()
+    # `owner is None` is load-bearing, NOT defensive noise. postgrest 2.31.0's
+    # AsyncMaybeSingleRequestBuilder.execute() returns a bare None when zero rows match
+    # (request_builder.py:167: `if len(parsed.data) == 0: return None`) -- NOT an object whose
+    # .data is None. Dereferencing owner.data would AttributeError into a 500, which leaks an
+    # existence oracle: 500 = no such trip, 404 = exists but not yours. This matches the repo's
+    # majority convention (jobs.py:80, generate_trip's replay precheck below,
+    # organizer.py:184) -- the `stream` route was the one outlier, fixed in 124417b.
+    if owner is None or owner.data is None or owner.data["user_id"] != user_id:  # guardrail #6
+        raise HTTPException(status_code=404, detail="Trip not found")  # 404 not 403: do not confirm existence
+
+
+def _trip_not_editable(message: str) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={"code": "trip_not_editable", "message": message},
+    )
+
+
+async def _require_editable_trip_place(
+    client,
+    *,
+    trip_id: str,
+    trip_place_id: str,
+    user_id: str,
+) -> dict:
+    """Apply every pre-mutation guard in its required order and return the paired row."""
+    await _require_trip_owner(client, trip_id, user_id)
+
+    trip_place = (
+        await client.table("trip_places")
+        .select("*")
+        .eq("id", trip_place_id)
+        .eq("trip_id", trip_id)
+        .maybe_single()
+        .execute()
+    )
+    if trip_place is None or trip_place.data is None:
+        raise HTTPException(status_code=404, detail="Trip place not found")
+
+    trip = (
+        await client.table("trips")
+        .select("status")
+        .eq("id", trip_id)
+        .maybe_single()
+        .execute()
+    )
+    if trip is None or trip.data is None:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    if trip.data["status"] not in {"complete", "saved_with_gaps"}:
+        raise _trip_not_editable("Only finished trips can be edited")
+
+    running_jobs = (
+        await client.table("jobs")
+        .select("id")
+        .eq("trip_id", trip_id)
+        .eq("status", "running")
+        .limit(1)
+        .execute()
+    )
+    if running_jobs is not None and running_jobs.data:
+        raise _trip_not_editable("The trip is currently being generated")
+
+    # Snapshot the pre-mutation row: test fakes and some client adapters may otherwise
+    # retain a reference that an update mutates in place, erasing the old day number.
+    return dict(trip_place.data)
+
+
+async def _resequence_trip_day(
+    client,
+    *,
+    trip_id: str,
+    day_number: int,
+    preferred_id: str | None = None,
+    preferred_index: int | None = None,
+) -> None:
+    """Make one day's sort_order dense, optionally placing one row at an exact index."""
+    result = (
+        await client.table("trip_places")
+        .select("id,sort_order")
+        .eq("trip_id", trip_id)
+        .eq("day_number", day_number)
+        .order("sort_order")
+        .order("id")
+        .execute()
+    )
+    rows = list(result.data or [])
+
+    if preferred_id is not None and preferred_index is not None:
+        preferred = next((row for row in rows if str(row["id"]) == preferred_id), None)
+        if preferred is not None:
+            rows.remove(preferred)
+            rows.insert(min(preferred_index, len(rows)), preferred)
+
+    for sort_order, row in enumerate(rows):
+        if row.get("sort_order") == sort_order:
+            continue
+        await (
+            client.table("trip_places")
+            .update({"sort_order": sort_order})
+            .eq("id", row["id"])
+            .eq("trip_id", trip_id)
+            .eq("day_number", day_number)
+            .execute()
+        )
+
+
 @app.post("/trips/{trip_id}/feedback", response_model=TripFeedbackResponse, status_code=201)
 @limiter.limit(BURST_LIMIT)
 async def submit_trip_feedback(
@@ -545,17 +668,7 @@ async def submit_trip_feedback(
     """
     trip_key = str(trip_id)
     client = await get_supabase_client()
-
-    owner = await client.table("trips").select("user_id").eq("id", trip_key).maybe_single().execute()
-    # `owner is None` is load-bearing, NOT defensive noise. postgrest 2.31.0's
-    # AsyncMaybeSingleRequestBuilder.execute() returns a bare None when zero rows match
-    # (request_builder.py:167: `if len(parsed.data) == 0: return None`) -- NOT an object whose
-    # .data is None. Dereferencing owner.data would AttributeError into a 500, which leaks an
-    # existence oracle: 500 = no such trip, 404 = exists but not yours. This matches the repo's
-    # majority convention (jobs.py:80, generate_trip's replay precheck below,
-    # organizer.py:184) -- the `stream` route was the one outlier, fixed in 124417b.
-    if owner is None or owner.data is None or owner.data["user_id"] != user_id:  # guardrail #6
-        raise HTTPException(status_code=404, detail="Trip not found")  # 404 not 403: do not confirm existence
+    await _require_trip_owner(client, trip_key, user_id)
 
     inserted = await client.table("feedback").insert({
         "trip_id": trip_key,
@@ -591,6 +704,111 @@ async def submit_trip_feedback(
             comment=row["comment"],
         )
     )
+
+
+@app.patch(
+    "/trips/{trip_id}/places/{trip_place_id}",
+    response_model=TripPlaceEditResponse,
+)
+@limiter.limit(BURST_LIMIT)
+async def edit_trip_place(
+    request: Request,          # must be named `request` — slowapi's key_func resolves it by name
+    response: Response,        # required: the limiter is headers_enabled=True
+    trip_id: UUID,
+    trip_place_id: UUID,
+    req: TripPlaceEditRequest,
+    _edits_enabled: None = Depends(_require_webmcp_edits_enabled),
+    user_id: str = Depends(get_current_user_id_stashed),
+) -> TripPlaceEditResponse:
+    trip_key = str(trip_id)
+    trip_place_key = str(trip_place_id)
+    client = await get_supabase_client()
+    existing = await _require_editable_trip_place(
+        client,
+        trip_id=trip_key,
+        trip_place_id=trip_place_key,
+        user_id=user_id,
+    )
+
+    updates = req.model_dump(exclude_none=True)
+    updated = (
+        await client.table("trip_places")
+        .update(updates)
+        .eq("id", trip_place_key)
+        .eq("trip_id", trip_key)
+        .execute()
+    )
+    if updated is None or not updated.data:
+        raise HTTPException(status_code=404, detail="Trip place not found")
+
+    old_day = existing.get("day_number")
+    new_day = req.day_number if req.day_number is not None else old_day
+    days_touched = sorted({day for day in (old_day, new_day) if isinstance(day, int)})
+    for day_number in days_touched:
+        await _resequence_trip_day(
+            client,
+            trip_id=trip_key,
+            day_number=day_number,
+            preferred_id=trip_place_key if day_number == new_day else None,
+            preferred_index=req.sort_order if day_number == new_day else None,
+        )
+
+    persisted = (
+        await client.table("trip_places")
+        .select("*")
+        .eq("id", trip_place_key)
+        .eq("trip_id", trip_key)
+        .maybe_single()
+        .execute()
+    )
+    if persisted is None or persisted.data is None:
+        raise HTTPException(status_code=404, detail="Trip place not found")
+
+    return TripPlaceEditResponse(
+        trip_place=TripPlaceRow.model_validate(persisted.data),
+        days_touched=days_touched,
+    )
+
+
+@app.delete(
+    "/trips/{trip_id}/places/{trip_place_id}",
+    response_model=TripPlaceDeleteResponse,
+)
+@limiter.limit(BURST_LIMIT)
+async def delete_trip_place(
+    request: Request,          # must be named `request` — slowapi's key_func resolves it by name
+    response: Response,        # required: the limiter is headers_enabled=True
+    trip_id: UUID,
+    trip_place_id: UUID,
+    _edits_enabled: None = Depends(_require_webmcp_edits_enabled),
+    user_id: str = Depends(get_current_user_id_stashed),
+) -> TripPlaceDeleteResponse:
+    trip_key = str(trip_id)
+    trip_place_key = str(trip_place_id)
+    client = await get_supabase_client()
+    existing = await _require_editable_trip_place(
+        client,
+        trip_id=trip_key,
+        trip_place_id=trip_place_key,
+        user_id=user_id,
+    )
+
+    removed = (
+        await client.table("trip_places")
+        .delete()
+        .eq("id", trip_place_key)
+        .eq("trip_id", trip_key)
+        .execute()
+    )
+    if removed is None or not removed.data:
+        raise HTTPException(status_code=404, detail="Trip place not found")
+
+    old_day = existing.get("day_number")
+    days_touched = [old_day] if isinstance(old_day, int) else []
+    for day_number in days_touched:
+        await _resequence_trip_day(client, trip_id=trip_key, day_number=day_number)
+
+    return TripPlaceDeleteResponse(removed_id=trip_place_key, days_touched=days_touched)
 
 
 @app.post("/generate-trip", response_model=GenerateTripResponse)

@@ -55,3 +55,26 @@ cd backend && uv run pytest -q                        -> 1897 passed, 13 skipped
   (`herdr` supports `worktree`), which is a separate index — not just separate paths.
 - Prefer `git commit -o <paths>` (commit *only* these paths) over bare `git commit` whenever any
   other agent might be live.
+
+## Batch 2 — React registration layer + submission docs
+
+| # | Task | Gate | Result |
+|---|---|---|---|
+| 2.1 | Backend endpoints (Codex, gpt-5.6-sol, Herdr pane) | `uv run pytest test_webmcp_edits.py -q` | ✅ **11 passed** |
+| 2.2 | Backend no-regression | `uv run pytest -q` | ✅ **1897 passed, 13 skipped** |
+| 2.3 | Guard spot-check **against the code, not Codex's report** | grep `backend/main.py` | ✅ flag default-off (95) · flag check (538) · `_require_trip_owner` (542, reused 570/671) · triple guard (551) · 409 `trip_not_editable` (555) · status guard (593) · running-job 409 (599–604) |
+| 2.4 | History repair — split the mixed commit, drop Codex's empty marker commit | `git log`, then re-run both suites | ✅ 629 frontend / 1897 backend still green **after** the surgery |
+| 2.5 | `WebMcpRegistry` + `RegisterTools` + `GlobalTools`, wired into `app/app/layout.tsx` | `tsc --noEmit` | ✅ clean |
+| 2.6 | `WebMcpStatus` — availability chip + tool inspector | `npx vitest run components/webmcp` | ✅ **4/4** incl. the no-provider case and the "how to enable" fallback |
+| 2.7 | Frontend no-regression | `npx vitest run` | ✅ **633 tests / 85 files** |
+| 2.8 | **Production build** — the gate unit tests cannot give you | `npm run build` | ✅ all routes build, middleware 153 kB |
+| 2.9 | `SUBMISSION.md` + `WHATS-NEW.md` (Codex, docs-only, no git) | read-through | ✅ answers all four Devpost questions; separates built from planned rather than overclaiming |
+
+**Batch 2 verdict: PASS.** React-layer diff was 389 lines — under the 400 gate.
+
+### State at hand-off
+
+- Branch `feat/webmcp`, **8 commits, nothing pushed** (correct — pushing is not an unattended action).
+- 4 WebMCP tools registering in the `/app` shell; 2 backend endpoints, flag-gated **off**.
+- Frontend **633 tests / 85 files** · backend **1897 passed, 13 skipped** · `tsc` clean · production build green.
+- Working tree clean apart from pre-existing untracked skill files that predate this branch.

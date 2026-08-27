@@ -75,3 +75,15 @@ Worked at the evening review; the big passes wait for the weekend.
       Check they do not stack badly on a small window.
 - 🟢 `README.md` and the landing page are rewritten for judges. **`frontend/app/page.tsx` has a
       clearly marked `TODO` for demo credentials** — that must be filled before submitting.
+
+## After the lunchtime fixes
+
+- ✅ **Both red checks passed** — global tools from `/app`, and the open trip used on a trip page.
+- ✅ Panel closes (chip toggles, plus an explicit ✕). Verified at 375 / 768 / 1440.
+- 🟡 **Re-check the dock in ChatGPT's browser** at the window size you actually use. The geometry
+      is verified in headless Chromium; ChatGPT's browser chrome may leave less height.
+- 🟡 **The prompts panel now hides while the tool list is open.** Check that reads as intentional
+      rather than as the panel disappearing on you.
+- 🟡 Still open from this morning: the **daylight basemap** in `evidence/01-trip-map.png`, and
+      whether the Agent Rail's 8s fade reads as calm or as noise in a real conversation.
+- 🔴 Still open: the **demo-credentials `TODO`** in `frontend/app/page.tsx` blocks submission.

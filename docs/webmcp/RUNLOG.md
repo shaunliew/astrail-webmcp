@@ -223,3 +223,27 @@ bun run src/cli.ts js "document.modelContext.executeTool('get_itinerary', {}).th
 
 That 10-second window is also a **real risk on the judged surface**: if ChatGPT's browser injects
 its WebMCP API later than 10s after mount, no tools register at all. Worth watching for.
+
+## Batch 7 — reported bugs (lunchtime, 27 Aug)
+
+**Both red T4 checks passed on the real surface**, which validates two design calls made blind:
+- From `/app` with no trip open: *"What's on day 2 of one of my latest generated Osaka trips?"* →
+  `list_trips` → `get_itinerary`, correct answer. This is the flow the **global tools** refactor
+  existed for; under the original page-scoped design the tool would not have been visible at all.
+- On the trip page: *"What's on day 2 of my Osaka trip?"* → used the open trip without asking
+  which. That is the **openTrip ref** fix, confirmed.
+
+"10 tools on `/app`" is correct, not a bug: 10 global + 3 map tools that only exist where a map does.
+
+| # | Task | Gate | Result |
+|---|---|---|---|
+| 7.1 | Tool panel could not be closed | vitest + browser | ✅ Panel rendered **below** the chip in a bottom-anchored box, so opening it pushed the chip upward and the click target moved out from under the cursor. Panel now renders **before** the chip; chip never moves; explicit close button added |
+| 7.2 | Three panels fighting for one corner | browser at 375 / 768 / 1440 | ✅ Chip, prompts and rail were each `fixed` at a hardcoded offset (4/16/28) — fine only while all three stay short. Replaced with **one dock**: each panel sizes itself and the others move, no offsets to keep in sync |
+| 7.3 | 13 tools taller than a phone | browser | ✅ `max-h-[60dvh]` + scroll. Measured fully on screen at 375×812 |
+| 7.4 | Prompts + tool list filled a phone viewport | browser | ✅ Now mutually exclusive — together they buried the map the agent is meant to be driving |
+| 7.5 | Regression + full suite | `npx vitest run` | ✅ **796 tests / 97 files**, 0 render loops in-browser |
+
+**Lesson, third time today:** all three of these were invisible to vitest. jsdom has no layout, so a
+panel positioned off the bottom of the viewport looks identical to one positioned correctly. The
+new tests pin what jsdom *can* see — DOM order, the close control, the height cap — and the
+geometry was verified by measuring `getBoundingClientRect` in a real browser at three widths.

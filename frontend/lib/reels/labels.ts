@@ -97,3 +97,33 @@ export function overlayLiveStatus(
     return { ...card, analysis_status: item === 'queued' ? 'queued' : 'processing' }
   })
 }
+
+/**
+ * The sentence under "No places found yet", where there is room for a reason.
+ *
+ * The card carries no error field — `saved_reel_cards` exposes status, `retry_after` and
+ * `analyzed_at`, and nothing about what actually broke — so this says what the status MEANS and
+ * what to do, and never invents a cause. A refused daily allowance is the one failure with a real
+ * explanation attached, because `retry_after` records it.
+ */
+export function statusExplanation(card: SavedReelCard, now: number = Date.now()): string | null {
+  switch (card.analysis_status) {
+    case 'not_analyzed':
+      return 'Save it again, or organize it from your library, to pull out its places.'
+    case 'queued':
+      return 'Waiting for a slot. This page updates itself as it goes.'
+    case 'processing':
+      return 'Reading the reel and checking each place against the map.'
+    case 'location_not_found':
+      return 'The reel was read, but nothing in it resolved to a real place on the map.'
+    case 'failed': {
+      const resetsAt = card.retry_after ? Date.parse(card.retry_after) : NaN
+      if (Number.isFinite(resetsAt) && resetsAt > now) {
+        return 'You have used today\u2019s analyses. Nothing is wrong with this reel \u2014 it can be analysed again after the limit resets.'
+      }
+      return 'Something went wrong while reading it. Saving it again retries the analysis.'
+    }
+    default:
+      return null
+  }
+}

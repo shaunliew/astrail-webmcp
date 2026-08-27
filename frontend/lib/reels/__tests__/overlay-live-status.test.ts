@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { overlayLiveStatus, statusLabel } from '@/lib/reels/labels'
+import { overlayLiveStatus, statusExplanation, statusLabel } from '@/lib/reels/labels'
 import type { OrganizeItemStatus, SavedReelCard } from '@/lib/reels/backend-types'
 
 const card = (id: string, over: Partial<SavedReelCard> = {}): SavedReelCard => ({
@@ -103,5 +103,48 @@ describe('statusLabel: a used-up allowance is not a broken reel', () => {
       places: [{ place_id: 'p1', name: 'X', lat: 1, lng: 1, country_code: 'JP', country_name: 'Japan', evidence_quote: 'q', source_url: null, source_reel_url: 'u', confidence: 0.9 }],
     })
     expect(statusLabel(found, AUG27)).toBe('Places found · 1')
+  })
+})
+
+describe('statusExplanation: say what the status means, invent nothing', () => {
+  const AUG27 = Date.parse('2026-08-27T12:00:00Z')
+
+  it('tells a capped user the reel is fine and the limit resets', () => {
+    // The distinction the card could not make: "this reel cannot be analysed" vs "not until
+    // tomorrow". Reported as a reel that had succeeded an hour earlier showing as failed.
+    const capped = card('a', { analysis_status: 'failed', retry_after: '2026-08-28T00:00:00Z' })
+    const text = statusExplanation(capped, AUG27)!
+    expect(text).toContain('used today')
+    expect(text).toContain('Nothing is wrong with this reel')
+  })
+
+  it('offers a retry for a genuine failure, without guessing at a cause', () => {
+    // saved_reel_cards carries no error field, so a cause here would be invented. What IS true
+    // and useful is that saving it again retries.
+    const broken = card('a', { analysis_status: 'failed', retry_after: null })
+    const text = statusExplanation(broken, AUG27)!
+    expect(text).toContain('Saving it again retries')
+    expect(text).not.toMatch(/apify|quota|limit|network|timeout/i)
+  })
+
+  it('does not claim a limit that has already reset', () => {
+    const stale = card('a', { analysis_status: 'failed', retry_after: '2026-08-26T00:00:00Z' })
+    expect(statusExplanation(stale, AUG27)).toContain('Saving it again retries')
+  })
+
+  it('distinguishes "read it, found nothing" from "could not read it"', () => {
+    // location_not_found is an honest zero, not an error — a still photo with a thin caption.
+    expect(statusExplanation(card('a', { analysis_status: 'location_not_found' }), AUG27))
+      .toContain('nothing in it resolved')
+  })
+
+  it('explains the in-flight states rather than leaving them bare', () => {
+    expect(statusExplanation(card('a', { analysis_status: 'queued' }), AUG27)).toContain('Waiting')
+    expect(statusExplanation(card('a', { analysis_status: 'processing' }), AUG27)).toContain('Reading the reel')
+  })
+
+  it('says nothing at all for an organized reel', () => {
+    // It has places, or it honestly found none — either way there is nothing to explain.
+    expect(statusExplanation(card('a', { analysis_status: 'organized' }), AUG27)).toBeNull()
   })
 })

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { ReelCollection, SavedReelCard } from '@/lib/reels/backend-types'
-import { STATUS_LABELS, reelLabel, sourceLabel, statusLabel } from '@/lib/reels/labels'
+import { reelLabel, sourceLabel, statusExplanation, statusLabel } from '@/lib/reels/labels'
 import { safeHref } from '@/lib/safe-href'
 
 /* ReelInfoCard — a centered modal opened from the Library browse grid showing a saved reel's
@@ -180,7 +180,13 @@ export default function ReelInfoCard({
               </ul>
             ) : (
               <p className="rounded-lg border border-dashed border-[color:var(--line-soft)] p-3 text-[13px] text-[color:var(--text-muted)]">
-                {`No places found yet — ${STATUS_LABELS[card.analysis_status]}.`}
+                {/* statusLabel, NOT STATUS_LABELS: the raw map has no idea a failure was a used-up
+                    daily allowance rather than a broken reel, and this is the surface someone
+                    opens precisely to find out which. */}
+                {`No places found yet — ${statusLabel(card)}.`}
+                {statusExplanation(card) ? (
+                  <span className="mt-1.5 block text-[color:var(--text-faint)]">{statusExplanation(card)}</span>
+                ) : null}
               </p>
             )}
           </div>

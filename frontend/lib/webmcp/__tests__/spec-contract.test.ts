@@ -39,13 +39,19 @@ const ctx: ToolContext = {
     openStream: () => {},
     confirm: async () => false,   // never approves inside a contract test
   },
+  edit: {
+    move: async () => ({}),
+    remove: async () => ({}),
+    refresh: async () => TOKYO_TRIP,
+    confirm: async () => false,
+  },
 }
 
 const specs = allTools(ctx)
 
 describe('tool spec contract', () => {
   it('registers at least the tools built so far', () => {
-    expect(specs.length).toBeGreaterThanOrEqual(7)
+    expect(specs.length).toBeGreaterThanOrEqual(9)
   })
 
   it('has globally unique names — a duplicate is REJECTED at registration, silently', () => {

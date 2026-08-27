@@ -28,13 +28,13 @@ export type TripReader = {
   load: (tripId: string) => Promise<TripBundle | null>
 }
 
-type Resolved = { ok: true; bundle: TripBundle } | { ok: false; message: string }
+export type Resolved = { ok: true; bundle: TripBundle } | { ok: false; message: string }
 
 /**
  * `list_trips` prints an 8-character id prefix to save output budget, so that is what the agent
  * will hand back. Accept the prefix, the full uuid, or nothing (meaning "the open trip").
  */
-async function resolveBundle(reader: TripReader, tripId?: string): Promise<Resolved> {
+export async function resolveBundle(reader: TripReader, tripId?: string): Promise<Resolved> {
   if (!tripId) {
     const open = reader.current()
     if (open) return { ok: true, bundle: open }

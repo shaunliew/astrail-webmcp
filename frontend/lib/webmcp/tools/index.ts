@@ -3,6 +3,7 @@ import { getAppStateTool, type AppStateSnapshot } from './app-state'
 import { getItineraryTool, getPlaceEvidenceTool, listTripsTool, type TripReader } from './trips'
 import { saveReelsTool } from './reels'
 import { getTripProgressTool, planTripFromReelsTool, type GenerationDeps } from './generation'
+import { movePlaceTool, removePlaceTool, type EditDeps } from './edit'
 
 /**
  * Every tool, assembled from plain readers.
@@ -17,6 +18,8 @@ export type ToolContext = {
   /** Saves one already-validated Instagram Reel URL. Validation stays in the tool. */
   saveReel: (url: string) => Promise<unknown>
   generation: GenerationDeps
+  /** Itinerary mutations. Gated server-side by WEBMCP_EDITS_ENABLED. */
+  edit: Omit<EditDeps, 'trips'>
 }
 
 /**
@@ -35,6 +38,8 @@ export function globalTools(ctx: ToolContext): ToolSpec[] {
     getPlaceEvidenceTool(ctx.trips),
     planTripFromReelsTool(ctx.generation),
     getTripProgressTool(ctx.generation.store),
+    movePlaceTool({ ...ctx.edit, trips: ctx.trips }),
+    removePlaceTool({ ...ctx.edit, trips: ctx.trips }),
   ]
 }
 

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import type { Trip } from '@/lib/trip/backend-types'
 import { getTrip, listTrips } from '@/lib/trip/supabase-api'
-import { generateTrip, streamGeneration } from '@/lib/trip/api'
+import { deleteTripPlace, editTripPlace, generateTrip, streamGeneration } from '@/lib/trip/api'
 import { createGenerationStore } from '@/lib/webmcp/generation'
 import { captureSavedReel, listSavedReelCards } from '@/lib/reels/api'
 import { getAccessToken } from '@/lib/supabase/session'
@@ -162,7 +162,21 @@ export default function GlobalTools() {
     [requestConfirm],
   )
 
-  const specs = globalTools({ readAppState, trips: tripReader, saveReel, generation })
+  const edit = useMemo(
+    () => ({
+      move: async (tripId: string, tpId: string, patch: { day_number?: number; sort_order?: number }) =>
+        editTripPlace(tripId, tpId, patch, await getAccessToken()),
+      remove: async (tripId: string, tpId: string) =>
+        deleteTripPlace(tripId, tpId, await getAccessToken()),
+      // The shell has no open bundle, so a refresh is a re-read. TripWorkspace will supply its
+      // own in-memory refresh when the map tools land, avoiding this round-trip on the trip page.
+      refresh: (tripId: string) => getTrip(tripId),
+      confirm: requestConfirm,
+    }),
+    [requestConfirm],
+  )
+
+  const specs = globalTools({ readAppState, trips: tripReader, saveReel, generation, edit })
 
   return <RegisterTools specs={specs} />
 }

@@ -9,6 +9,7 @@ import type {
   StreamEvent,
   TripFeedbackRequest,
   TripFeedbackResponse,
+  TripPlace,
 } from './backend-types'
 // Mock-auth shell: generation runs against the offline fixture replay with zero backend
 // (mirrors the MOCK_AUTH_ENABLED switches in middleware.ts and use-user.ts).
@@ -300,4 +301,59 @@ export function streamGeneration(
     }
   }
   return { cancel: () => es.close() }
+}
+
+// ---- WebMCP itinerary edits (backend endpoints are flag-gated by WEBMCP_EDITS_ENABLED) ----
+// Owner checks live server-side and return 404 (never 403) so a caller cannot probe which trip
+// ids exist. 409 means the trip is not in an editable state — usually a generation still running,
+// which would otherwise clobber the edit when the pipeline writes its itinerary.
+
+export type TripPlaceEditResult = { trip_place: TripPlace; days_touched: number[] }
+export type TripPlaceDeleteResult = { removed_id: string; days_touched: number[] }
+
+export async function editTripPlace(
+  tripId: string,
+  tripPlaceId: string,
+  patch: { day_number?: number; sort_order?: number },
+  accessToken: string,
+): Promise<TripPlaceEditResult> {
+  const res = await fetch(`${BACKEND_URL}/trips/${tripId}/places/${tripPlaceId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify(patch),
+  })
+  if (!res.ok) throw new Error(await editErrorMessage(res))
+  return (await res.json()) as TripPlaceEditResult
+}
+
+export async function deleteTripPlace(
+  tripId: string,
+  tripPlaceId: string,
+  accessToken: string,
+): Promise<TripPlaceDeleteResult> {
+  const res = await fetch(`${BACKEND_URL}/trips/${tripId}/places/${tripPlaceId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!res.ok) throw new Error(await editErrorMessage(res))
+  return (await res.json()) as TripPlaceDeleteResult
+}
+
+/** Turns the backend error envelope into something an agent can relay to a person. */
+async function editErrorMessage(res: Response): Promise<string> {
+  let code = ''
+  let message = ''
+  try {
+    const body = (await res.json()) as { error?: { code?: string; message?: string } }
+    code = body?.error?.code ?? ''
+    message = body?.error?.message ?? ''
+  } catch {
+    /* non-JSON error body */
+  }
+  if (res.status === 404) return 'That trip or stop was not found.'
+  if (res.status === 409) {
+    return message || 'This trip cannot be edited right now — it may still be generating.'
+  }
+  if (res.status === 422) return message || 'Nothing to change.'
+  return message || code || `Request failed (${res.status}).`
 }

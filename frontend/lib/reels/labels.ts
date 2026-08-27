@@ -1,4 +1,4 @@
-import type { SavedReelAnalysisStatus, SavedReelCard } from '@/lib/reels/backend-types'
+import type { OrganizeItemStatus, SavedReelAnalysisStatus, SavedReelCard } from '@/lib/reels/backend-types'
 
 /* Shared saved-reel label helpers. These idioms were replicated in LibraryPanel and ReelInfoCard
    (feasible-first, "no shared abstraction until a third caller" — ReelInfoCard finding N1). The
@@ -47,4 +47,30 @@ export function countryLabel(card: SavedReelCard): string | null {
   )
   if (names.length === 0) return null
   return names.length === 1 ? names[0] : `${names[0]} +${names.length - 1}`
+}
+
+/** Terminal item states: the saved_reels row now holds the truth, so an overlay must stand aside. */
+const ITEM_SETTLED = new Set<OrganizeItemStatus>(['organized', 'location_not_found', 'failed'])
+
+/**
+ * Show what an in-flight organize job is doing, WITHOUT persisting it.
+ *
+ * `saved_reels.analysis_status` is never 'queued' or 'processing' in practice — the organizer
+ * writes only a terminal value at the end — so a card reads "Not analyzed" for an entire run.
+ * Writing those two states into the row was the obvious fix and is the wrong one: nothing owns
+ * them. A job that fails between its steps marks only the parent job failed, stranding the reel
+ * reading "Analyzing…" forever; and because job creation is idempotent, a retry drags a reel that
+ * is genuinely processing back to "queued". The job's items already carry the answer, so this
+ * projects them over the cards for as long as the job is live and leaves no state behind.
+ */
+export function overlayLiveStatus(
+  cards: SavedReelCard[],
+  liveItems: Record<string, OrganizeItemStatus>,
+): SavedReelCard[] {
+  if (Object.keys(liveItems).length === 0) return cards
+  return cards.map((card) => {
+    const item = liveItems[card.id]
+    if (!item || ITEM_SETTLED.has(item)) return card
+    return { ...card, analysis_status: item === 'processing' ? 'processing' : 'queued' }
+  })
 }

@@ -36,7 +36,7 @@ function labelFor(pathname: string): string {
 
 export default function GlobalTools() {
   const pathname = usePathname() ?? '/app'
-  const { requestConfirm, openTrip, refreshOpenTrip, refreshSavedReels } = useWebMcpRegistry()
+  const { requestConfirm, openTrip, refreshOpenTrip, refreshSavedReels, adoptOrganizeJob } = useWebMcpRegistry()
   // One store for the session. It must outlive any single tool call — the stream runs for
   // 60-180s while `plan_trip_from_reels` returns in about a second.
   const storeRef = useRef(createGenerationStore())
@@ -148,12 +148,16 @@ export default function GlobalTools() {
   const analyzeReels = useCallback(async (savedReelIds: string[]) => {
     const token = await getAccessToken()
     const res = await startOrganize(savedReelIds, token)
-    // Extraction runs in the background; the count in get_app_state moves as places land, and
-    // the open list starts polling itself once a card reads queued/processing.
     void refreshReels()
+    // Show the new reels straight away...
     void refreshSavedReels.current?.()
+    // ...and hand the page the job so it can follow it. Progress is DERIVED from the job rather
+    // than written into saved_reels: a status persisted there has no owner, so a job that fails
+    // between its steps would strand a reel reading "Analyzing…" forever, and an idempotent retry
+    // would drag a reel that is genuinely processing back to "queued".
+    adoptOrganizeJob.current?.(res.job_id)
     return res
-  }, [refreshReels, refreshSavedReels])
+  }, [refreshReels, refreshSavedReels, adoptOrganizeJob])
 
   const generation = useMemo(
     () => ({

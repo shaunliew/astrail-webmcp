@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { pickTripDates } from '@/test/pickTripDates'
+import { WebMcpRegistryProvider, useWebMcpRegistry } from '@/components/webmcp/WebMcpRegistry'
 
 const { push, getAccessToken, listSavedReelCards, startOrganize, streamOrganize, getOrganizeStatus, generateTrip, streamGeneration, useEntitlement, requestSeat, mapInstance } = vi.hoisted(() => ({
   push: vi.fn(),
@@ -713,46 +714,92 @@ describe('SavedReelsFlow', () => {
   })
 })
 
-describe('reels being analysed refresh themselves', () => {
-  /* Extraction is a background job, so a reel saved as `queued` rendered once and then sat there
-     looking stuck. The user's own report: "i need to refresh the page only can reflect the latest
-     added post", and after that it still read "Not analyzed". */
-  it('polls while a reel is still queued or processing, and stops once none are', async () => {
-    vi.useFakeTimers()
-    try {
-      const queued: SavedReelCard[] = [{ ...cards[0], analysis_status: 'queued' }]
-      const done: SavedReelCard[] = [{ ...organizedCards[0], analysis_status: 'organized' }]
-      listSavedReelCards.mockResolvedValue(queued)
-      render(<MapProvider><SavedReelsFlow /></MapProvider>)
-      await act(async () => { await Promise.resolve() })
+describe('an agent-started extraction shows progress without a reload', () => {
+  /* The reported journey, end to end: a tool saves reels and starts extraction, and the page
+     shows "Not analyzed" for the whole run, changing only after a manual refresh once it is
+     already done — indistinguishable from the save having failed.
 
-      const afterMount = listSavedReelCards.mock.calls.length
-      listSavedReelCards.mockResolvedValue(done)
-      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
-      expect(listSavedReelCards.mock.calls.length).toBeGreaterThan(afterMount)
+     Live status is DERIVED from the organize job, never written into saved_reels. Persisting it
+     there looked simpler and is worse: nothing owns those rows, so a job failing between its
+     steps strands a reel reading "Analyzing…" forever, and an idempotent retry drags a reel that
+     is genuinely processing back to "queued". The job's items already carry the truth. */
+  beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }) })
+  afterEach(() => { vi.useRealTimers() })
 
-      // Now nothing is outstanding: a library page must not hold a timer open forever.
-      const afterSettled = listSavedReelCards.mock.calls.length
-      await act(async () => { await vi.advanceTimersByTimeAsync(20000) })
-      expect(listSavedReelCards.mock.calls.length).toBe(afterSettled)
-    } finally {
-      vi.useRealTimers()
-    }
+  function renderInRegistry() {
+    return render(
+      <WebMcpRegistryProvider>
+        <MapProvider><SavedReelsFlow /></MapProvider>
+      </WebMcpRegistryProvider>,
+    )
+  }
+
+  const job = (status: string, itemStatus: string) => ({
+    job_id: 'job-1', status, status_message: '', total_items: 1,
+    processed_items: 0, organized_items: 0, location_not_found_items: 0, failed_items: 0,
+    items: [{ saved_reel_id: 'saved-1', status: itemStatus, place_count: 0, error_message: null }],
   })
 
-  it('does not poll at all when every reel is settled', async () => {
-    vi.useFakeTimers()
-    try {
-      listSavedReelCards.mockResolvedValue([{ ...cards[0], analysis_status: 'not_analyzed' }])
-      render(<MapProvider><SavedReelsFlow /></MapProvider>)
-      await act(async () => { await Promise.resolve() })
-
-      const settled = listSavedReelCards.mock.calls.length
-      await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
-      // `not_analyzed` is a resting state, not work in progress — nothing will change on its own.
-      expect(listSavedReelCards.mock.calls.length).toBe(settled)
-    } finally {
-      vi.useRealTimers()
+  it('adopts a tool-started job and polls it', async () => {
+    // The gap this closes: the page follows a job IT started (jobId + SSE), but an agent starts
+    // one outside that state entirely, so the run was invisible here. What the adopted job then
+    // renders is unit-tested in lib/reels/__tests__/overlay-live-status.test.ts.
+    listSavedReelCards.mockResolvedValue([{ ...cards[0], analysis_status: 'not_analyzed' }])
+    getOrganizeStatus.mockClear()
+    getOrganizeStatus.mockResolvedValue(job('processing', 'processing'))
+    let slot: { current: ((id: string) => void) | null } | null = null
+    function Capture() {
+      slot = useWebMcpRegistry().adoptOrganizeJob
+      return null
     }
+    render(
+      <WebMcpRegistryProvider>
+        <MapProvider><SavedReelsFlow /></MapProvider>
+        <Capture />
+      </WebMcpRegistryProvider>,
+    )
+    await act(async () => { await Promise.resolve() })
+    expect(getOrganizeStatus).not.toHaveBeenCalled()      // nothing adopted yet
+
+    await act(async () => { slot?.current?.('job-1'); await Promise.resolve() })
+    await waitFor(() => expect(getOrganizeStatus).toHaveBeenCalledWith('job-1', 'token'))
+
+    const first = getOrganizeStatus.mock.calls.length
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(getOrganizeStatus.mock.calls.length).toBeGreaterThan(first)
+  })
+
+  it('stops polling once the job is terminal', async () => {
+    listSavedReelCards.mockResolvedValue([{ ...cards[0], analysis_status: 'not_analyzed' }])
+    let slot: { current: ((id: string) => void) | null } | null = null
+    function Capture() {
+      slot = useWebMcpRegistry().adoptOrganizeJob
+      return null
+    }
+    render(
+      <WebMcpRegistryProvider>
+        <MapProvider><SavedReelsFlow /></MapProvider>
+        <Capture />
+      </WebMcpRegistryProvider>,
+    )
+    await act(async () => { await Promise.resolve() })
+
+    getOrganizeStatus.mockResolvedValue(job('succeeded', 'organized'))
+    await act(async () => { slot?.current?.('job-1'); await Promise.resolve() })
+    const settled = getOrganizeStatus.mock.calls.length
+
+    // A terminal job ends the poll on its own — no timeout to guess at, and no timer left running
+    // on a library page.
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+    expect(getOrganizeStatus.mock.calls.length).toBe(settled)
+  })
+
+  it('does not poll at all when no agent job was adopted', async () => {
+    listSavedReelCards.mockResolvedValue([{ ...cards[0], analysis_status: 'not_analyzed' }])
+    getOrganizeStatus.mockClear()
+    renderInRegistry()
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+    expect(getOrganizeStatus).not.toHaveBeenCalled()
   })
 })

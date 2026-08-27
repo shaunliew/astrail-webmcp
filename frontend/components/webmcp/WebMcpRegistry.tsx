@@ -79,6 +79,15 @@ type RegistryValue = {
    * appeared after a manual page reload, which reads as the save having silently failed.
    */
   refreshSavedReels: React.MutableRefObject<(() => Promise<void>) | null>
+  /**
+   * A tool-started organize job, handed to the Saved Reels page so it can follow it.
+   *
+   * The page already knows how to follow a job it started itself; one started by an agent lands
+   * outside that state entirely, which is why an agent-triggered extraction showed no progress at
+   * all. Passing the id lets the page derive live per-reel status from the JOB — the authoritative
+   * record — instead of anything being written into `saved_reels` to represent it.
+   */
+  adoptOrganizeJob: React.MutableRefObject<((jobId: string) => void) | null>
   /** Visible log of what the agent did. Reads included — a silent read cannot be consented to. */
   activity: ActivityEntry[]
   beginActivity: (tool: string) => number
@@ -112,6 +121,7 @@ export function WebMcpRegistryProvider({ children }: { children: React.ReactNode
   const openTrip = useRef<unknown>(null)
   const refreshOpenTrip = useRef<(() => Promise<TripBundle | null>) | null>(null)
   const refreshSavedReels = useRef<(() => Promise<void>) | null>(null)
+  const adoptOrganizeJob = useRef<((jobId: string) => void) | null>(null)
 
   // Stable by construction. The render-loop bug earlier came from depending on the CONTEXT VALUE
   // (memoized on state) instead of on callbacks like these, so keep these dependency-free.
@@ -158,7 +168,7 @@ export function WebMcpRegistryProvider({ children }: { children: React.ReactNode
 
   const value = useMemo<RegistryValue>(
     () => ({
-      tools, supported, pending, requestConfirm, activity, beginActivity, endActivity, openTrip, refreshOpenTrip, refreshSavedReels,
+      tools, supported, pending, requestConfirm, activity, beginActivity, endActivity, openTrip, refreshOpenTrip, refreshSavedReels, adoptOrganizeJob,
       report, withdraw, setSupported,
     }),
     [tools, supported, pending, requestConfirm, activity, beginActivity, endActivity, report, withdraw],

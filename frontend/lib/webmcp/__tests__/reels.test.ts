@@ -198,12 +198,23 @@ describe('save_reels: extraction', () => {
   it('reports a failed queue WITHOUT claiming the save failed', async () => {
     // The two outcomes are separate: the reels are saved and the Library can organise them later.
     // Collapsing them would tell the user to re-save reels that are already there.
-    const analyze = vi.fn().mockRejectedValue(new Error('One of those Reels is already being organized.'))
+    const analyze = vi.fn().mockRejectedValue(new Error('postgrest unavailable'))
     const { spec } = tool(undefined, analyze)
     const out = await spec.execute({ urls: [URLS[0]] })
     expect(String(out)).toContain('Saved 1 of 1')
     expect(String(out)).toContain('extraction did not start')
-    expect(String(out)).toContain('already being organized')
+  })
+
+  it('does not call an in-flight extraction a failure', async () => {
+    // The backend allows one active organize job per user, so overlapping a running one 409s.
+    // Extraction IS happening — reporting "did not start" would send the user to retry work
+    // already in progress.
+    const analyze = vi.fn().mockRejectedValue(new Error('One of those Reels is already being organized. Wait for it to finish.'))
+    const { spec } = tool(undefined, analyze)
+    const out = String(await spec.execute({ urls: [URLS[0]] }))
+    expect(out).toContain('Saved 1 of 1')
+    expect(out).toContain('already being extracted')
+    expect(out).not.toContain('did not start')
   })
 
   it('does not queue extraction when nothing saved', async () => {

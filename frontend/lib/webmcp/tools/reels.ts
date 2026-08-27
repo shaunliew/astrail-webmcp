@@ -81,7 +81,12 @@ export function saveReelsTool(deps: SaveReelsDeps): ToolSpec {
           analysis = `\nExtracting places from ${toAnalyze.length} of them now — call list_saved_reels in ~30s to see what was found.`
         } catch (e) {
           const msg = e instanceof Error ? e.message : 'could not start'
-          analysis = `\nSaved, but extraction did not start: ${msg.slice(0, 120)}`
+          // "already being organized" is not a failure to report as one: extraction IS running,
+          // this call just did not start it. Saying "did not start" would send the user off to
+          // retry something that is already in progress.
+          analysis = /already being organized/i.test(msg)
+            ? '\nOne of them is already being extracted — call list_saved_reels shortly for results.'
+            : `\nSaved, but extraction did not start: ${msg.slice(0, 120)}`
         }
       } else if (saved > 0) {
         analysis = '\nAll of them were already analysed, so nothing was re-extracted.'

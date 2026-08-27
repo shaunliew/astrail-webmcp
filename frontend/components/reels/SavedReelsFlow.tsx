@@ -3,9 +3,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { captureSavedReel, getOrganizeStatus, listSavedReelCards, startOrganize, streamOrganize } from '@/lib/reels/api'
-import type { OrganizeJob, OrganizeStreamEvent, SavedReelCard, SavedReelPlaceProof } from '@/lib/reels/backend-types'
+import type { OrganizeItemStatus, OrganizeJob, OrganizeStreamEvent, SavedReelCard, SavedReelPlaceProof } from '@/lib/reels/backend-types'
 import type { StreamEvent } from '@/lib/trip/backend-types'
 import { groupPlacesByCountry, type CountryTray } from '@/lib/reels/organize'
+import { overlayLiveStatus } from '@/lib/reels/labels'
 import { getAccessToken } from '@/lib/supabase/session'
 import { generateTrip, streamGeneration } from '@/lib/trip/api'
 import { toGenerateRequest, type BriefInput, type DraftInspirationItem } from '@/lib/trip/parse-inspiration'
@@ -108,17 +109,52 @@ export default function SavedReelsFlow() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [registry])
 
-  /* Extraction is a background job, so a card saved as `queued` would sit there looking stuck
-     until something else caused a render. Poll only while work is actually outstanding, and stop
-     the moment none is — a permanently-running timer on a library page is worse than a reload.
-     Bounded by the statuses themselves: a failed or location_not_found reel is terminal. */
-  const pending = cards.some((c) => c.analysis_status === 'queued' || c.analysis_status === 'processing')
+  /* Follow an organize job an AGENT started.
+     `saved_reels.analysis_status` is never 'queued' or 'processing' in practice: the organizer
+     writes only a terminal value at the end, so a card read "Not analyzed" for the whole run.
+     The obvious fix — write those two states — is worse than it looks. Nothing owns them: a job
+     that fails between its steps marks only the parent job failed, stranding the reel reading
+     "Analyzing…" forever, and an idempotent retry drags a reel that is genuinely processing back
+     to "queued". So progress is DERIVED from the job, which is the record that actually knows.
+     The job's own items carry `saved_reel_id` + `status`, and reaching a terminal job state ends
+     the poll on its own — no timeout to guess at. */
+  const [toolJobId, setToolJobId] = useState<string | null>(null)
+  const [liveItems, setLiveItems] = useState<Record<string, OrganizeItemStatus>>({})
   useEffect(() => {
-    if (!pending) return
-    const id = setInterval(() => { void reloadCards().catch(() => {}) }, 5000)
-    return () => clearInterval(id)
+    const slot = registry?.adoptOrganizeJob
+    if (!slot) return
+    slot.current = (id: string) => { setLiveItems({}); setToolJobId(id) }
+    return () => { slot.current = null }
+  }, [registry])
+
+  useEffect(() => {
+    if (!toolJobId) return
+    let stopped = false
+    const tick = async () => {
+      try {
+        const token = await getAccessToken()
+        const job = await getOrganizeStatus(toolJobId, token)
+        if (stopped || !activeRef.current) return
+        setLiveItems(Object.fromEntries(job.items.map((i) => [i.saved_reel_id, i.status])))
+        if (job.status === 'succeeded' || job.status === 'failed') {
+          stopped = true
+          setToolJobId(null)
+          setLiveItems({})
+          await reloadCards()          // terminal: the real statuses and places are now in the cards
+        }
+      } catch {
+        // A transient read failure must not abandon the run; the next tick retries.
+      }
+    }
+    void tick()
+    const id = setInterval(() => { void tick() }, 3000)
+    return () => { stopped = true; clearInterval(id) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pending])
+  }, [toolJobId])
+
+  // Purely a view concern — nothing is written, so there is no state to strand and nothing to
+  // reconcile. The rule itself lives in lib/reels/labels so it can be tested without a DOM.
+  const liveCards = useMemo(() => overlayLiveStatus(cards, liveItems), [cards, liveItems])
 
   async function handleCapture(url: string) {
     setInboxMessage(null)
@@ -341,7 +377,7 @@ export default function SavedReelsFlow() {
           {inboxMessage}
         </p>
       ) : null}
-      <TraysScreen cards={cards} cardsStatus={cardsStatus} onCapture={handleCapture} onOrganize={handleOrganize} onCreateTrail={onCreateTrail} />
+      <TraysScreen cards={liveCards} cardsStatus={cardsStatus} onCapture={handleCapture} onOrganize={handleOrganize} onCreateTrail={onCreateTrail} />
     </div>
   )
 }

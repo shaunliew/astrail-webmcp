@@ -10,6 +10,7 @@ import type {
   TripFeedbackRequest,
   TripFeedbackResponse,
   TripPlace,
+  Trip,
 } from './backend-types'
 // Mock-auth shell: generation runs against the offline fixture replay with zero backend
 // (mirrors the MOCK_AUTH_ENABLED switches in middleware.ts and use-user.ts).
@@ -356,4 +357,35 @@ async function editErrorMessage(res: Response): Promise<string> {
   }
   if (res.status === 422) return message || 'Nothing to change.'
   return message || code || `Request failed (${res.status}).`
+}
+
+export type AddTripPlaceResult = { trip_place: TripPlace; days_touched: number[] }
+export type EditTripDatesResult = { trip: Trip; days_touched: number[] }
+
+export async function addTripPlace(
+  tripId: string,
+  body: { name: string; day_number: number; position?: number | null; lat?: number | null; lng?: number | null },
+  accessToken: string,
+): Promise<AddTripPlaceResult> {
+  const res = await fetch(`${BACKEND_URL}/trips/${tripId}/places`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(await editErrorMessage(res))
+  return (await res.json()) as AddTripPlaceResult
+}
+
+export async function editTripDates(
+  tripId: string,
+  body: { start_date?: string | null; end_date?: string | null },
+  accessToken: string,
+): Promise<EditTripDatesResult> {
+  const res = await fetch(`${BACKEND_URL}/trips/${tripId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) throw new Error(await editErrorMessage(res))
+  return (await res.json()) as EditTripDatesResult
 }

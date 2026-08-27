@@ -1,11 +1,13 @@
 import { describe, it, expect, vi } from 'vitest'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures/tokyo-trip'
-import { movePlaceTool, removePlaceTool, type EditDeps } from '../tools/edit'
+import { addPlaceTool, movePlaceTool, removePlaceTool, setTripDatesTool, type EditDeps } from '../tools/edit'
 
 const reader = { current: () => TOKYO_TRIP, list: async () => [TOKYO_TRIP.trip], load: async () => TOKYO_TRIP }
 
 const deps = (over: Partial<EditDeps> = {}): EditDeps => ({
   trips: reader,
+  add: vi.fn().mockResolvedValue({}),
+  setDates: vi.fn().mockResolvedValue({}),
   move: vi.fn().mockResolvedValue({}),
   remove: vi.fn().mockResolvedValue({}),
   refresh: vi.fn().mockResolvedValue(TOKYO_TRIP),
@@ -94,5 +96,101 @@ describe('remove_place', () => {
     const out = String(await removePlaceTool(d).execute({ place: '1' }))
     expect(out).toContain('not found')
     expect(out).not.toContain('Removed')
+  })
+})
+
+describe('add_place', () => {
+  it('asks before adding, then reports what it did', async () => {
+    // This is what the agent could not do when a user asked it to "add USJ to Day 1".
+    const d = deps()
+    const out = String(await addPlaceTool(d).execute({ name: 'Universal Studios Japan', day: 1 }))
+    expect(d.confirm).toHaveBeenCalled()
+    expect(d.add).toHaveBeenCalledWith(TOKYO_TRIP.trip.id, expect.objectContaining({
+      name: 'Universal Studios Japan', day_number: 1,
+    }))
+    expect(out).toContain('The user approved')
+  })
+
+  it('adds NOTHING when the user declines', async () => {
+    const d = deps({ confirm: vi.fn().mockResolvedValue(false) })
+    const out = String(await addPlaceTool(d).execute({ name: 'USJ', day: 1 }))
+    expect(d.add).not.toHaveBeenCalled()
+    expect(out).toContain('declined')
+  })
+
+  it('tells the agent the place has no Reel evidence behind it', async () => {
+    // Astrail's promise is that every claim is evidence-backed. A place the user asked for is
+    // still honest provenance, but it is NOT a Reel, and the agent must not imply otherwise.
+    const d = deps()
+    await addPlaceTool(d).execute({ name: 'USJ', day: 1 })
+    expect(String((d.confirm as ReturnType<typeof vi.fn>).mock.calls[0][0])).toContain('no Reel evidence')
+  })
+
+  it('refuses half a coordinate rather than sending a broken pair', async () => {
+    const d = deps()
+    const out = String(await addPlaceTool(d).execute({ name: 'USJ', day: 1, lat: 34.6 }))
+    expect(d.add).not.toHaveBeenCalled()
+    expect(out).toContain('both lat and lng')
+  })
+
+  it('passes the backend request for coordinates straight through', async () => {
+    // The backend returns 422 rather than inventing a coordinate. The agent needs to see that
+    // and ask the user, not silently drop the request.
+    const d = deps({ add: vi.fn().mockRejectedValue(new Error('Could not resolve "USJ" — supply lat and lng.')) })
+    const out = String(await addPlaceTool(d).execute({ name: 'USJ', day: 1 }))
+    expect(out).toContain('supply lat and lng')
+    expect(out).not.toContain('approved. Added')
+  })
+
+  it('warns that pin numbers shift after an insert', async () => {
+    const out = String(await addPlaceTool(deps()).execute({ name: 'USJ', day: 1, position: 1 }))
+    expect(out).toContain('get_itinerary')
+  })
+})
+
+describe('set_trip_dates', () => {
+  it('shifts the trip and says so', async () => {
+    // The other thing the agent could not do: "change the dates from Aug 27-29 to Aug 28-30".
+    const d = deps()
+    const out = String(await setTripDatesTool(d).execute({ start_date: '2026-08-28', end_date: '2026-08-30' }))
+    expect(d.setDates).toHaveBeenCalledWith(TOKYO_TRIP.trip.id, {
+      start_date: '2026-08-28', end_date: '2026-08-30',
+    })
+    expect(out).toContain('kept its stops')
+  })
+
+  it('shows the user the before and after before touching anything', async () => {
+    const d = deps()
+    await setTripDatesTool(d).execute({ start_date: '2026-08-28' })
+    const summary = String((d.confirm as ReturnType<typeof vi.fn>).mock.calls[0][0])
+    expect(summary).toContain('2026-08-28')
+    expect(summary).toContain(TOKYO_TRIP.trip.start_date!)
+  })
+
+  it('rejects a reversed range without calling the backend', async () => {
+    const d = deps()
+    const out = String(await setTripDatesTool(d).execute({ start_date: '2026-08-30', end_date: '2026-08-28' }))
+    expect(d.setDates).not.toHaveBeenCalled()
+    expect(out).toContain('before start_date')
+  })
+
+  it('rejects a malformed date', async () => {
+    const out = String(await setTripDatesTool(deps()).execute({ start_date: '28 Aug' }))
+    expect(out).toContain('YYYY-MM-DD')
+  })
+
+  it('surfaces the backend refusal to drop a day', async () => {
+    // 409 trip_range_too_short. Losing someone's day silently would be far worse than failing.
+    const d = deps({ setDates: vi.fn().mockRejectedValue(new Error('This trip has 3 days but the new range covers 2. Remove stops first.')) })
+    const out = String(await setTripDatesTool(d).execute({ start_date: '2026-08-28', end_date: '2026-08-29' }))
+    expect(out).toContain('Remove stops first')
+    expect(out).not.toContain('approved. The trip now runs')
+  })
+
+  it('changes nothing when the user declines', async () => {
+    const d = deps({ confirm: vi.fn().mockResolvedValue(false) })
+    const out = String(await setTripDatesTool(d).execute({ start_date: '2026-08-28' }))
+    expect(d.setDates).not.toHaveBeenCalled()
+    expect(out).toContain('unchanged')
   })
 })

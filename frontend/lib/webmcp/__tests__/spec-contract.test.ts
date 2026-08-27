@@ -41,6 +41,8 @@ const ctx: ToolContext = {
     confirm: async () => false,   // never approves inside a contract test
   },
   edit: {
+    add: async () => ({}),
+    setDates: async () => ({}),
     move: async () => ({}),
     remove: async () => ({}),
     refresh: async () => TOKYO_TRIP,
@@ -61,7 +63,7 @@ const specs = allTools(ctx, mapDeps)
 
 describe('tool spec contract', () => {
   it('registers at least the tools built so far', () => {
-    expect(specs.length).toBeGreaterThanOrEqual(13)
+    expect(specs.length).toBeGreaterThanOrEqual(15)
   })
 
   it('has globally unique names — a duplicate is REJECTED at registration, silently', () => {
@@ -112,6 +114,8 @@ describe('tool spec contract', () => {
       const req = spec.inputSchema?.required ?? []
       const args: Record<string, unknown> = {}
       if (req.includes('place')) args.place = '1'
+      if (req.includes('name')) args.name = 'Universal Studios Japan'
+      if (req.includes('day')) args.day = 1
       if (req.includes('urls')) args.urls = ['https://www.instagram.com/reel/Cabc123/']
       if (req.includes('reel_urls')) {
         args.reel_urls = ['https://www.instagram.com/reel/Cabc123/']

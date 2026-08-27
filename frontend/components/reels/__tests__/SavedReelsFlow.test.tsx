@@ -769,6 +769,49 @@ describe('an agent-started extraction shows progress without a reload', () => {
     expect(getOrganizeStatus.mock.calls.length).toBeGreaterThan(first)
   })
 
+  it('refetches as each reel lands, not only when the whole job ends', async () => {
+    /* Two reels: the first finished while the second was still extracting, and its card had
+       nowhere to get its real status and places from until the very end — so it visibly went
+       back to "Not analyzed". The list must catch up per reel. */
+    listSavedReelCards.mockResolvedValue([{ ...cards[0], analysis_status: 'not_analyzed' }])
+    getOrganizeStatus.mockClear()
+    let slot: { current: ((id: string) => void) | null } | null = null
+    function Capture() {
+      slot = useWebMcpRegistry().adoptOrganizeJob
+      return null
+    }
+    const twoItems = (first: string, second: string, status: string) => ({
+      job_id: 'job-1', status, status_message: '', total_items: 2,
+      processed_items: 0, organized_items: 0, location_not_found_items: 0, failed_items: 0,
+      items: [
+        { saved_reel_id: 'saved-1', status: first, place_count: 0, error_message: null },
+        { saved_reel_id: 'saved-2', status: second, place_count: 0, error_message: null },
+      ],
+    })
+
+    getOrganizeStatus.mockResolvedValue(twoItems('processing', 'queued', 'processing'))
+    render(
+      <WebMcpRegistryProvider>
+        <MapProvider><SavedReelsFlow /></MapProvider>
+        <Capture />
+      </WebMcpRegistryProvider>,
+    )
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { slot?.current?.('job-1'); await Promise.resolve() })
+    await waitFor(() => expect(getOrganizeStatus).toHaveBeenCalled())
+
+    const before = listSavedReelCards.mock.calls.length
+    // First reel lands. The JOB is still processing — the old code refetched nothing here.
+    getOrganizeStatus.mockResolvedValue(twoItems('organized', 'processing', 'processing'))
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(listSavedReelCards.mock.calls.length).toBeGreaterThan(before)
+
+    // ...and not again on the next tick, because nothing new settled.
+    const afterFirst = listSavedReelCards.mock.calls.length
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(listSavedReelCards.mock.calls.length).toBe(afterFirst)
+  })
+
   it('stops polling once the job is terminal', async () => {
     listSavedReelCards.mockResolvedValue([{ ...cards[0], analysis_status: 'not_analyzed' }])
     let slot: { current: ((id: string) => void) | null } | null = null

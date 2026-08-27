@@ -127,20 +127,34 @@ export default function SavedReelsFlow() {
     return () => { slot.current = null }
   }, [registry])
 
+  const settledItemsRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     if (!toolJobId) return
     let stopped = false
+    settledItemsRef.current = new Set()
     const tick = async () => {
       try {
         const token = await getAccessToken()
         const job = await getOrganizeStatus(toolJobId, token)
         if (stopped || !activeRef.current) return
         setLiveItems(Object.fromEntries(job.items.map((i) => [i.saved_reel_id, i.status])))
+
+        /* Refetch as each REEL lands, not only when the whole job does. A two-reel job finished
+           its first reel while the second was still extracting, and that card had nowhere to get
+           its real status and places from until the very end — so it sat there having visibly
+           regressed. Reload on the transition only; every tick would refetch the list on a timer
+           for no reason. */
+        const settled = job.items.filter((i) => i.status !== 'queued' && i.status !== 'processing')
+        const fresh = settled.filter((i) => !settledItemsRef.current.has(i.saved_reel_id))
+        for (const i of fresh) settledItemsRef.current.add(i.saved_reel_id)
+
         if (job.status === 'succeeded' || job.status === 'failed') {
           stopped = true
           setToolJobId(null)
           setLiveItems({})
-          await reloadCards()          // terminal: the real statuses and places are now in the cards
+          await reloadCards()          // terminal: the rows now hold every status and place
+        } else if (fresh.length > 0) {
+          await reloadCards()
         }
       } catch {
         // A transient read failure must not abandon the run; the next tick retries.

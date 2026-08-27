@@ -24,13 +24,31 @@ describe('overlayLiveStatus', () => {
     expect(statusLabel(out)).toBe('Queued')
   })
 
-  it('stands aside once the item is terminal, so the row wins', () => {
-    // organized/location_not_found/failed mean saved_reels now holds the truth. A stale overlay
-    // out-ranking it would show "Analyzing…" over a finished reel.
+  it('stands aside once the ROW has caught up, so the row wins', () => {
     for (const settled of ['organized', 'location_not_found', 'failed'] as OrganizeItemStatus[]) {
       const real = card('a', { analysis_status: 'organized' })
       expect(overlayLiveStatus([real], { a: settled })[0]).toBe(real)   // same object, untouched
     }
+  })
+
+  it('does NOT regress a finished reel to "Not analyzed" while its refetch is in flight', () => {
+    /* The reported bug. In a two-reel job the first reel finished, its item went terminal, the
+       overlay stood aside on that alone — and the card underneath was still the stale
+       `not_analyzed` from the initial load, because the cards were only refetched when the whole
+       JOB ended. So a completed reel visibly went backwards while the second was still running. */
+    const stale = card('a', { analysis_status: 'not_analyzed', places: [] })
+    const [out] = overlayLiveStatus([stale], { a: 'organized' })
+    expect(statusLabel(out)).toBe('Analyzing…')
+    expect(statusLabel(out)).not.toBe('Not analyzed')
+  })
+
+  it('lets a terminal row through the moment it carries places', () => {
+    // The refetch landed: places prove the row is current even if a stale item says otherwise.
+    const fresh = card('a', {
+      analysis_status: 'not_analyzed',
+      places: [{ place_id: 'p1', name: 'X', lat: 1, lng: 1, country_code: 'JP', country_name: 'Japan', evidence_quote: 'q', source_url: null, source_reel_url: 'u', confidence: 0.9 }],
+    })
+    expect(overlayLiveStatus([fresh], { a: 'processing' })[0]).toBe(fresh)
   })
 
   it('leaves cards the job does not mention completely alone', () => {

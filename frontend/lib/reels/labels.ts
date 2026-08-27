@@ -49,19 +49,16 @@ export function countryLabel(card: SavedReelCard): string | null {
   return names.length === 1 ? names[0] : `${names[0]} +${names.length - 1}`
 }
 
-/** Terminal item states: the saved_reels row now holds the truth, so an overlay must stand aside. */
-const ITEM_SETTLED = new Set<OrganizeItemStatus>(['organized', 'location_not_found', 'failed'])
-
 /**
  * Show what an in-flight organize job is doing, WITHOUT persisting it.
  *
  * `saved_reels.analysis_status` is never 'queued' or 'processing' in practice — the organizer
  * writes only a terminal value at the end — so a card reads "Not analyzed" for an entire run.
  * Writing those two states into the row was the obvious fix and is the wrong one: nothing owns
- * them. A job that fails between its steps marks only the parent job failed, stranding the reel
- * reading "Analyzing…" forever; and because job creation is idempotent, a retry drags a reel that
- * is genuinely processing back to "queued". The job's items already carry the answer, so this
- * projects them over the cards for as long as the job is live and leaves no state behind.
+ * them, `saved_reel_cards` HIDES a reel's places unless the status is 'organized', and
+ * `authorize_place_ids` allows trip generation only from organized reels — so a re-analysis would
+ * make verified places vanish and become unusable mid-run. The job's items already carry the
+ * answer, so this projects them over the cards while the job is live and leaves nothing behind.
  */
 export function overlayLiveStatus(
   cards: SavedReelCard[],
@@ -70,7 +67,15 @@ export function overlayLiveStatus(
   if (Object.keys(liveItems).length === 0) return cards
   return cards.map((card) => {
     const item = liveItems[card.id]
-    if (!item || ITEM_SETTLED.has(item)) return card
-    return { ...card, analysis_status: item === 'processing' ? 'processing' : 'queued' }
+    if (!item) return card
+
+    /* The ROW WINS as soon as it has caught up, and `not_analyzed` with no places is precisely
+       the state that proves it has not. Standing aside on the item's terminal status alone made
+       a finished reel flip back to "Not analyzed" until the whole job ended and the cards were
+       refetched — the first of two reels visibly regressed while the second was still running. */
+    if (card.analysis_status !== 'not_analyzed' || card.places.length > 0) return card
+
+    // Still stale. A terminal item here just means its refetch is in flight.
+    return { ...card, analysis_status: item === 'queued' ? 'queued' : 'processing' }
   })
 }

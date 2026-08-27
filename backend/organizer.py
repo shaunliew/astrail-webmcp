@@ -14,7 +14,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from genagents.place_extractor import EXTRACTOR_VERSION
@@ -74,6 +74,28 @@ async def _find_cache_id(client, normalized_url: str) -> str | None:
                     .eq("extractor_version", EXTRACTOR_VERSION)
                     .maybe_single().execute())
     return ((result.data if result is not None else None) or {}).get("id")
+
+
+ORGANIZE_QUOTA_MESSAGE = "Daily analysis limit reached"
+
+
+def _next_analysis_reset() -> str:
+    """When the daily allowance frees up: the next UTC midnight.
+
+    `user_daily_usage` is keyed by UTC date, so that boundary is the reset, not 24h from failure.
+    """
+    tomorrow = datetime.now(timezone.utc).date() + timedelta(days=1)
+    return datetime.combine(tomorrow, datetime.min.time(), tzinfo=timezone.utc).isoformat()
+
+
+class AnalysisQuotaReached(RuntimeError):
+    """The account's daily reel-analysis allowance is used up.
+
+    Distinct from every other failure, including a fault IN the quota system: `phase` is "quota"
+    for both, so the failure handler cannot tell them apart from the phase alone. It matters
+    because they are different things to a user — one resets at midnight UTC and needs no action,
+    the other is an outage — and the card said only "Analysis failed" for both.
+    """
 
 
 async def create_organize_job(client, user_id: str, saved_reel_ids: list[str]) -> str:
@@ -579,7 +601,7 @@ async def _process_item(ctx: _ItemContext, item: dict) -> bool:
             if quota_state in {"not_charged", "refunded"}:
                 phase = "quota"
                 if await reserve_organize_item_analysis(ctx.client, item["id"], ctx.user_id) is None:
-                    raise RuntimeError("analysis quota reached")
+                    raise AnalysisQuotaReached("daily reel-analysis allowance used up")
                 quota_state = "reserved"
             try:
                 phase = "apify"
@@ -636,18 +658,24 @@ async def _process_item(ctx: _ItemContext, item: dict) -> bool:
             "analyzed_at": _now(), "retry_after": None,
         }).eq("id", reel["id"]).eq("user_id", ctx.user_id).execute()
         await _record_organize_event(ctx.client, ctx.job_id, ctx.user_id, "stage", "Reel organized", {"saved_reel_id": reel["id"], "place_count": place_count}, lease_token=ctx.lease_token)
-    except Exception:
+    except Exception as exc:
         logger.error(
             "saved_reel_organize_item_failed phase=%s job_id=%s item_id=%s",
             phase, ctx.job_id, item["id"],
         )
+        # An allowance that resets is not a broken reel. `retry_after` already exists on
+        # saved_reels and is already exposed to the browser, so the card can say WHEN rather than
+        # leaving "Analysis failed" to read as "this reel cannot be analysed".
+        quota_reached = isinstance(exc, AnalysisQuotaReached)
+        message = ORGANIZE_QUOTA_MESSAGE if quota_reached else "Reel organization failed"
         await ctx.client.table("organize_job_items").update({
-            "status": "failed", "error_message": "Reel organization failed", "completed_at": _now()
+            "status": "failed", "error_message": message, "completed_at": _now()
         }).eq("id", item["id"]).eq("user_id", ctx.user_id).execute()
         await ctx.client.table("saved_reels").update({
-            "analysis_status": "failed", "retry_after": None,
+            "analysis_status": "failed",
+            "retry_after": _next_analysis_reset() if quota_reached else None,
         }).eq("id", reel["id"]).eq("user_id", ctx.user_id).execute()
-        await _record_organize_event(ctx.client, ctx.job_id, ctx.user_id, "error", "Reel organization failed", {"saved_reel_id": reel["id"]}, lease_token=ctx.lease_token)
+        await _record_organize_event(ctx.client, ctx.job_id, ctx.user_id, "error", message, {"saved_reel_id": reel["id"]}, lease_token=ctx.lease_token)
     return True
 
 

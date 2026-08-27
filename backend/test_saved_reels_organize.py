@@ -2692,3 +2692,27 @@ async def test_a_failing_refund_does_not_stop_recovery_dispatching_pending_jobs(
     pending = await recover_organize_jobs(client)
 
     assert [row["id"] for row in pending] == ["job-1"]
+
+
+# --- quota refusal is not a broken reel -----------------------------------------------------
+
+def test_next_analysis_reset_is_the_next_utc_midnight():
+    """`user_daily_usage` is keyed by UTC DATE, so the allowance frees at that boundary — not 24h
+    after the failure, which is what a naive "now + 1 day" would promise."""
+    from datetime import datetime, timezone
+
+    reset = datetime.fromisoformat(organizer._next_analysis_reset())
+    now = datetime.now(timezone.utc)
+    assert reset.tzinfo is not None
+    assert (reset.hour, reset.minute, reset.second) == (0, 0, 0)
+    assert reset > now
+    assert (reset - now).total_seconds() <= 24 * 3600
+
+
+def test_quota_refusal_raises_its_own_type():
+    """`phase` is "quota" both when the allowance is used up AND when the quota system itself
+    breaks, so the failure handler cannot tell them apart from the phase. One resets at midnight
+    and needs no action; the other is an outage. The card said "Analysis failed" for both."""
+    assert issubclass(organizer.AnalysisQuotaReached, RuntimeError)
+    # A plain RuntimeError from anywhere else must NOT be mistaken for the allowance running out.
+    assert not isinstance(RuntimeError("apify timeout"), organizer.AnalysisQuotaReached)

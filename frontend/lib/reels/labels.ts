@@ -16,9 +16,27 @@ export const STATUS_LABELS: Record<SavedReelAnalysisStatus, string> = {
   failed: 'Analysis failed',
 }
 
-/** Caption line: a grounded place count when present, else the analysis-status label. */
-export function statusLabel(card: SavedReelCard): string {
-  return card.places.length > 0 ? `Places found · ${card.places.length}` : STATUS_LABELS[card.analysis_status]
+/** Caption line: a grounded place count when present, else the analysis-status label.
+ *
+ *  `now` is injectable so the expiry branch is testable without freezing the clock globally.
+ */
+export function statusLabel(card: SavedReelCard, now: number = Date.now()): string {
+  if (card.places.length > 0) return `Places found · ${card.places.length}`
+
+  /* An allowance that resets is not a broken reel. The organizer records a refused analysis as
+     `failed` like any other error, and the card then read "Analysis failed" — which says the reel
+     cannot be analysed, when the truth is "not until tomorrow". `retry_after` is set only on that
+     path (every other failure clears it), so its presence IS the distinction, and it is already
+     carried to the browser. A past deadline falls through: the allowance has since reset, so the
+     row is simply stale and the plain failure label is the honest one. */
+  if (card.analysis_status === 'failed' && card.retry_after) {
+    const resetsAt = Date.parse(card.retry_after)
+    if (Number.isFinite(resetsAt) && resetsAt > now) {
+      const when = new Date(resetsAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+      return `Daily limit reached · try again ${when}`
+    }
+  }
+  return STATUS_LABELS[card.analysis_status]
 }
 
 /** Display title for a saved reel: the user's label, else its caption, else a kind-aware

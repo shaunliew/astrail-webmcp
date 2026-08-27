@@ -71,3 +71,37 @@ describe('overlayLiveStatus', () => {
     expect(statusLabel(out)).toBe('Places found · 1')
   })
 })
+
+describe('statusLabel: a used-up allowance is not a broken reel', () => {
+  const AUG27 = Date.parse('2026-08-27T12:00:00Z')
+
+  it('says when to come back instead of "Analysis failed"', () => {
+    /* The organizer records a refused analysis as `failed` like any other error, so the card read
+       "Analysis failed" — which says the reel cannot be analysed, when the truth is "not until
+       tomorrow". Reported live: a reel that had succeeded an hour earlier showed as failed. */
+    const capped = card('a', { analysis_status: 'failed', retry_after: '2026-08-28T00:00:00Z' })
+    expect(statusLabel(capped, AUG27)).toContain('Daily limit reached')
+    expect(statusLabel(capped, AUG27)).not.toBe('Analysis failed')
+  })
+
+  it('falls back to the plain label once the allowance has reset', () => {
+    // The deadline passed, so the row is just stale — claiming a limit that no longer applies
+    // would be its own wrong answer.
+    const stale = card('a', { analysis_status: 'failed', retry_after: '2026-08-26T00:00:00Z' })
+    expect(statusLabel(stale, AUG27)).toBe('Analysis failed')
+  })
+
+  it('keeps calling a REAL failure a failure', () => {
+    // Every non-quota failure clears retry_after, so its absence is what marks a genuine error.
+    const broken = card('a', { analysis_status: 'failed', retry_after: null })
+    expect(statusLabel(broken, AUG27)).toBe('Analysis failed')
+  })
+
+  it('still prefers places over any status', () => {
+    const found = card('a', {
+      analysis_status: 'failed', retry_after: '2026-08-28T00:00:00Z',
+      places: [{ place_id: 'p1', name: 'X', lat: 1, lng: 1, country_code: 'JP', country_name: 'Japan', evidence_quote: 'q', source_url: null, source_reel_url: 'u', confidence: 0.9 }],
+    })
+    expect(statusLabel(found, AUG27)).toBe('Places found · 1')
+  })
+})

@@ -112,3 +112,51 @@ Worked at the evening review; the big passes wait for the weekend.
       places" is geo jargon a traveller will not parse.
 - 🟡 **Re-pasting the same link always says "Saved to your library"** — the RPC upserts, so a
       duplicate is indistinguishable from a new save.
+
+## Map + suggestions pass (evening, 27 Aug) — needs your eyes
+
+Everything below is verified in a browser and by test; what it needs from you is judgement, and
+one live generation. Ordered by what breaks the demo if it is wrong.
+
+### 🔴 Do this one first — it is the only unproven path
+
+- **Run ONE fresh trip generation.** Nothing else exercises the new restaurant details search
+  (`genagents/restaurant_details.py`), because it only runs during generation. Costs one hosted
+  web search per DAY on top of the existing per-day labelling call. Set
+  `ASTRAIL_RESTAURANT_DETAILS=0` to skip it if you would rather not spend.
+  - Watch stderr for `[restaurant-details] pois=N enriched=M`.
+  - **`enriched=0` is a PASS, not a failure.** Small Japanese venues publish nothing; Mapbox's
+    own metadata was empty for 20 of 20 restaurants near the Osaka trip. The design keeps
+    silence over a guess.
+  - If M > 0, open an eat pin: hours should read as one line, and "More about this place ↗"
+    should go to the page those hours came from — the same source, never a different site.
+
+### 🟡 Judge by eye
+
+- **Teardrop pins.** Reel-sourced stops carry the Reel's cover in a brass ring; everything else
+  gets one placeholder disc. Is the hierarchy right — do the numbered stops still dominate the
+  eat/hotel pins beside them?
+- **Eat pins at 30px.** Big enough now? They were 22px and before that an 8px dot.
+- **The eat card** — cuisine, street address, why Astrail picked it, "Near <stop>". No image and
+  no hours unless the search found them; both are absent by design, not missing.
+- **Hotel card** (needs a trip that HAS hotels — the Osaka one has none): star class and guest
+  score on separate lines, nightly + total, cancellation, and the "Astrail does not book" line.
+
+### 🟢 Verified, but worth one glance in ChatGPT's browser specifically
+
+- Clicking a name under "Where to eat" flies the map there and opens its card.
+- Tapping a pin on a phone scrolls the matching itinerary card into view (the popup cannot be
+  seen on mobile at all — it is trapped below the sheet's stacking context).
+- A stop from another day selects correctly: the day switches with it.
+- Popups fit on a 1280x720 laptop, including both buttons.
+
+### ⚠ Known gaps, stated rather than discovered later
+
+- **Hotels: the Osaka trip has zero.** The stage ran and emitted no warning, so "searched and
+  found nothing" and "failed silently" are indistinguishable from outside. Weather emits a
+  warning in the same situation; hotels does not. Small backend fix, not yet done.
+- **Opening hours are not obtainable for most Japanese venues** from any provider we have.
+  Measured, not assumed: Mapbox returns `metadata: {}` for 20/20 nearby restaurants, and
+  unconstrained it matched an Osaka sushi bar to a Brooklyn one 11,111 km away.
+- **`preference_match_json` is `{}` on every row in both tables.** Nothing writes it. The
+  "matches your taste" rows were removed rather than left to render empty in front of a judge.

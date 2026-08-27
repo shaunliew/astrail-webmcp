@@ -480,8 +480,17 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                         # the same guarantee persist_itinerary has. A lost lease surfaces as a
                         # swallowed LeaseLost here (best-effort stage) — the outer
                         # `_abort_when_lease_lost` race is what actually aborts the run.
-                        await persist_hotels(client, trip_id, fetch=hotel,
-                                             job_id=job_id, lease_token=lease_token)
+                        written = await persist_hotels(client, trip_id, fetch=hotel,
+                                                       job_id=job_id, lease_token=lease_token)
+                        if not written:
+                            # A search that RAN and returned nothing is not the same as one that
+                            # broke, and only the broken case said anything. Weather already
+                            # distinguishes them ("No forecast available this far ahead"); hotels
+                            # emitted no event at all, so "searched Osaka, found nothing" and
+                            # "Travala failed silently" were indistinguishable from outside — for
+                            # the user reading the trip AND for anyone debugging it later.
+                            await record_event(client, trip_id, event_type="warning", stage="hotels",
+                                               message="No hotels available for these dates")
                     except LeaseLost:
                         # A superseded run: the fenced hotel RPC refused our write because a
                         # replacement worker owns this job. Return WITHOUT recording a warning — a

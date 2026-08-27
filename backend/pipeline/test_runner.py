@@ -920,6 +920,61 @@ async def test_runner_persists_hotel_suggestions():
 
 
 @pytest.mark.asyncio
+async def test_runner_says_so_when_the_hotel_search_finds_nothing():
+    """A search that RAN and returned nothing is not a search that broke.
+
+    Only the broken case said anything: an empty result emitted no event at all, so
+    "searched, found nothing" and "Travala failed silently" were indistinguishable from outside —
+    for the traveller reading the trip and for anyone debugging it weeks later. Weather already
+    makes this distinction ("No forecast available this far ahead").
+    """
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c.db["trips"] = [{"id": "trip-1", "user_id": "user-1", "start_date": "2026-08-01",
+                      "end_date": "2026-08-01", "adult_count": 2, "room_count": 1,
+                      "destination_hint": "Tokyo"}]
+
+    async def scrape(url): return _reel(url)
+    async def extract(reel): return [_place("A", lat=35.60, lng=139.70), _place("B", lat=35.62, lng=139.72)]
+
+    async def hotel(location, check_in, check_out, rooms):
+        return "sess-1", []          # ran fine, nothing available
+
+    await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+                                job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                mem0=None, weather=_no_weather, transport=_no_transport,
+                                restaurant=_no_restaurant, narrator=_no_narrator, hotel=hotel)
+
+    warnings = [e for e in c.events if e["stage"] == "hotels" and e["event_type"] == "warning"]
+    assert warnings, "an empty hotel search recorded nothing at all"
+    assert "No hotels available" in warnings[0]["message"]
+    # ...and it stays non-critical: an empty hotel list must not degrade the trip.
+    assert c.trip_updates[-1]["status"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_runner_stays_silent_when_hotels_were_found():
+    """The warning must mark an ABSENCE, not fire on every run."""
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
+    c.db["trips"] = [{"id": "trip-1", "user_id": "user-1", "start_date": "2026-08-01",
+                      "end_date": "2026-08-01", "adult_count": 2, "room_count": 1,
+                      "destination_hint": "Tokyo"}]
+
+    async def scrape(url): return _reel(url)
+    async def extract(reel): return [_place("A", lat=35.60, lng=139.70), _place("B", lat=35.62, lng=139.72)]
+
+    async def hotel(location, check_in, check_out, rooms):
+        return "sess-1", [{"name": "Park Hyatt Tokyo", "star": 5, "pricePerNight": 900,
+                           "currency": "USD", "hotelId": 13278, "packageId": "pkg-a"}]
+
+    await runner.run_generation("trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+                                job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                mem0=None, weather=_no_weather, transport=_no_transport,
+                                restaurant=_no_restaurant, narrator=_no_narrator, hotel=hotel)
+
+    assert not [e for e in c.events if e["stage"] == "hotels" and e["event_type"] == "warning"]
+
+
+@pytest.mark.asyncio
 async def test_runner_hotel_failure_is_non_critical():
     c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     c.db["trips"] = [{"id": "trip-1", "user_id": "user-1", "start_date": "2026-08-01",

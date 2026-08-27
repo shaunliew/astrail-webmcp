@@ -12,6 +12,10 @@ export const metadata: Metadata = {
 // follows once the transition grammar is approved. Previous sticky-section
 // build preserved in components/story/StoryLanding.tsx; old landing at /classic.
 export default function LandingPage() {
+  const demoEmail = process.env.NEXT_PUBLIC_DEMO_EMAIL?.trim()
+  const demoPassword = process.env.NEXT_PUBLIC_DEMO_PASSWORD?.trim()
+  const demoAccountConfigured = Boolean(demoEmail && demoPassword)
+
   return (
     <>
       <aside
@@ -94,9 +98,25 @@ export default function LandingPage() {
               <li><b className="text-[color:var(--ink-900)]">3.</b> Turn on <b className="text-[color:var(--ink-900)]">Settings &gt; Browser &gt; Permissions &gt; Enable site tools</b>.</li>
               <li><b className="text-[color:var(--ink-900)]">4.</b> Look for the Site tools arrow in the address bar and the WebMCP chip at the bottom-right of the page.</li>
             </ol>
-            <p className="mt-7 rounded-lg border border-dashed border-[color:var(--ink-400)] bg-[color:var(--paper-0)] px-4 py-3 font-[family-name:var(--font-ibm-plex-mono)] text-xs font-medium text-[color:var(--ink-600)]">
-              TODO: Demo credentials — add the submission account before judging.
-            </p>
+            {demoAccountConfigured ? (
+              <div className="mt-7 rounded-lg border border-[color:var(--spruce-deep)] bg-[color:var(--paper-0)] px-4 py-4 text-sm text-[color:var(--ink-600)]">
+                <p className="font-semibold text-[color:var(--spruce-deep)]">Demo account</p>
+                <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-2">
+                  <dt>Email</dt>
+                  <dd><code className="break-all font-[family-name:var(--font-ibm-plex-mono)] text-[color:var(--ink-900)]">{demoEmail}</code></dd>
+                  <dt>Password</dt>
+                  <dd><code className="break-all font-[family-name:var(--font-ibm-plex-mono)] text-[color:var(--ink-900)]">{demoPassword}</code></dd>
+                </dl>
+              </div>
+            ) : (
+              <p
+                role="alert"
+                className="mt-7 rounded-lg border-2 border-dashed border-[color:var(--fail)] bg-[color:var(--paper-0)] px-4 py-3 text-sm font-semibold leading-6 text-[color:var(--fail)]"
+              >
+                Submission blocked: set <code className="font-[family-name:var(--font-ibm-plex-mono)]">NEXT_PUBLIC_DEMO_EMAIL</code> and{' '}
+                <code className="font-[family-name:var(--font-ibm-plex-mono)]">NEXT_PUBLIC_DEMO_PASSWORD</code> in the hackathon deployment.
+              </p>
+            )}
           </section>
         </div>
       </div>

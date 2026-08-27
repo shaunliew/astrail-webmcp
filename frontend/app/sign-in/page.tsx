@@ -12,6 +12,25 @@ function looksLikeEmail(v: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(v.trim())
 }
 
+function passwordSignInError(error: { code?: string; message: string }): string {
+  const message = error.message.toLowerCase()
+  if (
+    error.code === 'email_provider_disabled' ||
+    message.includes('email logins are disabled') ||
+    (message.includes('email provider') && message.includes('disabled'))
+  ) {
+    return 'Password sign-in is not enabled for this project.'
+  }
+  if (error.code === 'invalid_credentials' || message.includes('invalid login credentials')) {
+    // Deliberately do not say whether the email exists. Supabase uses the same error for both.
+    return 'That email or password didn’t match. Check both and try again.'
+  }
+  if (error.code === 'email_not_confirmed') {
+    return 'Confirm this email address before signing in with a password.'
+  }
+  return 'Password sign-in couldn’t complete. Try again or use an email code.'
+}
+
 /* Official four-colour Google mark. The only place four foreign colours appear on the
    screen — they live inside the glyph, never in the five-role palette (resolves DESIGN.md
    §9's open "monochrome G" blocker: a compliant button rather than a recoloured logo). */
@@ -52,9 +71,12 @@ export default function SignInPage() {
   const router = useRouter()
   const [step, setStep] = useState<'email' | 'code'>('email')
   const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [passwordOpen, setPasswordOpen] = useState(false)
   const [digits, setDigits] = useState<string[]>(['', '', '', '', '', ''])
   const [pending, setPending] = useState(false)
   const [emailError, setEmailError] = useState<string | null>(null)
+  const [passwordError, setPasswordError] = useState<string | null>(null)
   const [codeError, setCodeError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [cooldown, setCooldown] = useState(0)
@@ -117,6 +139,29 @@ export default function SignInPage() {
     setStep('code')
     setCooldown(RESEND_COOLDOWN_S)
     setNotice(`We sent a 6-digit code to ${email.trim()}.`)
+  }
+
+  async function signInWithPassword() {
+    if (!emailValid || password.length === 0) return
+    setPending(true)
+    setEmailError(null)
+    setPasswordError(null)
+    try {
+      const supabase = createClient()
+      const { error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      })
+      if (error) {
+        setPasswordError(passwordSignInError(error))
+        return
+      }
+      router.push('/app')
+    } catch {
+      setPasswordError('Password sign-in couldn’t complete. Try again or use an email code.')
+    } finally {
+      setPending(false)
+    }
   }
 
   async function verifyCode() {
@@ -186,7 +231,7 @@ export default function SignInPage() {
               Your saved Reels, as one route.
             </h1>
             <p className="mt-2 text-[14px] leading-[1.4] text-[color:var(--text-muted)]">
-              Sign in or create your account. No password — we email you a code.
+              Sign in or create your account. The simplest route is a code by email.
             </p>
           </header>
 
@@ -240,6 +285,7 @@ export default function SignInPage() {
                     onChange={(e) => {
                       setEmail(e.target.value)
                       setEmailError(null)
+                      setPasswordError(null)
                     }}
                     onBlur={() => {
                       const v = email.trim()
@@ -273,6 +319,66 @@ export default function SignInPage() {
                 {pending ? 'Sending…' : emailValid ? 'Email me a 6-digit code' : 'Waiting for your email'}
               </button>
             </form>
+
+            <div className="border-t border-[color:var(--line-soft)] pt-4">
+              <button
+                type="button"
+                aria-expanded={passwordOpen}
+                onClick={() => {
+                  setPasswordOpen((open) => !open)
+                  setPasswordError(null)
+                }}
+                disabled={pending}
+                className={`inline-flex min-h-9 w-full items-center justify-center rounded-lg px-3 text-[13px] font-medium text-[color:var(--text-muted)] hover:bg-[color:var(--surface-2)] disabled:cursor-default disabled:opacity-60 ${FOCUS_RING}`}
+              >
+                {passwordOpen ? 'Use an email code instead' : 'Have a password? Sign in with it'}
+              </button>
+
+              {passwordOpen ? (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    void signInWithPassword()
+                  }}
+                  className="mt-4 space-y-4"
+                >
+                  <div className="space-y-2">
+                    <label htmlFor="password" className="block text-[13px] font-medium text-[color:var(--text)]">
+                      Password
+                    </label>
+                    <input
+                      id="password"
+                      type="password"
+                      required
+                      autoComplete="current-password"
+                      value={password}
+                      onChange={(e) => {
+                        setPassword(e.target.value)
+                        setPasswordError(null)
+                      }}
+                      aria-invalid={passwordError ? true : undefined}
+                      aria-describedby={passwordError ? 'passwordErr' : undefined}
+                      className={`min-h-11 w-full rounded-lg border bg-[color:var(--surface-1)] px-4 text-[color:var(--text)] ${FOCUS_RING} ${
+                        passwordError ? 'border-[color:var(--fail)]' : 'border-[color:var(--line-soft)]'
+                      }`}
+                    />
+                  </div>
+                  {passwordError ? (
+                    <p id="passwordErr" role="alert" className="flex items-start gap-1.5 text-[13px] text-[color:var(--fail)]">
+                      <span aria-hidden>✕</span>
+                      {passwordError}
+                    </p>
+                  ) : null}
+                  <button
+                    type="submit"
+                    disabled={!emailValid || password.length === 0 || pending}
+                    className={`flex min-h-11 w-full items-center justify-center rounded-lg border border-[color:var(--paper-line-2)] bg-[color:var(--surface-1)] px-5 text-[14px] font-medium text-[color:var(--text)] shadow-[0_1px_2px_rgba(28,23,16,0.06)] transition-[background,opacity] duration-150 hover:bg-[color:var(--surface-2)] disabled:cursor-default disabled:opacity-60 ${FOCUS_RING}`}
+                  >
+                    {pending ? 'Signing in…' : 'Sign in with password'}
+                  </button>
+                </form>
+              ) : null}
+            </div>
           </div>
 
           <p className="mt-5 text-center text-[12px] leading-[1.5] text-[color:var(--text-faint)]">
@@ -282,7 +388,7 @@ export default function SignInPage() {
             <a href="/privacy" className="underline underline-offset-2 hover:text-[color:var(--text-muted)]">Privacy&nbsp;Policy</a>.
           </p>
           <p className="mt-6 border-t border-[color:var(--line-soft)] pt-4 text-[13px] text-[color:var(--text-muted)]">
-            No account? Enter your email and we’ll make you one. We only ever send sign-in codes.
+            No account? Enter your email and we’ll make you one with a sign-in code.
           </p>
         </section>
       ) : (

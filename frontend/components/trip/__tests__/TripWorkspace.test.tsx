@@ -97,6 +97,25 @@ describe('TripWorkspace', () => {
     expect(card(day1.place_id)).toBeNull()          // the day switched, not merely appended
   })
 
+  it('leaks no source comment into the rendered page', async () => {
+    /* Inside JSX a `//` line is NOT a comment — it is a text child, and React renders it. Four
+       such lines sat above <main> and took 48px of page flow, pushing a 100dvh element that far
+       down: a strip of map above the details panel, and 48px of the panel below the fold. It was
+       invisible as text only because it is dark-on-dark, which is exactly why nothing caught it.
+       Braced comments are stripped, so this asserts the OUTPUT rather than the source style. */
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    renderWorkspace(TOKYO_TRIP.trip.id)
+    await screen.findByTestId('trip-map')
+
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
+    const leaked: string[] = []
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const text = (n.nodeValue ?? '').trim()
+      if (text.startsWith('//') || text.startsWith('/*')) leaked.push(text.slice(0, 60))
+    }
+    expect(leaked).toEqual([])
+  })
+
   it('toggles the panel open/closed from the single edge control', async () => {
     getTrip.mockResolvedValueOnce(TOKYO_TRIP)
     renderWorkspace(TOKYO_TRIP.trip.id)

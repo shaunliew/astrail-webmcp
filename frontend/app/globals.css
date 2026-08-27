@@ -1284,10 +1284,14 @@ button:focus-visible {
    where it is. Deliberately quieter than a trail pin: these are options, not stops on the route. */
 
 .eat-pin {
+  /* The chip ALONE is the marker box, and the label hangs off it absolutely — the same shape the
+     trail pins use. As a flex COLUMN containing both, Mapbox centred the chip+label stack on the
+     coordinate, which lifted the chip clear of the restaurant it marks and left the label fighting
+     neighbouring markers for room. Out of flow, the label cannot move the chip or resize the box. */
+  position: relative;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 0.15rem;
+  justify-content: center;
   padding: 0;
   border: 0;
   background: transparent;
@@ -1340,15 +1344,29 @@ button:focus-visible {
   stroke: #0b0f16;
 }
 
+/* Absolutely positioned, centred under the chip. `z-index` because a name is only useful if it
+   is on top: at street zoom these sit among Mapbox's own POI labels and other markers, and the
+   old in-flow chip could bury it. Higher contrast and a hairline border for the same reason — a
+   62%-black pill at 10px vanished against a dense map. */
 .eat-pin__label {
-  font-size: 0.625rem;
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 50%;
+  /* A CHILD, so it may transform freely — the ban in marker-css-contract.test.ts covers marker
+     ROOTS, which Mapbox positions with its own inline transform. */
+  transform: translateX(-50%);
+  z-index: 1;
+  font-size: 0.6875rem;
+  font-weight: 600;
   letter-spacing: 0.01em;
-  color: #f5f0e6;
-  background: rgb(0 0 0 / 0.62);
-  padding: 0.05rem 0.3rem;
-  border-radius: 0.25rem;
+  color: #f8ead1;
+  background: rgba(11, 15, 22, 0.88);
+  border: 1px solid rgba(239, 201, 141, 0.34);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.42);
+  padding: 0.1rem 0.35rem;
+  border-radius: 0.3rem;
   white-space: nowrap;
-  max-width: 120px;
+  max-width: 140px;
   overflow: hidden;
   text-overflow: ellipsis;
   pointer-events: none;
@@ -1357,12 +1375,19 @@ button:focus-visible {
 }
 
 /* Driven by the map's zoom, exactly like the trail labels — NOT by :hover alone. A touch device
-   has no hover, so the hover-only rule meant these names never appeared on a phone at all.
-   Hover and selection still force it, so it stays readable when deliberately pointed at. */
+   has no hover, so the hover-only rule meant these names never appeared on a phone at all. */
 .eat-pin__label--visible,
-.eat-pin:hover .eat-pin__label,
-.eat-pin--selected .eat-pin__label {
+.eat-pin:hover .eat-pin__label {
   opacity: 0.95;
+}
+
+/* SELECTED hides it, which looks backwards and is not. Selecting opens the card, and the card's
+   heading is the venue's name in full — so the pill underneath repeats it in 11px while colliding
+   with the card's own bottom edge and with the trail label of whichever stop it sits beside. That
+   collision is what "I cannot see the caption" actually was: a name half-buried under the thing
+   already naming it. Unselected pins keep their labels, which is when the name has a job to do. */
+.eat-pin--selected .eat-pin__label {
+  opacity: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {

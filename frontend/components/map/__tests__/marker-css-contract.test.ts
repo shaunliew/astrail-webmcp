@@ -79,9 +79,12 @@ describe('marker CSS contract: Mapbox owns marker-root positioning', () => {
       '.eat-pin--selected',
       '.eat-pin--selected .eat-pin__chip',
       '.eat-pin--selected .eat-pin__glyph',
-      // One rule, three selectors: the zoom-driven class plus the hover/selection overrides.
-      // The parser keeps a selector LIST verbatim, so it is asserted as written.
-      '.eat-pin__label--visible,\n.eat-pin:hover .eat-pin__label,\n.eat-pin--selected .eat-pin__label',
+      // Selection HIDES the label — the open card already names the venue in full, and the pill
+      // underneath collided with the card's own edge and with the neighbouring trail label.
+      '.eat-pin--selected .eat-pin__label',
+      // One rule, two selectors: the zoom-driven class plus the hover override. The parser keeps
+      // a selector LIST verbatim, so it is asserted as written.
+      '.eat-pin__label--visible,\n.eat-pin:hover .eat-pin__label',
       '.hotel-hub-pin',
     ])
   })

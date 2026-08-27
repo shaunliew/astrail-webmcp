@@ -216,10 +216,16 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
         openPanel={() => setPanelOpen(true)}
         refresh={refreshBundle}
       />
-    // The interactive Mapbox canvas is a FIXED layer behind this route (MapProvider's
-    // `.shared-map`). This overlay must be click-through, or it swallows every pan/zoom/
-    // pin-tap before the map beneath ever sees it. Interactive children re-enable
-    // pointer events explicitly (the panel + its buttons below).
+    {/* The interactive Mapbox canvas is a FIXED layer behind this route (MapProvider's
+        `.shared-map`). This overlay must be click-through, or it swallows every pan/zoom/
+        pin-tap before the map beneath ever sees it. Interactive children re-enable
+        pointer events explicitly (the panel + its buttons below).
+
+        A BRACED comment, not bare `//`. Inside JSX a `//` line is not a comment — it is a text child,
+        so these four lines RENDERED, took 48px of flow, and pushed <main> (which is 100dvh
+        tall) that far down the page. The visible symptom was a strip of map above the details
+        panel and 48px of the panel hanging below the fold. Invisible as text only because it
+        is dark-on-dark. */}
     <main className="pointer-events-none relative h-[100dvh] w-full overflow-hidden">
       <div className="pointer-events-none absolute inset-0">
         <TripMap

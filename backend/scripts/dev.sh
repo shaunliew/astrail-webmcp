@@ -45,5 +45,8 @@ else
 fi
 
 echo "deletion sweep: disabled"
-echo "listening on http://localhost:${PORT:-8000}"
-exec uv run uvicorn main:app --reload --host 127.0.0.1 --port "${PORT:-8000}"
+echo "listening on http://localhost:${PORT:-8000}  (override with PORT=8001)"
+# Bind 0.0.0.0, not 127.0.0.1. Embedded browsers (ChatGPT / Codex in-app) do not treat every
+# loopback form alike — 127.0.0.1 can come back ERR_BLOCKED_BY_CLIENT while `localhost` resolves
+# fine, and binding only to the literal 127.0.0.1 rules out the other spellings entirely.
+exec uv run uvicorn main:app --reload --host 0.0.0.0 --port "${PORT:-8000}"

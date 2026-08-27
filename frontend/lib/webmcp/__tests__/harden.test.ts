@@ -1,84 +1,82 @@
-import { describe, it, expect, vi, afterEach } from 'vitest'
-import { hardenModelContext, hardenWhenAvailable } from '../harden'
+import { describe, it, expect, afterEach } from 'vitest'
+import { suppressUnregisterAborts } from '../harden'
 
 type Doc = { modelContext?: unknown }
 const doc = () => document as unknown as Doc
-afterEach(() => { delete doc().modelContext; vi.useRealTimers() })
-
-describe('hardenModelContext', () => {
-  it('does nothing when there is no WebMCP', () => {
-    expect(hardenModelContext()).toBe(false)
-  })
-
-  it('marks an abort-driven rejection as handled', async () => {
-    // The real failure: use-webmcp-tool never catches registerTool's promise, and aborting the
-    // signal is how a tool UNREGISTERS — so every unmount threw an AbortError overlay.
-    const rejected = Promise.reject(Object.assign(new Error('signal is aborted without reason'), { name: 'AbortError' }))
-    doc().modelContext = { registerTool: () => rejected }
-
-    const unhandled: unknown[] = []
-    const onUnhandled = (e: PromiseRejectionEvent) => { unhandled.push(e.reason); e.preventDefault() }
-    window.addEventListener('unhandledrejection', onUnhandled)
-
-    expect(hardenModelContext()).toBe(true)
-    ;(doc().modelContext as { registerTool: () => unknown }).registerTool()
-    await new Promise((r) => setTimeout(r, 0))
-
-    window.removeEventListener('unhandledrejection', onUnhandled)
-    expect(unhandled).toHaveLength(0)
-  })
-
-  it('still surfaces a rejection that is NOT an abort', async () => {
-    // Swallowing everything would hide a genuinely broken tool registration.
-    const err = Object.assign(new Error('bad schema'), { name: 'TypeError' })
-    doc().modelContext = { registerTool: () => Promise.reject(err) }
-    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
-    hardenModelContext()
-    ;(doc().modelContext as { registerTool: () => unknown }).registerTool()
-    await new Promise((r) => setTimeout(r, 0))
-    expect(spy).toHaveBeenCalledWith('[webmcp] registerTool rejected:', err)
-    spy.mockRestore()
-  })
-
-  it('returns the original promise so callers are unaffected', async () => {
-    const value = { ok: true }
-    doc().modelContext = { registerTool: () => Promise.resolve(value) }
-    hardenModelContext()
-    await expect((doc().modelContext as { registerTool: () => Promise<unknown> }).registerTool()).resolves.toBe(value)
-  })
-
-  it('is idempotent — never double-wraps', () => {
-    let calls = 0
-    doc().modelContext = { registerTool: () => { calls++; return Promise.resolve() } }
-    hardenModelContext()
-    hardenModelContext()
-    ;(doc().modelContext as { registerTool: () => unknown }).registerTool()
-    expect(calls).toBe(1)
-  })
-
-  it('tolerates a synchronous registerTool', () => {
-    doc().modelContext = { registerTool: () => undefined }
-    expect(hardenModelContext()).toBe(true)
-    expect(() => (doc().modelContext as { registerTool: () => unknown }).registerTool()).not.toThrow()
-  })
+const cleanups: (() => void)[] = []
+afterEach(() => {
+  cleanups.splice(0).forEach((c) => c())
+  delete doc().modelContext
 })
 
-describe('hardenWhenAvailable', () => {
-  it('picks up a late-injected model context', () => {
-    vi.useFakeTimers()
-    const stop = hardenWhenAvailable(10_000, 500)
+function start() {
+  const stop = suppressUnregisterAborts()
+  cleanups.push(stop)
+  return stop
+}
+
+/** Fire a synthetic unhandledrejection and report whether anything called preventDefault. */
+function fireRejection(reason: unknown): boolean {
+  const event = new Event('unhandledrejection', { cancelable: true }) as PromiseRejectionEvent & {
+    reason?: unknown
+  }
+  Object.defineProperty(event, 'reason', { value: reason })
+  window.dispatchEvent(event)
+  return event.defaultPrevented
+}
+
+const abortNoReason = () =>
+  Object.assign(new Error('signal is aborted without reason'), { name: 'AbortError' })
+
+describe('suppressUnregisterAborts', () => {
+  it('suppresses the abort that WebMCP unregistration produces', () => {
     doc().modelContext = { registerTool: () => Promise.resolve() }
-    vi.advanceTimersByTime(500)
-    expect((doc().modelContext as { __astrailHardened?: boolean }).__astrailHardened).toBe(true)
-    stop()
+    start()
+    expect(fireRejection(abortNoReason())).toBe(true)
   })
 
-  it('gives up rather than polling forever', () => {
-    vi.useFakeTimers()
-    const spy = vi.spyOn(global, 'clearInterval')
-    hardenWhenAvailable(1_000, 500)
-    vi.advanceTimersByTime(1_200)
-    expect(spy).toHaveBeenCalled()
-    spy.mockRestore()
+  it('leaves every other rejection alone', () => {
+    doc().modelContext = { registerTool: () => Promise.resolve() }
+    start()
+    expect(fireRejection(new TypeError('something genuinely broke'))).toBe(false)
+  })
+
+  it('leaves an abort that carries a real reason alone', () => {
+    // A deliberate abort in our own code passes a reason, so it must still surface.
+    doc().modelContext = { registerTool: () => Promise.resolve() }
+    start()
+    const withReason = Object.assign(new Error('user cancelled the upload'), { name: 'AbortError' })
+    expect(fireRejection(withReason)).toBe(false)
+  })
+
+  it('does nothing at all when WebMCP is not present', () => {
+    // Without a model context this rejection came from somewhere else entirely.
+    start()
+    expect(fireRejection(abortNoReason())).toBe(false)
+  })
+
+  it('stops suppressing after cleanup', () => {
+    doc().modelContext = { registerTool: () => Promise.resolve() }
+    const stop = suppressUnregisterAborts()
+    stop()
+    expect(fireRejection(abortNoReason())).toBe(false)
+  })
+
+  it('NEVER touches document.modelContext', () => {
+    // The regression this file exists for: the first attempt reassigned
+    // document.modelContext.registerTool, which is a non-writable property of a native
+    // interface. That threw TypeError and took the whole /app shell down with it.
+    const frozen = Object.freeze({ registerTool: Object.freeze(() => Promise.resolve()) })
+    doc().modelContext = frozen
+    expect(() => start()).not.toThrow()
+    fireRejection(abortNoReason())
+    expect(doc().modelContext).toBe(frozen)
+  })
+
+  it('survives a model context that throws on property access', () => {
+    // Anything cosmetic must degrade to "the overlay is back", never "the app will not load".
+    doc().modelContext = new Proxy({}, { get() { throw new Error('hostile') } })
+    expect(() => start()).not.toThrow()
+    expect(() => fireRejection(abortNoReason())).not.toThrow()
   })
 })

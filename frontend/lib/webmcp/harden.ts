@@ -1,5 +1,5 @@
 /**
- * Work around an unhandled rejection in `use-webmcp-tool@0.2.0`.
+ * Suppress the unhandled rejection that `use-webmcp-tool@0.2.0` leaves behind.
  *
  * The hook registers like this:
  *
@@ -7,63 +7,63 @@
  *   catch (error) { ... }
  *   return () => controller.abort()
  *
- * `registerTool` returns a Promise (the spec's WebIDL says so), but the call is never awaited and
- * the promise is never `.catch()`ed — and that `try/catch` only ever sees a SYNCHRONOUS throw.
- * Aborting the signal is how WebMCP unregisters a tool, so every unmount and every
- * re-registration rejects a promise nobody is holding. The browser reports it as
- * `AbortError: signal is aborted without reason`, and in dev Next.js throws a full-screen error
- * overlay over a perfectly healthy app.
+ * `registerTool` returns a Promise, but the call is never awaited and never `.catch()`ed — and
+ * that `try/catch` only ever sees a SYNCHRONOUS throw. Aborting the signal is how WebMCP
+ * unregisters a tool, so every unmount rejects a promise nobody holds. The browser reports
+ * `AbortError: signal is aborted without reason`, and Next.js renders a full-screen overlay over
+ * a perfectly healthy app.
  *
- * We cannot fix the library from here, but we can make its promise handled: wrap `registerTool`
- * once so an abort-driven rejection is swallowed and anything else is surfaced. The caller still
- * receives the original promise, so behaviour is unchanged.
+ * A first attempt wrapped `document.modelContext.registerTool`. That was wrong: on a real
+ * implementation the method is a NON-WRITABLE property of a native interface, so assigning to it
+ * throws `TypeError: Cannot assign to read only property` — which broke the whole /app shell.
+ * The lesson is baked in below: never assume a platform object is patchable, and never let a
+ * cosmetic fix run outside a try/catch.
+ *
+ * So instead of touching the platform object we listen for the rejection and mark it handled.
+ * Narrow on purpose — see `isWebMcpUnregisterAbort`.
  */
 
-type Hardenable = {
-  registerTool?: (...args: unknown[]) => unknown
-  __astrailHardened?: boolean
-}
-
-function modelContext(): Hardenable | null {
-  if (typeof document === 'undefined') return null
-  return (document as unknown as { modelContext?: Hardenable }).modelContext ?? null
-}
-
-/** Returns true once the wrap is in place (or was already). */
-export function hardenModelContext(): boolean {
-  const mc = modelContext()
-  if (!mc || typeof mc.registerTool !== 'function') return false
-  if (mc.__astrailHardened) return true
-
-  const original = mc.registerTool.bind(mc)
-  mc.registerTool = (...args: unknown[]) => {
-    const result = original(...args)
-    if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
-      // Attaching a handler is the whole point — it marks the rejection as handled. Never
-      // re-throw here: that would just create a second unhandled rejection.
-      void (result as Promise<unknown>).catch((error: unknown) => {
-        const name = (error as { name?: string } | null)?.name
-        if (name === 'AbortError') return // expected: this is how a tool unregisters
-        console.error('[webmcp] registerTool rejected:', error)
-      })
-    }
-    return result
-  }
-  mc.__astrailHardened = true
-  return true
+/** Exactly what an abort with no reason produces. Anything richer is somebody else's error. */
+function isWebMcpUnregisterAbort(reason: unknown): boolean {
+  if (typeof document === 'undefined') return false
+  // Only meaningful when WebMCP is actually in play; otherwise leave every rejection alone.
+  if (!(document as unknown as { modelContext?: unknown }).modelContext) return false
+  const err = reason as { name?: string; message?: string } | null
+  if (!err || err.name !== 'AbortError') return false
+  // `AbortController.abort()` with no argument produces this exact message across engines.
+  // A deliberate abort in our own code passes a reason, so it will never match here.
+  return typeof err.message === 'string' && /aborted without reason/i.test(err.message)
 }
 
 /**
- * `document.modelContext` can be injected after mount (an extension's content script, or the
- * browser wiring it up late), so poll briefly rather than checking once. The window matches the
- * hook's own detection window; past that it has given up too.
+ * Start suppressing. Returns a cleanup function.
+ *
+ * Everything is defensive: this exists only to stop a cosmetic overlay, so any failure inside it
+ * must degrade to "the overlay is back", never to "the app will not load".
  */
-export function hardenWhenAvailable(windowMs = 10_000, stepMs = 500): () => void {
-  if (hardenModelContext()) return () => {}
-  let elapsed = 0
-  const timer = setInterval(() => {
-    elapsed += stepMs
-    if (hardenModelContext() || elapsed >= windowMs) clearInterval(timer)
-  }, stepMs)
-  return () => clearInterval(timer)
+export function suppressUnregisterAborts(): () => void {
+  if (typeof window === 'undefined') return () => {}
+
+  const onRejection = (event: PromiseRejectionEvent) => {
+    try {
+      if (!isWebMcpUnregisterAbort(event.reason)) return
+      // Marking it handled is the whole fix; nothing else about the app changes.
+      event.preventDefault()
+    } catch {
+      // Never let the suppressor itself break the page.
+    }
+  }
+
+  try {
+    window.addEventListener('unhandledrejection', onRejection)
+  } catch {
+    return () => {}
+  }
+  return () => {
+    try {
+      window.removeEventListener('unhandledrejection', onRejection)
+    } catch {
+      /* nothing useful to do */
+    }
+  }
 }

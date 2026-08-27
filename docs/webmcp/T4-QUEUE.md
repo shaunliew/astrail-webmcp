@@ -87,3 +87,28 @@ Worked at the evening review; the big passes wait for the weekend.
 - 🟡 Still open from this morning: the **daylight basemap** in `evidence/01-trip-map.png`, and
       whether the Agent Rail's 8s fade reads as calm or as noise in a real conversation.
 - 🔴 Still open: the **demo-credentials `TODO`** in `frontend/app/page.tsx` blocks submission.
+
+## UX pass (afternoon, 27 Aug) — needs your eyes
+
+- 🟢 **Fixed and verified in a browser:** the map never framed the trip on mobile (globe over the
+      Indian Ocean); the status chip covered the day/leg counts; pasting several Reel links did
+      nothing; the home screen had no "what next"; the plan sheet promised skippable dates it then
+      refused. Before/after in `docs/webmcp/evidence/ux-before/` and `ux-after/`.
+- 🟡 **Judge the new home CTA copy** — "Plan a trip from your N saved reels". It is the first
+      thing that tells someone what to do after saving, so the wording matters more than usual.
+- 🟡 **Try pasting a block of Reel links** into the capture box. It should fill a row per link,
+      up to 5, without touching "+ Add another link".
+- 🟡 **"Use a 3-day draft"** on the plan sheet fills the picker with tomorrow + 2 days. Check the
+      default range feels sane, and that the picker visibly shows what it chose.
+- 🔴 **Still unaddressed, and the biggest remaining one:** the ~60-180s organize wait shows only
+      decorative cycling words ("Stargazing…", "Connecting the dots…") that are explicitly
+      unrelated to backend progress. The REAL status is rendered `sr-only`, so a sighted user
+      cannot tell working from stuck. Everything needed is already streaming — this is a
+      presentation fix, not a data one.
+- 🔴 **Dead end:** a tray of never-organized reels shows a disabled "Create trail" with no path
+      forward. The user has to independently know to go back to the library and select.
+- 🟡 **Vocabulary is inconsistent on one screen**: the empty state says "No trails yet" while the
+      section header below it says "Your trays", and neither is ever defined. "Your grounded
+      places" is geo jargon a traveller will not parse.
+- 🟡 **Re-pasting the same link always says "Saved to your library"** — the RPC upserts, so a
+      duplicate is indistinguishable from a new save.

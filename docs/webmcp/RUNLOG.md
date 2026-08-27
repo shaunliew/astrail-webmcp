@@ -142,3 +142,42 @@ so a compile error surfaces in the log rather than in someone's browser.
 The build gate must run either **before** the dev server starts or **after** it is stopped.
 Overnight batches run a build gate, so any dev server left up during the day is collateral —
 stop it before dispatching a batch, or scope the build to a separate output directory.
+
+## Batch 3–5 — generation, editing, map tools (morning, 27 Aug)
+
+| # | Task | Gate | Result |
+|---|---|---|---|
+| 3.1 | Data tools moved from page-scoped to **global** | vitest | ✅ Scoping them to the trip page failed the actual flow: in a chat-first product the user asks "what's on day 2 of my Kyoto trip?" without navigating, and a tool on an unopened page is invisible exactly when wanted. Now takes an optional `trip_id`, accepting the 8-char prefix `list_trips` prints |
+| 3.2 | `plan_trip_from_reels` + `get_trip_progress` + generation store | `vitest lib/webmcp` | ✅ 24 tests. Self-throttling poll, STAGE_LABEL narration, dead stream → `unknown` not eternal "generating" |
+| 3.3 | `AgentConfirm` approval card | vitest | ✅ 7 tests incl. XSS: caption text renders as text, never markup |
+| 4.1 | `move_place` / `remove_place` + frontend fetchers | vitest | ✅ 10 tests. 1-based tool position → 0-based column pinned by test |
+| 5.1 | `show_on_map`, `set_map_mode`, `get_map_view` (page-scoped) | vitest | ✅ 12 tests |
+| 5.2 | Mapbox visuals — popups, chips, day colours, 3D (Codex) | `vitest components/map` | ✅ 42/42; claims verified against the code: no `innerHTML`, http/https allowlist, marker contract 8/8 |
+| 5.3 | **Full suite + production build** | `npx vitest run`, `npm run build` | ✅ **761 tests / 93 files**, build green |
+
+**12 tools. 20 commits. Nothing pushed.**
+
+### 🔴 Two bugs the unit tests could not catch
+
+**1. Infinite render loop on every trip page** — "Maximum update depth exceeded", thousands of
+times. Introduced when I made the registry optional: I swapped stable callback deps for the whole
+context value, which is memoized on `tools`. `report()` → new tools → new context → effect →
+`report()` → forever.
+
+> **All 758 tests passed while the page was unusable.** Every test seeded the registry directly;
+> none rendered `RegisterTools` inside the real provider. The regression test now does, and also
+> covers a specs array whose identity changes each render — which is what `GlobalTools` does.
+
+**2. `RegisterTools` hard-required the provider**, so `TripWorkspace` — a core product component —
+threw wherever the agent layer was absent. 13 existing tests caught this one. The dependency was
+backwards: registration targets `document.modelContext`; the registry only feeds the status chip.
+
+Both are the argument for the T2/T3 browser gate. Neither was visible from vitest.
+
+### Screenshots — `docs/webmcp/evidence/`
+
+Captured via gstack `/browse` against a temporary mock-auth server on 3001 (your `.env.local` was
+never touched; the real-auth server is back up).
+
+⚠️ The compiled `browse` binary at `~/.claude/skills/gstack/browse/dist/browse` is broken —
+"Script not found". Workaround: `cd ~/.claude/skills/gstack/browse && bun run src/cli.ts <cmd>`.

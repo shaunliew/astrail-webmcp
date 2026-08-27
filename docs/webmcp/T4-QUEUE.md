@@ -40,3 +40,23 @@ Worked at the evening review; the big passes wait for the weekend.
       Hooking `listSavedReelCards()` needs a signed-in session, so it is a follow-up, not overnight work.
 - 🟢 Read `docs/webmcp/SUBMISSION.md` — the text judges may score **without opening the app**.
 - 🟢 Read `docs/webmcp/WHATS-NEW.md` — eligibility item; confirm the pre-existing/new split is honest.
+
+## After the morning batch — 12 tools, needs your eyes
+
+- 🔴 **Re-check the trip page in ChatGPT.** The chip should now read **5 tools** on `/app` and
+      **8 on a trip page** (3 map tools register there). The infinite-loop fix is verified in
+      headless Chromium but not yet in ChatGPT's browser.
+- 🔴 **Try the flow that motivated the global-tools change**, from `/app`, without opening a trip:
+      *"What's on day 2 of one of my Kyoto trips?"* → expect `list_trips` then `get_itinerary`.
+- 🟡 **The basemap looks like full daylight** in `evidence/01-trip-map.png`, not the Night &
+      Daybreak aesthetic. Could be the dawn `lightPreset` behaving as designed, or a regression
+      from the map work. Only you can tell.
+- 🟡 **Day-route colours are hard to distinguish at overview zoom** (see `01-trip-map.png`).
+      Legible up close; may need more contrast when zoomed out.
+- 🟡 **Marker chips hide below zoom 11** — by design, but check the threshold feels right in Tokyo.
+- 🟡 Codex's own list: chip density on mobile, a long multiline caption in a popup, a >6-day trip
+      where the colour palette cycles, and a city with no `composite/building` data.
+- 🟢 `move_place` / `remove_place` are **unit-tested only** — no live writes, as you asked.
+      `WEBMCP_EDITS_ENABLED` is still false and no backend is running locally.
+- 🟢 `plan_trip_from_reels` has **never been run for real** — it costs Apify + OpenAI credit and
+      burns the trial. Needs you present.

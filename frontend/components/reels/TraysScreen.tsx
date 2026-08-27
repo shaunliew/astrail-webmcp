@@ -57,6 +57,8 @@ export default function TraysScreen({
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [libraryOpen, setLibraryOpen] = useState(false)
+  // Which mode the library should open in — 'select' when the user pressed "Plan a trip".
+  const [libraryMode, setLibraryMode] = useState<'browse' | 'select'>('browse')
   const [createOpen, setCreateOpen] = useState(false)
   const [urls, setUrls] = useState<string[]>([''])
   const [busy, setBusy] = useState(false)
@@ -112,6 +114,32 @@ export default function TraysScreen({
   }, [])
 
   const cardById = useMemo(() => new Map(cards.map((card) => [card.id, card])), [cards])
+
+  /**
+   * Spread a multi-link paste across the rows.
+   *
+   * People copy Reels in batches — from notes, a chat, a share sheet — and arrive with several
+   * links separated by newlines or spaces. The form took one link per row and made you click
+   * "+ Add another link" for each, which is exactly the copy-paste friction this product exists
+   * to remove. A paste containing more than one link now fills the rows itself.
+   */
+  function spreadPastedLinks(index: number, raw: string): boolean {
+    const found = raw.split(/[\s,]+/).map((t) => t.trim()).filter(Boolean)
+    if (found.length < 2) return false
+    setUrls((prev) => {
+      const next = [...prev]
+      next[index] = found[0]
+      // Fill blank rows first so a half-typed row is never overwritten, then append.
+      for (const link of found.slice(1)) {
+        if (next.length >= MAX_CAPTURE_LINKS) break
+        const blank = next.findIndex((u, j) => j > index && !u.trim())
+        if (blank >= 0) next[blank] = link
+        else next.push(link)
+      }
+      return next
+    })
+    return true
+  }
 
   async function capture() {
     const targets = urls.map((u) => u.trim())
@@ -250,9 +278,10 @@ export default function TraysScreen({
         <div inert={viewingReel !== null}>
           <LibraryPanel
             cards={cards}
-            onClose={() => setLibraryOpen(false)}
+            onClose={() => { setLibraryOpen(false); setLibraryMode('browse') }}
             onOpenReel={handleOpenReel}
             onOrganize={onOrganize}
+            initialMode={libraryMode}
           />
         </div>
         {reelOverlay}
@@ -289,6 +318,10 @@ export default function TraysScreen({
               type="url"
               value={value}
               onChange={(e) => setUrls((prev) => prev.map((u, j) => (j === i ? e.target.value : u)))}
+              onPaste={(e) => {
+                const text = e.clipboardData.getData('text')
+                if (spreadPastedLinks(i, text)) e.preventDefault()
+              }}
               placeholder={i === 0 ? 'Paste an Instagram Reel or post link to save it for later…' : 'Paste another Reel or post link…'}
               className="min-h-11 flex-1 rounded-lg border border-[color:var(--line-soft)] bg-[color:var(--surface-1)] px-4 text-[color:var(--text)] placeholder:text-[color:var(--text-faint)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]"
             />
@@ -306,6 +339,20 @@ export default function TraysScreen({
             )}
           </div>
         ))}
+        {cards.length > 0 ? (
+          /* After a successful save the home screen said nothing about what to do next: you had
+             to guess that the inspiration banner was the door, then find an unlabelled
+             Browse/Select toggle inside it. Four non-obvious steps before anything happened.
+             This is the "start here" the screen was missing, and it lands in select mode. */
+          <button
+            type="button"
+            onClick={() => { setLibraryMode('select'); setLibraryOpen(true) }}
+            className="mt-4 w-full rounded-full bg-[color:var(--brass-deep)] px-4 py-2.5 text-sm font-semibold text-[color:var(--paper-0)] transition hover:opacity-90"
+          >
+            Plan a trip from your {cards.length} saved {cards.length === 1 ? 'reel' : 'reels'}
+          </button>
+        ) : null}
+
         {urls.length < MAX_CAPTURE_LINKS ? (
           <button
             type="button"

@@ -38,13 +38,19 @@ export default function LibraryPanel({
   onClose,
   onOpenReel,
   onOrganize,
+  initialMode = 'browse',
 }: {
+  /** Land straight in select mode when the user already said they want to plan. */
+  initialMode?: Mode
   cards: SavedReelCard[]
   onClose: () => void
   onOpenReel: (card: SavedReelCard) => void
   onOrganize: (ids: string[]) => Promise<void>
 }) {
-  const [mode, setMode] = useState<Mode>('browse')
+  // Browse is right when someone opens the library to look around. It is wrong when they
+  // arrived by pressing "Plan a trip" — then they have already said what they want, and
+  // landing in Browse makes them find an unlabelled toggle before anything can happen.
+  const [mode, setMode] = useState<Mode>(initialMode)
   const [country, setCountry] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<string[]>([])

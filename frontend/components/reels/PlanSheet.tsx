@@ -204,7 +204,31 @@ export default function PlanSheet({
               endDate={brief.end_date}
               onChange={(start, end) => onBrief((b) => ({ ...b, start_date: start, end_date: end }))}
             />
-            <p className="mt-2 text-[13px] text-[color:var(--text-muted)]">Skip this and Astrail builds a 3-day draft you can date later.</p>
+            {/* This line used to read "Skip this and Astrail builds a 3-day draft you can date
+                later" while the Generate button below was hard-disabled without dates — telling
+                someone an action is optional and then refusing it is the clearest way to leave
+                them stuck at "I don't know how to start". Now the offer is real: the button fills
+                the picker with a visible range they can see and change before generating. */}
+            {ready ? null : (
+              <p className="mt-2 text-[13px] text-[color:var(--text-muted)]">
+                Not sure yet?{' '}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const start = new Date()
+                    start.setDate(start.getDate() + 1)
+                    const end = new Date(start)
+                    end.setDate(end.getDate() + 2)
+                    const iso = (d: Date) => d.toISOString().slice(0, 10)
+                    onBrief((b) => ({ ...b, start_date: iso(start), end_date: iso(end) }))
+                  }}
+                  className="font-medium text-[color:var(--brass-deep)] underline underline-offset-2"
+                >
+                  Use a 3-day draft
+                </button>{' '}
+                and change the dates later.
+              </p>
+            )}
           </div>
 
           <button type="button" onClick={() => setEditing((e) => !e)} className="mt-4 text-[13px] font-medium text-[color:var(--brass-deep)] underline underline-offset-2">

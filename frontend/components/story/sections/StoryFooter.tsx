@@ -2,7 +2,6 @@ import Link from 'next/link'
 
 import { AstrailLogo } from '@/components/brand/AstrailLogo'
 import { contactEmail } from '@/components/landing/landing-copy'
-import { SEATS_TOTAL } from '../story-config'
 
 /* The full footer — the trust + legal spine a live product needs (a waitlist
    page can skip it; a beta taking real accounts can't). Dark so the chrome
@@ -82,7 +81,7 @@ export default function StoryFooter() {
             take. Evidence-backed planning on a real map.
           </p>
           <p className="mt-4 text-xs uppercase tracking-[0.16em] text-[color:var(--starlight-70)]">
-            {SEATS_TOTAL}-seat self-funded beta
+            WebMCP Challenge build
           </p>
         </div>
 
@@ -103,7 +102,7 @@ export default function StoryFooter() {
       </div>
 
       <div className="mx-auto mt-14 flex max-w-6xl flex-col gap-2 border-t border-[color:var(--night-line)] pt-6 text-xs text-[color:var(--starlight-70)] md:flex-row md:items-center md:justify-between">
-        <p>&copy; 2026 Astrail &middot; Singapore &middot; Open beta</p>
+        <p>&copy; 2026 Astrail &middot; Singapore &middot; WebMCP Challenge build</p>
         <p>
           Astrail is an early beta, not the final product. It uses AI to
           generate recommendations from public content &mdash; always

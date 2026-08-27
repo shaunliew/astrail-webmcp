@@ -3,14 +3,15 @@
 import Link from 'next/link'
 
 import { AstrailLogo } from '@/components/brand/AstrailLogo'
-import { SEATS_TOTAL } from './story-config'
 
-/* Persistent chrome, repointed to the open beta (2026-08-03). Glass pills so
-   the same nav reads on both the warm ivory hero and the night sections. The
-   primary action is now the product itself — sign up and plan — not a waitlist.
-   Scarcity is real (25 unlimited seats) but earned by activation, so signing up
-   IS how you get considered; there is no separate "request a seat" button to
-   go dead before the entitlement backend ships. */
+/* Persistent chrome. Glass pills so the same nav reads on both the warm ivory hero and the night
+   sections.
+
+   The seat counter ("25 seats · open beta") is gone on THIS deployment. It is a real scarcity
+   signal for the product, and reading it on a challenge build invites exactly the wrong
+   conclusion: that a judge is being funnelled toward a beta rather than shown an experiment. The
+   sign-in stays, because judges have credentials and need somewhere to use them — it just no
+   longer sells anything. */
 export default function StoryNav() {
   return (
     <nav className="story-nav" aria-label="Astrail">
@@ -31,13 +32,10 @@ export default function StoryNav() {
 
       <div className="story-nav__pill">
         <span className="story-nav__seats">
-          <b>{SEATS_TOTAL} seats</b> &middot; open beta
+          <b>WebMCP</b> &middot; challenge build
         </span>
-        <Link href="/sign-in" className="story-nav__link">
-          Log in
-        </Link>
         <Link href="/sign-in" className="story-nav__cta">
-          Start planning free
+          Sign in to try it
         </Link>
       </div>
     </nav>

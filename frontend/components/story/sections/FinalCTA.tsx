@@ -5,7 +5,7 @@ import Link from 'next/link'
 import PlayOnceVideo from '../PlayOnceVideo'
 import { tallyFallbackUrl } from '@/components/landing/landing-copy'
 import { TALLY_NOTIFY_FORM_ID } from '@/lib/tally'
-import { CLIPS, SEATS_TOTAL, STILLS } from '../story-config'
+import { CLIPS, STILLS } from '../story-config'
 
 /* The warm bookend — the mech lands and waves. The message is now the open
    beta: plan free today, and the scarce thing (unlimited planning for 25
@@ -32,21 +32,21 @@ export default function FinalCTA() {
 
       <div className="story-copy story-copy--center" style={{ zIndex: 40 }}>
         <p className="story-eyebrow text-[color:var(--story-teal-ink)]">
-          The beta is open
+          Try it with an agent
         </p>
         <h2 className="story-h text-[color:var(--ink-900)]">
-          Plan your first trip free. Only {SEATS_TOTAL} fly unlimited.
+          Ask it what you can do here.
         </h2>
         <p className="story-sub max-w-[32em] text-[color:var(--ink-600)]">
-          We&rsquo;re self-funded, so unlimited planning goes to just{' '}
-          {SEATS_TOTAL} early explorers, picked at our discretion from
-          whoever&rsquo;s actually using Astrail. Sign up, plan a trip, tell
-          us what broke &mdash; that&rsquo;s how you get noticed.
+          Open this page in ChatGPT&rsquo;s built-in browser and the agent can
+          read it, save the Reels you paste, build the trip while narrating each
+          stage, and move a stop to another day &mdash; on the same map you are
+          looking at. Sign in first; the tools act as you.
         </p>
 
         <div className="mt-8 flex flex-wrap items-center gap-4">
           <Link href="/sign-in" className="story-btn story-btn--primary">
-            Start planning free
+            Sign in to try it
           </Link>
           <a href="#how-it-works" className="story-btn story-btn--ghost">
             See how it works
@@ -54,8 +54,8 @@ export default function FinalCTA() {
         </div>
 
         <p className="mt-5 text-[13px] text-[color:var(--ink-400)]">
-          Early beta &mdash; this isn&rsquo;t the final product. Expect rough
-          edges while we build in the open.
+          A challenge build &mdash; not a finished product, and not something you
+          can sign up for. Expect rough edges.
         </p>
 
         <p className="mt-8 text-[15px] text-[color:var(--ink-600)]">

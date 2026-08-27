@@ -1,7 +1,9 @@
 import { faqs } from '@/components/landing/landing-copy'
 
 /* Objection handling. Static (not an accordion) — six short Q/As read faster
-   than they click. Copy lives in landing-copy so edits stay in one file. */
+   than they click. Copy lives in landing-copy so edits stay in one file.
+   Retargeted for the challenge build: the questions are about what was made and
+   whether it can be trusted, not about joining a beta. */
 export default function FAQ() {
   return (
     <section id="faq" className="bg-[color:var(--paper-1)] px-6 py-24 md:px-12">
@@ -10,7 +12,7 @@ export default function FAQ() {
           Questions
         </p>
         <h2 className="story-h text-[color:var(--ink-900)]">
-          What people ask before they sign up.
+          What people ask about this build.
         </h2>
 
         <dl className="mt-12 border-t border-[color:var(--paper-line)]">

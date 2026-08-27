@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
 
+import ChallengeBanner from "@/components/landing/ChallengeBanner";
 import StoryStage from "@/components/story/stage/StoryStage";
 
 export const metadata: Metadata = {
-  title: "Astrail — turn the reels you saved into a route you'll actually take",
+  title: "Astrail — a WebMCP Challenge build",
   description:
-    "Paste the travel reels you saved. Astrail's agents turn them into an evidence-backed itinerary on a real map. Self-funded beta, 25 seats.",
+    "A trip planner an agent can operate. 16 WebMCP tools let an agent read the signed-in page, save Instagram Reels, run a generation, drive the live map, and restructure a finished route — every stop still carrying the caption it came from.",
 };
 
 // One-Stage proof slice (beats 0→2) under review — the full 8-beat stage
@@ -18,21 +19,7 @@ export default function LandingPage() {
 
   return (
     <>
-      <aside
-        role="status"
-        aria-label="Challenge build notice"
-        className="sticky top-0 z-[100] border-b border-[color:var(--paper-line-2)] bg-[color:var(--night-900)] px-5 py-3 text-center font-[family-name:var(--font-figtree)] text-sm leading-5 text-[color:var(--starlight)] shadow-[0_4px_20px_rgba(10,13,20,0.18)]"
-      >
-        This is a WebMCP Challenge build of Astrail — an experiment in planning trips with an
-        agent. For the production product, see{' '}
-        <a
-          href="https://astrail.xyz"
-          className="font-semibold text-[color:var(--brass-bright)] underline underline-offset-4"
-        >
-          astrail.xyz
-        </a>
-        .
-      </aside>
+      <ChallengeBanner />
 
       <div className="bg-[color:var(--paper-1)] px-5 py-12 font-[family-name:var(--font-figtree)] text-[color:var(--ink-900)] sm:px-8 lg:py-16">
         <div className="mx-auto grid max-w-6xl gap-6 lg:grid-cols-2">
@@ -52,23 +39,46 @@ export default function LandingPage() {
             <ul className="mt-6 space-y-3 text-[15px] leading-6 text-[color:var(--ink-600)]">
               <li className="flex gap-3">
                 <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
-                A browser-side WebMCP layer that shares the signed-in page&apos;s live state with an agent.
+                <span className="min-w-0">
+                  <b className="text-[color:var(--ink-900)]">16 tools</b> registered with{' '}
+                <code className="break-all text-[color:var(--ink-900)]">document.modelContext.registerTool()</code> — 13 anywhere in the app, 3 more that appear only once a map exists to drive.
+                </span>
               </li>
               <li className="flex gap-3">
                 <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
-                <code className="text-[color:var(--ink-900)]">get_app_state</code> tells the agent where the user is and what can happen next.
+                <span className="min-w-0">
+                  <code className="text-[color:var(--ink-900)]">get_app_state</code> answers &ldquo;what can I do here?&rdquo; — the fix for the one thing testers kept saying, that they could not tell where to click.
+                </span>
               </li>
               <li className="flex gap-3">
                 <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
-                Tools can read saved Reels, trips, itineraries, and the verbatim evidence behind each stop.
+                <span className="min-w-0">
+                  The agent can read your saved Reels, your trips, any day&apos;s itinerary, and the <b className="text-[color:var(--ink-900)]">verbatim caption</b> behind a given stop.
+                </span>
               </li>
               <li className="flex gap-3">
                 <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
-                New actions save Reels, start and track generation, control the live map, and edit a finished route.
+                <span className="min-w-0">
+                  It can also act: save Reels, start a 60&ndash;180 second generation and narrate each stage, fly and tilt the live map, and move, remove, add or re-plan stops on a finished route.
+                </span>
               </li>
               <li className="flex gap-3">
                 <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
-                Owner-checked edit endpoints and contract tests keep agent actions scoped, attributable, and safe.
+                <span className="min-w-0">
+                  The map was rebuilt to be worth driving: every stop that came from a Reel carries <b className="text-[color:var(--ink-900)]">that Reel&apos;s own cover frame</b> in its pin, and links back to the Reel itself &mdash; never to a scraped directory page.
+                </span>
+              </li>
+              <li className="flex gap-3">
+                <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
+                <span className="min-w-0">
+                  Anything that spends money or cannot be undone stops for approval on the page first, and the edit endpoints behind it are owner-checked, flag-gated and status-guarded.
+                </span>
+              </li>
+              <li className="flex gap-3">
+                <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
+                <span className="min-w-0">
+                  Where a fact does not exist, nothing is shown in its place. No invented opening hours, no borrowed photographs, and no Reel cited for a stop that did not come from one.
+                </span>
               </li>
             </ul>
             <a

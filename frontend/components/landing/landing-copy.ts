@@ -18,36 +18,39 @@ export const howItWorksSteps = [
   },
 ] as const;
 
+/* Rewritten for the WebMCP Challenge deployment. The previous set answered "should I join this
+   beta" — seats, pricing, what ships later — which is the wrong question to leave in front of a
+   judge evaluating an experiment. These answer "what did they build, and can I trust it". */
 export const faqs = [
   {
-    question: "What does the beta actually do?",
+    question: "What is this?",
     answer:
-      "You give Astrail your saved Reels, dates, budget, and preferences. It returns verified stops, a day-by-day itinerary, route logic, and why each place made the cut.",
+      "A WebMCP Challenge build of Astrail, a planner that turns saved Instagram Reels into a routed, evidence-backed itinerary. The challenge work is the layer that lets an agent operate that planner directly — reading the page you are signed into, and acting on it — rather than you clicking through it alone.",
   },
   {
-    question: "Does it book hotels or flights?",
+    question: "What can the agent actually do?",
     answer:
-      "Not in the beta. We're focused on getting the planning layer right first: verified places, trustworthy routing, saved trips, and explained decisions. Booking comes later, and only once the planning is good enough to trust.",
+      "Sixteen tools. It can tell you what is possible from where you are, read your saved Reels and any day of an itinerary, quote the caption a stop came from, save new Reels, start a generation and narrate each stage as it runs, fly and tilt the map, and move, remove, add or re-plan stops on a finished route.",
   },
   {
-    question: "How does the personalization work?",
+    question: "Can it do things without asking me?",
     answer:
-      "Astrail learns your travel style as you use it: pace, budget, food, walking tolerance, neighborhoods you like, things you avoid. The goal is a planner that gets sharper over time without hiding the assumptions it's using.",
+      "Not the ones that matter. Anything that spends money or cannot be undone stops for approval on the page first, and the request is shown to you in full before anything is sent. Reading is free and reversible actions just happen — a confirmation on every click would make the whole thing tiresome to use.",
+  },
+  {
+    question: "What stops it inventing things?",
+    answer:
+      "Structure, not instructions. Every place comes from a real geocoded record and the agent picks from that list by index, so it has no way to emit a location that does not exist. Where a fact is simply absent — opening hours we cannot source, a photo nobody published — the space stays empty rather than being filled with something plausible.",
   },
   {
     question: "Why start from Reels?",
     answer:
-      "Because that's where most travel intent now starts. People save places months before they're ready to plan. Astrail starts from that messy pile of saves and turns it into a real trip.",
+      "Because that is where most travel intent now starts. People save places months before they are ready to plan. Astrail starts from that messy pile of saves and turns it into a real trip — and every stop keeps a link back to the Reel it came from, not to a directory page that happens to mention it.",
   },
   {
-    question: "Is it really free?",
+    question: "Does it book hotels or flights?",
     answer:
-      "Yes. Planning is free during the beta, and there's no card anywhere in the flow. Unlimited planning is limited to 25 seats we grant at our discretion to early explorers who actually use Astrail; everyone else can still sign up and plan a real trip to try it out.",
-  },
-  {
-    question: "How do I give feedback?",
-    answer:
-      "Use the feedback link in the footer or just email us. We read every message. Astrail is an early beta, and what you tell us decides what we build next.",
+      "No. Hotel results come from a live search and are shown with their price and cancellation terms, but Astrail does not take payments and there is no booking step anywhere in the flow. A price on a card is a search result, not an offer being held for you.",
   },
 ] as const;
 

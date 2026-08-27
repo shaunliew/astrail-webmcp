@@ -197,7 +197,10 @@
 
 .story-nav {
   position: fixed;
-  top: 0;
+  /* Sits BELOW the challenge banner, which is sticky at z-100 and would otherwise cover these
+     links entirely. ChallengeBanner measures itself and publishes the variable; the 0px fallback
+     is what every page without a banner gets, so this file needs no per-route knowledge. */
+  top: var(--challenge-banner-h, 0px);
   left: 0;
   right: 0;
   z-index: 50;

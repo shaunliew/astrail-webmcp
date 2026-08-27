@@ -14,7 +14,6 @@ import FAQ from '../sections/FAQ'
 import FinalCTA from '../sections/FinalCTA'
 import StoryFooter from '../sections/StoryFooter'
 import { useLenis } from './useLenis'
-import { SEATS_TOTAL } from '../story-config'
 
 /* PRODUCT-FIRST HYBRID, repointed to the open beta (2026-08-03).
 
@@ -22,7 +21,7 @@ import { SEATS_TOTAL } from '../story-config'
    why Astrail exists (ZH, 2026-08-06), then the page scrolls into the real
    product: how it works (real screenshots), a live map,
    the demo video, the FAQ, an honest FOMO CTA, and a full footer. The primary
-   action everywhere is "Start planning free" (sign up + generate), because
+   action everywhere is "Sign in to try it" (the tools act as the signed-in user), because
    signing up and using it puts you in the running for one of the 25 unlimited
    seats, which we grant at our discretion. */
 export default function StoryStage() {
@@ -37,7 +36,7 @@ export default function StoryStage() {
 
         <div className="story-copy story-copy--center" style={{ zIndex: 40 }}>
           <p className="story-eyebrow text-[color:var(--story-teal-ink)]">
-            AI-native trip planning &middot; Now in beta
+            AI-native trip planning &middot; WebMCP Challenge build
           </p>
           <h1 className="story-h text-[color:var(--ink-900)] [font-size:clamp(2.4rem,4.6vw,4rem)]">
             Turn the reels you saved into a route you&rsquo;ll{' '}
@@ -45,24 +44,24 @@ export default function StoryStage() {
           </h1>
           <p className="story-sub max-w-[29em] text-[color:var(--ink-600)]">
             Astrail turns scattered travel inspiration into a real itinerary on
-            a map, with the evidence attached to every stop. Plan your
-            first trip free, in minutes.
+            a map, with the evidence attached to every stop. This build adds{' '}
+            <b className="font-bold text-[color:var(--ink-900)]">WebMCP</b>, so an
+            agent can do all of it with you, on the page you are looking at.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-4">
             <Link href="/sign-in" className="story-btn story-btn--primary">
-              Start planning free
+              Sign in to try it
             </Link>
             <a href="#how-it-works" className="story-btn story-btn--ghost">
               See how it works
             </a>
           </div>
           <p className="story-sub mt-7 text-[15px] text-[color:var(--ink-600)]">
-            Free while we&rsquo;re in beta &middot; only{' '}
+            Open it in ChatGPT&rsquo;s built-in browser and ask{' '}
             <b className="font-bold text-[color:var(--ink-900)]">
-              {SEATS_TOTAL} explorers
+              &ldquo;what can I do here?&rdquo;
             </b>{' '}
-            get unlimited planning. We hand-pick them at our discretion from
-            early users who actually use Astrail and tell us what breaks.
+            &mdash; sixteen tools answer, and then act.
           </p>
         </div>
 

@@ -26,23 +26,26 @@ describe('WebMCP Challenge landing', () => {
     vi.unstubAllEnvs()
   })
 
-  it('keeps the challenge build distinct from production', () => {
+  it('says plainly that this is a challenge build, and sends nobody to a product', () => {
     render(<LandingPage />)
 
     expect(screen.getByRole('status')).toHaveTextContent(
-      'This is a WebMCP Challenge build of Astrail — an experiment in planning trips with an agent.',
+      'This is a WebMCP Challenge build — an experiment in planning trips with an agent, not a product you can sign up for.',
     )
-    expect(screen.getByRole('link', { name: 'astrail.xyz' })).toHaveAttribute(
-      'href',
-      'https://astrail.xyz',
-    )
+    // The notice used to point at astrail.xyz. This deployment stands alone: routing a judge to a
+    // different product mid-evaluation is a distraction, and it invited reading the two as one.
+    expect(screen.queryByRole('link', { name: /astrail\.xyz/i })).toBeNull()
   })
 
   it('documents the challenge additions and links to the full eligibility record', () => {
     render(<LandingPage />)
 
     const section = screen.getByRole('region', { name: "What's new for this hackathon" })
-    expect(within(section).getAllByRole('listitem')).toHaveLength(5)
+    expect(within(section).getAllByRole('listitem')).toHaveLength(7)
+    // The claims a judge can check against the repo in one grep.
+    expect(section).toHaveTextContent('16 tools')
+    expect(section).toHaveTextContent('document.modelContext.registerTool()')
+    expect(section).toHaveTextContent('get_app_state')
     expect(within(section).getByRole('link', { name: /full new-vs-pre-existing record/i }))
       .toHaveAttribute(
         'href',

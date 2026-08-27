@@ -52,6 +52,16 @@ describe('WebMcpStatus', () => {
     expect(container).toBeEmptyDOMElement()
   })
 
+  it('keeps the count readable to assistive tech even when compacted', async () => {
+    // On a phone the full label lands on top of the trip's day/leg counts, so the visible chip
+    // shrinks to the number. The words must not disappear for screen readers with it.
+    withRegistry([
+      { name: 'get_app_state', description: 'Where you are', readOnly: true },
+      { name: 'move_place', description: 'Move a stop', readOnly: false },
+    ])
+    expect(await screen.findByRole('button', { name: 'WebMCP active, 2 tools' })).toBeInTheDocument()
+  })
+
   it('shows the live tool count', async () => {
     withRegistry([
       { name: 'get_app_state', description: 'Where you are', readOnly: true },

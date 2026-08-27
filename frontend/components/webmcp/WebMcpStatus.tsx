@@ -89,6 +89,7 @@ export default function WebMcpStatus({
         type="button"
         onClick={() => setOpen(!open)}
         aria-expanded={open}
+        aria-label={supported ? `WebMCP active, ${count} tools` : 'WebMCP unavailable'}
         className={[
           'flex items-center gap-2 rounded-full border px-3 py-1.5 backdrop-blur transition',
           supported
@@ -103,7 +104,14 @@ export default function WebMcpStatus({
             supported ? 'bg-[#C9974E]' : 'bg-white/40',
           ].join(' ')}
         />
-        {supported ? `WebMCP active · ${count} tool${count === 1 ? '' : 's'}` : 'WebMCP unavailable'}
+        {/* On a phone the trip panel is a full-width sheet, so a wide chip lands squarely on
+            top of the day/leg counts. Compact to the number there and keep the words for
+            screen readers; widen from sm: up where there is room beside the content. */}
+        <span className="sm:hidden">{supported ? count : '—'}</span>
+        <span className="hidden sm:inline">
+          {supported ? `WebMCP active · ${count} tool${count === 1 ? '' : 's'}` : 'WebMCP unavailable'}
+        </span>
+
       </button>
 
     </div>

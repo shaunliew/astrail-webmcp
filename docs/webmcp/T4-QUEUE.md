@@ -160,3 +160,33 @@ one live generation. Ordered by what breaks the demo if it is wrong.
   unconstrained it matched an Osaka sushi bar to a Brooklyn one 11,111 km away.
 - **`preference_match_json` is `{}` on every row in both tables.** Nothing writes it. The
   "matches your taste" rows were removed rather than left to render empty in front of a judge.
+
+## Overnight batch 9 — what closed, and what is left (28 Aug, ~02:00)
+
+**Ingest is proven end to end.** Shaun ran it before sleeping: save through the agent → extraction
+starts → the card shows Queued/Analyzing live → places land. No manual refresh anywhere.
+
+Closed overnight, all fault-injection tested:
+
+- 🟢 ~~the ~60-180s wait shows only decorative words while the real status is `sr-only`~~ — the
+      longest-standing red item. Now one element, seen and heard, plus elapsed seconds.
+- 🟢 ~~TrayDetail "Create trail" dead-end~~ — offers "Find places in N reels" and does it.
+- 🟢 ~~vocabulary ("No trails yet" over "Your trays", "grounded places")~~ — one noun, defined at
+      first use; the jargon chip now reads "Places we found".
+- 🟢 ~~duplicate paste silently reports success~~ — says "already in your library".
+- 🟢 hotels now record a warning when the search yields nothing, so an absence is visible.
+
+### 🔴 Still the one thing nobody has run
+
+**`plan_trip_from_reels` end to end.** It spends real Apify + OpenAI credit, so it was never right
+to run it unattended. It is also the only path that exercises the restaurant details web search
+(`genagents/restaurant_details.py`). Everything either side of it is now verified.
+
+Daily reel-analysis allowance was raised 5 → 25 on the test account, so quota will not interfere.
+
+### 🟡 Worth your eyes when you are back
+
+- The wait screen: does the real stage text plus a running clock read better than the cycling
+  words did? It is the screen a judge sits through, and only a person can judge the feel.
+- "Find places in N reels" on a tray with un-analysed reels — is the wording right?
+- The landing page end to end, now that every trace of beta/seats/roadmap framing is gone.

@@ -389,3 +389,15 @@ export async function editTripDates(
   if (!res.ok) throw new Error(await editErrorMessage(res))
   return (await res.json()) as EditTripDatesResult
 }
+
+export type ReplanTripResult = { days_narrated: number; routes_refreshed: boolean }
+
+/** Re-routes the trip and rewrites its day summaries. Costs an LLM call — never call it silently. */
+export async function replanTrip(tripId: string, accessToken: string): Promise<ReplanTripResult> {
+  const res = await fetch(`${BACKEND_URL}/trips/${tripId}/replan`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
+  if (!res.ok) throw new Error(await editErrorMessage(res))
+  return (await res.json()) as ReplanTripResult
+}

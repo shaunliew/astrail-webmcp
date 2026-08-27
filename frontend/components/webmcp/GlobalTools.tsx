@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import type { Trip, TripBundle } from '@/lib/trip/backend-types'
 import { getTrip, listTrips } from '@/lib/trip/supabase-api'
-import { addTripPlace, deleteTripPlace, editTripDates, editTripPlace, generateTrip, streamGeneration } from '@/lib/trip/api'
+import { addTripPlace, deleteTripPlace, editTripDates, editTripPlace, generateTrip, replanTrip, streamGeneration } from '@/lib/trip/api'
 import { createGenerationStore } from '@/lib/webmcp/generation'
 import { captureSavedReel, listSavedReelCards } from '@/lib/reels/api'
 import { getAccessToken } from '@/lib/supabase/session'
@@ -168,6 +168,7 @@ export default function GlobalTools() {
         addTripPlace(tripId, body, await getAccessToken()),
       setDates: async (tripId: string, body: Parameters<typeof editTripDates>[1]) =>
         editTripDates(tripId, body, await getAccessToken()),
+      replan: async (tripId: string) => replanTrip(tripId, await getAccessToken()),
       move: async (tripId: string, tpId: string, patch: { day_number?: number; sort_order?: number }) =>
         editTripPlace(tripId, tpId, patch, await getAccessToken()),
       remove: async (tripId: string, tpId: string) =>

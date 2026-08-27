@@ -43,6 +43,7 @@ const ctx: ToolContext = {
   edit: {
     add: async () => ({}),
     setDates: async () => ({}),
+    replan: async () => ({ days_narrated: 0, routes_refreshed: true }),
     move: async () => ({}),
     remove: async () => ({}),
     refresh: async () => TOKYO_TRIP,
@@ -63,7 +64,7 @@ const specs = allTools(ctx, mapDeps)
 
 describe('tool spec contract', () => {
   it('registers at least the tools built so far', () => {
-    expect(specs.length).toBeGreaterThanOrEqual(15)
+    expect(specs.length).toBeGreaterThanOrEqual(16)
   })
 
   it('has globally unique names — a duplicate is REJECTED at registration, silently', () => {

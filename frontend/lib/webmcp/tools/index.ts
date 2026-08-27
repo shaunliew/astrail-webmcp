@@ -3,7 +3,7 @@ import { getAppStateTool, type AppStateSnapshot } from './app-state'
 import { getItineraryTool, getPlaceEvidenceTool, listTripsTool, type TripReader } from './trips'
 import { listSavedReelsTool, saveReelsTool, type SavedReelSummary } from './reels'
 import { getTripProgressTool, planTripFromReelsTool, type GenerationDeps } from './generation'
-import { addPlaceTool, movePlaceTool, removePlaceTool, setTripDatesTool, type EditDeps } from './edit'
+import { addPlaceTool, movePlaceTool, removePlaceTool, replanTripTool, setTripDatesTool, type EditDeps } from './edit'
 import { getMapViewTool, setMapModeTool, showOnMapTool, type MapDeps } from './map'
 
 /**
@@ -46,6 +46,7 @@ export function globalTools(ctx: ToolContext): ToolSpec[] {
     removePlaceTool({ ...ctx.edit, trips: ctx.trips }),
     addPlaceTool({ ...ctx.edit, trips: ctx.trips }),
     setTripDatesTool({ ...ctx.edit, trips: ctx.trips }),
+    replanTripTool({ ...ctx.edit, trips: ctx.trips }),
   ]
 }
 

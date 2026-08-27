@@ -19,6 +19,7 @@ export type EditDeps = {
   trips: TripReader
   add: (tripId: string, body: { name: string; day_number: number; position?: number | null; lat?: number | null; lng?: number | null }) => Promise<unknown>
   setDates: (tripId: string, body: { start_date?: string | null; end_date?: string | null }) => Promise<unknown>
+  replan: (tripId: string) => Promise<{ days_narrated: number; routes_refreshed: boolean }>
   move: (tripId: string, tripPlaceId: string, patch: { day_number?: number; sort_order?: number }) => Promise<unknown>
   remove: (tripId: string, tripPlaceId: string) => Promise<unknown>
   /** Re-reads the trip so the page reflects the change before the tool reports success. */
@@ -220,6 +221,43 @@ export function setTripDatesTool(deps: EditDeps): ToolSpec {
 
       await deps.refresh(r.bundle.trip.id)
       return `The user approved. The trip now runs ${to}. Every day kept its stops and its number.`
+    },
+  }
+}
+
+export function replanTripTool(deps: EditDeps): ToolSpec {
+  return {
+    name: 'replan_trip',
+    description:
+      'Rewrites the day-by-day summaries so they match the stops the trip actually has now, and recalculates the routes. Use this after adding, moving or removing stops, because the existing summaries still describe the old itinerary. The user approves it first, since rewriting costs them credit. Routes alone already refresh on every edit; this is only needed for the wording.',
+    inputSchema: {
+      type: 'object',
+      properties: { trip_id: { type: 'string', description: 'Trip id from list_trips. Omit for the open trip.' } },
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: false, untrustedContentHint: false },
+    execute: async (args) => {
+      const r = await resolveBundle(deps.trips, typeof args.trip_id === 'string' ? args.trip_id : undefined)
+      if (!r.ok) return r.message
+
+      const dayCount = r.bundle.days.length
+      // Approval is not optional: this rewrites prose the user may have read, and it spends
+      // model credit. An agent must not be able to trigger it on its own initiative.
+      const approved = await deps.confirm(
+        `Rewrite the day summaries for this trip so they match its current stops.\n${dayCount} day${dayCount === 1 ? '' : 's'} will be re-described. This uses your credit.`,
+      )
+      if (!approved) return 'The user declined. The summaries are unchanged.'
+
+      let result: { days_narrated: number; routes_refreshed: boolean }
+      try {
+        result = await deps.replan(r.bundle.trip.id)
+      } catch (e) {
+        return e instanceof Error ? e.message : 'Replanning failed.'
+      }
+
+      await deps.refresh(r.bundle.trip.id)
+      const routes = result.routes_refreshed ? 'Routes recalculated.' : 'Routes could not be recalculated this time.'
+      return `The user approved. Rewrote ${result.days_narrated} day summar${result.days_narrated === 1 ? 'y' : 'ies'} to match the current stops. ${routes}`
     },
   }
 }

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures/tokyo-trip'
-import { addPlaceTool, movePlaceTool, removePlaceTool, setTripDatesTool, type EditDeps } from '../tools/edit'
+import { addPlaceTool, movePlaceTool, removePlaceTool, replanTripTool, setTripDatesTool, type EditDeps } from '../tools/edit'
 
 const reader = { current: () => TOKYO_TRIP, list: async () => [TOKYO_TRIP.trip], load: async () => TOKYO_TRIP }
 
@@ -8,6 +8,7 @@ const deps = (over: Partial<EditDeps> = {}): EditDeps => ({
   trips: reader,
   add: vi.fn().mockResolvedValue({}),
   setDates: vi.fn().mockResolvedValue({}),
+  replan: vi.fn().mockResolvedValue({ days_narrated: 3, routes_refreshed: true }),
   move: vi.fn().mockResolvedValue({}),
   remove: vi.fn().mockResolvedValue({}),
   refresh: vi.fn().mockResolvedValue(TOKYO_TRIP),
@@ -192,5 +193,52 @@ describe('set_trip_dates', () => {
     const out = String(await setTripDatesTool(d).execute({ start_date: '2026-08-28' }))
     expect(d.setDates).not.toHaveBeenCalled()
     expect(out).toContain('unchanged')
+  })
+})
+
+describe('replan_trip', () => {
+  it('rewrites the summaries after the stops changed', async () => {
+    // Reported: after adding USJ and Osaka Castle, Day 1 still read "Start easy with Dekasan,
+    // then keep the day simple with a visit to Umeda Sky Building" — describing an itinerary
+    // that no longer existed.
+    const d = deps()
+    const out = String(await replanTripTool(d).execute({}))
+    expect(d.replan).toHaveBeenCalledWith(TOKYO_TRIP.trip.id)
+    expect(out).toContain('Rewrote 3 day summaries')
+    expect(out).toContain('Routes recalculated')
+  })
+
+  it('asks first, because rewriting spends the user credit', async () => {
+    const d = deps()
+    await replanTripTool(d).execute({})
+    const summary = String((d.confirm as ReturnType<typeof vi.fn>).mock.calls[0][0])
+    expect(summary).toContain('uses your credit')
+  })
+
+  it('rewrites NOTHING when the user declines', async () => {
+    const d = deps({ confirm: vi.fn().mockResolvedValue(false) })
+    const out = String(await replanTripTool(d).execute({}))
+    expect(d.replan).not.toHaveBeenCalled()
+    expect(out).toContain('unchanged')
+  })
+
+  it('says plainly when routes could not be recalculated', async () => {
+    // Reporting a clean success when half of it failed is the thing to avoid.
+    const d = deps({ replan: vi.fn().mockResolvedValue({ days_narrated: 2, routes_refreshed: false }) })
+    const out = String(await replanTripTool(d).execute({}))
+    expect(out).toContain('could not be recalculated')
+  })
+
+  it('does not claim success when the backend returns 502', async () => {
+    const d = deps({ replan: vi.fn().mockRejectedValue(new Error('Narration failed; routes were refreshed.')) })
+    const out = String(await replanTripTool(d).execute({}))
+    expect(out).toContain('Narration failed')
+    expect(out).not.toContain('Rewrote')
+  })
+
+  it('refreshes the page so the new wording is visible', async () => {
+    const d = deps()
+    await replanTripTool(d).execute({})
+    expect(d.refresh).toHaveBeenCalledWith(TOKYO_TRIP.trip.id)
   })
 })

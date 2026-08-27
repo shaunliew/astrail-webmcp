@@ -60,7 +60,7 @@ export default function ExamplePrompts() {
   }
 
   return (
-    <div className="fixed bottom-16 right-4 z-30 w-[min(22rem,calc(100vw-2rem))] rounded-xl border border-white/15 bg-black/85 p-3 text-xs text-white/85 shadow-xl backdrop-blur">
+    <div className="pointer-events-auto w-[min(22rem,100%)] rounded-xl border border-white/15 bg-black/85 p-3 text-xs text-white/85 shadow-xl backdrop-blur">
       <div className="mb-2 flex items-start justify-between gap-2">
         <p className="text-[11px] uppercase tracking-wider text-[#E8D5B0]">Try asking the agent</p>
         <button

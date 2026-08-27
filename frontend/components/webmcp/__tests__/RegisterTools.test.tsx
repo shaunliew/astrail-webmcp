@@ -27,7 +27,7 @@ describe('RegisterTools inside the real provider', () => {
       render(
         <WebMcpRegistryProvider>
           <RegisterTools specs={[spec('tool_one'), spec('tool_two')]} />
-          <WebMcpStatus />
+          <WebMcpStatus open={false} onOpenChange={() => {}} />
         </WebMcpRegistryProvider>,
       )
       await waitFor(() => expect(screen.getByRole('button')).toBeInTheDocument())
@@ -42,7 +42,7 @@ describe('RegisterTools inside the real provider', () => {
     render(
       <WebMcpRegistryProvider>
         <RegisterTools specs={[spec('tool_one'), spec('tool_two')]} />
-        <WebMcpStatus />
+        <WebMcpStatus open={false} onOpenChange={() => {}} />
       </WebMcpRegistryProvider>,
     )
     // No WebMCP in jsdom, so the chip reports unavailable — but the registration path still ran

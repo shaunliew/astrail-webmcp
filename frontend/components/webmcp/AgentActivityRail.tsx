@@ -36,7 +36,7 @@ export default function AgentActivityRail() {
     <div
       aria-live="polite"
       aria-label="Agent activity"
-      className="pointer-events-none fixed bottom-28 right-4 z-30 w-[min(22rem,calc(100vw-2rem))] space-y-1.5"
+      className="pointer-events-none w-[min(22rem,100%)] space-y-1.5"
     >
       {visible.map((e) => (
         <div

@@ -111,15 +111,41 @@ export async function getTrip(tripId: string): Promise<TripBundle | null> {
     inspirationRows.map((i) => i.normalized_reel_url).filter((u): u is string => Boolean(u)),
   )]
   const covers = new Map<string, string>()
+  /* Which Reel a stop came from, for trips whose rows predate `evidence_json.source_reel_url`.
+     Without this the popup can only offer `source_url` — the RESEARCH page — so a stop scraped
+     from a Japanese venue directory showed a Yahoo Maps link under the heading "From your
+     Instagram Reel", and no way to reach the Reel at all. The legacy fallback in `reelUrlFor`
+     cannot rescue those: it needs the trip to have exactly ONE Reel, and a multi-Reel trip has
+     no honest way to guess which. `reel_place_mentions` recorded the answer all along, and
+     `saved_reel_cards.places` is where a browser can read it. */
+  const reelByPlaceId = new Map<string, string>()
   if (reelUrls.length > 0) {
     const { data: cards } = await supabase
-      .from('saved_reel_cards').select('normalized_url, thumbnail_url').in('normalized_url', reelUrls)
-    for (const card of (cards ?? []) as { normalized_url: string, thumbnail_url: string | null }[]) {
+      .from('saved_reel_cards')
+      .select('normalized_url, thumbnail_url, places').in('normalized_url', reelUrls)
+    type MentionRow = { place_id: string | null, source_reel_url: string | null }
+    type CardRow = { normalized_url: string, thumbnail_url: string | null, places: MentionRow[] | null }
+    for (const card of (cards ?? []) as CardRow[]) {
       if (card.thumbnail_url) covers.set(card.normalized_url, card.thumbnail_url)
+      for (const mention of card.places ?? []) {
+        if (mention.place_id && mention.source_reel_url) {
+          reelByPlaceId.set(mention.place_id, mention.source_reel_url)
+        }
+      }
     }
   }
 
-  const tripPlaces = (places.data ?? []) as unknown as TripPlace[]
+  /* Backfill only — a row the backend already attributed is left exactly as it is, and only
+     reel-extracted stops are touched, so the bundle never claims a Reel origin for a stop the
+     user typed even before `reelUrlFor`'s provenance gate sees it. */
+  const tripPlaces = ((places.data ?? []) as unknown as TripPlace[]).map((tp) => (
+    tp.evidence_json.source_reel_url || tp.source_type !== 'reel_extracted'
+      ? tp
+      : {
+        ...tp,
+        evidence_json: { ...tp.evidence_json, source_reel_url: reelByPlaceId.get(tp.place_id) ?? null },
+      }
+  ))
   const restaurantRows = (restaurants.data ?? []) as RestaurantSuggestion[]
 
   /* Suggestion places are NOT trip stops, so the `trip_places` join above never

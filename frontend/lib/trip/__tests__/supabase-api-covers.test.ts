@@ -52,6 +52,19 @@ const inspirationRow = (url: string | null, id: string) => ({
   // deliberately NO thumbnail_url — the real table does not have this column
 })
 
+const tripPlace = (placeId: string, sourceType: string, sourceReelUrl: string | null = null) => ({
+  id: `tp_${placeId}`, trip_id: TRIP_ID, place_id: placeId, source_type: sourceType,
+  day_number: 1, sort_order: 0,
+  evidence_json: {
+    confidence: 0.9, source_url: 'https://map.yahoo.co.jp/v3/place/XYZ', quote: 'q', quotes: ['q'],
+    rationale: null, evidence_kind: sourceType === 'reel_extracted' ? 'reel_quote' : 'requested_by_you',
+    ...(sourceReelUrl ? { source_reel_url: sourceReelUrl } : {}),
+  },
+  place: { id: placeId, name: placeId, lat: 1, lng: 1 },
+})
+
+const mention = (placeId: string, reelUrl: string) => ({ place_id: placeId, source_reel_url: reelUrl })
+
 async function loadTrip(tables: Record<string, unknown[]>, spy?: { savedReelQuery?: unknown[] }) {
   createClient.mockReturnValue(stubSupabase({ trips: [{ id: TRIP_ID }], ...tables }, spy))
   const { getTrip } = await import('@/lib/trip/supabase-api')
@@ -119,5 +132,57 @@ describe('getTrip: Reel covers', () => {
       saved_reel_cards: [{ normalized_url: REEL_A, thumbnail_url: 'https://cdn.test/a.jpg' }],
     }, spy)
     expect(spy.savedReelQuery).toEqual([REEL_A])
+  })
+})
+
+describe('getTrip: Reel attribution for rows written before source_reel_url existed', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    createClient.mockReset()
+  })
+
+  // The reported bug: a stop's popup said "From your Instagram Reel" but the only link was a
+  // Yahoo Maps page, because `source_url` is the RESEARCH page and the Reel was never recorded.
+  // reelUrlFor's legacy fallback cannot rescue it — that needs a single-Reel trip, and this is a
+  // multi-Reel one. reel_place_mentions recorded which Reel named which place all along.
+  it('recovers the Reel for a legacy stop from reel_place_mentions', async () => {
+    const bundle = await loadTrip({
+      trip_inspiration_items: [inspirationRow(REEL_A, 'i1'), inspirationRow(REEL_B, 'i2')],
+      trip_places: [tripPlace('pl_dekasan', 'reel_extracted')],
+      saved_reel_cards: [
+        { normalized_url: REEL_A, thumbnail_url: null, places: [mention('pl_dekasan', REEL_A)] },
+        { normalized_url: REEL_B, thumbnail_url: null, places: [] },
+      ],
+    })
+    expect(bundle!.places[0].evidence_json.source_reel_url).toBe(REEL_A)
+  })
+
+  it('never overwrites an attribution the backend already recorded', async () => {
+    const bundle = await loadTrip({
+      trip_inspiration_items: [inspirationRow(REEL_A, 'i1')],
+      trip_places: [tripPlace('pl_x', 'reel_extracted', REEL_B)],
+      saved_reel_cards: [{ normalized_url: REEL_A, thumbnail_url: null, places: [mention('pl_x', REEL_A)] }],
+    })
+    expect(bundle!.places[0].evidence_json.source_reel_url).toBe(REEL_B)
+  })
+
+  it('does not attribute a Reel to a stop the user asked for', async () => {
+    // A Reel can mention a place the user also typed. Backfilling it would let the popup claim
+    // the stop came from that Reel — a false provenance claim (guardrail #1).
+    const bundle = await loadTrip({
+      trip_inspiration_items: [inspirationRow(REEL_A, 'i1')],
+      trip_places: [tripPlace('pl_typed', 'user_requested')],
+      saved_reel_cards: [{ normalized_url: REEL_A, thumbnail_url: null, places: [mention('pl_typed', REEL_A)] }],
+    })
+    expect(bundle!.places[0].evidence_json.source_reel_url).toBeUndefined()
+  })
+
+  it('leaves a stop unattributed when no Reel mentions it', async () => {
+    const bundle = await loadTrip({
+      trip_inspiration_items: [inspirationRow(REEL_A, 'i1')],
+      trip_places: [tripPlace('pl_orphan', 'reel_extracted')],
+      saved_reel_cards: [{ normalized_url: REEL_A, thumbnail_url: null, places: [] }],
+    })
+    expect(bundle!.places[0].evidence_json.source_reel_url).toBeNull()
   })
 })

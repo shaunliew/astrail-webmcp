@@ -690,7 +690,7 @@ async def _find_or_create_restaurant_place(client, cand, city) -> str:
     return inserted[0]["id"]
 
 
-async def persist_restaurants(client, trip_id: str, *, suggest=None,
+async def persist_restaurants(client, trip_id: str, *, suggest=None, details_fetcher=None,
                               preference_block: str | None = None) -> int:
     """Additive: for each day, get grounded restaurant suggestions (Mapbox + LLM) near the day's
     places and INSERT them into restaurant_suggestions. MUST run AFTER persist_itinerary created
@@ -740,8 +740,35 @@ async def persist_restaurants(client, trip_id: str, *, suggest=None,
         anchors = [(p["id"], p["lat"], p["lng"]) for p in entries]
         city = next((p.get("city") for p in entries if p.get("city")), None)
         candidates = await suggest(day_places, city=city, preference_block=preference_block)   # a failure here propagates -> runner warns
-        for cand in candidates:
+
+        # Opening hours + official website, one batched web search for THIS DAY's few restaurants.
+        # Best-effort by construction: fetch_restaurant_details never raises, and an empty result
+        # is the expected outcome for small venues that publish nothing (guardrail #3).
+        #
+        # The Mapbox name is passed, NOT cand.name — the latter can be the LLM's English label,
+        # and genagents/restaurant_details.py is only safe to give a tool BECAUSE its input stays
+        # Mapbox-sourced. Sending model-written text back into a tool-holding agent would quietly
+        # undo that (see that module's docstring).
+        details: dict[int, dict] = {}
+        fetch_details = details_fetcher
+        if fetch_details is None and _restaurant_details_enabled():
+            from genagents.restaurant_details import fetch_restaurant_details
+
+            fetch_details = fetch_restaurant_details
+        if fetch_details is not None:
+            details = await fetch_details(
+                [{"name": c.name_local or c.name, "address": c.address} for c in candidates],
+                city=city,
+            )
+
+        for i, cand in enumerate(candidates):
             restaurant_place_id = await _find_or_create_restaurant_place(client, cand, city)
+            detail = details.get(i) or {}
+            evidence = {"source": "mapbox_searchbox", "mapbox_id": cand.mapbox_id,
+                        "categories": cand.categories, "distance_m": cand.distance_m,
+                        "address": cand.address}
+            if detail:
+                evidence["details"] = detail
             await client.table("restaurant_suggestions").insert({
                 "trip_id": trip_id,
                 "trip_day_id": trip_day_id,
@@ -749,14 +776,29 @@ async def persist_restaurants(client, trip_id: str, *, suggest=None,
                 "near_place_id": _nearest_place_id(cand.lat, cand.lng, anchors),
                 "cuisine": cand.cuisine,
                 "summary": cand.summary,
-                "source_url": None,                          # Mapbox POIs have no review URL
-                "evidence_json": {"source": "mapbox_searchbox", "mapbox_id": cand.mapbox_id,
-                                  "categories": cand.categories, "distance_m": cand.distance_m,
-                                  "address": cand.address},
+                # Mapbox POIs carry no review URL of their own; this is the page the details
+                # search actually read, so the link and the hours share one provenance.
+                "source_url": detail.get("source_url"),
+                "evidence_json": evidence,
                 "preference_match_json": {},
             }).execute()
             written += 1
     return written
+
+
+def _restaurant_details_enabled() -> bool:
+    """Opening-hours/website enrichment. ON by default (it is why the feature was asked for), and
+    switchable off without a deploy: it adds one hosted web search per day of the trip, so a run
+    that must be cheap can set ASTRAIL_RESTAURANT_DETAILS=0.
+
+    Also requires OPENAI_API_KEY. Without it the enrichment cannot work at all, and the difference
+    matters to the OFFLINE suite: `fetch_restaurant_details` swallows every failure by design, so
+    an unkeyed run would build an Agent, attempt a call, fail auth and return {} — passing tests
+    for the wrong reason, slowly, and breaking the credential-free parity rule (guardrail #16).
+    Checking the key turns that into a clean skip."""
+    if not os.environ.get("OPENAI_API_KEY"):
+        return False
+    return os.environ.get("ASTRAIL_RESTAURANT_DETAILS", "1").strip().lower() not in ("0", "false", "no")
 
 
 async def persist_narration(client, trip_id: str, user_id: str, *, narrate=None,

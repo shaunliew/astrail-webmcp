@@ -368,7 +368,6 @@ describe('TripMap', () => {
     expect(card!.textContent).toContain('4 star')
     expect(card!.textContent).toContain('USD 128 / night')
     expect(card!.textContent).toContain('USD 384 total')
-    expect(card!.textContent).toContain('central')                    // matched preference
     // Astrail does not book. A bare number reads as a held price, which it is not.
     expect(card!.textContent).toContain('Astrail does not book')
   })

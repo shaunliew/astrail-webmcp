@@ -13,6 +13,12 @@ import type { HotelSuggestion, Place, RestaurantSuggestion } from '@/lib/trip/ba
  * A plausible "Open until 18:00" that we inferred is precisely the hallucinated-detail failure
  * guardrail #1 exists to prevent, on a product whose promise is that every claim is backed.
  *
+ * NEITHER card shows "matches your taste", though `preference_match_json` exists on both types.
+ * `persist_restaurants` and `persist_hotels` insert `{}` literally — "stays {} until prefs are
+ * wired (Step 9)" — and a live check of both tables found `{}` on every row. It rendered for the
+ * fixture and never once in production. A section that is always empty on real data is worse than
+ * no section, and a field that exists is not evidence that anything fills it.
+ *
  * Every value is written with textContent. Restaurant summaries are model-written and hotel names
  * come from a third-party API; neither is ever parsed as markup.
  */
@@ -41,19 +47,6 @@ function money(currency: string | null, amount: number | null): string | null {
   return currency ? `${currency} ${rounded.toLocaleString()}` : String(rounded)
 }
 
-/** Preference matches, when the agent recorded which ones this suggestion satisfies. */
-function matchedPreferences(source: Record<string, unknown>): string[] {
-  const raw = source.matched
-  return Array.isArray(raw) ? raw.filter((v): v is string => typeof v === 'string') : []
-}
-
-function appendMatches(content: HTMLElement, matches: string[]): void {
-  if (matches.length === 0) return
-  content.append(el('p', 'evidence-popup__eyebrow', 'Matches your taste'))
-  const list = el('p', 'suggestion-popup__matches', matches.join(' · '))
-  content.append(list)
-}
-
 function appendLink(content: HTMLElement, url: string | null, label: string): void {
   if (!url) return
   let safe: string
@@ -73,20 +66,50 @@ function appendLink(content: HTMLElement, url: string | null, label: string): vo
   content.append(a)
 }
 
-/** "Where to eat": what kind of food, why Astrail chose it, and a link when one was recorded.
- *  `source_url` is null on most rows in practice, so the link is the exception, not the rule. */
-export function buildEatPopup(r: RestaurantSuggestion, place: Place): HTMLElement {
+/** "Where to eat": what kind of food, where exactly, why Astrail chose it, and which stop it sits
+ *  beside.
+ *
+ *  NO "matches your taste" row, though the field exists: `persist_restaurants` inserts
+ *  `preference_match_json: {}` literally — "stays {} until prefs are wired (Step 9)" — so that
+ *  block rendered for the fixture and never once in production. A section that is always empty on
+ *  real data is worse than no section.
+ *
+ *  The street address IS real and was already being stored, unused, in `evidence_json.address`
+ *  (Mapbox's `full_address`). On a map, where-exactly answers more than a website would.
+ *
+ *  `distance_m` is deliberately NOT rendered next to the anchor stop's name. It is measured from
+ *  the DAY'S CENTROID — the point `suggest_restaurants` searched around — not from `near_place_id`.
+ *  Printing "180 m from Nukata Station" would be a precise-sounding falsehood. */
+export function buildEatPopup(r: RestaurantSuggestion, place: Place, nearName?: string | null): HTMLElement {
   const content = el('article', 'evidence-popup suggestion-popup')
   content.append(el('p', 'evidence-popup__eyebrow', ['Where to eat', r.cuisine].filter(Boolean).join(' · ')))
   content.append(el('h3', 'evidence-popup__title', place.name))
 
-  const where = [place.area, place.city].filter(Boolean).join(', ')
+  const address = typeof r.evidence_json.address === 'string' ? r.evidence_json.address : null
+  const where = address || [place.area, place.city].filter(Boolean).join(', ')
   if (where) content.append(el('p', 'evidence-popup__where', where))
 
   if (r.summary) content.append(el('p', 'suggestion-popup__body', r.summary))
-  appendMatches(content, matchedPreferences(r.preference_match_json))
-  appendLink(content, r.source_url, 'More about this place ↗')
+  if (nearName) content.append(el('p', 'suggestion-popup__matches', `Near ${nearName}`))
+
+  const details = eatDetails(r)
+  if (details.hours) content.append(el('p', 'suggestion-popup__body', details.hours))
+  appendLink(content, details.website ?? r.source_url, 'More about this place ↗')
   return content
+}
+
+/** Opening hours + website written by the details enrichment (see backend
+ *  genagents/restaurant_details.py). Absent on every row generated before it existed, and absent
+ *  whenever the search found nothing it could attribute — so both reads are guarded and neither
+ *  is ever synthesised. */
+function eatDetails(r: RestaurantSuggestion): { hours: string | null, website: string | null } {
+  const d = r.evidence_json.details
+  if (!d || typeof d !== 'object') return { hours: null, website: null }
+  const rec = d as Record<string, unknown>
+  return {
+    hours: typeof rec.opening_hours === 'string' && rec.opening_hours.trim() ? rec.opening_hours : null,
+    website: typeof rec.website === 'string' ? rec.website : null,
+  }
 }
 
 /** "Where to stay": the numbers that actually decide a hotel — class, guest score, nightly rate,
@@ -123,8 +146,6 @@ export function buildStayPopup(h: HotelSuggestion, now: number = Date.now()): HT
 
   const cancellation = cancellationLine(h, now)
   if (cancellation) content.append(el('p', 'suggestion-popup__body', cancellation))
-
-  appendMatches(content, matchedPreferences(h.preference_match_json))
 
   // Search results, not an offer. Prices move and availability lapses, so the popup says where
   // the number came from rather than implying we are holding it.

@@ -50,6 +50,25 @@ class RestaurantCandidate(BaseModel):
     distance_m: float | None = None
 
 
+class RestaurantDetail(BaseModel):
+    """One web-searched detail set for a PROVIDED Mapbox POI (genagents/restaurant_details.py).
+
+    Like RestaurantLabel, the model returns only a `poi_index` into the input list plus text — it
+    never emits a place, so a detail cannot attach to a venue we did not search. `source_url` is
+    what makes the other two fields keepable: hours without a citation are dropped, because an
+    unattributed opening time is a claim about the world with nothing behind it (guardrail #1)."""
+    poi_index: int
+    opening_hours: str | None = None
+    website: str | None = None
+    source_url: str | None = None
+
+
+class RestaurantDetailSet(BaseModel):
+    """Agent output wrapper. An EMPTY list is the expected result for small local venues that
+    publish nothing, and is preferred over a confident guess."""
+    details: list[RestaurantDetail] = Field(default_factory=list)
+
+
 class DayNarration(BaseModel):
     """Per-day narration the LLM writes for ONE trip_day, anchored by day_number (like the restaurant
     poi_index — the LLM cannot narrate a day that isn't in the trip). No min_length on the strings:

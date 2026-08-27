@@ -67,11 +67,38 @@ describe('buildEatPopup', () => {
     evidence_json: {}, preference_match_json: { matched: ['walkable'] }, ...over,
   })
 
-  it('carries the cuisine, the reason and the matched preference', () => {
-    const text = buildEatPopup(suggestion(), place).textContent!
+  it('carries the cuisine, the address, the reason and the anchor stop', () => {
+    const text = buildEatPopup(
+      suggestion({ evidence_json: { address: '1-2-3 Asakusa, Taito City' } }), place, 'Senso-ji Temple',
+    ).textContent!
     expect(text).toContain('sushi')
+    expect(text).toContain('1-2-3 Asakusa, Taito City')     // Mapbox full_address, already stored
     expect(text).toContain('Counter sushi near your first stop.')
-    expect(text).toContain('walkable')
+    expect(text).toContain('Near Senso-ji Temple')
+  })
+
+  it('shows no "matches your taste" row, because nothing ever fills it', () => {
+    // persist_restaurants/persist_hotels insert `{}` literally, and a live check of both tables
+    // found `{}` on every row. It rendered only for the fixture.
+    const withMatches = suggestion({ preference_match_json: { matched: ['walkable'] } })
+    expect(buildEatPopup(withMatches, place).textContent).not.toContain('walkable')
+    expect(buildStayPopup(hotel(), AUG).textContent).not.toMatch(/matches your taste/i)
+  })
+
+  it('never prints a distance beside the anchor stop', () => {
+    // `distance_m` is measured from the DAY CENTROID, not from near_place_id. "180 m from
+    // Nukata Station" would be a precise-sounding falsehood.
+    const withDistance = suggestion({ evidence_json: { address: 'A', distance_m: 180 } })
+    expect(buildEatPopup(withDistance, place, 'Nukata Station').textContent).not.toContain('180')
+  })
+
+  it('shows opening hours and a website once the details enrichment has run', () => {
+    const enriched = suggestion({
+      evidence_json: { address: 'A', details: { opening_hours: 'Mon-Sat 11:30-14:00, 17:30-22:00', website: 'https://example.jp' } },
+    })
+    const card = buildEatPopup(enriched, place)
+    expect(card.textContent).toContain('Mon-Sat 11:30')
+    expect(card.querySelector('a')?.getAttribute('href')).toBe('https://example.jp/')
   })
 
   it('links out only when a source URL was actually recorded', () => {

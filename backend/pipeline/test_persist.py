@@ -2073,6 +2073,74 @@ async def test_persist_restaurants_writes_row_place_and_near_id():
 
 
 @pytest.mark.asyncio
+async def test_persist_restaurants_stores_web_searched_details_and_their_source():
+    """Opening hours + official website (genagents/restaurant_details.py) ride along in
+    evidence_json, and the page they came from becomes the row's source_url — so the link a user
+    clicks and the hours they read share one provenance."""
+    c = _Client()
+    await _seed_two_places_one_day(c)
+
+    async def suggest(places, *, city=None, preference_block=None):
+        return [_rcand("Ramen Near Tower", 35.6587, 139.7455)]
+
+    async def details(pois, *, city=None):
+        # The MAPBOX name must be what is searched, never the LLM's English label: this agent is
+        # only safe to give a tool because its input stays Mapbox-sourced.
+        assert pois == [{"name": "ラーメン", "address": "Tokyo"}]
+        return {0: {"opening_hours": "Mon-Sat 11:30-22:00", "website": "https://ramen.example.jp",
+                    "source_url": "https://tabelog.example/ramen"}}
+
+    await persist.persist_restaurants(c, "trip-1", suggest=suggest, details_fetcher=details)
+    rs = c.db["restaurant_suggestions"][0]
+    assert rs["source_url"] == "https://tabelog.example/ramen"
+    assert rs["evidence_json"]["details"]["opening_hours"] == "Mon-Sat 11:30-22:00"
+    assert rs["evidence_json"]["mapbox_id"] == "poi.1"            # the Mapbox grounding survives
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_writes_a_clean_row_when_no_details_are_found():
+    """The common case for small local venues. An absent detail must leave no empty `details` key
+    and no source_url, rather than an object the frontend has to special-case."""
+    c = _Client()
+    await _seed_two_places_one_day(c)
+
+    async def suggest(places, *, city=None, preference_block=None):
+        return [_rcand("Ramen Near Tower", 35.6587, 139.7455)]
+
+    async def details(pois, *, city=None):
+        return {}
+
+    await persist.persist_restaurants(c, "trip-1", suggest=suggest, details_fetcher=details)
+    rs = c.db["restaurant_suggestions"][0]
+    assert rs["source_url"] is None
+    assert "details" not in rs["evidence_json"]
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_matches_details_to_the_right_restaurant():
+    """Entries are keyed by the POI index the agent answered with, so a partial result attaches to
+    the venue it describes and not simply to the first row written."""
+    c = _Client()
+    await _seed_two_places_one_day(c)
+
+    async def suggest(places, *, city=None, preference_block=None):
+        return [_rcand("First", 35.6587, 139.7455, name_local="いち"),
+                _rcand("Second", 35.7149, 139.7968, name_local="に")]
+
+    async def details(pois, *, city=None):
+        return {1: {"opening_hours": "Daily 09:00-17:00", "source_url": "https://x.example/2"}}
+
+    await persist.persist_restaurants(c, "trip-1", suggest=suggest, details_fetcher=details)
+    rows = c.db["restaurant_suggestions"]
+    by_place = {r["restaurant_place_id"]: r for r in rows}
+    named = {p["id"]: p["name"] for p in c.db["places"]}
+    first = next(r for pid, r in by_place.items() if named[pid] == "First")
+    second = next(r for pid, r in by_place.items() if named[pid] == "Second")
+    assert "details" not in first["evidence_json"] and first["source_url"] is None
+    assert second["evidence_json"]["details"]["opening_hours"] == "Daily 09:00-17:00"
+
+
+@pytest.mark.asyncio
 async def test_persist_restaurants_passes_city_from_places():
     c = _Client()
     await _seed_two_places_one_day(c)                             # _cp sets city_or_region_guess="Tokyo"

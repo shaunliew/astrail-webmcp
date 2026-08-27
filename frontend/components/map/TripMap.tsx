@@ -371,6 +371,13 @@ export default function TripMap({
     buildingLayerAddedRef.current = false
   }
 
+  /* The stop a suggestion was searched around. `near_place_id` is the day's stop NEAREST the
+     restaurant, resolved through the same index the rest of the map uses. */
+  function nearName(r: RestaurantSuggestion): string | null {
+    if (!r.near_place_id) return null
+    return buildPlaceIndex(bundle).get(r.near_place_id)?.name ?? null
+  }
+
   /* One popup at a time across every layer — a stop, a restaurant and a hotel opening three
      stacked cards over the map is how the panel-versus-map hierarchy falls apart. */
   function openSuggestionPopup(at: [number, number], content: HTMLElement) {
@@ -557,7 +564,7 @@ export default function TripMap({
         el.addEventListener('click', (e) => {
           e.stopPropagation()
           onSelectRestaurant?.(place.id)      // keep the sidebar strip in step with the map
-          openSuggestionPopup([place.lng, place.lat], buildEatPopup(r, place))
+          openSuggestionPopup([place.lng, place.lat], buildEatPopup(r, place, nearName(r)))
         })
         return new mapboxgl.Marker({ element: el }).setLngLat([place.lng, place.lat]).addTo(map)
       })
@@ -849,7 +856,9 @@ export default function TripMap({
       padding: framePadding({ popupRoom: true }), duration: 1200, essential: true,
     })
     const suggestion = bundle.restaurants.find((r) => r.restaurant_place_id === selectedRestaurantPlaceId)
-    if (suggestion) openSuggestionPopup([place.lng, place.lat], buildEatPopup(suggestion, place))
+    if (suggestion) {
+      openSuggestionPopup([place.lng, place.lat], buildEatPopup(suggestion, place, nearName(suggestion)))
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRestaurantPlaceId])
 

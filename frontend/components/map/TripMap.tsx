@@ -556,10 +556,38 @@ export default function TripMap({
   // The details panel overlays the map — the left 440px on desktop, a bottom sheet on
   // mobile — so uniform padding would frame a day's pins right underneath it. Bias the
   // padding toward the panel's edge so framed pins always land in the visible strip.
+  //
+  // Measured against the CANVAS, not the window. An earlier version derived the bottom padding
+  // from window.innerHeight, which on a phone asked for 394px of padding inside a canvas that
+  // was shorter than that. Mapbox then logs "Map cannot fit within canvas with the given bounds,
+  // padding, and/or offset" and REFUSES TO MOVE — so opening a Tokyo trip on mobile showed the
+  // default globe over the Indian Ocean, with no error anyone would notice.
   function framePadding() {
-    if (typeof window === 'undefined') return { top: 80, right: 80, bottom: 80, left: 80 }
-    if (window.innerWidth >= 768) return { top: 80, right: 80, bottom: 80, left: 480 }
-    return { top: 80, right: 60, bottom: Math.round(window.innerHeight * 0.42) + 40, left: 60 }
+    const map = getMap()
+    // Defensive: the map may not be ready, and framing must never throw — a padding helper
+    // taking down the whole map effect would be a far worse bug than a loosely framed camera.
+    const canvas = typeof map?.getCanvas === 'function' ? map.getCanvas() : null
+    const width = canvas?.clientWidth || (typeof window === 'undefined' ? 1024 : window.innerWidth)
+    const height = canvas?.clientHeight || (typeof window === 'undefined' ? 768 : window.innerHeight)
+
+    const wide = width >= 768
+    const wanted = wide
+      ? { top: 80, right: 80, bottom: 80, left: 480 }   // desktop: clear the left panel
+      : { top: 72, right: 48, bottom: Math.round(height * 0.42) + 32, left: 48 }
+
+    // Never let opposing pads consume the canvas: Mapbox abandons the fit entirely rather than
+    // doing its best, so a too-greedy pad costs the whole camera move. Cap each axis at 70% and
+    // shrink proportionally, which degrades to "framed a bit tight" instead of "not framed".
+    const fit = (a: number, b: number, extent: number) => {
+      const budget = extent * 0.7
+      const total = a + b
+      if (total <= budget || total === 0) return [a, b] as const
+      const scale = budget / total
+      return [Math.floor(a * scale), Math.floor(b * scale)] as const
+    }
+    const [top, bottom] = fit(wanted.top, wanted.bottom, height)
+    const [left, right] = fit(wanted.left, wanted.right, width)
+    return { top, right, bottom, left }
   }
 
   // essential: framing is not decoration — reduced-motion must still land on the pins,

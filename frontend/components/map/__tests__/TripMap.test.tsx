@@ -11,6 +11,9 @@ const {
   const handler = () => ({ enable: vi.fn(), disable: vi.fn() })
   const mapInstance = {
     on: vi.fn(), off: vi.fn(), getZoom: vi.fn(() => 13),
+    // Framing measures the CANVAS, not the window: padding derived from window height once
+    // exceeded a phone's canvas, and Mapbox responds by abandoning the camera move entirely.
+    getCanvas: vi.fn(() => ({ clientWidth: 1440, clientHeight: 900 })),
     addSource: vi.fn(), addLayer: vi.fn(),
     getSource: vi.fn((_id?: string) => undefined), getLayer: vi.fn((_id?: string) => undefined),
     removeLayer: vi.fn(), removeSource: vi.fn(),
@@ -132,6 +135,22 @@ describe('TripMap', () => {
 
   // With one persistent instance the camera no longer resets on navigation, so the trip
   // view has to frame its own places rather than inherit the generation globe.
+  it('never asks for more padding than the canvas can give', async () => {
+    // The bug: framePadding derived `bottom` from window.innerHeight (394px on a phone) and
+    // applied it to a shorter canvas. Mapbox logs "Map cannot fit within canvas with the given
+    // bounds, padding, and/or offset" and REFUSES TO MOVE — so a Tokyo trip opened on mobile
+    // showed the default globe over the Indian Ocean, silently.
+    mapInstance.getCanvas.mockReturnValue({ clientWidth: 390, clientHeight: 380 })
+    renderMap()
+    await flush()
+    fireLoad()
+    await flush()
+    expect(mapInstance.fitBounds).toHaveBeenCalled()
+    const pad = mapInstance.fitBounds.mock.calls.at(-1)![1].padding
+    expect(pad.top + pad.bottom).toBeLessThan(380)
+    expect(pad.left + pad.right).toBeLessThan(390)
+  })
+
   it('frames its own places instead of inheriting the generation camera', async () => {
     renderMap()
     await flush()

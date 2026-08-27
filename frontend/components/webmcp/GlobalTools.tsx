@@ -176,7 +176,17 @@ export default function GlobalTools() {
     [requestConfirm],
   )
 
-  const specs = globalTools({ readAppState, trips: tripReader, saveReel, generation, edit })
+  const loadSavedReels = useCallback(async () => {
+    const cards = await listSavedReelCards()
+    return cards.map((c) => ({
+      url: c.normalized_url,
+      caption: c.caption,
+      status: c.analysis_status,
+      places: c.places.map((p) => ({ name: p.name, country: p.country_name })),
+    }))
+  }, [])
+
+  const specs = globalTools({ readAppState, trips: tripReader, saveReel, loadSavedReels, generation, edit })
 
   return <RegisterTools specs={specs} />
 }

@@ -75,3 +75,75 @@ describe('save_reels', () => {
     expect(envelopeLength(String(out))).toBeLessThanOrEqual(OUTPUT_LIMIT)
   })
 })
+
+import { listSavedReelsTool, type SavedReelSummary } from '../tools/reels'
+
+const reel = (url: string, places: [string, string][], caption: string | null = null): SavedReelSummary => ({
+  url, caption, status: 'analyzed',
+  places: places.map(([name, country]) => ({ name, country })),
+})
+
+const listTool = (reels: SavedReelSummary[]) => listSavedReelsTool({ load: async () => reels })
+
+describe('list_saved_reels', () => {
+  it('unblocks planning from an existing library — the whole point of the tool', async () => {
+    // Without this, plan_trip_from_reels needs URLs the agent has no way to obtain, so it would
+    // have to ask the user to paste links they had ALREADY saved.
+    const out = String(await listTool([
+      reel('https://www.instagram.com/reel/Ca/', [['Senso-ji', 'Japan']], 'hidden Tokyo spots'),
+    ]).execute({}))
+    expect(out).toContain('instagram.com/reel/Ca')
+    expect(out).toContain('Senso-ji')
+  })
+
+  it('groups by the country places were verified in', async () => {
+    const out = String(await listTool([
+      reel('https://www.instagram.com/reel/Ca/', [['Senso-ji', 'Japan'], ['Shibuya', 'Japan']]),
+      reel('https://www.instagram.com/reel/Cb/', [['Hoi An', 'Vietnam']]),
+    ]).execute({}))
+    expect(out).toContain('Japan 2 places')
+    expect(out).toContain('Vietnam 1 places')
+  })
+
+  it('filters by country', async () => {
+    const out = String(await listTool([
+      reel('https://www.instagram.com/reel/Ca/', [['Senso-ji', 'Japan']]),
+      reel('https://www.instagram.com/reel/Cb/', [['Hoi An', 'Vietnam']]),
+    ]).execute({ country: 'Vietnam' }))
+    expect(out).toContain('Hoi An')
+    expect(out).not.toContain('Senso-ji')
+  })
+
+  it('says so plainly when a filter matches nothing', async () => {
+    const out = String(await listTool([reel('https://www.instagram.com/reel/Ca/', [['Senso-ji', 'Japan']])])
+      .execute({ country: 'Peru' }))
+    expect(out).toContain('No saved reels with places in "Peru"')
+  })
+
+  it('truncates long captions rather than blowing the output budget', async () => {
+    const out = String(await listTool([
+      reel('https://www.instagram.com/reel/Ca/', [['A', 'Japan']], 'x'.repeat(300)),
+    ]).execute({}))
+    expect(out).not.toContain('x'.repeat(100))
+  })
+
+  it('distinguishes "none saved" from "could not read"', async () => {
+    // A failed read must never render as an empty library — the agent would tell the user to
+    // start over when in fact they have a full tray.
+    const empty = String(await listTool([]).execute({}))
+    expect(empty).toContain('No saved reels yet')
+
+    const broken = listSavedReelsTool({ load: async () => { throw new Error('not signed in') } })
+    const out = String(await broken.execute({}))
+    expect(out).toContain('Could not read')
+    expect(out.toLowerCase()).toContain('do not tell the user they have none')
+  })
+
+  it('caps the list and stays inside the output budget', async () => {
+    const many = Array.from({ length: 40 }, (_, i) =>
+      reel(`https://www.instagram.com/reel/Clong${i}/`, [[`A Place With A Long Name ${i}`, 'Japan']], 'a caption here'))
+    const out = String(await listTool(many).execute({}))
+    expect(out).toContain('more')
+    expect(envelopeLength(out)).toBeLessThanOrEqual(OUTPUT_LIMIT)
+  })
+})

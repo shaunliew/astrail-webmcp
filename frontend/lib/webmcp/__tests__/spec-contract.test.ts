@@ -33,6 +33,7 @@ const ctx: ToolContext = {
     load: async () => TOKYO_TRIP,
   },
   saveReel: async () => ({}),
+  loadSavedReels: async () => [],
   generation: {
     store: createGenerationStore(),
     create: async () => 'trip-1',
@@ -60,7 +61,7 @@ const specs = allTools(ctx, mapDeps)
 
 describe('tool spec contract', () => {
   it('registers at least the tools built so far', () => {
-    expect(specs.length).toBeGreaterThanOrEqual(12)
+    expect(specs.length).toBeGreaterThanOrEqual(13)
   })
 
   it('has globally unique names — a duplicate is REJECTED at registration, silently', () => {

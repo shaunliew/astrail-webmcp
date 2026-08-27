@@ -1123,3 +1123,92 @@ button:focus-visible {
   background: rgba(201, 151, 78, 0.28);
   color: var(--starlight);
 }
+
+/* --- Evidence popup: trip-relative detail (added for the WebMCP build) ---------------------
+   The popup answers "why is this on MY trip and what do I do here", not "what is this place".
+   Everything below is layout only; the content is built as DOM nodes in TripMap.tsx so caption
+   text is never parsed as markup. */
+
+.evidence-popup__image {
+  display: block;
+  width: calc(100% + 2rem);
+  margin: -1rem -1rem 0.75rem;
+  height: 7.5rem;
+  object-fit: cover;
+  border-radius: 0.5rem 0.5rem 0 0;
+}
+
+.evidence-popup__subtitle {
+  margin-top: 0.125rem;
+  font-size: 0.8125rem;
+  color: color-mix(in srgb, currentColor 62%, transparent);
+}
+
+.evidence-popup__where {
+  margin-top: 0.125rem;
+  font-size: 0.75rem;
+  color: color-mix(in srgb, currentColor 52%, transparent);
+}
+
+.evidence-popup__context {
+  margin: 0.25rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: color-mix(in srgb, currentColor 78%, transparent);
+}
+
+.evidence-popup__context li {
+  position: relative;
+  padding-left: 0.75rem;
+}
+
+.evidence-popup__context li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.5em;
+  width: 0.25rem;
+  height: 0.25rem;
+  border-radius: 999px;
+  background: #c9974e;
+}
+
+.evidence-popup__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.evidence-popup__zoom {
+  border: 1px solid color-mix(in srgb, #c9974e 55%, transparent);
+  border-radius: 999px;
+  padding: 0.25rem 0.625rem;
+  font-size: 0.6875rem;
+  letter-spacing: 0.02em;
+  color: #e8d5b0;
+  background: transparent;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease;
+}
+
+.evidence-popup__zoom:hover {
+  border-color: #c9974e;
+  color: #fff;
+}
+
+/* The popup can now be tall enough to run off a phone; cap it and let it scroll. */
+.astrail-evidence-popup .mapboxgl-popup-content {
+  max-height: min(70dvh, 32rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .evidence-popup__zoom {
+    transition: none;
+  }
+}

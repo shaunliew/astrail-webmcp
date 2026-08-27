@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react'
 import mapboxgl from 'mapbox-gl'
+import { buildPopupModel, type PopupModel } from './popup-model'
 import type { TripBundle, TripPlace } from '@/lib/trip/backend-types'
 import {
   trailCoordinates, buildTrailNumbers, buildPlaceIndex, placesForDay, hasRealCoords,
@@ -38,57 +39,119 @@ function safeWebUrl(raw: string): string | null {
   }
 }
 
-/** Build popup DOM without parsing attacker-controlled caption text as markup. */
-function evidencePopupContent(tripPlace: TripPlace, pin: number | null): HTMLElement {
+/**
+ * Build popup DOM without parsing attacker-controlled caption text as markup.
+ *
+ * Every string goes in via textContent. Reel captions are written by strangers, so a popup that
+ * used innerHTML here would be a stored-XSS hole on the one surface that promises provenance.
+ */
+function evidencePopupContent(
+  model: PopupModel,
+  onZoom: () => void,
+): HTMLElement {
   const content = document.createElement('article')
   content.className = 'evidence-popup'
 
+  if (model.imageUrl) {
+    const safeImg = safeWebUrl(model.imageUrl)
+    if (safeImg) {
+      const img = document.createElement('img')
+      img.className = 'evidence-popup__image'
+      img.src = safeImg
+      img.alt = ''            // decorative: the name is already the heading
+      img.loading = 'lazy'
+      // A dead Instagram CDN link must not leave a broken-image glyph in the card.
+      img.addEventListener('error', () => img.remove())
+      content.append(img)
+    }
+  }
+
   const eyebrow = document.createElement('p')
   eyebrow.className = 'evidence-popup__eyebrow'
-  eyebrow.textContent = [
-    pin === null ? 'Place' : `Stop ${pin}`,
-    tripPlace.day_number === null ? 'Unscheduled' : `Day ${tripPlace.day_number}`,
-  ].join(' · ')
+  eyebrow.textContent = model.eyebrow
 
   const title = document.createElement('h3')
   title.className = 'evidence-popup__title'
-  title.textContent = tripPlace.place.name
+  title.textContent = model.title
+
+  content.append(eyebrow, title)
+
+  if (model.subtitle) {
+    const sub = document.createElement('p')
+    sub.className = 'evidence-popup__subtitle'
+    sub.textContent = model.subtitle
+    content.append(sub)
+  }
+
+  if (model.where) {
+    const where = document.createElement('p')
+    where.className = 'evidence-popup__where'
+    where.textContent = model.where
+    content.append(where)
+  }
+
+  // The trip-relative block: what a generic place card cannot tell you.
+  if (model.context.length) {
+    const label = document.createElement('p')
+    label.className = 'evidence-popup__label'
+    label.textContent = 'On this trip'
+    const list = document.createElement('ul')
+    list.className = 'evidence-popup__context'
+    for (const line of model.context) {
+      const li = document.createElement('li')
+      li.textContent = line
+      list.append(li)
+    }
+    content.append(label, list)
+  }
 
   const evidenceLabel = document.createElement('p')
   evidenceLabel.className = 'evidence-popup__label'
-  evidenceLabel.textContent = tripPlace.evidence_json.quote ? 'Verbatim Reel evidence' : 'Why it is here'
+  evidenceLabel.textContent = model.evidenceLabel
 
   const evidence = document.createElement('blockquote')
   evidence.className = 'evidence-popup__quote'
-  evidence.textContent = tripPlace.evidence_json.quote
-    ?? tripPlace.evidence_json.rationale
-    ?? 'No caption quote is available for this stop.'
+  evidence.textContent = model.evidence
 
-  const confidence = document.createElement('p')
-  confidence.className = 'evidence-popup__confidence'
-  confidence.textContent = `Confidence ${Math.round(tripPlace.evidence_json.confidence * 100)}%`
+  content.append(evidenceLabel, evidence)
 
-  content.append(eyebrow, title, evidenceLabel, evidence, confidence)
+  if (model.confidence !== null) {
+    const confidence = document.createElement('p')
+    confidence.className = 'evidence-popup__confidence'
+    confidence.textContent = `Confidence ${model.confidence}%`
+    content.append(confidence)
+  }
 
-  const sourceUrl = tripPlace.evidence_json.source_url
-  if (sourceUrl) {
-    const safeUrl = safeWebUrl(sourceUrl)
+  const actions = document.createElement('div')
+  actions.className = 'evidence-popup__actions'
+
+  const zoom = document.createElement('button')
+  zoom.type = 'button'
+  zoom.className = 'evidence-popup__zoom'
+  zoom.textContent = 'Zoom in for 3D'
+  zoom.addEventListener('click', onZoom)
+  actions.append(zoom)
+
+  if (model.source) {
+    const safeUrl = safeWebUrl(model.source.url)
     if (safeUrl) {
       const source = document.createElement('a')
       source.className = 'evidence-popup__source'
       source.href = safeUrl
       source.target = '_blank'
       source.rel = 'noopener noreferrer'
-      source.textContent = 'Open source Reel ↗'
-      content.append(source)
+      source.textContent = model.source.label
+      actions.append(source)
     } else {
+      // A javascript: or data: URL lifted from a caption renders as inert text, never a link.
       const unsafeSource = document.createElement('p')
       unsafeSource.className = 'evidence-popup__source evidence-popup__source--invalid'
-      unsafeSource.textContent = sourceUrl
-      content.append(unsafeSource)
+      unsafeSource.textContent = model.source.url
+      actions.append(unsafeSource)
     }
   }
 
+  content.append(actions)
   return content
 }
 
@@ -260,7 +323,20 @@ export default function TripMap({
             maxWidth: '340px',
           })
             .setLngLat([tp.place.lng, tp.place.lat])
-            .setDOMContent(evidencePopupContent(tp, number))
+            .setDOMContent(
+              evidencePopupContent(buildPopupModel(bundle, tp), () => {
+                // Drop to street level and tilt: the fill-extrusion buildings switch on at z15,
+                // so this is what turns "a dot on a map" into "what is actually around this place".
+                map.flyTo({
+                  center: [tp.place.lng, tp.place.lat],
+                  zoom: 17,
+                  pitch: 60,
+                  bearing: -20,
+                  duration: 1400,
+                  essential: true,   // still runs under prefers-reduced-motion
+                })
+              }),
+            )
             .addTo(map)
         })
         return new mapboxgl.Marker({ element: el }).setLngLat([tp.place.lng, tp.place.lat]).addTo(map)

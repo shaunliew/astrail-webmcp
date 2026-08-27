@@ -6,6 +6,8 @@ constructs a live Supabase client or makes a network request.
 from __future__ import annotations
 
 import os
+from datetime import date
+from fnmatch import fnmatchcase
 
 import httpx
 import pytest
@@ -21,6 +23,7 @@ from rate_limit import get_current_user_id_stashed, limiter  # noqa: E402
 _TRIP_ID = "11111111-1111-1111-1111-111111111111"
 _OTHER_TRIP_ID = "22222222-2222-2222-2222-222222222222"
 _TARGET_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+_NEW_PLACE_ID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
 
 
 class _Result:
@@ -44,6 +47,9 @@ class _Table:
         self._orders: list[tuple[str, bool]] = []
         self._single = False
         self._limit: int | None = None
+        self._ranges: list[tuple[str, str, object]] = []
+        self._in_filters: dict[str, set[object]] = {}
+        self._ilike_filters: dict[str, str] = {}
 
     def select(self, columns="*"):
         self._op = "select"
@@ -55,12 +61,33 @@ class _Table:
         self._payload = dict(payload)
         return self
 
+    def insert(self, payload):
+        self._op = "insert"
+        self._payload = dict(payload)
+        return self
+
     def delete(self):
         self._op = "delete"
         return self
 
     def eq(self, column, value):
         self._filters[column] = value
+        return self
+
+    def in_(self, column, values):
+        self._in_filters[column] = set(values)
+        return self
+
+    def ilike(self, column, pattern):
+        self._ilike_filters[column] = pattern
+        return self
+
+    def gte(self, column, value):
+        self._ranges.append((column, "gte", value))
+        return self
+
+    def lte(self, column, value):
+        self._ranges.append((column, "lte", value))
         return self
 
     def order(self, column, *, desc=False):
@@ -76,7 +103,23 @@ class _Table:
         return self
 
     def _matches(self, row):
-        return all(row.get(key) == value for key, value in self._filters.items())
+        if not all(row.get(key) == value for key, value in self._filters.items()):
+            return False
+        if not all(row.get(key) in values for key, values in self._in_filters.items()):
+            return False
+        for column, pattern in self._ilike_filters.items():
+            wildcard = pattern.replace("%", "*").replace("_", "?").casefold()
+            if not fnmatchcase(str(row.get(column, "")).casefold(), wildcard):
+                return False
+        for column, op, value in self._ranges:
+            candidate = row.get(column)
+            if candidate is None:
+                return False
+            if op == "gte" and candidate < value:
+                return False
+            if op == "lte" and candidate > value:
+                return False
+        return True
 
     def _ordered(self, rows):
         ordered = list(rows)
@@ -110,6 +153,14 @@ class _Table:
         if self._limit is not None:
             matched = matched[: self._limit]
 
+        if self._op == "insert":
+            row = dict(self._payload)
+            if "id" not in row:
+                row["id"] = self.client.next_id(self.name)
+            if self.name == "trip_places":
+                row.setdefault("created_at", "2026-08-27T00:00:00+00:00")
+            rows.append(row)
+            return _Result([row])
         if self._op == "update":
             for row in matched:
                 row.update(self._payload)
@@ -128,9 +179,16 @@ class _Client:
         self.db = db
         self.owner_result = owner_result
         self.calls: list[dict] = []
+        self._ids = {"places": 0, "trip_places": 0}
 
     def table(self, name):
         return _Table(self, name)
+
+    def next_id(self, table):
+        self._ids[table] = self._ids.get(table, 0) + 1
+        if table == "places":
+            return _NEW_PLACE_ID
+        return f"99999999-9999-9999-9999-{self._ids[table]:012d}"
 
 
 def _trip_place(row_id, trip_id, day_number, sort_order, *, place_suffix="1"):
@@ -146,11 +204,37 @@ def _trip_place(row_id, trip_id, day_number, sort_order, *, place_suffix="1"):
     }
 
 
-def _seed_owned_trip(db, *, status="complete", user_id="user-1"):
+def _seed_owned_trip(
+    db,
+    *,
+    status="complete",
+    user_id="user-1",
+    start_date="2026-08-27",
+    end_date="2026-08-29",
+):
     db.setdefault("trips", []).append({
         "id": _TRIP_ID,
         "user_id": user_id,
         "status": status,
+        "destination_hint": "Osaka",
+        "inferred_destination": "Osaka, Japan",
+        "start_date": start_date,
+        "end_date": end_date,
+        "origin_city": None,
+        "budget_level": None,
+        "adult_count": 1,
+        "child_count": 0,
+        "room_count": 1,
+        "occupancy_json": {},
+        "hotel_preference_json": {},
+        "persona_snapshot_json": {},
+        "preference_sources": [],
+        "preference_summary": None,
+        "title": "Three days in Osaka",
+        "summary": None,
+        "tradeoffs": {"notes": [], "comparisons": []},
+        "created_at": "2026-08-27T00:00:00+00:00",
+        "updated_at": "2026-08-27T00:00:00+00:00",
     })
 
 
@@ -348,3 +432,241 @@ async def test_delete_resequences_the_touched_day_densely(monkeypatch):
     ]
     # Untouched days are not normalized as a side effect.
     assert next(row for row in db["trip_places"] if row["day_number"] == 2)["sort_order"] == 4
+
+
+async def test_add_place_is_404_when_feature_flag_is_off(monkeypatch):
+    monkeypatch.setattr(main, "WEBMCP_EDITS_ENABLED", False, raising=False)
+
+    async def _must_not_touch_db():
+        raise AssertionError("feature-off route touched Supabase")
+
+    monkeypatch.setattr(main, "get_supabase_client", _must_not_touch_db)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main.app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={"name": "Universal Studios Japan", "day_number": 1, "lat": 34.6654, "lng": 135.4323},
+        )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+async def test_add_place_non_owner_is_404_not_403(monkeypatch):
+    db: dict = {}
+    _seed_owned_trip(db, user_id="user-2")
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={"name": "Universal Studios Japan", "day_number": 1, "lat": 34.6654, "lng": 135.4323},
+        )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+    assert db.get("trip_places", []) == []
+
+
+async def test_add_place_rejects_generating_trip(monkeypatch):
+    db: dict = {}
+    _seed_owned_trip(db, status="generating")
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={"name": "Universal Studios Japan", "day_number": 1, "lat": 34.6654, "lng": 135.4323},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "trip_not_editable"
+    assert db.get("trip_places", []) == []
+
+
+async def test_add_place_rejects_running_job(monkeypatch):
+    db: dict = {"jobs": [{"id": "job-1", "trip_id": _TRIP_ID, "status": "running"}]}
+    _seed_owned_trip(db)
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={"name": "Universal Studios Japan", "day_number": 1, "lat": 34.6654, "lng": 135.4323},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "trip_not_editable"
+    assert db.get("trip_places", []) == []
+
+
+async def test_add_place_requires_resolvable_coordinates(monkeypatch):
+    db: dict = {}
+    _seed_owned_trip(db)
+    db["places"] = [{
+        "id": "00000000-0000-0000-0000-000000000001",
+        "name": "Osaka Castle",
+        "aliases": [],
+        "lat": 34.6873,
+        "lng": 135.5262,
+        "city": "Osaka",
+        "country": "Japan",
+        "country_code": "JP",
+    }]
+    db["trip_places"] = [_trip_place(_TARGET_ID, _TRIP_ID, 1, 0)]
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={"name": "Universal Studios Japan", "day_number": 1},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+    assert "supply both lat and lng" in response.json()["error"]["message"].lower()
+    assert len(db["trip_places"]) == 1
+
+
+async def test_add_place_reuses_trip_location_and_resequences_dense(monkeypatch):
+    db: dict = {}
+    _seed_owned_trip(db, status="saved_with_gaps")
+    castle_place_id = "00000000-0000-0000-0000-000000000001"
+    usj_place_id = "00000000-0000-0000-0000-000000000002"
+    db["places"] = [
+        {
+            "id": castle_place_id,
+            "name": "Osaka Castle",
+            "aliases": [],
+            "lat": 34.6873,
+            "lng": 135.5262,
+            "city": "Osaka",
+            "country": "Japan",
+            "country_code": "JP",
+        },
+        {
+            "id": usj_place_id,
+            "name": "Universal Studios Japan",
+            "aliases": ["USJ"],
+            "lat": 34.6654,
+            "lng": 135.4323,
+            "city": "Osaka",
+            "country": "Japan",
+            "country_code": "JP",
+        },
+    ]
+    db["trip_places"] = [
+        _trip_place(_TARGET_ID, _TRIP_ID, 1, 2),
+        _trip_place("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", _TRIP_ID, 1, 7, place_suffix="3"),
+    ]
+    db["trip_places"][0]["place_id"] = castle_place_id
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={"name": "universal studios japan", "day_number": 1, "position": 1},
+        )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["days_touched"] == [1]
+    assert body["trip_place"]["place_id"] == usj_place_id
+    assert body["trip_place"]["source_type"] == "user_requested"
+    assert body["trip_place"]["evidence_json"] == {
+        "confidence": 1.0,
+        "source_url": None,
+        "source_reel_url": None,
+        "quote": "universal studios japan",
+        "quotes": [],
+        "rationale": None,
+        "evidence_kind": "requested_by_you",
+    }
+    assert [row["sort_order"] for row in sorted(db["trip_places"], key=lambda row: row["sort_order"])] == [0, 1, 2]
+    assert next(row for row in db["trip_places"] if row["place_id"] == usj_place_id)["sort_order"] == 0
+
+
+async def test_change_dates_is_404_when_feature_flag_is_off(monkeypatch):
+    monkeypatch.setattr(main, "WEBMCP_EDITS_ENABLED", False, raising=False)
+
+    async def _must_not_touch_db():
+        raise AssertionError("feature-off route touched Supabase")
+
+    monkeypatch.setattr(main, "get_supabase_client", _must_not_touch_db)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main.app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        response = await client.patch(f"/trips/{_TRIP_ID}", json={"start_date": "2026-08-28"})
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+async def test_change_dates_rejects_reversed_range(monkeypatch):
+    db: dict = {}
+    _seed_owned_trip(db)
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.patch(
+            f"/trips/{_TRIP_ID}",
+            json={"start_date": "2026-08-30", "end_date": "2026-08-28"},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+async def test_change_dates_rejects_empty_body(monkeypatch):
+    db: dict = {}
+    _seed_owned_trip(db)
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.patch(f"/trips/{_TRIP_ID}", json={})
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+async def test_change_dates_rejects_range_shorter_than_existing_days(monkeypatch):
+    db: dict = {}
+    _seed_owned_trip(db)
+    db["trip_days"] = [
+        {"id": f"day-{number}", "trip_id": _TRIP_ID, "day_number": number, "day_date": f"2026-08-{26 + number:02d}"}
+        for number in (1, 2, 3)
+    ]
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.patch(
+            f"/trips/{_TRIP_ID}",
+            json={"start_date": "2026-08-28", "end_date": "2026-08-29"},
+        )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "trip_range_too_short"
+    assert "3 existing days" in response.json()["error"]["message"]
+    assert "remove stops first" in response.json()["error"]["message"].lower()
+    assert db["trips"][0]["start_date"] == "2026-08-27"
+    assert [row["day_date"] for row in db["trip_days"]] == ["2026-08-27", "2026-08-28", "2026-08-29"]
+
+
+async def test_change_dates_redates_every_day_without_changing_day_number(monkeypatch):
+    db: dict = {}
+    _seed_owned_trip(db)
+    db["trip_days"] = [
+        {"id": f"day-{number}", "trip_id": _TRIP_ID, "day_number": number, "day_date": f"2026-08-{26 + number:02d}"}
+        for number in (1, 2, 3)
+    ]
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.patch(
+            f"/trips/{_TRIP_ID}",
+            json={"start_date": "2026-08-28", "end_date": "2026-08-30"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["days_touched"] == [1, 2, 3]
+    assert response.json()["trip"]["start_date"] == "2026-08-28"
+    assert response.json()["trip"]["end_date"] == "2026-08-30"
+    assert [(row["day_number"], row["day_date"]) for row in db["trip_days"]] == [
+        (1, date(2026, 8, 28).isoformat()),
+        (2, date(2026, 8, 29).isoformat()),
+        (3, date(2026, 8, 30).isoformat()),
+    ]

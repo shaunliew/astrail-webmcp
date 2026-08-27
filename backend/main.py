@@ -19,6 +19,7 @@ import contextlib
 import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import date, timedelta
 from uuid import UUID
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
@@ -46,10 +47,15 @@ from api.schemas import (
     TripFeedback,
     TripFeedbackRequest,
     TripFeedbackResponse,
+    TripDateEditRequest,
+    TripDateEditResponse,
+    TripPlaceCreateRequest,
+    TripPlaceCreateResponse,
     TripPlaceDeleteResponse,
     TripPlaceEditRequest,
     TripPlaceEditResponse,
     TripPlaceRow,
+    TripRow,
 )
 from api.streaming import stream_organize_events, stream_trip_events
 from auth import get_current_user_id, get_user_id_from_query_or_header
@@ -61,6 +67,8 @@ from config_validation import validate_required_secrets
 from jobs import compute_idempotency_key, enqueue_job, reclaim_expired_jobs
 from log_redaction import install as _install_log_redaction
 from observability import capture_exception as _sentry_capture, init_sentry as _init_sentry
+from models.place import CanonicalPlace
+from pipeline.persist import _evidence_json, _find_or_create_place
 from pipeline.runner import record_event, run_generation
 from preferences import compose_preference_summary, fetch_traveler_profile
 from rate_limit import (
@@ -559,6 +567,39 @@ def _trip_not_editable(message: str) -> HTTPException:
     )
 
 
+async def _require_trip_editable_state(client, trip_id: str) -> dict:
+    """Require a finished, idle trip after its ownership guard has already run."""
+    trip = (
+        await client.table("trips")
+        .select("*")
+        .eq("id", trip_id)
+        .maybe_single()
+        .execute()
+    )
+    if trip is None or trip.data is None:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    if trip.data["status"] not in {"complete", "saved_with_gaps"}:
+        raise _trip_not_editable("Only finished trips can be edited")
+
+    running_jobs = (
+        await client.table("jobs")
+        .select("id")
+        .eq("trip_id", trip_id)
+        .eq("status", "running")
+        .limit(1)
+        .execute()
+    )
+    if running_jobs is not None and running_jobs.data:
+        raise _trip_not_editable("The trip is currently being generated")
+    return dict(trip.data)
+
+
+async def _require_editable_trip(client, *, trip_id: str, user_id: str) -> dict:
+    """Apply the shared owner/status/running-job guard stack for a trip mutation."""
+    await _require_trip_owner(client, trip_id, user_id)
+    return await _require_trip_editable_state(client, trip_id)
+
+
 async def _require_editable_trip_place(
     client,
     *,
@@ -580,28 +621,7 @@ async def _require_editable_trip_place(
     if trip_place is None or trip_place.data is None:
         raise HTTPException(status_code=404, detail="Trip place not found")
 
-    trip = (
-        await client.table("trips")
-        .select("status")
-        .eq("id", trip_id)
-        .maybe_single()
-        .execute()
-    )
-    if trip is None or trip.data is None:
-        raise HTTPException(status_code=404, detail="Trip not found")
-    if trip.data["status"] not in {"complete", "saved_with_gaps"}:
-        raise _trip_not_editable("Only finished trips can be edited")
-
-    running_jobs = (
-        await client.table("jobs")
-        .select("id")
-        .eq("trip_id", trip_id)
-        .eq("status", "running")
-        .limit(1)
-        .execute()
-    )
-    if running_jobs is not None and running_jobs.data:
-        raise _trip_not_editable("The trip is currently being generated")
+    await _require_trip_editable_state(client, trip_id)
 
     # Snapshot the pre-mutation row: test fakes and some client adapters may otherwise
     # retain a reference that an update mutates in place, erasing the old day number.
@@ -645,6 +665,57 @@ async def _resequence_trip_day(
             .eq("day_number", day_number)
             .execute()
         )
+
+
+async def _find_requested_place_coordinates(client, *, trip_id: str, name: str) -> dict | None:
+    """Reuse exact-name coordinates only when the row shares this trip's city or country."""
+    links = (
+        await client.table("trip_places")
+        .select("place_id")
+        .eq("trip_id", trip_id)
+        .execute()
+    )
+    place_ids = [row["place_id"] for row in (links.data or []) if row.get("place_id")]
+    if not place_ids:
+        return None
+
+    context_result = (
+        await client.table("places")
+        .select("id,city,country")
+        .in_("id", place_ids)
+        .execute()
+    )
+    cities = {
+        str(row["city"]).strip().casefold()
+        for row in (context_result.data or [])
+        if row.get("city")
+    }
+    countries = {
+        str(row["country"]).strip().casefold()
+        for row in (context_result.data or [])
+        if row.get("country")
+    }
+    if not cities and not countries:
+        return None
+
+    candidates = (
+        await client.table("places")
+        .select("id,name,aliases,lat,lng,city,country,country_code")
+        .ilike("name", name)
+        .limit(25)
+        .execute()
+    )
+    wanted = name.casefold()
+    for row in candidates.data or []:
+        if str(row.get("name", "")).strip().casefold() != wanted:
+            continue
+        if row.get("lat") is None or row.get("lng") is None:
+            continue
+        city = str(row.get("city") or "").strip().casefold()
+        country = str(row.get("country") or "").strip().casefold()
+        if (city and city in cities) or (country and country in countries):
+            return dict(row)
+    return None
 
 
 @app.post("/trips/{trip_id}/feedback", response_model=TripFeedbackResponse, status_code=201)
@@ -703,6 +774,207 @@ async def submit_trip_feedback(
             rating=row["rating"],
             comment=row["comment"],
         )
+    )
+
+
+@app.post(
+    "/trips/{trip_id}/places",
+    response_model=TripPlaceCreateResponse,
+    status_code=201,
+)
+@limiter.limit(BURST_LIMIT)
+async def add_trip_place(
+    request: Request,          # must be named `request` — slowapi's key_func resolves it by name
+    response: Response,        # required: the limiter is headers_enabled=True
+    trip_id: UUID,
+    req: TripPlaceCreateRequest,
+    _edits_enabled: None = Depends(_require_webmcp_edits_enabled),
+    user_id: str = Depends(get_current_user_id_stashed),
+) -> TripPlaceCreateResponse:
+    trip_key = str(trip_id)
+    client = await get_supabase_client()
+    await _require_editable_trip(client, trip_id=trip_key, user_id=user_id)
+
+    resolved = None
+    if req.lat is None and req.lng is None:
+        resolved = await _find_requested_place_coordinates(
+            client,
+            trip_id=trip_key,
+            name=req.name,
+        )
+        if resolved is None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "validation_error",
+                    "message": (
+                        f"Could not resolve coordinates for '{req.name}' from this trip's "
+                        "city or country; supply both lat and lng"
+                    ),
+                },
+            )
+
+    lat = req.lat if req.lat is not None else resolved["lat"]
+    lng = req.lng if req.lng is not None else resolved["lng"]
+    canonical = CanonicalPlace(
+        name=req.name,
+        category="other",
+        lat=lat,
+        lng=lng,
+        confidence=1.0,
+        evidence_quote=req.name,
+        source_type="user_requested",
+        source_url=None,
+        city_or_region_guess=resolved.get("city") if resolved else None,
+    )
+    place_id = await _find_or_create_place(client, canonical, grounded=None)
+
+    existing_link = (
+        await client.table("trip_places")
+        .select("id")
+        .eq("trip_id", trip_key)
+        .eq("place_id", place_id)
+        .maybe_single()
+        .execute()
+    )
+    if existing_link is not None and existing_link.data is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "place_already_on_trip", "message": "This place is already on the trip"},
+        )
+
+    current_day = (
+        await client.table("trip_places")
+        .select("id,sort_order")
+        .eq("trip_id", trip_key)
+        .eq("day_number", req.day_number)
+        .order("sort_order")
+        .order("id")
+        .execute()
+    )
+    existing_rows = list(current_day.data or [])
+    provisional_order = max(
+        (row["sort_order"] for row in existing_rows if isinstance(row.get("sort_order"), int)),
+        default=-1,
+    ) + 1
+    inserted = (
+        await client.table("trip_places")
+        .insert({
+            "trip_id": trip_key,
+            "place_id": place_id,
+            "source_type": "user_requested",
+            "evidence_json": _evidence_json(canonical),
+            "day_number": req.day_number,
+            "sort_order": provisional_order,
+        })
+        .execute()
+    )
+    if inserted is None or not inserted.data:
+        raise HTTPException(status_code=500, detail="Failed to add trip place")
+    inserted_id = str(inserted.data[0]["id"])
+
+    await _resequence_trip_day(
+        client,
+        trip_id=trip_key,
+        day_number=req.day_number,
+        preferred_id=inserted_id if req.position is not None else None,
+        preferred_index=req.position - 1 if req.position is not None else None,
+    )
+    persisted = (
+        await client.table("trip_places")
+        .select("*")
+        .eq("id", inserted_id)
+        .eq("trip_id", trip_key)
+        .maybe_single()
+        .execute()
+    )
+    if persisted is None or persisted.data is None:
+        raise HTTPException(status_code=500, detail="Failed to read added trip place")
+    return TripPlaceCreateResponse(
+        trip_place=TripPlaceRow.model_validate(persisted.data),
+        days_touched=[req.day_number],
+    )
+
+
+@app.patch(
+    "/trips/{trip_id}",
+    response_model=TripDateEditResponse,
+)
+@limiter.limit(BURST_LIMIT)
+async def edit_trip_dates(
+    request: Request,          # must be named `request` — slowapi's key_func resolves it by name
+    response: Response,        # required: the limiter is headers_enabled=True
+    trip_id: UUID,
+    req: TripDateEditRequest,
+    _edits_enabled: None = Depends(_require_webmcp_edits_enabled),
+    user_id: str = Depends(get_current_user_id_stashed),
+) -> TripDateEditResponse:
+    trip_key = str(trip_id)
+    client = await get_supabase_client()
+    trip = await _require_editable_trip(client, trip_id=trip_key, user_id=user_id)
+
+    try:
+        effective_start = req.start_date or date.fromisoformat(str(trip["start_date"]))
+        effective_end = req.end_date or date.fromisoformat(str(trip["end_date"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "validation_error",
+                "message": "The trip has no complete date range; supply both start_date and end_date",
+            },
+        ) from exc
+    if effective_end < effective_start:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "validation_error", "message": "end_date must be on or after start_date"},
+        )
+
+    day_result = (
+        await client.table("trip_days")
+        .select("id,day_number,day_date")
+        .eq("trip_id", trip_key)
+        .order("day_number")
+        .execute()
+    )
+    days = list(day_result.data or [])
+    range_days = (effective_end - effective_start).days + 1
+    highest_day_number = max((row["day_number"] for row in days), default=0)
+    if range_days < max(len(days), highest_day_number):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "trip_range_too_short",
+                "message": (
+                    f"Trip has {len(days)} existing days, but the new range has {range_days}; "
+                    "remove stops first before shortening the trip"
+                ),
+            },
+        )
+
+    days_touched = [row["day_number"] for row in days]
+    for row in days:
+        day_date = effective_start + timedelta(days=row["day_number"] - 1)
+        await (
+            client.table("trip_days")
+            .update({"day_date": day_date.isoformat()})
+            .eq("id", row["id"])
+            .eq("trip_id", trip_key)
+            .execute()
+        )
+
+    updated = (
+        await client.table("trips")
+        .update({"start_date": effective_start.isoformat(), "end_date": effective_end.isoformat()})
+        .eq("id", trip_key)
+        .eq("user_id", user_id)
+        .execute()
+    )
+    if updated is None or not updated.data:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    return TripDateEditResponse(
+        trip=TripRow.model_validate(updated.data[0]),
+        days_touched=days_touched,
     )
 
 

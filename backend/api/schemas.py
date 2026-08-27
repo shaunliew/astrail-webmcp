@@ -274,6 +274,50 @@ class TripPlaceEditRequest(BaseModel):
         return self
 
 
+class TripPlaceCreateRequest(BaseModel):
+    """POST /trips/{trip_id}/places body for a user-requested stop."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120)
+    day_number: int = Field(ge=1, strict=True)
+    position: int | None = Field(default=None, ge=1, strict=True)
+    lat: float | None = Field(default=None, ge=-90.0, le=90.0)
+    lng: float | None = Field(default=None, ge=-180.0, le=180.0)
+
+    @field_validator("name")
+    @classmethod
+    def require_nonblank_name(cls, value: str) -> str:
+        name = value.strip()
+        if not name:
+            raise ValueError("name must not be blank")
+        return name
+
+    @model_validator(mode="after")
+    def require_coordinate_pair(self):
+        if (self.lat is None) != (self.lng is None):
+            raise ValueError("lat and lng must be supplied together")
+        return self
+
+
+class TripDateEditRequest(BaseModel):
+    """PATCH /trips/{trip_id} body for changing an existing trip's dates."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    start_date: date | None = None
+    end_date: date | None = None
+
+    @model_validator(mode="after")
+    def validate_date_edit(self):
+        if self.start_date is None and self.end_date is None:
+            raise ValueError("At least one of start_date or end_date is required")
+        if self.start_date is not None and self.end_date is not None \
+                and self.end_date < self.start_date:
+            raise ValueError("end_date must be on or after start_date")
+        return self
+
+
 class TripPlaceRow(BaseModel):
     """The persisted trip_places row returned after an itinerary edit."""
 
@@ -292,6 +336,43 @@ class TripPlaceEditResponse(BaseModel):
     days_touched: list[int]
 
 
+class TripPlaceCreateResponse(BaseModel):
+    trip_place: TripPlaceRow
+    days_touched: list[int]
+
+
 class TripPlaceDeleteResponse(BaseModel):
     removed_id: str
+    days_touched: list[int]
+
+
+class TripRow(BaseModel):
+    """The persisted trips row returned after a date edit."""
+
+    id: str
+    user_id: str
+    status: Literal["draft", "generating", "places_ready", "complete", "saved_with_gaps", "failed"]
+    destination_hint: str | None
+    inferred_destination: str | None
+    start_date: date | None
+    end_date: date | None
+    origin_city: str | None
+    budget_level: Literal["budget", "mid_range", "premium", "luxury"] | None
+    adult_count: int
+    child_count: int
+    room_count: int
+    occupancy_json: dict[str, Any]
+    hotel_preference_json: dict[str, Any]
+    persona_snapshot_json: dict[str, Any]
+    preference_sources: list[str]
+    preference_summary: str | None
+    title: str | None
+    summary: str | None
+    tradeoffs: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class TripDateEditResponse(BaseModel):
+    trip: TripRow
     days_touched: list[int]

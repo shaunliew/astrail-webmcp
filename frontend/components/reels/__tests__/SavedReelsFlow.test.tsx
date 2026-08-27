@@ -842,6 +842,42 @@ describe('an agent-started extraction shows progress without a reload', () => {
     expect(polled).toContain('job-2')
   })
 
+  it('keeps other jobs moving when one job\'s status read fails', async () => {
+    /* Promise.all rejected the whole batch on a single bad read, so one unreadable job id stalled
+       EVERY adopted job for the rest of the page mount — and nothing evicts a permanently bad id.
+       Each job has to advance on its own. */
+    listSavedReelCards.mockResolvedValue([{ ...cards[0], analysis_status: 'not_analyzed' }])
+    let slot: { current: ((id: string) => void) | null } | null = null
+    function Capture() {
+      slot = useWebMcpRegistry().adoptOrganizeJob
+      return null
+    }
+    getOrganizeStatus.mockImplementation(async (id: string) => {
+      if (id === 'job-bad') throw new Error('404 gone')
+      return { ...job('processing', 'organized'), job_id: id }
+    })
+    render(
+      <WebMcpRegistryProvider>
+        <MapProvider><SavedReelsFlow /></MapProvider>
+        <Capture />
+      </WebMcpRegistryProvider>,
+    )
+    await act(async () => { await Promise.resolve() })
+
+    // Adopt the BAD id first: under Promise.all its rejection took the whole batch with it, so
+    // the good job never got a chance to report its finished item.
+    const before = listSavedReelCards.mock.calls.length
+    listSavedReelCards.mockResolvedValue(organizedCards)
+    await act(async () => { slot?.current?.('job-bad'); await Promise.resolve() })
+    await act(async () => { slot?.current?.('job-good'); await Promise.resolve() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+
+    expect(getOrganizeStatus.mock.calls.map((c) => c[0])).toContain('job-good')
+    // The good job's finished item still triggers its refetch despite its neighbour throwing.
+    expect(listSavedReelCards.mock.calls.length).toBeGreaterThan(before)
+    getOrganizeStatus.mockReset()
+  })
+
   it('does not retire an item when its refetch fails', async () => {
     /* Ids were marked settled BEFORE the reload succeeded, so one failed read retired the item
        forever — reinstating, invisibly, the stale card this whole mechanism exists to prevent. */

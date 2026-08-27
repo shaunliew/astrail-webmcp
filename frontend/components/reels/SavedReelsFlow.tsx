@@ -131,8 +131,8 @@ export default function SavedReelsFlow() {
     return () => { slot.current = null }
   }, [registry])
 
-  // Items whose refetch has ALREADY landed. Keyed by job so a reel appearing in a later job is
-  // not suppressed by the earlier one having settled it.
+  // Items whose refetch has ALREADY landed, keyed `jobId:reelId` — a reel re-analysed by a LATER
+  // job must not be suppressed by the earlier job having settled it.
   const settledRef = useRef<Set<string>>(new Set())
   const jobKey = toolJobIds.join(',')
   useEffect(() => {
@@ -141,8 +141,15 @@ export default function SavedReelsFlow() {
     const tick = async () => {
       try {
         const token = await getAccessToken()
-        const jobs = await Promise.all(toolJobIds.map((id) => getOrganizeStatus(id, token)))
+        /* allSettled, NOT all: one rejected status read used to reject the whole batch, so a
+           single unreadable job id stalled EVERY adopted job for the rest of the page mount —
+           and nothing evicts a permanently bad id. Each job now advances on its own. */
+        const settled = await Promise.allSettled(toolJobIds.map((id) => getOrganizeStatus(id, token)))
         if (stopped || !activeRef.current) return
+        const jobs = settled
+          .filter((r): r is PromiseFulfilledResult<OrganizeJob> => r.status === 'fulfilled')
+          .map((r) => r.value)
+        if (jobs.length === 0) return          // every read failed; the next tick retries
 
         const items = jobs.flatMap((j) => j.items)
         setLiveItems(Object.fromEntries(items.map((i) => [i.saved_reel_id, i.status])))
@@ -154,13 +161,15 @@ export default function SavedReelsFlow() {
            An id is marked settled only AFTER its refetch succeeds. Marking it first meant a
            single failed read retired the item forever — reinstating the stale card this whole
            mechanism exists to prevent, and doing it invisibly. */
-        const fresh = items.filter((i) => i.status !== 'queued' && i.status !== 'processing')
-          .filter((i) => !settledRef.current.has(`${i.saved_reel_id}`))
+        const fresh = jobs.flatMap((j) => j.items
+          .filter((i) => i.status !== 'queued' && i.status !== 'processing')
+          .filter((i) => !settledRef.current.has(`${j.job_id}:${i.saved_reel_id}`))
+          .map((i) => ({ key: `${j.job_id}:${i.saved_reel_id}`, item: i })))
         const finished = jobs.filter((j) => j.status === 'succeeded' || j.status === 'failed')
 
         if (fresh.length > 0 || finished.length > 0) {
           await reloadCards()                       // throws on failure -> nothing below runs
-          for (const i of fresh) settledRef.current.add(`${i.saved_reel_id}`)
+          for (const f of fresh) settledRef.current.add(f.key)
         }
 
         /* Drop a job only once its cards have actually been reloaded. Clearing state first and

@@ -68,9 +68,27 @@ describe('overlayLiveStatus', () => {
     const withPlaces = card('a', { places: [{ place_id: 'p1', name: 'X', lat: 1, lng: 1, country_code: 'JP', country_name: 'Japan', evidence_quote: 'q', source_url: null, source_reel_url: 'u', confidence: 0.9 }] })
     const [out] = overlayLiveStatus([withPlaces], { a: 'processing' })
     expect(out.places).toBe(withPlaces.places)      // same array, untouched
-    // A card WITH places still reads "Places found · N": the previous run's places are real and
-    // remain useful while a new run is in flight.
-    expect(statusLabel(out)).toBe('Places found · 1')
+  })
+
+  it('reports the active run, not the previous run\'s place count', () => {
+    /* Setting the status was not enough: statusLabel checked places FIRST, so a reel being
+       re-analysed kept reading "Places found · 3" from the run before while the new one was
+       underway — the overlay was correct and the label ignored it. */
+    const rerun = card('a', {
+      analysis_status: 'organized',
+      places: [{ place_id: 'p1', name: 'X', lat: 1, lng: 1, country_code: 'JP', country_name: 'Japan', evidence_quote: 'q', source_url: null, source_reel_url: 'u', confidence: 0.9 }],
+    })
+    const [out] = overlayLiveStatus([rerun], { a: 'processing' })
+    expect(statusLabel(out)).toBe('Analyzing…')
+    expect(out.places).toHaveLength(1)              // the places are kept, just not the headline
+  })
+
+  it('goes back to the place count once nothing is running', () => {
+    const done = card('a', {
+      analysis_status: 'organized',
+      places: [{ place_id: 'p1', name: 'X', lat: 1, lng: 1, country_code: 'JP', country_name: 'Japan', evidence_quote: 'q', source_url: null, source_reel_url: 'u', confidence: 0.9 }],
+    })
+    expect(statusLabel(overlayLiveStatus([done], {})[0])).toBe('Places found · 1')
   })
 })
 

@@ -21,6 +21,14 @@ export const STATUS_LABELS: Record<SavedReelAnalysisStatus, string> = {
  *  `now` is injectable so the expiry branch is testable without freezing the clock globally.
  */
 export function statusLabel(card: SavedReelCard, now: number = Date.now()): string {
+  /* An ACTIVE run outranks the place count. Checking places first meant a reel being re-analysed
+     kept reading "Places found · 3" from its PREVIOUS run while the new one was underway — the
+     overlay set the status correctly and this line then ignored it, so the user still could not
+     see that anything was happening. The places are real and stay on the card; what changes is
+     which fact the one-line label reports. */
+  if (card.analysis_status === 'queued' || card.analysis_status === 'processing') {
+    return STATUS_LABELS[card.analysis_status]
+  }
   if (card.places.length > 0) return `Places found · ${card.places.length}`
 
   /* An allowance that resets is not a broken reel. The organizer records a refused analysis as

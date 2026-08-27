@@ -1,5 +1,6 @@
 import type { ToolSpec } from '../types'
 import { normalizeReelUrl } from '@/lib/trip/parse-inspiration'
+import { wasAlreadySaved } from '@/lib/reels/labels'
 
 /**
  * Reel ingestion — the friction this whole project started from.
@@ -19,7 +20,13 @@ export type SaveReelsDeps = {
 
 /** Only the two fields this tool reads. Narrow on purpose: a wider type would invite the tool to
  *  start reporting reel internals it has no business echoing back to an agent. */
-export type SavedReelLike = { id: string, analysis_status: string }
+export type SavedReelLike = {
+  id: string
+  analysis_status: string
+  /** Used only to tell a fresh save from a re-paste — see wasAlreadySaved. */
+  created_at?: string
+  updated_at?: string
+}
 
 const MAX_REELS = 5
 
@@ -62,7 +69,11 @@ export function saveReelsTool(deps: SaveReelsDeps): ToolSpec {
           // for extraction again would spend an Apify run and a slot of the daily cap to
           // recompute what is already there.
           if (reel?.analysis_status !== 'organized' && reel?.id) toAnalyze.push(reel.id)
-          results.push(`✓ ${url}`)
+          // The RPC upserts, so a re-paste is indistinguishable from a new save unless we say so.
+          // An agent reporting "saved 3" when 2 were already there misstates what it did.
+          const already = Boolean(reel?.created_at && reel?.updated_at
+            && wasAlreadySaved({ created_at: reel.created_at, updated_at: reel.updated_at }))
+          results.push(`✓ ${url}${already ? ' (already in your library)' : ''}`)
         } catch (e) {
           const msg = e instanceof Error ? e.message : 'failed'
           results.push(`✗ ${url} — ${msg.slice(0, 80)}`)

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { overlayLiveStatus, statusExplanation, statusLabel } from '@/lib/reels/labels'
+import { overlayLiveStatus, statusExplanation, statusLabel, wasAlreadySaved } from '@/lib/reels/labels'
 import type { OrganizeItemStatus, SavedReelCard } from '@/lib/reels/backend-types'
 
 const card = (id: string, over: Partial<SavedReelCard> = {}): SavedReelCard => ({
@@ -146,5 +146,32 @@ describe('statusExplanation: say what the status means, invent nothing', () => {
   it('says nothing at all for an organized reel', () => {
     // It has places, or it honestly found none — either way there is nothing to explain.
     expect(statusExplanation(card('a', { analysis_status: 'organized' }), AUG27)).toBeNull()
+  })
+})
+
+describe('wasAlreadySaved', () => {
+  /* capture_saved_reel is an UPSERT and returns the row either way, so re-pasting a link the user
+     already had always reported "Saved to your library" — telling them they did something they
+     did not, and sending them hunting for a reel that was already there.
+
+     The signal is exact and needs no cross-machine clock comparison: saved_reels' trigger is
+     BEFORE UPDATE, so the conflict branch bumps updated_at while a fresh insert leaves both set
+     by the same now() in one statement. */
+  it('treats equal timestamps as a genuinely new save', () => {
+    const t = '2026-08-27T10:00:00Z'
+    expect(wasAlreadySaved({ created_at: t, updated_at: t })).toBe(false)
+  })
+
+  it('recognises a re-paste, where the upsert bumped updated_at', () => {
+    expect(wasAlreadySaved({
+      created_at: '2026-08-27T10:00:00Z', updated_at: '2026-08-27T10:00:05Z',
+    })).toBe(true)
+  })
+
+  it('recognises a reel that has since been analysed', () => {
+    // Analysis writes to the row, so updated_at has long since moved on.
+    expect(wasAlreadySaved({
+      created_at: '2026-08-01T10:00:00Z', updated_at: '2026-08-27T09:00:00Z',
+    })).toBe(true)
   })
 })

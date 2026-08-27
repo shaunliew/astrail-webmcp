@@ -1,4 +1,4 @@
-import type { OrganizeItemStatus, SavedReelAnalysisStatus, SavedReelCard } from '@/lib/reels/backend-types'
+import type { OrganizeItemStatus, SavedReel, SavedReelAnalysisStatus, SavedReelCard } from '@/lib/reels/backend-types'
 
 /* Shared saved-reel label helpers. These idioms were replicated in LibraryPanel and ReelInfoCard
    (feasible-first, "no shared abstraction until a third caller" — ReelInfoCard finding N1). The
@@ -126,4 +126,20 @@ export function statusExplanation(card: SavedReelCard, now: number = Date.now())
     default:
       return null
   }
+}
+
+/**
+ * Was this reel already in the library before this save?
+ *
+ * `capture_saved_reel` is an UPSERT and returns the row either way, so re-pasting a link a user
+ * already has always reported "Saved to your library" — cheerfully telling them they did
+ * something they did not.
+ *
+ * `updated_at !== created_at` is exact, and needs no clocks compared across machines: the table's
+ * trigger is BEFORE UPDATE, so the conflict branch bumps `updated_at` while a fresh insert leaves
+ * both set by the same `now()` in one statement. Any row that existed before is therefore either
+ * touched by this upsert or already carries a later `updated_at` from its own analysis.
+ */
+export function wasAlreadySaved(reel: Pick<SavedReel, 'created_at' | 'updated_at'>): boolean {
+  return reel.updated_at !== reel.created_at
 }

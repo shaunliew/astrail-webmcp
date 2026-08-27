@@ -6,7 +6,7 @@ import { captureSavedReel, getOrganizeStatus, listSavedReelCards, startOrganize,
 import type { OrganizeItemStatus, OrganizeJob, OrganizeStreamEvent, SavedReelCard, SavedReelPlaceProof } from '@/lib/reels/backend-types'
 import type { StreamEvent } from '@/lib/trip/backend-types'
 import { groupPlacesByCountry, type CountryTray } from '@/lib/reels/organize'
-import { overlayLiveStatus } from '@/lib/reels/labels'
+import { overlayLiveStatus, wasAlreadySaved } from '@/lib/reels/labels'
 import { getAccessToken } from '@/lib/supabase/session'
 import { generateTrip, streamGeneration } from '@/lib/trip/api'
 import { toGenerateRequest, type BriefInput, type DraftInspirationItem } from '@/lib/trip/parse-inspiration'
@@ -174,8 +174,12 @@ export default function SavedReelsFlow() {
     setInboxMessage(null)
     const token = await getAccessToken()
     if (!activeRef.current) return
-    await captureSavedReel(url, token)
+    const { saved_reel: saved } = await captureSavedReel(url, token)
     if (!activeRef.current) return
+    // The RPC upserts, so a link the user already had came back looking exactly like a new save
+    // and was reported as one. Telling someone they saved something they did not is a small lie
+    // that costs them a real hunt for the "new" reel.
+    setInboxMessage(wasAlreadySaved(saved) ? 'That reel is already in your library.' : null)
     await reloadCards()
   }
 

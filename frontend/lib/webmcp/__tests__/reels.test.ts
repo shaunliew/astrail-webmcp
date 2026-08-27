@@ -223,3 +223,34 @@ describe('save_reels: extraction', () => {
     expect(analyze).not.toHaveBeenCalled()
   })
 })
+
+
+describe('save_reels: re-pasting a reel already in the library', () => {
+  const URL = 'https://www.instagram.com/reel/Ca1/'
+
+  it('says so rather than reporting it as a new save', async () => {
+    // An agent reporting "Saved 3" when two were already there misstates what it did, and sends
+    // the user looking for reels that never arrived.
+    const save = vi.fn().mockResolvedValue({
+      id: 'sr_1', analysis_status: 'organized',
+      created_at: '2026-08-01T10:00:00Z', updated_at: '2026-08-27T09:00:00Z',
+    })
+    const out = String(await saveReelsTool({ save, analyze: vi.fn() }).execute({ urls: [URL] }))
+    expect(out).toContain('already in your library')
+  })
+
+  it('stays quiet for a genuinely new save', async () => {
+    const t = '2026-08-27T10:00:00Z'
+    const save = vi.fn().mockResolvedValue({ id: 'sr_1', analysis_status: 'not_analyzed', created_at: t, updated_at: t })
+    const out = String(await saveReelsTool({ save, analyze: vi.fn() }).execute({ urls: [URL] }))
+    expect(out).not.toContain('already in your library')
+  })
+
+  it('does not guess when the backend sent no timestamps', async () => {
+    // Absence of evidence is not evidence of a duplicate: claiming one would be worse than
+    // saying nothing.
+    const save = vi.fn().mockResolvedValue({ id: 'sr_1', analysis_status: 'not_analyzed' })
+    const out = String(await saveReelsTool({ save, analyze: vi.fn() }).execute({ urls: [URL] }))
+    expect(out).not.toContain('already in your library')
+  })
+})

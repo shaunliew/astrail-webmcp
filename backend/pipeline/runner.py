@@ -483,14 +483,21 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                         written = await persist_hotels(client, trip_id, fetch=hotel,
                                                        job_id=job_id, lease_token=lease_token)
                         if not written:
-                            # A search that RAN and returned nothing is not the same as one that
-                            # broke, and only the broken case said anything. Weather already
-                            # distinguishes them ("No forecast available this far ahead"); hotels
-                            # emitted no event at all, so "searched Osaka, found nothing" and
-                            # "Travala failed silently" were indistinguishable from outside — for
-                            # the user reading the trip AND for anyone debugging it later.
+                            # An empty result used to record NOTHING, so "we looked and found
+                            # none" and "Travala failed silently" were indistinguishable from
+                            # outside — for the traveller reading the trip and for anyone
+                            # debugging it later. Weather already makes that distinction
+                            # ("No forecast available this far ahead").
+                            #
+                            # Worded WITHOUT claiming a search happened, deliberately. Zero rows
+                            # also means "no search ran": persist_hotels needs a city or a
+                            # destination_hint plus both dates, and a trip whose places carry no
+                            # city and whose hint is empty returns 0 having called nothing.
+                            # "No hotels available for these dates" would report a result for a
+                            # search that never occurred. `phase` in the log tells an engineer
+                            # which it was; the event only has to make the absence visible.
                             await record_event(client, trip_id, event_type="warning", stage="hotels",
-                                               message="No hotels available for these dates")
+                                               message="No hotel suggestions for this trip")
                     except LeaseLost:
                         # A superseded run: the fenced hotel RPC refused our write because a
                         # replacement worker owns this job. Return WITHOUT recording a warning — a

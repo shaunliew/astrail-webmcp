@@ -81,10 +81,13 @@ export function saveReelsTool(deps: SaveReelsDeps): ToolSpec {
       }
       const saved = results.filter((r) => r.startsWith('✓')).length
 
-      /* ONE job for the batch, not one per reel: the backend allows a single active organize job
-         per user, so a per-reel loop would 409 on the second. Failing to queue extraction must
-         not read as failing to save — the reels ARE saved, and the app's own Library can organise
-         them later — so this reports the two outcomes separately. */
+      /* ONE job for the batch, not one per reel. Job creation rejects a batch that OVERLAPS an
+         active job's saved reels, so a per-reel loop would 409 on the second reel of the same
+         call. (It is not a global one-job-per-user rule — the active unique index is on
+         (user_id, idempotency_key), and two disjoint batches run side by side.)
+
+         Failing to queue extraction must not read as failing to save: the reels ARE saved and the
+         Library can organise them later, so the two outcomes are reported separately. */
       let analysis = ''
       if (toAnalyze.length > 0) {
         try {

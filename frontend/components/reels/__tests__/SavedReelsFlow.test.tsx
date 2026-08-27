@@ -812,6 +812,65 @@ describe('an agent-started extraction shows progress without a reload', () => {
     expect(listSavedReelCards.mock.calls.length).toBe(afterFirst)
   })
 
+  it('keeps following the first job when a second one is adopted', async () => {
+    /* The backend does NOT enforce one active organize job per user: creation rejects only a
+       batch that OVERLAPS an active job's reels, so two disjoint batches run side by side. A
+       single job slot meant a second save_reels while the first was still extracting silently
+       abandoned it, leaving its cards stale. */
+    listSavedReelCards.mockResolvedValue([{ ...cards[0], analysis_status: 'not_analyzed' }])
+    getOrganizeStatus.mockClear()
+    getOrganizeStatus.mockResolvedValue(job('processing', 'processing'))
+    let slot: { current: ((id: string) => void) | null } | null = null
+    function Capture() {
+      slot = useWebMcpRegistry().adoptOrganizeJob
+      return null
+    }
+    render(
+      <WebMcpRegistryProvider>
+        <MapProvider><SavedReelsFlow /></MapProvider>
+        <Capture />
+      </WebMcpRegistryProvider>,
+    )
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { slot?.current?.('job-1'); await Promise.resolve() })
+    await act(async () => { slot?.current?.('job-2'); await Promise.resolve() })
+
+    getOrganizeStatus.mockClear()
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    const polled = getOrganizeStatus.mock.calls.map((c) => c[0])
+    expect(polled).toContain('job-1')      // the first job is still being followed
+    expect(polled).toContain('job-2')
+  })
+
+  it('does not retire an item when its refetch fails', async () => {
+    /* Ids were marked settled BEFORE the reload succeeded, so one failed read retired the item
+       forever — reinstating, invisibly, the stale card this whole mechanism exists to prevent. */
+    listSavedReelCards.mockResolvedValue([{ ...cards[0], analysis_status: 'not_analyzed' }])
+    getOrganizeStatus.mockClear()
+    let slot: { current: ((id: string) => void) | null } | null = null
+    function Capture() {
+      slot = useWebMcpRegistry().adoptOrganizeJob
+      return null
+    }
+    getOrganizeStatus.mockResolvedValue(job('processing', 'organized'))
+    render(
+      <WebMcpRegistryProvider>
+        <MapProvider><SavedReelsFlow /></MapProvider>
+        <Capture />
+      </WebMcpRegistryProvider>,
+    )
+    await act(async () => { await Promise.resolve() })
+
+    listSavedReelCards.mockRejectedValueOnce(new Error('supabase blip'))
+    await act(async () => { slot?.current?.('job-1'); await Promise.resolve() })
+
+    // The failed read must be retried on the next tick, not treated as done.
+    const before = listSavedReelCards.mock.calls.length
+    listSavedReelCards.mockResolvedValue(organizedCards)
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(listSavedReelCards.mock.calls.length).toBeGreaterThan(before)
+  })
+
   it('stops polling once the job is terminal', async () => {
     listSavedReelCards.mockResolvedValue([{ ...cards[0], analysis_status: 'not_analyzed' }])
     let slot: { current: ((id: string) => void) | null } | null = null

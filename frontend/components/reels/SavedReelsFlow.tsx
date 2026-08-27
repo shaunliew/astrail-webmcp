@@ -109,62 +109,79 @@ export default function SavedReelsFlow() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [registry])
 
-  /* Follow an organize job an AGENT started.
+  /* Follow organize jobs an AGENT started.
      `saved_reels.analysis_status` is never 'queued' or 'processing' in practice: the organizer
      writes only a terminal value at the end, so a card read "Not analyzed" for the whole run.
      The obvious fix — write those two states — is worse than it looks. Nothing owns them: a job
      that fails between its steps marks only the parent job failed, stranding the reel reading
      "Analyzing…" forever, and an idempotent retry drags a reel that is genuinely processing back
      to "queued". So progress is DERIVED from the job, which is the record that actually knows.
-     The job's own items carry `saved_reel_id` + `status`, and reaching a terminal job state ends
-     the poll on its own — no timeout to guess at. */
-  const [toolJobId, setToolJobId] = useState<string | null>(null)
+
+     A SET of job ids, not one. The backend does NOT enforce one active organize job per user —
+     the active unique index is on (user_id, idempotency_key), and creation rejects only jobs
+     that OVERLAP an active job's saved reels. Two disjoint batches run happily side by side, so
+     a second `save_reels` while the first is still extracting used to replace the first job and
+     abandon it, leaving its cards stale until something unrelated refreshed them. */
+  const [toolJobIds, setToolJobIds] = useState<string[]>([])
   const [liveItems, setLiveItems] = useState<Record<string, OrganizeItemStatus>>({})
   useEffect(() => {
     const slot = registry?.adoptOrganizeJob
     if (!slot) return
-    slot.current = (id: string) => { setLiveItems({}); setToolJobId(id) }
+    slot.current = (id: string) => setToolJobIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
     return () => { slot.current = null }
   }, [registry])
 
-  const settledItemsRef = useRef<Set<string>>(new Set())
+  // Items whose refetch has ALREADY landed. Keyed by job so a reel appearing in a later job is
+  // not suppressed by the earlier one having settled it.
+  const settledRef = useRef<Set<string>>(new Set())
+  const jobKey = toolJobIds.join(',')
   useEffect(() => {
-    if (!toolJobId) return
+    if (toolJobIds.length === 0) return
     let stopped = false
-    settledItemsRef.current = new Set()
     const tick = async () => {
       try {
         const token = await getAccessToken()
-        const job = await getOrganizeStatus(toolJobId, token)
+        const jobs = await Promise.all(toolJobIds.map((id) => getOrganizeStatus(id, token)))
         if (stopped || !activeRef.current) return
-        setLiveItems(Object.fromEntries(job.items.map((i) => [i.saved_reel_id, i.status])))
 
-        /* Refetch as each REEL lands, not only when the whole job does. A two-reel job finished
+        const items = jobs.flatMap((j) => j.items)
+        setLiveItems(Object.fromEntries(items.map((i) => [i.saved_reel_id, i.status])))
+
+        /* Refetch as each REEL lands, not only when its whole job does: a two-reel job finished
            its first reel while the second was still extracting, and that card had nowhere to get
-           its real status and places from until the very end — so it sat there having visibly
-           regressed. Reload on the transition only; every tick would refetch the list on a timer
-           for no reason. */
-        const settled = job.items.filter((i) => i.status !== 'queued' && i.status !== 'processing')
-        const fresh = settled.filter((i) => !settledItemsRef.current.has(i.saved_reel_id))
-        for (const i of fresh) settledItemsRef.current.add(i.saved_reel_id)
+           its real status and places from until the very end.
 
-        if (job.status === 'succeeded' || job.status === 'failed') {
-          stopped = true
-          setToolJobId(null)
-          setLiveItems({})
-          await reloadCards()          // terminal: the rows now hold every status and place
-        } else if (fresh.length > 0) {
-          await reloadCards()
+           An id is marked settled only AFTER its refetch succeeds. Marking it first meant a
+           single failed read retired the item forever — reinstating the stale card this whole
+           mechanism exists to prevent, and doing it invisibly. */
+        const fresh = items.filter((i) => i.status !== 'queued' && i.status !== 'processing')
+          .filter((i) => !settledRef.current.has(`${i.saved_reel_id}`))
+        const finished = jobs.filter((j) => j.status === 'succeeded' || j.status === 'failed')
+
+        if (fresh.length > 0 || finished.length > 0) {
+          await reloadCards()                       // throws on failure -> nothing below runs
+          for (const i of fresh) settledRef.current.add(`${i.saved_reel_id}`)
+        }
+
+        /* Drop a job only once its cards have actually been reloaded. Clearing state first and
+           awaiting the reload afterwards meant one transient read failure stopped the poll for
+           good: the effect was already disabled, its interval already cleared, and no retry left. */
+        if (finished.length > 0) {
+          const done = new Set(finished.map((j) => j.job_id))
+          setToolJobIds((prev) => prev.filter((id) => !done.has(id)))
+          setLiveItems((prev) => Object.fromEntries(
+            Object.entries(prev).filter(([id]) => !finished.some((j) => j.items.some((i) => i.saved_reel_id === id))),
+          ))
         }
       } catch {
-        // A transient read failure must not abandon the run; the next tick retries.
+        // Transient: the next tick retries, and nothing has been retired in the meantime.
       }
     }
     void tick()
     const id = setInterval(() => { void tick() }, 3000)
     return () => { stopped = true; clearInterval(id) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [toolJobId])
+  }, [jobKey])
 
   // Purely a view concern — nothing is written, so there is no state to strand and nothing to
   // reconcile. The rule itself lives in lib/reels/labels so it can be tested without a DOM.

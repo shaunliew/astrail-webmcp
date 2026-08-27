@@ -87,14 +87,23 @@ export function overlayLiveStatus(
     const item = liveItems[card.id]
     if (!item) return card
 
-    /* The ROW WINS as soon as it has caught up, and `not_analyzed` with no places is precisely
-       the state that proves it has not. Standing aside on the item's terminal status alone made
-       a finished reel flip back to "Not analyzed" until the whole job ended and the cards were
-       refetched — the first of two reels visibly regressed while the second was still running. */
+    /* An ACTIVE item outranks whatever the row says, always. Yielding to any non-default row
+       state was wrong in both directions: a reel being RE-analysed still carries its previous
+       `failed`, `location_not_found` or `organized` outcome, so the row looked caught up while
+       the new run was only starting, and the user watched a stale result sit there instead of
+       "Analyzing…". The row's prior outcome is not evidence about the current job. */
+    if (item === 'queued' || item === 'processing') {
+      return { ...card, analysis_status: item }
+    }
+
+    /* The item is terminal. The row wins as soon as it has caught up — and `not_analyzed` with
+       no places is precisely the state that proves it has NOT. Standing aside on the item's
+       terminal status alone made a finished reel flip back to "Not analyzed" until the whole job
+       ended: the first of two reels visibly regressed while the second was still running. */
     if (card.analysis_status !== 'not_analyzed' || card.places.length > 0) return card
 
-    // Still stale. A terminal item here just means its refetch is in flight.
-    return { ...card, analysis_status: item === 'queued' ? 'queued' : 'processing' }
+    // Terminal item over a stale row: its refetch is in flight, so hold the working state.
+    return { ...card, analysis_status: 'processing' }
   })
 }
 
@@ -109,7 +118,7 @@ export function overlayLiveStatus(
 export function statusExplanation(card: SavedReelCard, now: number = Date.now()): string | null {
   switch (card.analysis_status) {
     case 'not_analyzed':
-      return 'Save it again, or organize it from your library, to pull out its places.'
+      return 'Organize it, from your library or its tray, to pull out its places.'
     case 'queued':
       return 'Waiting for a slot. This page updates itself as it goes.'
     case 'processing':
@@ -121,7 +130,9 @@ export function statusExplanation(card: SavedReelCard, now: number = Date.now())
       if (Number.isFinite(resetsAt) && resetsAt > now) {
         return 'You have used today\u2019s analyses. Nothing is wrong with this reel \u2014 it can be analysed again after the limit resets.'
       }
-      return 'Something went wrong while reading it. Saving it again retries the analysis.'
+      /* NOT "save it again": re-pasting only upserts the row, it does not re-run anything. What
+         actually retries is organizing it — from the library, or the tray's own button. */
+      return 'Something went wrong while reading it. Organize it again to retry.'
     }
     default:
       return null

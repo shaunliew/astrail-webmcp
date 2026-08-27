@@ -42,13 +42,14 @@ describe('overlayLiveStatus', () => {
     expect(statusLabel(out)).not.toBe('Not analyzed')
   })
 
-  it('lets a terminal row through the moment it carries places', () => {
-    // The refetch landed: places prove the row is current even if a stale item says otherwise.
+  it('lets a row through once its item is terminal and it carries places', () => {
+    // Places do NOT prove the row is current — a reel being re-analysed still holds the previous
+    // run's places. What proves it is the ITEM being terminal, with the row caught up.
     const fresh = card('a', {
       analysis_status: 'not_analyzed',
       places: [{ place_id: 'p1', name: 'X', lat: 1, lng: 1, country_code: 'JP', country_name: 'Japan', evidence_quote: 'q', source_url: null, source_reel_url: 'u', confidence: 0.9 }],
     })
-    expect(overlayLiveStatus([fresh], { a: 'processing' })[0]).toBe(fresh)
+    expect(overlayLiveStatus([fresh], { a: 'organized' })[0]).toBe(fresh)
   })
 
   it('leaves cards the job does not mention completely alone', () => {
@@ -63,11 +64,12 @@ describe('overlayLiveStatus', () => {
     expect(overlayLiveStatus(cards, {})).toBe(cards)
   })
 
-  it('never invents places — only the status is projected', () => {
+  it('never invents or drops places — only the status is projected', () => {
     const withPlaces = card('a', { places: [{ place_id: 'p1', name: 'X', lat: 1, lng: 1, country_code: 'JP', country_name: 'Japan', evidence_quote: 'q', source_url: null, source_reel_url: 'u', confidence: 0.9 }] })
     const [out] = overlayLiveStatus([withPlaces], { a: 'processing' })
-    expect(out.places).toBe(withPlaces.places)
-    // A card WITH places reads "Places found · N" regardless of status, which stays true here.
+    expect(out.places).toBe(withPlaces.places)      // same array, untouched
+    // A card WITH places still reads "Places found · N": the previous run's places are real and
+    // remain useful while a new run is in flight.
     expect(statusLabel(out)).toBe('Places found · 1')
   })
 })
@@ -123,13 +125,13 @@ describe('statusExplanation: say what the status means, invent nothing', () => {
     // and useful is that saving it again retries.
     const broken = card('a', { analysis_status: 'failed', retry_after: null })
     const text = statusExplanation(broken, AUG27)!
-    expect(text).toContain('Saving it again retries')
+    expect(text).toContain('Organize it again to retry')
     expect(text).not.toMatch(/apify|quota|limit|network|timeout/i)
   })
 
   it('does not claim a limit that has already reset', () => {
     const stale = card('a', { analysis_status: 'failed', retry_after: '2026-08-26T00:00:00Z' })
-    expect(statusExplanation(stale, AUG27)).toContain('Saving it again retries')
+    expect(statusExplanation(stale, AUG27)).toContain('Organize it again to retry')
   })
 
   it('distinguishes "read it, found nothing" from "could not read it"', () => {
@@ -173,5 +175,35 @@ describe('wasAlreadySaved', () => {
     expect(wasAlreadySaved({
       created_at: '2026-08-01T10:00:00Z', updated_at: '2026-08-27T09:00:00Z',
     })).toBe(true)
+  })
+})
+
+describe('overlayLiveStatus: re-analysing a reel that already has an outcome', () => {
+  /* The overlay yielded to the row whenever it was non-default. But a reel being RE-analysed
+     still carries its PREVIOUS outcome — save_reels re-queues anything not already organized, and
+     the Library can re-run an organized one — so the row looked caught up while the new run was
+     only starting, and the user watched a stale result instead of "Analyzing…". A prior outcome
+     is not evidence about the current job. */
+  it('shows a failed reel as analysing while it is being retried', () => {
+    const retrying = card('a', { analysis_status: 'failed' })
+    expect(statusLabel(overlayLiveStatus([retrying], { a: 'processing' })[0])).toBe('Analyzing…')
+  })
+
+  it('shows a location_not_found reel as analysing while it is being retried', () => {
+    const retrying = card('a', { analysis_status: 'location_not_found' })
+    expect(statusLabel(overlayLiveStatus([retrying], { a: 'queued' })[0])).toBe('Queued')
+  })
+
+  it('overrides even an organized row with places while a new run is active', () => {
+    const rerun = card('a', {
+      analysis_status: 'organized',
+      places: [{ place_id: 'p1', name: 'X', lat: 1, lng: 1, country_code: 'JP', country_name: 'Japan', evidence_quote: 'q', source_url: null, source_reel_url: 'u', confidence: 0.9 }],
+    })
+    expect(overlayLiveStatus([rerun], { a: 'processing' })[0].analysis_status).toBe('processing')
+  })
+
+  it('still yields to a caught-up row once the item is terminal', () => {
+    const done = card('a', { analysis_status: 'organized' })
+    expect(overlayLiveStatus([done], { a: 'organized' })[0]).toBe(done)
   })
 })

@@ -20,7 +20,20 @@ describe('OrganizeGlobe', () => {
     // One element, seen and heard: a visible copy plus a separate sr-only copy would double it up.
     render(<OrganizeGlobe message="Pinning places" />)
     expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite')
+    expect(screen.getByRole('status')).toHaveAttribute('aria-atomic', 'true')
     expect(screen.getAllByText('Pinning places')).toHaveLength(1)
+  })
+
+  it('keeps the live-region element itself mounted across status changes', () => {
+    /* The fade is restarted by keying an INNER span. Keying the element that carries
+       role="status" remounts the live region, and a freshly inserted one is not reliably
+       announced — which would have quietly regressed the screen-reader users who were the only
+       people this screen served before it showed anything at all. */
+    const view = render(<OrganizeGlobe message="Reading your Reels" />)
+    const first = screen.getByRole('status')
+    view.rerender(<OrganizeGlobe message="Pinning places" />)
+    expect(screen.getByRole('status')).toBe(first)          // same node, new text
+    expect(screen.getByRole('status')).toHaveTextContent('Pinning places')
   })
 
   it('shows no invented progress words', () => {

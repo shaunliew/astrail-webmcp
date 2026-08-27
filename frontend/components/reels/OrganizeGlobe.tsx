@@ -58,13 +58,18 @@ export default function OrganizeGlobe({ message }: { message: string }) {
 
       {/* ONE status, seen and heard. `key` restarts the fade on each change so a new stage reads
           as an event rather than text quietly swapping. */}
+      {/* The live region OWNER stays mounted; only the inner span is keyed. Keying the element
+          that carries role="status" remounts it on every change, and a freshly inserted live
+          region is not reliably announced — which would have quietly regressed the screen-reader
+          users who were the only ones served before this. aria-atomic so the whole stage phrase
+          is read, not the diff. */}
       <p
-        key={message}
         role="status"
         aria-live="polite"
-        className="organize-word max-w-[34ch] text-center text-sm tracking-[0.08em] text-[color:var(--starlight)]"
+        aria-atomic="true"
+        className="max-w-[34ch] text-center text-sm tracking-[0.08em] text-[color:var(--starlight)]"
       >
-        {message}
+        <span key={message} className="organize-word">{message}</span>
       </p>
 
       <p className="text-xs tabular-nums tracking-[0.08em] text-[color:var(--muted)]">

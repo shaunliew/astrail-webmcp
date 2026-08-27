@@ -946,7 +946,11 @@ async def test_runner_says_so_when_the_hotel_search_finds_nothing():
 
     warnings = [e for e in c.events if e["stage"] == "hotels" and e["event_type"] == "warning"]
     assert warnings, "an empty hotel search recorded nothing at all"
-    assert "No hotels available" in warnings[0]["message"]
+    assert "No hotel suggestions" in warnings[0]["message"]
+    # Deliberately NOT "available for these dates": zero rows also means no search ran at all
+    # (persist_hotels needs a city or destination_hint plus both dates), and claiming a result for
+    # a search that never happened is its own wrong answer.
+    assert "available" not in warnings[0]["message"]
     # ...and it stays non-critical: an empty hotel list must not degrade the trip.
     assert c.trip_updates[-1]["status"] == "complete"
 

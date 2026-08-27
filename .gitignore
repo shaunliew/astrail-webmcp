@@ -24,6 +24,9 @@ frontend/env.local
 # Node
 node_modules/
 .next/
+# Alternate build dirs from NEXT_DIST_DIR (next.config.ts) — a second dev server in the
+# same folder must not share `.next/`, or the two overwrite each other's chunks.
+.next-*/
 out/
 *.tsbuildinfo
 checkpoint*.png

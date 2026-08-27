@@ -68,6 +68,15 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  // Two Next servers started in this directory SHARE `.next/` and overwrite each other's
+  // chunks — the running one then 500s with `Cannot read properties of undefined (reading
+  // 'call')` from __webpack_require__, which reads as an app bug rather than a collision.
+  // Set NEXT_DIST_DIR to give a second server (e.g. the NEXT_PUBLIC_MOCK_AUTH fixture
+  // harness) its own build dir. Unset everywhere else, so deploys are unaffected.
+  // Side effect worth knowing: Next rewrites tsconfig.json to add "<distDir>/types" to
+  // `include` (and reformats the file while it is there). Run
+  // `git checkout frontend/tsconfig.json` after a harness session.
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   poweredByHeader: false,
   async redirects() {
     return [

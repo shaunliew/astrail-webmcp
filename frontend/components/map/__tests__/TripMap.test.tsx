@@ -173,6 +173,32 @@ describe('TripMap', () => {
     expect(pad.left + pad.right).toBeLessThan(390)
   })
 
+  it('refuses a hostile Reel thumbnail rather than rendering it', async () => {
+    // thumbnail_url arrives from Apify's scrape of Instagram — attacker-controlled third-party
+    // content (guardrail #11). The popup already routes its copy through safeWebUrl; the pin's
+    // <image href> is the same value and must clear the same check, or the two disagree about
+    // what is safe to load. Falling back to the placeholder is the correct degradation.
+    const hostile = {
+      ...TOKYO_TRIP,
+      inspiration: TOKYO_TRIP.inspiration.map((i, idx) =>
+        idx === 0 ? { ...i, thumbnail_url: 'javascript:alert(1)' } : i),
+    }
+    render(
+      <MapProvider>
+        <TripMap bundle={hostile} activeDayNumber={1} selectedPlaceId={null} onSelectPlace={() => {}} />
+      </MapProvider>,
+    )
+    await flush()
+    fireLoad()
+    await flush()
+
+    const marker = markerElements.find((e) => e.getAttribute('aria-label') === 'Senso-ji Temple')!
+    expect(marker.querySelector('image')).toBeNull()
+    expect(marker.querySelector('.constellation-pin__placeholder')).not.toBeNull()
+    // And nothing anywhere on the map smuggled the string through.
+    expect(markerElements.some((e) => e.innerHTML.includes('javascript:'))).toBe(false)
+  })
+
   it('leaves room below a selected place for its popup', async () => {
     // Mapbox picks a popup anchor by asking "is there room ABOVE?" before "is there room
     // BELOW?", and when neither fits it falls through to placing the popup below and overflows

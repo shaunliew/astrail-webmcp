@@ -26,3 +26,12 @@ if (typeof globalThis.matchMedia !== 'function') {
       dispatchEvent: () => false,
     }) as MediaQueryList
 }
+
+// jsdom implements no layout, so Element.prototype.scrollIntoView is simply absent — a
+// component that brings a selected item into view throws "not a function" rather than
+// silently doing nothing. A no-op keeps such components mountable; a test that cares
+// whether it was CALLED should spy on this instead of asserting scroll position, which
+// jsdom cannot report anyway.
+if (typeof Element.prototype.scrollIntoView !== 'function') {
+  Element.prototype.scrollIntoView = function scrollIntoView() {}
+}

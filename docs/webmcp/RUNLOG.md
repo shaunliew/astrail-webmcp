@@ -247,3 +247,48 @@ its WebMCP API later than 10s after mount, no tools register at all. Worth watch
 panel positioned off the bottom of the viewport looks identical to one positioned correctly. The
 new tests pin what jsdom *can* see — DOM order, the close control, the height cap — and the
 geometry was verified by measuring `getBoundingClientRect` in a real browser at three widths.
+
+## Batch 8 — teardrop pins + the two-dev-server incident (evening, 27 Aug)
+
+Shaun's call, verbatim: *"we just focus on those locations that are from reels, so that we just use
+the thumbnail from the reel will do. For those added from agent or from the web search we can just
+one placeholder that is universal."* That is the whole design: **the pin's photo is evidence, and a
+place with no Reel behind it gets a deliberate blank rather than a borrowed picture.**
+
+| # | Task | Gate | Result |
+|---|---|---|---|
+| 8.1 | Teardrop pins replace the dots; Reel cover in the head | `npx vitest run components/map` + browser measure | ✅ Pin measured **40×52** (was 30×30), selected **50×65**, receding **26×34**. 2 of 6 fixture pins carry covers, 4 the placeholder |
+| 8.2 | Three dot-era CSS rules removed | marker-css-contract drift guard | ✅ They styled `border` against `border: 0` (a no-op) and drew an `outline` on the marker root — a **rectangle** around a teardrop, because an outline follows the bounding box, not the shape. Source kind now draws on the SVG path |
+| 8.3 | Popup clipped on a 720px laptop | browser measure at 1280×720 | ✅ Overflowed by 53px; both CTAs off-screen. Fixed at the **camera** — `framePadding({popupRoom:true})` lands the pin in the upper third. Now 91px of headroom. Fault-injected |
+| 8.4 | Hostile Reel thumbnail | vitest, fault-injected | ✅ **Real finding, found before Codex's pass.** `safeWebUrl` gated the popup's copy of `thumbnail_url` but not the pin's `<image href>` — the same attacker-controlled value from Apify's scrape (guardrail #11). Now gated at the call site, so the number badge agrees with it |
+| 8.5 | Pin tap did nothing visible on mobile | browser at 390×844 | ✅ The popup opens inside `.shared-map`, which is `position: fixed; z-index: 0` — **its own stacking context** — so it can never paint above the `z-10` sheet covering ~65% of a phone. No z-index fixes that. The selected place's card now scrolls into view instead, which also fixes the agent's `show_on_map` direction |
+| 8.6 | Full suite | `npx vitest run` + `tsc --noEmit` | ✅ **863 tests / 100 files**, typecheck clean |
+
+### Incident: two dev servers, one `.next/`
+
+`:3001` and `:3002` were both running Next dev from `frontend/`, so they shared `.next/` and
+overwrote each other's chunks. The symptom is a **500 with `Cannot read properties of undefined
+(reading 'call')` from `__webpack_require__`** — which reads as an application bug and sends you
+looking in the wrong place. Same error Shaun hit earlier in the sprint, and the same root cause as
+the "never run `next build` while the dev server is running" note: **anything that writes `.next/`
+concurrently corrupts it.**
+
+Fixed structurally rather than by remembering: `distDir: process.env.NEXT_DIST_DIR || ".next"` in
+`next.config.ts`, plus `.next-*/` in `.gitignore`. The fixture harness now runs as
+
+```bash
+tmux new-session -d -s harness \
+  "cd frontend && NEXT_DIST_DIR=.next-harness NEXT_PUBLIC_MOCK_AUTH=true npx next dev -p 3002"
+```
+
+Two caveats recorded so the next session does not rediscover them:
+- Next **rewrites `tsconfig.json`** to add `<distDir>/types` (and reformats the file). Run
+  `git checkout frontend/tsconfig.json` after a harness session.
+- A repo hook requires dev servers to run in tmux, but its regex matches the string `npm run dev`
+  **anywhere in a command** — including inside the tmux invocation it recommends, and including
+  prose that merely mentions it. `npx next dev` inside tmux satisfies the actual requirement.
+
+**Lesson:** two of the three real defects this batch (8.3, 8.5) were geometry that vitest
+structurally cannot see, and the third (8.4) was a consistency gap between two call sites of one
+value. None would have been caught by more unit tests — 860 were already passing. Measuring
+`getBoundingClientRect` in a real browser at three viewports is what found them.

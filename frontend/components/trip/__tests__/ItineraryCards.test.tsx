@@ -28,6 +28,30 @@ describe('ItineraryCards', () => {
     expect(onSelectPlace).toHaveBeenCalledWith(day1[0].place_id)
   })
 
+  // A pin tap (or the agent's show_on_map) changes selectedPlaceId from outside this list.
+  // On mobile that used to be invisible: the map's evidence popup lives inside `.shared-map`,
+  // which is `position: fixed; z-index: 0` — its own stacking context — so it can never paint
+  // above the z-10 details sheet covering most of a phone screen. Scrolling the matching card
+  // into view is the surface that IS visible there.
+  it('brings a place selected from the map into view', () => {
+    const spy = vi.spyOn(Element.prototype, 'scrollIntoView')
+    const view = render(
+      <ItineraryCards places={day1} selectedPlaceId={null} onSelectPlace={() => {}} />,
+    )
+    expect(spy).not.toHaveBeenCalled()   // nothing selected yet — no unprompted scrolling
+
+    const target = day1[1] ?? day1[0]
+    view.rerender(
+      <ItineraryCards places={day1} selectedPlaceId={target.place_id} onSelectPlace={() => {}} />,
+    )
+    expect(spy).toHaveBeenCalledTimes(1)
+    // The element scrolled must be the card for THAT place, not merely some card.
+    expect((spy.mock.contexts[0] as HTMLElement).dataset.placeId).toBe(target.place_id)
+    // 'nearest', so clicking a card already on screen never jolts the list under the cursor.
+    expect(spy.mock.calls[0][0]).toMatchObject({ block: 'nearest' })
+    spy.mockRestore()
+  })
+
   it('marks the selected card', () => {
     render(<ItineraryCards places={day1} selectedPlaceId={day1[0].place_id} onSelectPlace={() => {}} />)
     expect(screen.getByRole('button', { name: new RegExp(day1[0].place.name, 'i') }))

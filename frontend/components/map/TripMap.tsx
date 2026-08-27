@@ -414,7 +414,15 @@ export default function TripMap({
           tp.place_id === selectedPlaceId ? 'constellation-pin--selected' : '',
         ].filter(Boolean).join(' ')
         // The Reel still that this stop came from, when we can attribute one honestly.
-        const photoUrl = thumbnailFor(bundle, tp)
+        // Same untrusted value the popup already gates (guardrail #11: Reel content is
+        // attacker-controlled). It reaches us from Apify's Instagram scrape via the DB, and
+        // an SVG <image href> is a resource load, so it must clear the same protocol check as
+        // the popup's copy — gated HERE rather than inside buildPinGraphic so the badge below
+        // agrees with it; disagreeing would print the stop number twice.
+        // NB the empty-string guard: safeWebUrl('') resolves against our origin and returns a
+        // valid URL, which would render a broken image instead of the placeholder.
+        const rawPhoto = thumbnailFor(bundle, tp)
+        const photoUrl = rawPhoto ? safeWebUrl(rawPhoto) : null
         el.append(buildPinGraphic(photoUrl, number))
         if (photoUrl && number !== null) el.append(buildPinBadge(number))
         if (number !== null) {

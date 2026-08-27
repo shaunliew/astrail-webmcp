@@ -1,5 +1,6 @@
 'use client'
 
+import { useEffect, useRef } from 'react'
 import type { TripPlace, PlaceSourceType } from '@/lib/trip/backend-types'
 import EvidenceChip from './EvidenceChip'
 
@@ -31,17 +32,36 @@ export default function ItineraryCards({
   selectedPlaceId: string | null
   onSelectPlace: (placeId: string) => void
 }) {
+  const listRef = useRef<HTMLOListElement>(null)
+
+  // A selection can arrive from somewhere the card list cannot see: a tap on a map pin, or the
+  // agent calling show_on_map. On mobile that was invisible — the map's evidence popup opens
+  // inside `.shared-map`, which is `position: fixed; z-index: 0` and therefore its own stacking
+  // context, so the popup can never paint above the `z-10` details sheet covering ~65% of a
+  // phone screen. No z-index fixes that. Bringing the matching CARD into view instead uses the
+  // surface mobile already has, and fixes the agent's direction on desktop for free.
+  useEffect(() => {
+    if (!selectedPlaceId) return
+    const card = listRef.current?.querySelector(`[data-place-id="${CSS.escape(selectedPlaceId)}"]`)
+    // 'nearest' so a card already on screen does not jolt — clicking a card must not scroll it.
+    card?.scrollIntoView({
+      block: 'nearest',
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    })
+  }, [selectedPlaceId])
+
   if (places.length === 0) {
     return <p className="type-body text-sm text-[var(--muted)]">No stops planned for this day.</p>
   }
   return (
-    <ol className="flex flex-col gap-2">
+    <ol ref={listRef} className="flex flex-col gap-2">
       {places.map((tp, i) => {
         const selected = tp.place_id === selectedPlaceId
         return (
           <li key={tp.id}>
             <button
               type="button"
+              data-place-id={tp.place_id}
               aria-current={selected ? 'true' : undefined}
               onClick={() => onSelectPlace(tp.place_id)}
               className={[

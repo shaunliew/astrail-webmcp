@@ -22,6 +22,14 @@ function ToolRegistration({ spec, enabled = true }: { spec: ToolSpec; enabled?: 
   // component — crashes anywhere the agent layer is not mounted, which is a bad trade for a
   // cosmetic feature. Without a provider the tool still registers; it just is not listed.
   const registry = useOptionalWebMcpRegistry()
+  // Depend on the individual callbacks, NEVER on the registry object itself.
+  // The context value is memoized on `tools`, so `registry` changes every time a tool reports —
+  // and an effect that both depends on `registry` and calls `report()` re-triggers itself
+  // forever ("Maximum update depth exceeded"). These three are stable: report/withdraw are
+  // useCallback([]) and setSupported is a state setter.
+  const report = registry?.report
+  const withdraw = registry?.withdraw
+  const setSupported = registry?.setSupported
 
   const { supported, registered, error } = useWebMCP({
     name: spec.name,
@@ -38,24 +46,24 @@ function ToolRegistration({ spec, enabled = true }: { spec: ToolSpec; enabled?: 
   })
 
   useEffect(() => {
-    registry?.setSupported(supported)
-  }, [supported, registry])
+    setSupported?.(supported)
+  }, [supported, setSupported])
 
   useEffect(() => {
     if (error) console.error(`[webmcp] "${spec.name}" registration error:`, error)
-    if (!registry) return
+    if (!report || !withdraw) return
     if (!enabled) {
-      registry.withdraw(spec.name)
+      withdraw(spec.name)
       return
     }
-    registry.report({
+    report({
       name: spec.name,
       description: spec.description,
       readOnly: spec.annotations?.readOnlyHint === true,
       registered,
     })
-    return () => registry.withdraw(spec.name)
-  }, [spec.name, spec.description, spec.annotations?.readOnlyHint, registered, enabled, error, registry])
+    return () => withdraw(spec.name)
+  }, [spec.name, spec.description, spec.annotations?.readOnlyHint, registered, enabled, error, report, withdraw])
 
   return null
 }

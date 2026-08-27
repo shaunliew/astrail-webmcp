@@ -67,6 +67,10 @@ class _FakeQuery:
         self._filters.append(("gt", col, val))
         return self
 
+    def in_(self, col, vals):
+        self._filters.append(("in", col, list(vals)))
+        return self
+
     def order(self, col, **_):
         self._order = col
         return self
@@ -89,6 +93,9 @@ class _FakeQuery:
                     return False
             elif kind == "gt":
                 if not (cur is not None and cur > val):
+                    return False
+            elif kind == "in":
+                if cur not in val:
                     return False
         return True
 
@@ -531,3 +538,100 @@ def test_import_needs_no_keys(monkeypatch):
 
     importlib.reload(m)
     assert m.TABLE == "reel_cache"
+
+
+# --- --only scoping ------------------------------------------------------------------------------
+
+
+_OTHER = "https://www.instagram.com/reel/OTHERUSER"
+_TARGET = "https://www.instagram.com/reel/DadCW-qyBMJ"
+
+
+def _two_null_rows():
+    return [
+        {"normalized_url": _TARGET, "thumbnail_url": None, "source_platform": "instagram",
+         "raw_payload": {"display_url": _COVER}},
+        {"normalized_url": _OTHER, "thumbnail_url": None, "source_platform": "instagram",
+         "raw_payload": {"display_url": _COVER}},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_only_repairs_the_named_reel_and_leaves_every_other_row_alone():
+    """Without scoping, repairing ONE reel sweeps every NULL cover in the table — including other
+    users' — and spends an Apify run on each whose saved pointer has expired. `--only` bounds both
+    the blast radius and the worst-case spend to the URLs actually named."""
+    from scripts import backfill_reel_covers as mod
+
+    client = _FakeClient(_two_null_rows())
+    table = client.reel_cache
+
+    async def scrape(*_a, **_k):
+        raise AssertionError("must repair from the saved pointer, not by spending an Apify run")
+
+    async def rehost(_client, display_url, _key):
+        return _REHOSTED
+
+    tally = await run_backfill(client, scrape=scrape, rehost=rehost, token="t", only=[_TARGET])
+
+    assert tally["done"] == 1
+    by_url = {r["normalized_url"]: r for r in table.rows}
+    assert by_url[_TARGET]["thumbnail_url"] == _REHOSTED
+    assert by_url[_OTHER]["thumbnail_url"] is None      # untouched
+    assert mod is not None
+
+
+@pytest.mark.asyncio
+async def test_only_dry_run_counts_just_that_reel_and_spends_nothing():
+    client = _FakeClient(_two_null_rows())
+    table = client.reel_cache
+
+    async def _factory():
+        return client
+
+    code = await main(["--dry-run", "--only", _TARGET], client_factory=_factory)
+
+    assert code == 0
+    assert all(r["thumbnail_url"] is None for r in table.rows)   # dry-run never writes
+
+
+@pytest.mark.asyncio
+async def test_only_normalises_a_pasted_link_before_matching():
+    """`normalized_url` stores `.../reel/ABC` — no trailing slash, no query string. A link pasted
+    from the app or a share sheet carries both, and an unnormalized value matches NOTHING while
+    exiting 0, which reads exactly like "already repaired"."""
+    client = _FakeClient(_two_null_rows())
+    table = client.reel_cache
+
+    async def _factory():
+        return client
+
+    async def scrape(*_a, **_k):
+        raise AssertionError("pointer-first: no Apify run expected")
+
+    async def rehost(_client, _display_url, _key):
+        return _REHOSTED
+
+    code = await main(
+        ["--confirm", "--only", f"{_TARGET}/?igsh=tracking"],
+        client_factory=_factory, scrape=scrape, rehost=rehost, token="t",
+    )
+
+    assert code == 0
+    by_url = {r["normalized_url"]: r for r in table.rows}
+    assert by_url[_TARGET]["thumbnail_url"] == _REHOSTED
+    assert by_url[_OTHER]["thumbnail_url"] is None
+
+
+@pytest.mark.asyncio
+async def test_only_rejects_a_url_that_is_not_a_reel_before_touching_anything():
+    client = _FakeClient(_two_null_rows())
+    table = client.reel_cache
+
+    async def _factory():
+        raise AssertionError("must fail on the argument, before building a client")
+
+    code = await main(["--confirm", "--only", "https://example.com/nope"], client_factory=_factory)
+
+    assert code == 4
+    assert all(r["thumbnail_url"] is None for r in table.rows)

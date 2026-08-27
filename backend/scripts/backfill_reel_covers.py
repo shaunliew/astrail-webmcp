@@ -25,10 +25,22 @@ Import stays keyless: `_cover_key` (pure) is imported at module scope; the servi
 Apify scraper, and `rehost_cover` are imported lazily inside the run body, and `APIFY_TOKEN` is read
 only on the confirmed run. So this module imports with no env set (guardrail #16).
 
+SCOPING. `--only <reel-url>` (repeatable) restricts EVERY query to the reels named, so repairing one
+cover cannot sweep every other user's NULL rows, and the worst-case spend is one Apify run per URL
+given rather than one per NULL row in the table. Values are normalized first: `normalized_url` stores
+`.../reel/ABC` with no trailing slash and no query string, while a link pasted from the app or a share
+sheet carries both — and an unnormalized value matches nothing while still exiting 0, which reads
+exactly like "already repaired".
+
 Usage (from backend/):
     uv run --env-file .env python -m scripts.backfill_reel_covers --dry-run   # count NULL rows, no credits
     uv run --env-file .env python -m scripts.backfill_reel_covers             # refuses, prints how to confirm
     uv run --env-file .env python -m scripts.backfill_reel_covers --confirm   # re-scrapes + re-hosts (SPENDS credits)
+
+    # One reel: counts first (free), then repairs pointer-first — an Apify run ONLY if its saved
+    # display_url has expired, which is likely for a pointer more than a few days old.
+    uv run --env-file .env python -m scripts.backfill_reel_covers --only <reel-url> --dry-run
+    uv run --env-file .env python -m scripts.backfill_reel_covers --only <reel-url> --confirm
 """
 from __future__ import annotations
 
@@ -65,7 +77,7 @@ async def _bucket_exists(client) -> bool:
     return any(getattr(b, "id", None) == BUCKET or getattr(b, "name", None) == BUCKET for b in buckets)
 
 
-def _null_query(client, cursor: str, batch_size: int):
+def _null_query(client, cursor: str, batch_size: int, only: list[str] | None = None):
     """The keyset page of NULL-cover Instagram rows after `cursor`, ordered by `normalized_url`.
 
     Selects `raw_payload` alongside `normalized_url` so each row carries its saved `display_url` repair
@@ -77,20 +89,24 @@ def _null_query(client, cursor: str, batch_size: int):
         .is_("thumbnail_url", "null")
         .eq("source_platform", "instagram")
     )
+    if only:
+        query = query.in_("normalized_url", only)
     if cursor:
         query = query.gt("normalized_url", cursor)
     return query.order("normalized_url").limit(batch_size)
 
 
-async def _count_null(client) -> int:
+async def _count_null(client, only: list[str] | None = None) -> int:
     """Count NULL-cover Instagram rows without transferring any row bodies (dry-run; no credits)."""
-    resp = await (
+    query = (
         client.table(TABLE)
         .select("normalized_url", count="exact", head=True)
         .is_("thumbnail_url", "null")
         .eq("source_platform", "instagram")
-        .execute()
     )
+    if only:
+        query = query.in_("normalized_url", only)
+    resp = await query.execute()
     return resp.count or 0
 
 
@@ -169,6 +185,7 @@ async def run_backfill(
     token: str,
     batch_size: int = _BATCH_SIZE,
     concurrency: int = _CONCURRENCY,
+    only: list[str] | None = None,
 ) -> dict[str, int]:
     """Keyset-paginate every NULL-cover Instagram row, re-hosting each cover with bounded concurrency.
     Returns a `{done, failed, skipped}` tally. Terminates because the cursor advances past every row."""
@@ -177,7 +194,7 @@ async def run_backfill(
     semaphore = asyncio.Semaphore(concurrency)
     cursor = ""
     while True:
-        batch = (await _null_query(client, cursor, batch_size).execute()).data or []
+        batch = (await _null_query(client, cursor, batch_size, only).execute()).data or []
         if not batch:
             break
         await asyncio.gather(
@@ -217,6 +234,17 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="only COUNT the NULL-cover rows; no scrape, no credits, no writes",
     )
+    parser.add_argument(
+        "--only",
+        action="append",
+        metavar="REEL_URL",
+        help=(
+            "repair ONLY these reels (repeatable). Scopes every query, so a one-row repair cannot "
+            "sweep every other user's NULL covers — and caps the worst case at one Apify run per "
+            "URL given. Normalized first: a pasted link carries a trailing slash and tracking "
+            "params, while normalized_url stores neither, and an unnormalized value matches nothing"
+        ),
+    )
     parser.add_argument("--batch-size", type=_positive_int, default=_BATCH_SIZE, help="keyset page size (positive)")
     parser.add_argument("--concurrency", type=_positive_int, default=_CONCURRENCY, help="max concurrent rows (positive)")
     return parser.parse_args(argv)
@@ -245,11 +273,22 @@ async def main(
     `rehost_cover`, and `$APIFY_TOKEN` (all imported/read lazily so this module imports keyless)."""
     args = _parse_args(argv)
 
+    only: list[str] | None = None
+    if args.only:
+        from scrape.reel_url import normalize_reel_url
+
+        try:
+            only = [normalize_reel_url(u) for u in args.only]
+        except ValueError as exc:
+            print(f"--only: {exc}", file=sys.stderr)
+            return 4
+
     if args.dry_run:
         client = await _resolve_client(client_factory)
-        count = await _count_null(client)
+        count = await _count_null(client, only)
+        scope = f" of the {len(only)} requested" if only else " (instagram)"
         print(
-            f"[backfill] dry-run: {count} reel_cache rows have NULL thumbnail_url (instagram). "
+            f"[backfill] dry-run: {count} reel_cache rows{scope} have NULL thumbnail_url. "
             "No scrape, no Apify credits spent.",
             file=sys.stderr,
         )
@@ -279,7 +318,7 @@ async def main(
     print("Backfilling NULL reel covers (re-scraping via Apify — this SPENDS credits)…", file=sys.stderr)
     tally = await run_backfill(
         client, scrape=scrape, rehost=rehost, token=token,
-        batch_size=args.batch_size, concurrency=args.concurrency,
+        batch_size=args.batch_size, concurrency=args.concurrency, only=only,
     )
     print(
         f"[backfill] complete: done={tally['done']} failed={tally['failed']} skipped={tally['skipped']}",

@@ -11,6 +11,7 @@ import GlobalTools from '@/components/webmcp/GlobalTools'
 import WebMcpStatus from '@/components/webmcp/WebMcpStatus'
 import AgentConfirm from '@/components/webmcp/AgentConfirm'
 import ExamplePrompts from '@/components/webmcp/ExamplePrompts'
+import AgentActivityRail from '@/components/webmcp/AgentActivityRail'
 
 // The WebMCP layer sits beside MapProvider for the same reason MapProvider is here: the shell is
 // the only common ancestor of every /app route, so a tool registered here survives client-side
@@ -23,6 +24,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <GlobalTools />
         <AgentConfirm />
         <ExamplePrompts />
+        <AgentActivityRail />
         <WebMcpStatus />
       </WebMcpRegistryProvider>
     </div>

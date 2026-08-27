@@ -30,13 +30,27 @@ function ToolRegistration({ spec, enabled = true }: { spec: ToolSpec; enabled?: 
   const report = registry?.report
   const withdraw = registry?.withdraw
   const setSupported = registry?.setSupported
+  const beginActivity = registry?.beginActivity
+  const endActivity = registry?.endActivity
 
   const { supported, registered, error } = useWebMCP({
     name: spec.name,
     description: spec.description,
     inputSchema: spec.inputSchema,
     annotations: spec.annotations,
-    execute: spec.execute,
+    // Wrapping here rather than in each tool means EVERY call is announced, including reads.
+    // A read the user never sees is a read they could not consent to.
+    execute: async (args: Record<string, unknown>) => {
+      const id = beginActivity?.(spec.name)
+      try {
+        const result = await spec.execute(args)
+        if (id !== undefined) endActivity?.(id, 'done', typeof result === 'string' ? result.split('\n')[0] : undefined)
+        return result
+      } catch (e) {
+        if (id !== undefined) endActivity?.(id, 'failed', e instanceof Error ? e.message : undefined)
+        throw e
+      }
+    },
     enabled,
     onError: (e) => {
       // A rejected registration is an ABSENT tool: nothing throws, nothing logs, it is simply

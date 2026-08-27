@@ -1,6 +1,18 @@
 'use client'
 
-import { createContext, useCallback, useContext, useMemo, useState } from 'react'
+import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react'
+
+/**
+ * Agent actions are announced in the app's words, never the tool's. A user should read
+ * "MOVED  7 - Senso-ji -> Day 3", not `move_place({place_ref:"7"})`.
+ */
+const LABELS: Record<string, string> = {
+  get_app_state: 'READING', list_trips: 'READING', get_itinerary: 'READING',
+  get_place_evidence: 'CHECKING', get_map_view: 'LOOKING', list_saved_reels: 'READING',
+  show_on_map: 'SHOWING', set_map_mode: 'SWITCHING',
+  save_reels: 'SAVING', plan_trip_from_reels: 'PLANNING', get_trip_progress: 'WATCHING',
+  move_place: 'MOVED', remove_place: 'REMOVED',
+}
 
 /**
  * A view of what is currently registered, so the UI can SHOW the user what the agent can do.
@@ -18,6 +30,16 @@ export type RegisteredToolView = {
   registered: boolean
 }
 
+export type ActivityEntry = {
+  id: number
+  tool: string
+  /** Written in the app's vocabulary, never the tool's. */
+  label: string
+  detail: string | null
+  status: 'running' | 'done' | 'failed'
+  at: number
+}
+
 export type PendingConfirm = {
   summary: string
   resolve: (approved: boolean) => void
@@ -29,6 +51,10 @@ type RegistryValue = {
   pending: PendingConfirm | null
   /** Called from inside a tool's execute; resolves when the user answers. */
   requestConfirm: (summary: string) => Promise<boolean>
+  /** Visible log of what the agent did. Reads included — a silent read cannot be consented to. */
+  activity: ActivityEntry[]
+  beginActivity: (tool: string) => number
+  endActivity: (id: number, status: 'done' | 'failed', detail?: string) => void
   /** Whether `document.modelContext` exists at all — false in an ordinary browser. */
   supported: boolean
   report: (view: RegisteredToolView) => void
@@ -53,6 +79,23 @@ export function WebMcpRegistryProvider({ children }: { children: React.ReactNode
   const [tools, setTools] = useState<RegisteredToolView[]>([])
   const [supported, setSupported] = useState(false)
   const [pending, setPending] = useState<PendingConfirm | null>(null)
+  const [activity, setActivity] = useState<ActivityEntry[]>([])
+  const activitySeq = useRef(0)
+
+  // Stable by construction. The render-loop bug earlier came from depending on the CONTEXT VALUE
+  // (memoized on state) instead of on callbacks like these, so keep these dependency-free.
+  const beginActivity = useCallback((tool: string) => {
+    const id = ++activitySeq.current
+    setActivity((prev) => [
+      ...prev.slice(-4),   // a tail, not a transcript
+      { id, tool, label: LABELS[tool] ?? 'WORKING', detail: null, status: 'running', at: Date.now() },
+    ])
+    return id
+  }, [])
+
+  const endActivity = useCallback((id: number, status: 'done' | 'failed', detail?: string) => {
+    setActivity((prev) => prev.map((e) => (e.id === id ? { ...e, status, detail: detail ?? null } : e)))
+  }, [])
 
   /**
    * One approval at a time. A queue would let an agent stack irreversible actions behind a
@@ -83,8 +126,11 @@ export function WebMcpRegistryProvider({ children }: { children: React.ReactNode
   }, [])
 
   const value = useMemo<RegistryValue>(
-    () => ({ tools, supported, pending, requestConfirm, report, withdraw, setSupported }),
-    [tools, supported, pending, requestConfirm, report, withdraw],
+    () => ({
+      tools, supported, pending, requestConfirm, activity, beginActivity, endActivity,
+      report, withdraw, setSupported,
+    }),
+    [tools, supported, pending, requestConfirm, activity, beginActivity, endActivity, report, withdraw],
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

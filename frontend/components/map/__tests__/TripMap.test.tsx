@@ -5,12 +5,14 @@ import { markTripFramed } from '@/lib/trip/map-handoff'
 import MapProvider from '@/components/map/MapProvider'
 import TripMap from '@/components/map/TripMap'
 
-const { mapInstance, MapCtor, MarkerCtor, BoundsCtor, markerElements } = vi.hoisted(() => {
+const {
+  mapInstance, MapCtor, MarkerCtor, PopupCtor, BoundsCtor, markerElements, popupElements,
+} = vi.hoisted(() => {
   const handler = () => ({ enable: vi.fn(), disable: vi.fn() })
   const mapInstance = {
-    on: vi.fn(),
+    on: vi.fn(), off: vi.fn(), getZoom: vi.fn(() => 13),
     addSource: vi.fn(), addLayer: vi.fn(),
-    getSource: vi.fn(() => undefined), getLayer: vi.fn(() => undefined),
+    getSource: vi.fn((_id?: string) => undefined), getLayer: vi.fn((_id?: string) => undefined),
     removeLayer: vi.fn(), removeSource: vi.fn(),
     flyTo: vi.fn(), fitBounds: vi.fn(), setConfigProperty: vi.fn(),
     remove: vi.fn(), resize: vi.fn(), stop: vi.fn(),
@@ -27,12 +29,27 @@ const { mapInstance, MapCtor, MarkerCtor, BoundsCtor, markerElements } = vi.hois
     }
     return marker
   })
+  const popupElements: HTMLElement[] = []
+  const PopupCtor = vi.fn(() => {
+    const popup = {
+      setLngLat: vi.fn(() => popup),
+      setDOMContent: vi.fn((element: HTMLElement) => {
+        popupElements.push(element)
+        return popup
+      }),
+      addTo: vi.fn(() => popup),
+      remove: vi.fn(),
+    }
+    return popup
+  })
   const BoundsCtor = vi.fn(() => ({ extend: vi.fn() }))
-  return { mapInstance, MapCtor, MarkerCtor, BoundsCtor, markerElements }
+  return { mapInstance, MapCtor, MarkerCtor, PopupCtor, BoundsCtor, markerElements, popupElements }
 })
 
 vi.mock('mapbox-gl', () => ({
-  default: { Map: MapCtor, Marker: MarkerCtor, LngLatBounds: BoundsCtor, accessToken: '' },
+  default: {
+    Map: MapCtor, Marker: MarkerCtor, Popup: PopupCtor, LngLatBounds: BoundsCtor, accessToken: '',
+  },
 }))
 vi.mock('mapbox-gl/dist/mapbox-gl.css', () => ({}))
 
@@ -66,15 +83,23 @@ function renderMap(props: Partial<Parameters<typeof TripMap>[0]> = {}) {
 const geomOf = (id: string) =>
   TOKYO_TRIP.transport_legs.find((l) => l.id === id)!.route_geometry!.coordinates
 
-function trailCoords(): number[][] {
+function trailFeatures(): { properties: { day_number: number; color: string }; geometry: { coordinates: number[][] } }[] {
   const call = mapInstance.addSource.mock.calls.find((c) => c[0] === 'trip-trail')
-  return (call![1] as { data: { geometry: { coordinates: number[][] } } }).data.geometry.coordinates
+  return (call![1] as {
+    data: { features: { properties: { day_number: number; color: string }; geometry: { coordinates: number[][] } }[] }
+  }).data.features
+}
+
+function trailCoords(): number[][] {
+  return trailFeatures().flatMap((feature, index) =>
+    index === 0 ? feature.geometry.coordinates : feature.geometry.coordinates.slice(1))
 }
 
 describe('TripMap', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     markerElements.length = 0
+    popupElements.length = 0
     process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN = 'pk.test'
     // Framing is scheduled via requestAnimationFrame (so a Strict Mode remount /
     // generation handoff can't cancel the fit — see TripMap). Run it synchronously
@@ -177,31 +202,28 @@ describe('TripMap', () => {
     await flush()
     fireLoad()
 
-    // one brass journey line (casing + dashed core), not per-leg segments
+    // one route source with a brass casing and day-coloured dashed core
     expect(mapInstance.addLayer).toHaveBeenCalledWith(expect.objectContaining({
       id: 'trip-trail-casing',
       paint: expect.objectContaining({ 'line-width': 9, 'line-opacity': 0.18 }),
     }))
     expect(mapInstance.addLayer).toHaveBeenCalledWith(expect.objectContaining({
       id: 'trip-trail-core',
-      paint: expect.objectContaining({ 'line-width': 2.6, 'line-dasharray': [0.1, 1.6] }),
+      paint: expect.objectContaining({
+        'line-width': 2.6,
+        'line-dasharray': [0.1, 1.6],
+        'line-color': ['get', 'color'],
+      }),
     }))
-    // the line threads every dayed stop in (day, sort_order) order, Day 1 → last day, with
-    // each same-day hop's road interior spliced in between its two pins
+    // Each day is a separate feature so Mapbox can colour it independently.
     expect(mapInstance.addSource).toHaveBeenCalledWith('trip-trail', expect.objectContaining({
       data: expect.objectContaining({
-        geometry: {
-          type: 'LineString',
-          coordinates: [
-            [139.7967, 35.7148],             // Senso-ji    (Day 1, stop 1)
-            ...geomOf('leg_1').slice(1, -1), // road interior, Day 1 hop
-            [139.7906, 35.6497],             // teamLab     (Day 1, stop 2)
-            [139.7016, 35.658],              // Shibuya Sky (Day 2, stop 3) — cross-day, straight
-            ...geomOf('leg_2').slice(1, -1), // road interior, Day 2 hop
-            [139.7002, 35.6606],             // Ichiran     (Day 2, stop 4)
-            [139.8804, 35.6329],             // Disneyland  (Day 3, stop 5) — cross-day, straight
-          ],
-        },
+        type: 'FeatureCollection',
+        features: expect.arrayContaining([
+          expect.objectContaining({ properties: expect.objectContaining({ day_number: 1 }) }),
+          expect.objectContaining({ properties: expect.objectContaining({ day_number: 2 }) }),
+          expect.objectContaining({ properties: expect.objectContaining({ day_number: 3 }) }),
+        ]),
       }),
     }))
 
@@ -215,6 +237,132 @@ describe('TripMap', () => {
     expect(byLabel('Tokyo Disneyland')).toHaveTextContent('5')
     // the undayed base hotel is not a stop on the trail — it recedes, unnumbered
     expect(byLabel('Shinjuku Granbell Hotel')).toHaveClass('constellation-pin--receding')
+  })
+
+  it('shows a place-name chip at city zoom and hides it when zoomed out', async () => {
+    renderMap()
+    await flush()
+    fireLoad()
+    await flush()
+
+    const marker = markerElements.find(
+      (element) => element.getAttribute('aria-label') === 'Senso-ji Temple',
+    )!
+    const chip = marker.querySelector<HTMLElement>('.constellation-pin__label')!
+    expect(marker.querySelector('.constellation-pin__number')).toHaveTextContent('1')
+    expect(chip).toHaveTextContent('Senso-ji Temple')
+    expect(chip).toHaveClass('constellation-pin__label--visible')
+
+    mapInstance.getZoom.mockReturnValue(8)
+    const zoomHandler = mapInstance.on.mock.calls.find((call) => call[0] === 'zoom')?.[1]
+    act(() => { (zoomHandler as () => void)() })
+    expect(chip).not.toHaveClass('constellation-pin__label--visible')
+  })
+
+  it('truncates a long marker chip without losing the full accessible name', async () => {
+    const bundle = structuredClone(TOKYO_TRIP)
+    const fullName = 'The Extremely Long Museum of Contemporary Astronomical Art'
+    bundle.places[0].place.name = fullName
+    renderMap({ bundle })
+    await flush()
+    fireLoad()
+
+    const marker = markerElements.find(
+      (element) => element.getAttribute('aria-label') === fullName,
+    )!
+    const chip = marker.querySelector<HTMLElement>('.constellation-pin__label')!
+    expect(chip.textContent).toMatch(/…$/)
+    expect(chip.textContent!.length).toBeLessThan(fullName.length)
+    expect(chip).toHaveAttribute('title', fullName)
+  })
+
+  it('opens evidence in a text-only popup when a marker is clicked', async () => {
+    const bundle = structuredClone(TOKYO_TRIP)
+    bundle.places[0].evidence_json.quote = '<img src=x onerror="alert(1)"> Visit before sunset.'
+    bundle.places[0].evidence_json.source_url = 'https://www.instagram.com/reel/safe-source/'
+    const onSelectPlace = vi.fn()
+
+    renderMap({ bundle, onSelectPlace })
+    await flush()
+    fireLoad()
+
+    const marker = markerElements.find(
+      (element) => element.getAttribute('aria-label') === 'Senso-ji Temple',
+    )!
+    act(() => { marker.click() })
+
+    expect(onSelectPlace).toHaveBeenCalledWith(bundle.places[0].place_id)
+    expect(PopupCtor).toHaveBeenCalledWith(expect.objectContaining({
+      className: 'astrail-evidence-popup',
+    }))
+    const popup = popupElements.at(-1)!
+    expect(popup).toHaveTextContent('Stop 1')
+    expect(popup).toHaveTextContent('Day 1')
+    expect(popup).toHaveTextContent('<img src=x onerror="alert(1)"> Visit before sunset.')
+    expect(popup.querySelector('img')).toBeNull()
+    expect(popup.querySelector('a')).toHaveAttribute(
+      'href', 'https://www.instagram.com/reel/safe-source/',
+    )
+  })
+
+  it('does not make an attacker-controlled non-http source URL clickable', async () => {
+    const bundle = structuredClone(TOKYO_TRIP)
+    bundle.places[0].evidence_json.source_url = 'javascript:alert(document.cookie)'
+
+    renderMap({ bundle })
+    await flush()
+    fireLoad()
+    const marker = markerElements.find(
+      (element) => element.getAttribute('aria-label') === 'Senso-ji Temple',
+    )!
+    act(() => { marker.click() })
+
+    const popup = popupElements.at(-1)!
+    expect(popup).toHaveTextContent('javascript:alert(document.cookie)')
+    expect(popup.querySelector('a')).toBeNull()
+  })
+
+  it('colours each day segment while keeping the trail continuous', async () => {
+    renderMap()
+    await flush()
+    fireLoad()
+
+    const features = trailFeatures()
+    expect(features.map((feature) => feature.properties.day_number)).toEqual([1, 2, 3])
+    expect(new Set(features.map((feature) => feature.properties.color)).size).toBe(3)
+    for (let index = 1; index < features.length; index++) {
+      expect(features[index].geometry.coordinates[0]).toEqual(
+        features[index - 1].geometry.coordinates.at(-1),
+      )
+    }
+  })
+
+  it('adds 3D buildings from the composite source at street zoom', async () => {
+    mapInstance.getSource.mockImplementation((id?: string) =>
+      id === 'composite' ? ({} as never) : undefined)
+    renderMap()
+    await flush()
+    fireLoad()
+
+    expect(mapInstance.addLayer).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'astrail-3d-buildings',
+      type: 'fill-extrusion',
+      source: 'composite',
+      'source-layer': 'building',
+      minzoom: 15,
+      slot: 'middle',
+    }))
+    mapInstance.getSource.mockReturnValue(undefined as never)
+  })
+
+  it('skips 3D buildings when the active style has no composite source', async () => {
+    renderMap()
+    await flush()
+    fireLoad()
+
+    expect(mapInstance.addLayer).not.toHaveBeenCalledWith(expect.objectContaining({
+      id: 'astrail-3d-buildings',
+    }))
   })
 
   it('keeps one whole-trip trail — switching the active day does not redraw it', async () => {

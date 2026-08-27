@@ -2,13 +2,139 @@
 
 import { useEffect, useRef } from 'react'
 import mapboxgl from 'mapbox-gl'
-import type { TripBundle } from '@/lib/trip/backend-types'
+import type { TripBundle, TripPlace } from '@/lib/trip/backend-types'
 import {
   trailCoordinates, buildTrailNumbers, buildPlaceIndex, placesForDay, hasRealCoords,
   selectedHotel, hubSpokeFeatures, isHotelBasePlace, hotelBasePlaceIds,
 } from '@/lib/trip/selectors'
 import { consumeTripFramed } from '@/lib/trip/map-handoff'
 import { useSharedMap } from '@/components/map/MapProvider'
+
+const DAY_ROUTE_COLORS = [
+  '#F4D7A1', // light starlight brass
+  '#C9974E', // Astrail brass
+  '#8F632C', // dark bronze
+  '#E7B866', // bright amber
+  '#A97842', // warm umber
+  '#FFE2AA', // pale gold
+] as const
+
+const BUILDING_LAYER_ID = 'astrail-3d-buildings'
+const LABEL_ZOOM = 11
+const LABEL_MAX_CHARS = 24
+
+function shortPlaceName(name: string): string {
+  const chars = Array.from(name)
+  if (chars.length <= LABEL_MAX_CHARS) return name
+  return `${chars.slice(0, LABEL_MAX_CHARS - 1).join('')}…`
+}
+
+function safeWebUrl(raw: string): string | null {
+  try {
+    const parsed = new URL(raw)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.href : null
+  } catch {
+    return null
+  }
+}
+
+/** Build popup DOM without parsing attacker-controlled caption text as markup. */
+function evidencePopupContent(tripPlace: TripPlace, pin: number | null): HTMLElement {
+  const content = document.createElement('article')
+  content.className = 'evidence-popup'
+
+  const eyebrow = document.createElement('p')
+  eyebrow.className = 'evidence-popup__eyebrow'
+  eyebrow.textContent = [
+    pin === null ? 'Place' : `Stop ${pin}`,
+    tripPlace.day_number === null ? 'Unscheduled' : `Day ${tripPlace.day_number}`,
+  ].join(' · ')
+
+  const title = document.createElement('h3')
+  title.className = 'evidence-popup__title'
+  title.textContent = tripPlace.place.name
+
+  const evidenceLabel = document.createElement('p')
+  evidenceLabel.className = 'evidence-popup__label'
+  evidenceLabel.textContent = tripPlace.evidence_json.quote ? 'Verbatim Reel evidence' : 'Why it is here'
+
+  const evidence = document.createElement('blockquote')
+  evidence.className = 'evidence-popup__quote'
+  evidence.textContent = tripPlace.evidence_json.quote
+    ?? tripPlace.evidence_json.rationale
+    ?? 'No caption quote is available for this stop.'
+
+  const confidence = document.createElement('p')
+  confidence.className = 'evidence-popup__confidence'
+  confidence.textContent = `Confidence ${Math.round(tripPlace.evidence_json.confidence * 100)}%`
+
+  content.append(eyebrow, title, evidenceLabel, evidence, confidence)
+
+  const sourceUrl = tripPlace.evidence_json.source_url
+  if (sourceUrl) {
+    const safeUrl = safeWebUrl(sourceUrl)
+    if (safeUrl) {
+      const source = document.createElement('a')
+      source.className = 'evidence-popup__source'
+      source.href = safeUrl
+      source.target = '_blank'
+      source.rel = 'noopener noreferrer'
+      source.textContent = 'Open source Reel ↗'
+      content.append(source)
+    } else {
+      const unsafeSource = document.createElement('p')
+      unsafeSource.className = 'evidence-popup__source evidence-popup__source--invalid'
+      unsafeSource.textContent = sourceUrl
+      content.append(unsafeSource)
+    }
+  }
+
+  return content
+}
+
+/**
+ * Split the continuous journey into day features. The connector from the previous day's last
+ * stop to this day's first stop belongs to the arriving day, so adjacent features share an
+ * endpoint and the route never breaks visually.
+ */
+function dayTrailFeatureCollection(
+  bundle: TripBundle,
+): GeoJSON.FeatureCollection<GeoJSON.LineString, { day_number: number; color: string }> {
+  const dayNumbers = [...new Set(
+    bundle.places
+      .filter((tripPlace) => tripPlace.day_number !== null)
+      .map((tripPlace) => tripPlace.day_number as number),
+  )].sort((a, b) => a - b)
+  const features: GeoJSON.Feature<
+    GeoJSON.LineString,
+    { day_number: number; color: string }
+  >[] = []
+  let previous: [number, number] | null = null
+
+  dayNumbers.forEach((dayNumber, dayIndex) => {
+    const dayPlaces = placesForDay(bundle, dayNumber)
+      .filter((tripPlace) => hasRealCoords(tripPlace.place.lng, tripPlace.place.lat))
+    if (dayPlaces.length === 0) return
+
+    const withinDay = dayPlaces.length === 1
+      ? [[dayPlaces[0].place.lng, dayPlaces[0].place.lat] as [number, number]]
+      : trailCoordinates({ ...bundle, places: dayPlaces })
+    const coordinates = previous ? [previous, ...withinDay] : withinDay
+    previous = withinDay.at(-1) ?? previous
+    if (coordinates.length < 2) return
+
+    features.push({
+      type: 'Feature',
+      properties: {
+        day_number: dayNumber,
+        color: DAY_ROUTE_COLORS[dayIndex % DAY_ROUTE_COLORS.length],
+      },
+      geometry: { type: 'LineString', coordinates },
+    })
+  })
+
+  return { type: 'FeatureCollection', features }
+}
 
 export default function TripMap({
   bundle, activeDayNumber, selectedPlaceId, onSelectPlace,
@@ -26,6 +152,9 @@ export default function TripMap({
 }) {
   const { hasToken, ready, getMap, acquire, release, setMarkers } = useSharedMap()
   const routeIdsRef = useRef<string[]>([])
+  const markerLabelsRef = useRef<HTMLElement[]>([])
+  const activePopupRef = useRef<mapboxgl.Popup | null>(null)
+  const buildingLayerAddedRef = useRef(false)
   const framedRef = useRef(false)
 
   function clearRoutes() {
@@ -36,6 +165,22 @@ export default function TripMap({
       if (map.getSource(id)) map.removeSource(id)
     }
     routeIdsRef.current = []
+  }
+
+  function clearBuildings() {
+    const map = getMap()
+    if (!map) return
+    if (map.getLayer(BUILDING_LAYER_ID)) map.removeLayer(BUILDING_LAYER_ID)
+    buildingLayerAddedRef.current = false
+  }
+
+  function syncMarkerLabelVisibility() {
+    const map = getMap()
+    if (!map) return
+    const visible = map.getZoom() >= LABEL_ZOOM
+    for (const label of markerLabelsRef.current) {
+      label.classList.toggle('constellation-pin__label--visible', visible)
+    }
   }
 
   // Daybreak world (DESIGN-DRAFT §5): generation happens at night (GenerationScene);
@@ -53,7 +198,11 @@ export default function TripMap({
     // Layers are ours, and the map outlives this component — leaving them behind would
     // paint this trip's routes over the next one.
     return () => {
+      activePopupRef.current?.remove()
+      activePopupRef.current = null
+      markerLabelsRef.current = []
       clearRoutes()
+      clearBuildings()
       release()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -72,6 +221,7 @@ export default function TripMap({
     // predicate is IMPORTED from selectors (the same one hubSpokeFeatures uses to pick spoke
     // targets) — reimplementing it risks dropping the base_place_id signal and double-pinning.
     const basePlaceIds = hotelBasePlaceIds(bundle)
+    const labels: HTMLElement[] = []
     const markers = bundle.places
       .filter((tp) => hasRealCoords(tp.place.lng, tp.place.lat))
       .filter((tp) => layerMode !== 'hub' || !isHotelBasePlace(tp, basePlaceIds))
@@ -86,8 +236,33 @@ export default function TripMap({
           number === null ? 'constellation-pin--receding' : '',
           tp.place_id === selectedPlaceId ? 'constellation-pin--selected' : '',
         ].filter(Boolean).join(' ')
-        el.textContent = number === null ? '' : String(number)
-        el.addEventListener('click', (e) => { e.stopPropagation(); onSelectPlace(tp.place_id) })
+        const numberEl = document.createElement('span')
+        numberEl.className = 'constellation-pin__number'
+        numberEl.textContent = number === null ? '' : String(number)
+        el.append(numberEl)
+        if (number !== null) {
+          const label = document.createElement('span')
+          label.className = 'constellation-pin__label'
+          label.textContent = shortPlaceName(tp.place.name)
+          label.title = tp.place.name
+          labels.push(label)
+          el.append(label)
+        }
+        el.addEventListener('click', (e) => {
+          e.stopPropagation()
+          onSelectPlace(tp.place_id)
+          activePopupRef.current?.remove()
+          activePopupRef.current = new mapboxgl.Popup({
+            className: 'astrail-evidence-popup',
+            closeButton: true,
+            closeOnClick: true,
+            offset: 18,
+            maxWidth: '340px',
+          })
+            .setLngLat([tp.place.lng, tp.place.lat])
+            .setDOMContent(evidencePopupContent(tp, number))
+            .addTo(map)
+        })
         return new mapboxgl.Marker({ element: el }).setLngLat([tp.place.lng, tp.place.lat]).addTo(map)
       })
     // Hub mode: pin the selected PLACED hotel as the hub. Honest empty-state (Guardrail #1 / C5):
@@ -109,7 +284,9 @@ export default function TripMap({
         )
       }
     }
+    markerLabelsRef.current = labels
     setMarkers(markers)
+    syncMarkerLabelVisibility()
   }
 
   // "Constellation trail" (docs/roadmap/trip-map-day-connections.md): one continuous brass
@@ -124,14 +301,14 @@ export default function TripMap({
     const map = getMap()
     if (!map) return
     clearRoutes()
-    const coordinates = trailCoordinates(bundle)
-    if (coordinates.length < 2) return // one stop (or none) has nothing to connect
+    const trail = dayTrailFeatureCollection(bundle)
+    if (trail.features.length === 0) return // one stop (or none) has nothing to connect
     const id = 'trip-trail'
     const casingId = `${id}-casing`
     const coreId = `${id}-core`
     map.addSource(id, {
       type: 'geojson',
-      data: { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates } },
+      data: trail,
     })
     map.addLayer({
       id: casingId,
@@ -146,13 +323,44 @@ export default function TripMap({
       source: id,
       layout: { 'line-join': 'round', 'line-cap': 'round' },
       paint: {
-        'line-color': '#C9974E',
+        'line-color': ['get', 'color'],
         'line-width': 2.6,
         'line-opacity': 0.95,
         'line-dasharray': [0.1, 1.6],
       },
     })
     routeIdsRef.current.push(id, casingId, coreId)
+  }
+
+  function drawBuildings() {
+    const map = getMap()
+    if (!map || buildingLayerAddedRef.current || map.getLayer(BUILDING_LAYER_ID)) return
+    // Standard normally exposes vector buildings through `composite`. Other styles may not;
+    // skipping the layer keeps those styles fully functional instead of failing the trip map.
+    if (!map.getSource('composite')) return
+    try {
+      map.addLayer({
+        id: BUILDING_LAYER_ID,
+        type: 'fill-extrusion',
+        source: 'composite',
+        'source-layer': 'building',
+        minzoom: 15,
+        slot: 'middle',
+        filter: ['==', ['get', 'extrude'], 'true'],
+        paint: {
+          'fill-extrusion-color': '#B89D78',
+          'fill-extrusion-height': ['coalesce', ['get', 'height'], 8],
+          'fill-extrusion-base': ['coalesce', ['get', 'min_height'], 0],
+          'fill-extrusion-opacity': 0.42,
+          'fill-extrusion-vertical-gradient': true,
+        },
+      })
+      buildingLayerAddedRef.current = true
+    } catch {
+      // A style can expose `composite` without a `building` source-layer. That is a supported
+      // no-buildings state; the route and DOM markers remain available above the canvas.
+      buildingLayerAddedRef.current = false
+    }
   }
 
   // Hotel-hub map (plan 2026-08-04-hotel-hub-map, T9): hub mode's counterpart to drawTrail. Straight
@@ -250,6 +458,7 @@ export default function TripMap({
       framedRef.current = true
       drawMarkers()
       drawRouteLayer()
+      drawBuildings()
       // Arriving from the trips dashboard already framed on this trip → settle into the
       // panel geometry (short) rather than re-fly the whole camera (full). Any other entry
       // (generation handoff, direct load) never marks the handoff, so it frames normally.
@@ -257,6 +466,16 @@ export default function TripMap({
       flyToTrip(inherited ? 900 : 2200)
     })
     return () => { cancelled = true; cancelAnimationFrame(raf) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready])
+
+  useEffect(() => {
+    if (!ready) return
+    const map = getMap()
+    if (!map) return
+    map.on('zoom', syncMarkerLabelVisibility)
+    syncMarkerLabelVisibility()
+    return () => { map.off('zoom', syncMarkerLabelVisibility) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready])
 

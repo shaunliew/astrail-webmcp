@@ -601,6 +601,46 @@ button:focus-visible {
   width: 26px;
 }
 
+.constellation-pin__number {
+  align-items: center;
+  display: flex;
+  height: 100%;
+  justify-content: center;
+  width: 100%;
+}
+
+/* A child, not the Mapbox-positioned marker root. It may sit beside the pin without
+   participating in Mapbox's inline positioning transform. Zoom visibility is driven by
+   TripMap so city context is labeled while regional views stay quiet. */
+.constellation-pin__label {
+  background: rgba(11, 15, 22, 0.92);
+  border: 1px solid rgba(239, 201, 141, 0.38);
+  border-radius: 9999px;
+  box-shadow: 0 3px 12px rgba(5, 5, 6, 0.34);
+  color: #F8EAD1;
+  font-size: 10px;
+  font-weight: 600;
+  left: calc(100% + 6px);
+  letter-spacing: 0.01em;
+  line-height: 1;
+  max-width: 150px;
+  opacity: 0;
+  overflow: hidden;
+  padding: 5px 8px;
+  pointer-events: none;
+  position: absolute;
+  text-overflow: ellipsis;
+  top: 50%;
+  transition: opacity 160ms ease-out, visibility 160ms ease-out;
+  visibility: hidden;
+  white-space: nowrap;
+}
+
+.constellation-pin__label--visible {
+  opacity: 0.92;
+  visibility: visible;
+}
+
 .constellation-pin--reel_extracted {
   border-style: solid;
 }
@@ -734,6 +774,100 @@ button:focus-visible {
   line-height: 1;
   padding: 0;
   width: 34px;
+}
+
+/* Mapbox evidence popup. Caption text is inserted with textContent/setDOMContent in TripMap;
+   these rules only style the resulting nodes and never parse evidence as HTML. */
+.astrail-evidence-popup .mapboxgl-popup-content {
+  background: rgba(11, 15, 22, 0.97);
+  border: 1px solid rgba(239, 201, 141, 0.48);
+  border-radius: 12px;
+  box-shadow: 0 14px 40px rgba(5, 5, 6, 0.48);
+  color: #F8EAD1;
+  padding: 16px 18px 15px;
+}
+
+.astrail-evidence-popup.mapboxgl-popup-anchor-bottom .mapboxgl-popup-tip {
+  border-top-color: rgba(11, 15, 22, 0.97);
+}
+
+.astrail-evidence-popup.mapboxgl-popup-anchor-top .mapboxgl-popup-tip {
+  border-bottom-color: rgba(11, 15, 22, 0.97);
+}
+
+.astrail-evidence-popup.mapboxgl-popup-anchor-left .mapboxgl-popup-tip {
+  border-right-color: rgba(11, 15, 22, 0.97);
+}
+
+.astrail-evidence-popup.mapboxgl-popup-anchor-right .mapboxgl-popup-tip {
+  border-left-color: rgba(11, 15, 22, 0.97);
+}
+
+.astrail-evidence-popup .mapboxgl-popup-close-button {
+  color: rgba(248, 234, 209, 0.7);
+  font-size: 18px;
+  padding: 4px 8px;
+}
+
+.evidence-popup {
+  display: grid;
+  gap: 7px;
+  max-width: 292px;
+}
+
+.evidence-popup__eyebrow,
+.evidence-popup__label,
+.evidence-popup__confidence,
+.evidence-popup__source {
+  margin: 0;
+}
+
+.evidence-popup__eyebrow,
+.evidence-popup__label {
+  color: #EFC98D;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.evidence-popup__title {
+  color: #FFF8EB;
+  font-family: var(--font-geist), system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.2;
+  margin: 0 22px 2px 0;
+}
+
+.evidence-popup__quote {
+  border-left: 2px solid rgba(239, 201, 141, 0.58);
+  color: rgba(255, 248, 235, 0.88);
+  font-size: 12px;
+  line-height: 1.45;
+  margin: 0;
+  max-height: 132px;
+  overflow-y: auto;
+  padding-left: 10px;
+  white-space: pre-wrap;
+}
+
+.evidence-popup__confidence {
+  color: rgba(248, 234, 209, 0.58);
+  font-size: 10px;
+}
+
+.evidence-popup__source {
+  color: #EFC98D;
+  font-size: 11px;
+  text-decoration: underline;
+  text-decoration-color: rgba(239, 201, 141, 0.4);
+  text-underline-offset: 3px;
+}
+
+.evidence-popup__source--invalid {
+  color: rgba(248, 234, 209, 0.48);
+  overflow-wrap: anywhere;
+  text-decoration: none;
 }
 
 /* The single persistent Mapbox instance (components/map/MapProvider). Fixed to the
@@ -928,6 +1062,10 @@ button:focus-visible {
   }
 
   .constellation-pin {
+    transition: none;
+  }
+
+  .constellation-pin__label {
     transition: none;
   }
 

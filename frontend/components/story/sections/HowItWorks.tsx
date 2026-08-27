@@ -4,32 +4,46 @@ import ShotSlot from './ShotSlot'
 import { SCREENS } from '../story-config'
 
 /* The trust spine: what Astrail actually does, told with REAL app UI.
-   Three steps, real screenshots (no renders, no simulated product). */
+   Three steps, real screenshots (no renders, no simulated product).
+
+   Rewritten agent-first for the challenge build. The steps used to describe the manual flow with
+   the agent as a footnote, which is backwards for a page whose whole subject is operating a
+   website WITH an agent. Each step now leads with what you say and names the tools behind it, so
+   a judge can match the claim to the registry.
+
+   The badge label became a per-step field. It was hardcoded "Soon" for a Telegram teaser that is
+   out of scope here and promised something nobody could try; a roadmap word sitting in front of a
+   shipped capability read as though the capability were unbuilt. */
 const STEPS = [
   {
     eyebrow: 'Step 1',
-    title: 'Paste the reels you saved',
-    body: 'Drop 1–5 Instagram travel reels, your dates, budget and vibe. That pile of saved inspiration is the input.',
+    title: 'Hand it the reels',
+    body: 'Paste 1\u20135 Instagram Reel links with your dates, budget and vibe \u2014 or open the page in ChatGPT and say \u201csave these reels\u201d. The agent calls the same tool the form does, so the two paths are not different features.',
     src: SCREENS.createTrail,
     alt: 'Astrail create-trail form with pasted reel links',
-    slotLabel: 'real screenshot — create-trail form',
-    note: 'forward reels straight to our Telegram bot and skip the copy-paste',
+    slotLabel: 'real screenshot \u2014 create-trail form',
+    badge: 'Agent',
+    note: 'save_reels \u00b7 up to 5 at a time, non-Instagram links refused before any request',
   },
   {
     eyebrow: 'Step 2',
-    title: 'Agents do the research',
-    body: 'Astrail extracts every place, verifies it exists, and checks weather and routes. Each recommendation keeps its evidence: the source reel and the exact caption quote.',
+    title: 'Follow the work as it happens',
+    body: 'Astrail extracts every place, verifies it exists, and checks weather and routes. Ask the agent to start it and you get the run narrated \u2014 which stage it is on, what it kept, what it dropped \u2014 instead of sixty to a hundred and eighty seconds of spinner.',
     src: SCREENS.agentsResearch,
     alt: 'Astrail agents researching the places from your Reels, over the live globe',
-    slotLabel: 'real screenshot — agents at work',
+    slotLabel: 'real screenshot \u2014 agents at work',
+    badge: 'Agent',
+    note: 'plan_trip_from_reels \u2192 get_trip_progress \u00b7 approval on the page before anything is spent',
   },
   {
     eyebrow: 'Step 3',
-    title: 'Get a route you can actually take',
-    body: 'A day-by-day itinerary on a real map, connected by real routes, where every stop traces back to the reel it came from.',
+    title: 'Change it by saying so',
+    body: 'A day-by-day itinerary on a real map, every stop traceable to the reel it came from. \u201cDay 2 is packed \u2014 move stop 7 to day 3\u201d and the route redraws while you watch, because the agent drives the same setters your click does.',
     src: SCREENS.tripWorkspace,
     alt: 'Astrail trip workspace: itinerary beside the live map',
-    slotLabel: 'real screenshot — trip workspace',
+    slotLabel: 'real screenshot \u2014 trip workspace',
+    badge: 'Agent',
+    note: 'move_place \u00b7 remove_place \u00b7 add_place \u00b7 replan_trip \u00b7 show_on_map',
   },
 ] as const
 
@@ -44,7 +58,7 @@ export default function HowItWorks() {
           How it works
         </p>
         <h2 className="story-h max-w-[24ch] text-[color:var(--ink-900)]">
-          From saved reels to a real plan, in one sitting.
+          From saved reels to a real plan — with an agent doing the clicking.
         </h2>
 
         <div className="mt-14 flex flex-col gap-20">
@@ -66,7 +80,7 @@ export default function HowItWorks() {
                 {'note' in step && step.note ? (
                   <p className="mt-4 text-[14px] font-medium text-[color:var(--story-teal-ink)]">
                     <span className="mr-2 rounded-full border border-[color:var(--story-teal-ink)] px-2 py-[2px] text-[11px] uppercase tracking-[0.12em]">
-                      Soon
+                      {'badge' in step && step.badge ? step.badge : 'Soon'}
                     </span>
                     {step.note}
                   </p>

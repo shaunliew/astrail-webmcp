@@ -334,16 +334,24 @@ class TripPlaceRow(BaseModel):
 class TripPlaceEditResponse(BaseModel):
     trip_place: TripPlaceRow
     days_touched: list[int]
+    routes_refreshed: bool
 
 
 class TripPlaceCreateResponse(BaseModel):
     trip_place: TripPlaceRow
     days_touched: list[int]
+    routes_refreshed: bool
 
 
 class TripPlaceDeleteResponse(BaseModel):
     removed_id: str
     days_touched: list[int]
+    routes_refreshed: bool
+
+
+class TripReplanResponse(BaseModel):
+    days_narrated: int
+    routes_refreshed: bool
 
 
 class TripRow(BaseModel):

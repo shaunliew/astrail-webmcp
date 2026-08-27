@@ -55,6 +55,7 @@ from api.schemas import (
     TripPlaceEditRequest,
     TripPlaceEditResponse,
     TripPlaceRow,
+    TripReplanResponse,
     TripRow,
 )
 from api.streaming import stream_organize_events, stream_trip_events
@@ -68,7 +69,12 @@ from jobs import compute_idempotency_key, enqueue_job, reclaim_expired_jobs
 from log_redaction import install as _install_log_redaction
 from observability import capture_exception as _sentry_capture, init_sentry as _init_sentry
 from models.place import CanonicalPlace
-from pipeline.persist import _evidence_json, _find_or_create_place
+from pipeline.persist import (
+    _evidence_json,
+    _find_or_create_place,
+    persist_narration,
+    persist_transport,
+)
 from pipeline.runner import record_event, run_generation
 from preferences import compose_preference_summary, fetch_traveler_profile
 from rate_limit import (
@@ -667,6 +673,21 @@ async def _resequence_trip_day(
         )
 
 
+async def _refresh_trip_routes(client, trip_id: str) -> bool:
+    """Best-effort route refresh after a structural edit; the edit remains authoritative."""
+    try:
+        await persist_transport(client, trip_id)
+    except Exception as exc:
+        # Type only: provider/DB exception messages can contain credentials or connection details.
+        logger.warning(
+            "webmcp_route_refresh_failed trip_id=%s error=%s",
+            trip_id,
+            type(exc).__name__,
+        )
+        return False
+    return True
+
+
 async def _find_requested_place_coordinates(client, *, trip_id: str, name: str) -> dict | None:
     """Reuse exact-name coordinates only when the row shares this trip's city or country."""
     links = (
@@ -774,6 +795,49 @@ async def submit_trip_feedback(
             rating=row["rating"],
             comment=row["comment"],
         )
+    )
+
+
+@app.post(
+    "/trips/{trip_id}/replan",
+    response_model=TripReplanResponse,
+)
+@limiter.limit(BURST_LIMIT)
+async def replan_trip(
+    request: Request,          # must be named `request` — slowapi's key_func resolves it by name
+    response: Response,        # required: the limiter is headers_enabled=True
+    trip_id: UUID,
+    _edits_enabled: None = Depends(_require_webmcp_edits_enabled),
+    user_id: str = Depends(get_current_user_id_stashed),
+) -> TripReplanResponse | JSONResponse:
+    trip_key = str(trip_id)
+    client = await get_supabase_client()
+    await _require_editable_trip(client, trip_id=trip_key, user_id=user_id)
+
+    routes_refreshed = await _refresh_trip_routes(client, trip_key)
+    try:
+        days_narrated = await persist_narration(client, trip_key, user_id)
+    except Exception as exc:
+        # Do not leak an Agents SDK/provider error body; it can contain sensitive request context.
+        logger.warning(
+            "webmcp_replan_narration_failed trip_id=%s error=%s",
+            trip_key,
+            type(exc).__name__,
+        )
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": {
+                    "code": "replan_failed",
+                    "message": "Itinerary narration could not be regenerated",
+                },
+                "routes_refreshed": routes_refreshed,
+            },
+        )
+
+    return TripReplanResponse(
+        days_narrated=days_narrated,
+        routes_refreshed=routes_refreshed,
     )
 
 
@@ -890,9 +954,11 @@ async def add_trip_place(
     )
     if persisted is None or persisted.data is None:
         raise HTTPException(status_code=500, detail="Failed to read added trip place")
+    routes_refreshed = await _refresh_trip_routes(client, trip_key)
     return TripPlaceCreateResponse(
         trip_place=TripPlaceRow.model_validate(persisted.data),
         days_touched=[req.day_number],
+        routes_refreshed=routes_refreshed,
     )
 
 
@@ -1036,9 +1102,11 @@ async def edit_trip_place(
     if persisted is None or persisted.data is None:
         raise HTTPException(status_code=404, detail="Trip place not found")
 
+    routes_refreshed = await _refresh_trip_routes(client, trip_key)
     return TripPlaceEditResponse(
         trip_place=TripPlaceRow.model_validate(persisted.data),
         days_touched=days_touched,
+        routes_refreshed=routes_refreshed,
     )
 
 
@@ -1080,7 +1148,12 @@ async def delete_trip_place(
     for day_number in days_touched:
         await _resequence_trip_day(client, trip_id=trip_key, day_number=day_number)
 
-    return TripPlaceDeleteResponse(removed_id=trip_place_key, days_touched=days_touched)
+    routes_refreshed = await _refresh_trip_routes(client, trip_key)
+    return TripPlaceDeleteResponse(
+        removed_id=trip_place_key,
+        days_touched=days_touched,
+        routes_refreshed=routes_refreshed,
+    )
 
 
 @app.post("/generate-trip", response_model=GenerateTripResponse)

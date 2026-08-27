@@ -260,7 +260,16 @@ def _client(monkeypatch, db, *, user_id="user-1", owner_result=_DEFAULT_OWNER_RE
 
 
 @pytest.fixture(autouse=True)
-def _reset_app():
+def _reset_app(monkeypatch):
+    async def _transport_stub(client, trip_id):
+        return 0
+
+    async def _narration_must_be_explicit(client, trip_id, user_id):
+        raise AssertionError("persist_narration was called outside an explicit replan test")
+
+    # Every route test stays keyless even after structural edits start refreshing routes.
+    monkeypatch.setattr(main, "persist_transport", _transport_stub, raising=False)
+    monkeypatch.setattr(main, "persist_narration", _narration_must_be_explicit, raising=False)
     limiter.reset()
     yield
     main.app.dependency_overrides.clear()
@@ -286,6 +295,7 @@ async def test_edit_routes_are_404_when_feature_flag_is_off(monkeypatch, method)
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "not_found"
+    assert response.json()["error"]["message"] == "Not found"
 
 
 async def test_non_owner_is_404_not_403(monkeypatch):
@@ -300,6 +310,7 @@ async def test_non_owner_is_404_not_403(monkeypatch):
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "not_found"
+    assert response.json()["error"]["message"] == "Trip not found"
     assert db["trip_places"][0]["sort_order"] == 0
 
 
@@ -425,7 +436,11 @@ async def test_delete_resequences_the_touched_day_densely(monkeypatch):
         response = await client.delete(f"/trips/{_TRIP_ID}/places/{_TARGET_ID}")
 
     assert response.status_code == 200
-    assert response.json() == {"removed_id": _TARGET_ID, "days_touched": [1]}
+    assert response.json() == {
+        "removed_id": _TARGET_ID,
+        "days_touched": [1],
+        "routes_refreshed": True,
+    }
     assert [(row["id"], row["sort_order"]) for row in db["trip_places"] if row["day_number"] == 1] == [
         ("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", 0),
         ("cccccccc-cccc-cccc-cccc-cccccccccccc", 1),
@@ -670,3 +685,219 @@ async def test_change_dates_redates_every_day_without_changing_day_number(monkey
         (2, date(2026, 8, 29).isoformat()),
         (3, date(2026, 8, 30).isoformat()),
     ]
+
+
+def _seed_structural_edit_trip(db):
+    _seed_owned_trip(db)
+    castle_id = "00000000-0000-0000-0000-000000000001"
+    usj_id = "00000000-0000-0000-0000-000000000002"
+    sky_id = "00000000-0000-0000-0000-000000000003"
+    db["places"] = [
+        {
+            "id": castle_id,
+            "name": "Osaka Castle",
+            "aliases": [],
+            "lat": 34.6873,
+            "lng": 135.5262,
+            "city": "Osaka",
+            "country": "Japan",
+            "country_code": "JP",
+        },
+        {
+            "id": usj_id,
+            "name": "Universal Studios Japan",
+            "aliases": ["USJ"],
+            "lat": 34.6654,
+            "lng": 135.4323,
+            "city": "Osaka",
+            "country": "Japan",
+            "country_code": "JP",
+        },
+        {
+            "id": sky_id,
+            "name": "Umeda Sky Building",
+            "aliases": [],
+            "lat": 34.7053,
+            "lng": 135.4905,
+            "city": "Osaka",
+            "country": "Japan",
+            "country_code": "JP",
+        },
+    ]
+    db["trip_places"] = [
+        _trip_place(_TARGET_ID, _TRIP_ID, 1, 0),
+        _trip_place("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", _TRIP_ID, 1, 1, place_suffix="3"),
+    ]
+    db["trip_places"][0]["place_id"] = castle_id
+    db["trip_places"][1]["place_id"] = sky_id
+
+
+async def _perform_edit(client, operation):
+    if operation == "add":
+        return await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={"name": "Universal Studios Japan", "day_number": 1, "position": 2},
+        )
+    if operation == "move":
+        return await client.patch(
+            f"/trips/{_TRIP_ID}/places/{_TARGET_ID}",
+            json={"sort_order": 1},
+        )
+    if operation == "delete":
+        return await client.delete(f"/trips/{_TRIP_ID}/places/{_TARGET_ID}")
+    if operation == "dates":
+        return await client.patch(f"/trips/{_TRIP_ID}", json={"start_date": "2026-08-28"})
+    raise AssertionError(f"unknown operation {operation}")
+
+
+@pytest.mark.parametrize("operation,expected_status", [("add", 201), ("move", 200), ("delete", 200)])
+async def test_structural_edits_refresh_routes(monkeypatch, operation, expected_status):
+    db: dict = {}
+    _seed_structural_edit_trip(db)
+    calls = []
+
+    async def _transport(client, trip_id):
+        calls.append((client, trip_id))
+        return 2
+
+    monkeypatch.setattr(main, "persist_transport", _transport)
+    async with _client(monkeypatch, db) as client:
+        response = await _perform_edit(client, operation)
+
+    assert response.status_code == expected_status
+    assert response.json()["routes_refreshed"] is True
+    assert calls == [(client.fake_supabase, _TRIP_ID)]  # type: ignore[attr-defined]
+
+
+async def test_transport_failure_does_not_fail_structural_edit(monkeypatch):
+    db: dict = {}
+    _seed_structural_edit_trip(db)
+
+    async def _transport_failure(client, trip_id):
+        raise RuntimeError("Mapbox unavailable")
+
+    monkeypatch.setattr(main, "persist_transport", _transport_failure)
+    async with _client(monkeypatch, db) as client:
+        response = await _perform_edit(client, "move")
+
+    assert response.status_code == 200
+    assert response.json()["trip_place"]["sort_order"] == 1
+    assert response.json()["routes_refreshed"] is False
+
+
+async def test_replan_is_404_when_feature_flag_is_off(monkeypatch):
+    monkeypatch.setattr(main, "WEBMCP_EDITS_ENABLED", False, raising=False)
+
+    async def _must_not_touch_db():
+        raise AssertionError("feature-off route touched Supabase")
+
+    monkeypatch.setattr(main, "get_supabase_client", _must_not_touch_db)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main.app, raise_app_exceptions=False),
+        base_url="http://test",
+    ) as client:
+        response = await client.post(f"/trips/{_TRIP_ID}/replan")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+    assert response.json()["error"]["message"] == "Not found"
+
+
+async def test_replan_non_owner_is_404_not_403(monkeypatch):
+    db: dict = {}
+    _seed_owned_trip(db, user_id="user-2")
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(f"/trips/{_TRIP_ID}/replan")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+    assert response.json()["error"]["message"] == "Trip not found"
+
+
+async def test_replan_rejects_generating_trip(monkeypatch):
+    db: dict = {}
+    _seed_owned_trip(db, status="generating")
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(f"/trips/{_TRIP_ID}/replan")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "trip_not_editable"
+
+
+async def test_replan_rejects_running_job(monkeypatch):
+    db: dict = {"jobs": [{"id": "job-1", "trip_id": _TRIP_ID, "status": "running"}]}
+    _seed_owned_trip(db)
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(f"/trips/{_TRIP_ID}/replan")
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "trip_not_editable"
+
+
+async def test_replan_refreshes_routes_then_narrates(monkeypatch):
+    db: dict = {}
+    _seed_owned_trip(db)
+    calls = []
+
+    async def _transport(client, trip_id):
+        calls.append(("transport", client, trip_id))
+        return 3
+
+    async def _narration(client, trip_id, user_id):
+        calls.append(("narration", client, trip_id, user_id))
+        return 2
+
+    monkeypatch.setattr(main, "persist_transport", _transport)
+    monkeypatch.setattr(main, "persist_narration", _narration)
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(f"/trips/{_TRIP_ID}/replan")
+
+    assert response.status_code == 200
+    assert response.json() == {"days_narrated": 2, "routes_refreshed": True}
+    assert calls == [
+        ("transport", client.fake_supabase, _TRIP_ID),  # type: ignore[attr-defined]
+        ("narration", client.fake_supabase, _TRIP_ID, "user-1"),  # type: ignore[attr-defined]
+    ]
+
+
+async def test_replan_narration_failure_is_502_and_reports_route_result(monkeypatch):
+    db: dict = {}
+    _seed_owned_trip(db)
+
+    async def _transport(client, trip_id):
+        return 2
+
+    async def _narration_failure(client, trip_id, user_id):
+        raise RuntimeError("LLM unavailable")
+
+    monkeypatch.setattr(main, "persist_transport", _transport)
+    monkeypatch.setattr(main, "persist_narration", _narration_failure)
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(f"/trips/{_TRIP_ID}/replan")
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "replan_failed"
+    assert "narration" in response.json()["error"]["message"].lower()
+    assert response.json()["routes_refreshed"] is True
+    assert "days_narrated" not in response.json()
+
+
+@pytest.mark.parametrize("operation", ["add", "move", "delete", "dates"])
+async def test_cheap_edit_routes_never_call_persist_narration(monkeypatch, operation):
+    db: dict = {}
+    _seed_structural_edit_trip(db)
+    narration_calls = []
+
+    async def _narration(client, trip_id, user_id):
+        narration_calls.append((client, trip_id, user_id))
+        return 1
+
+    monkeypatch.setattr(main, "persist_narration", _narration)
+    async with _client(monkeypatch, db) as client:
+        response = await _perform_edit(client, operation)
+
+    assert response.status_code in {200, 201}
+    assert narration_calls == []

@@ -120,3 +120,25 @@ reasons — and advises — off either with equal confidence.
 | 4.5 | Full suite + production build | `npx vitest run`, `npm run build` | ✅ **656 tests / 87 files**, build green |
 
 **Standing rule for every tool from here:** never report a count you failed to load as zero.
+
+### ⚠️ Incident — `next build` clobbered the running dev server
+
+**What happened.** I ran `npm run build` as a verification gate while `next dev` was live in the
+`astraildev` tmux session. Both write to the same `.next/` directory, and the production build
+replaced the chunks the dev server had open. The browser then threw:
+
+```
+Runtime TypeError: Cannot read properties of undefined (reading 'call')
+  Object.__webpack_require__  .next/server/webpack-runtime.js (25:43)
+```
+
+**Impact:** none to the code — tests and the build both passed. Purely a corrupted dev cache,
+but it looked like an application crash to the person testing, which cost trust and time.
+
+**Fix:** stop the dev server → `rm -rf .next` → restart → warm `/`, `/app`, `/sign-in` with curl
+so a compile error surfaces in the log rather than in someone's browser.
+
+**Rule for the rest of the sprint:** `next build` and `next dev` are NOT safely concurrent.
+The build gate must run either **before** the dev server starts or **after** it is stopped.
+Overnight batches run a build gate, so any dev server left up during the day is collateral —
+stop it before dispatching a batch, or scope the build to a separate output directory.

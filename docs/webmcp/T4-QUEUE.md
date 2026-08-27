@@ -60,3 +60,18 @@ Worked at the evening review; the big passes wait for the weekend.
       `WEBMCP_EDITS_ENABLED` is still false and no backend is running locally.
 - 🟢 `plan_trip_from_reels` has **never been run for real** — it costs Apify + OpenAI credit and
       burns the trial. Needs you present.
+
+## After the completion pass — 13 tools
+
+- 🔴 **Chip should read 10 tools on `/app`, 13 on a trip page.** Verified in headless Chromium with
+      a shim; not yet in ChatGPT's own browser.
+- 🔴 **Try, from `/app` without opening a trip:** *"What's on day 2 of one of my Kyoto trips?"*
+      Then the same question **while on a trip page** — it should use that trip, not ask which.
+- 🟡 **Watch for a slow WebMCP injection in ChatGPT.** The hook stops looking 10s after mount. If
+      the chip says "unavailable" on a slow load but works after a refresh, that is the cause.
+- 🟡 **Judge the Agent Rail's timing** — entries fade after 8s, max 5 shown. Feels right in tests;
+      only you can say whether it reads as calm or as noise during a real conversation.
+- 🟡 **The example-prompts panel and the rail share the bottom-right corner** with the WebMCP chip.
+      Check they do not stack badly on a small window.
+- 🟢 `README.md` and the landing page are rewritten for judges. **`frontend/app/page.tsx` has a
+      clearly marked `TODO` for demo credentials** — that must be filled before submitting.

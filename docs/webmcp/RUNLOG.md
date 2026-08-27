@@ -181,3 +181,45 @@ never touched; the real-auth server is back up).
 
 ⚠️ The compiled `browse` binary at `~/.claude/skills/gstack/browse/dist/browse` is broken —
 "Script not found". Workaround: `cd ~/.claude/skills/gstack/browse && bun run src/cli.ts <cmd>`.
+
+## Batch 6 — completion pass (late morning, 27 Aug)
+
+| # | Task | Gate | Result |
+|---|---|---|---|
+| 6.1 | `list_saved_reels` | vitest | ✅ 16 tests. **Unblocked the main flow** — without it `plan_trip_from_reels` needs URLs the agent has no way to obtain, so it would ask the user to paste links they had already saved |
+| 6.2 | `ExamplePrompts` — context-aware first-run panel | vitest | ✅ 5 tests. Hidden where WebMCP is unsupported; survives a throwing localStorage |
+| 6.3 | **`AgentActivityRail`** — the last never-cut item from the plan | vitest | ✅ 9 tests. Wrapped in `RegisterTools`, so no call can be silent — reads included |
+| 6.4 | Landing framing + judge README (Codex) | vitest | ✅ 7 tests; verified: robots noindex real, tool names read from source, and it explicitly does NOT overclaim on editing |
+| 6.5 | **Real-browser end-to-end** | gstack `/browse` + a `document.modelContext` shim | ✅ **13 tools register · `get_itinerary` returns the real itinerary · 0 console errors · 0 render loops** |
+| 6.6 | Full suite | `npx vitest run`, `tsc` | ✅ **793 tests / 97 files** |
+
+**13 tools. 26 commits. Nothing pushed.**
+
+### 🔴 Bug 3 — found only by executing a tool in a browser
+
+Sitting **on a trip page**, `get_itinerary` answered *"Which trip? Call list_trips and pass its
+trip_id."* Technically correct, obviously wrong. Making the data tools global had quietly lost the
+one thing page-scoping gave for free: knowing which trip is on screen.
+
+`TripWorkspace` now publishes its bundle to a **ref** on the registry that the global tools read.
+A ref rather than state, deliberately — state would re-create the context value on every trip load
+and re-trigger this morning's render loop.
+
+> Three bugs so far, and **not one was visible from vitest**: the render loop, the hard provider
+> dependency, and this. Unit tests verified the pieces; only the browser verified the composition.
+
+### How to drive WebMCP in a headless browser (reusable)
+
+The hook polls for a late-injected `document.modelContext` for **10 seconds after mount**, then
+gives up. So the shim must land inside that window:
+
+```bash
+cd ~/.claude/skills/gstack/browse            # the compiled dist/browse binary is broken
+bun run src/cli.ts goto http://localhost:3001/app/trip/trip_tokyo_demo
+sleep 2                                       # must be well under 10s
+bun run src/cli.ts eval /private/tmp/inject-webmcp.js
+bun run src/cli.ts js "document.modelContext.executeTool('get_itinerary', {}).then(r => r.content[0].text)"
+```
+
+That 10-second window is also a **real risk on the judged surface**: if ChatGPT's browser injects
+its WebMCP API later than 10s after mount, no tools register at all. Worth watching for.

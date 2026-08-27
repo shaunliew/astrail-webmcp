@@ -412,3 +412,51 @@ sixteen exist and listed the shipped ones as "planned, not yet claimed as comple
 the work to a judge. Rewritten against the branch, with all 21 cited SHAs verified to exist. The
 README's tool table is now checked against the registry by a script rather than by eye, and its
 status section says plainly what has been run live and what has not.
+
+---
+
+## Batch 10 — the verification pass, and closing what it found
+
+`83d4395` · `58151a6` · 2026-08-28, unattended
+
+Codex re-reviewed batch 9's own fixes rather than the original code. That is the pass worth
+running: a fix written under time pressure at 3am is the least-reviewed code in the branch.
+
+**Verdict: five of six findings genuinely closed, one partially, and one NEW HIGH introduced by
+the fix itself.** The new HIGH is the instructive one. Batch 9 replaced a single job slot with a
+set of adopted jobs — correct — and polled them with `Promise.all`. One rejected status read
+therefore rejected the whole batch, so a single unreadable job id stalled *every* adopted job for
+the rest of the page mount. That is strictly worse than the single slot it replaced: the fix for
+"a second job abandons the first" made "a bad job abandons all of them" possible.
+
+`Promise.allSettled` now, with a test that adopts a bad id alongside a good one and asserts the
+good one still reports its finished item. Restoring `Promise.all` fails it.
+
+The partially-closed finding: the overlay correctly marked a re-analysing card `processing`, and
+`statusLabel` then ignored it, because places were checked first. A reel being re-analysed kept
+reading "Places found · 3" from the *previous* run. An active run now outranks the place count.
+
+Two more from the same pass, both mine: `settledRef` was keyed by reel id while its comment
+claimed per-job, so a reel re-analysed by a later job would have been suppressed by an earlier
+job having settled it; and the README contract test had gone stale in exactly the way it existed
+to prevent — it hardcoded 13 tool names against a registry of 16 and kept passing. It now derives
+the names from `lib/webmcp/tools/`, with a guard-the-guard assertion so a broken parse fails
+loudly rather than vacuously.
+
+`58151a6` closed the remaining three, all bounds rather than defects: the adopted-job set had no
+eviction (a job that never reaches a terminal status is never retired, so the set grew on every
+`save_reels` call and polled a dead id for the life of the page — capped at 8, oldest out); the
+3s poll had no in-flight guard, so a slow round overlapped the next tick and doubled every request
+at exactly the wrong moment; and I had documented `updated_at !== created_at` as "exact" when it
+is transport-dependent — `now()` is transaction-stable, so two captures in one transaction would
+share a timestamp. Reliable, not exact, and the comment now says which.
+
+### The lesson, stated for the third time in this branch
+
+Batch 8: the fixture asserted a shape the database does not have. Batch 9: green tests written by
+the author in the same hour proved nothing about the invariant. Batch 10: the *fix* for batch 9's
+finding introduced a worse failure of the same kind, and its own tests passed.
+
+Fault injection proves a guard is load-bearing. It does not prove the guard is correct, and it
+never proves the guard is the *right* guard. Only a second reader with a different prior has
+caught any of these — and it caught them in the code most recently declared done.

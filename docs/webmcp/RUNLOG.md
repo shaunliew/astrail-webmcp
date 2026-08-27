@@ -90,3 +90,33 @@ cd backend && uv run pytest -q                        -> 1897 passed, 13 skipped
 
 **Batch 3 verdict: PASS.** 5 tools now registering (`get_app_state`, `list_trips`, `save_reels`
 globally; `get_itinerary`, `get_place_evidence` on a trip page).
+
+## 🟢 T4 GATE PASSED — first real verification in ChatGPT desktop (27 Aug, 09:28)
+
+**The critical unknown is resolved.** Tools register, ChatGPT discovers them, and it called
+`get_app_state` unprompted when asked "what can I do here?". The Site tools arrow appeared and
+the in-page chip read **"WebMCP active · 3 tools"** with correct reads/changes badges.
+
+Everything built overnight rested on this working. It does.
+
+### But the test immediately caught a real bug — which is what the gate is for
+
+The agent told a user with a full library: *"there are no saved reels or verified places"* and
+advised them to *"start by pasting a Reel link"* — while simultaneously mentioning their
+**"Tokyo Winter 2026" tray**, which it had read off the page. The tool was contradicting the screen.
+
+Cause: `get_app_state` reported a hardcoded `savedReels: 0`.
+
+**The real lesson is not the missing wiring.** It is that an unloaded value rendered as a
+confident `0`. To an agent, "0" and "I could not check" are entirely different facts, and it
+reasons — and advises — off either with equal confidence.
+
+| # | Fix | Gate | Result |
+|---|---|---|---|
+| 4.1 | Counts are `number \| null`; `null` renders as "an unknown number of", plus an explicit line telling the agent **not** to claim the user has none | `npx vitest run lib/webmcp` | ✅ **77/77** |
+| 4.2 | A *loaded* zero still renders as `0` — "unknown" must not swallow a real zero either | covered by test | ✅ |
+| 4.3 | `savedReels` / `verifiedPlaces` wired to `listSavedReelCards()`, distinct places de-duplicated, refreshed after a save | typecheck | ✅ |
+| 4.4 | `blocked` only fires when the counts are actually **known** — an unknown blocks nothing | covered by test | ✅ |
+| 4.5 | Full suite + production build | `npx vitest run`, `npm run build` | ✅ **656 tests / 87 files**, build green |
+
+**Standing rule for every tool from here:** never report a count you failed to load as zero.

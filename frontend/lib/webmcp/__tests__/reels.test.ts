@@ -2,7 +2,13 @@ import { describe, it, expect, vi } from 'vitest'
 import { saveReelsTool } from '../tools/reels'
 import { envelopeLength, OUTPUT_LIMIT } from '../fit'
 
-const tool = (save = vi.fn().mockResolvedValue({})) => ({ spec: saveReelsTool({ save }), save })
+/** `save` resolves to a saved reel: the tool reads its id and analysis_status to decide what to
+ *  send for extraction. `analyze` is the second half — queuing place extraction — which the app's
+ *  own form has always done and the tool used not to. */
+const tool = (
+  save = vi.fn().mockResolvedValue({ id: 'sr_1', analysis_status: 'not_analyzed' }),
+  analyze = vi.fn().mockResolvedValue({ job_id: 'job_1' }),
+) => ({ spec: saveReelsTool({ save, analyze }), save, analyze })
 
 describe('save_reels', () => {
   it('saves valid Instagram Reel URLs', async () => {
@@ -48,7 +54,7 @@ describe('save_reels', () => {
 
   it('surfaces a per-URL failure without throwing out of the tool', async () => {
     const save = vi.fn().mockRejectedValue(new Error('already saved'))
-    const out = await saveReelsTool({ save }).execute({
+    const out = await saveReelsTool({ save, analyze: vi.fn() }).execute({
       urls: ['https://www.instagram.com/reel/Cabc123/'],
     })
     expect(String(out)).toContain('already saved')
@@ -145,5 +151,64 @@ describe('list_saved_reels', () => {
     const out = String(await listTool(many).execute({}))
     expect(out).toContain('more')
     expect(envelopeLength(out)).toBeLessThanOrEqual(OUTPUT_LIMIT)
+  })
+})
+
+
+/* Saving used to stop at "recorded". The reel then sat `not_analyzed` with no places, so the
+   agent could save three reels and still have nothing to plan a trip from — which is exactly what
+   happened in testing. The app's own form (SavedReelsFlow) always called startOrganize after
+   captureSavedReel; the tool simply never did. */
+describe('save_reels: extraction', () => {
+  const URLS = ['https://www.instagram.com/reel/Ca1/', 'https://www.instagram.com/reel/Cb2/']
+
+  it('queues extraction for what it just saved', async () => {
+    const save = vi.fn()
+      .mockResolvedValueOnce({ id: 'sr_1', analysis_status: 'not_analyzed' })
+      .mockResolvedValueOnce({ id: 'sr_2', analysis_status: 'not_analyzed' })
+    const { spec, analyze } = tool(save)
+    const out = await spec.execute({ urls: URLS })
+
+    // ONE call for the batch. The backend permits a single active organize job per user, so a
+    // per-reel loop would 409 on the second reel.
+    expect(analyze).toHaveBeenCalledTimes(1)
+    expect(analyze).toHaveBeenCalledWith(['sr_1', 'sr_2'])
+    expect(String(out)).toContain('Extracting places from 2')
+  })
+
+  it('never re-extracts a reel that is already organized', async () => {
+    // Saving is an upsert, so re-adding a known reel returns it organized. Re-analysing would
+    // spend an Apify run and a slot of the daily cap to recompute what is already stored.
+    const save = vi.fn()
+      .mockResolvedValueOnce({ id: 'sr_1', analysis_status: 'organized' })
+      .mockResolvedValueOnce({ id: 'sr_2', analysis_status: 'not_analyzed' })
+    const { spec, analyze } = tool(save)
+    await spec.execute({ urls: URLS })
+    expect(analyze).toHaveBeenCalledWith(['sr_2'])
+  })
+
+  it('says so plainly when everything was already analysed', async () => {
+    const save = vi.fn().mockResolvedValue({ id: 'sr_1', analysis_status: 'organized' })
+    const { spec, analyze } = tool(save)
+    const out = await spec.execute({ urls: [URLS[0]] })
+    expect(analyze).not.toHaveBeenCalled()
+    expect(String(out)).toContain('already analysed')
+  })
+
+  it('reports a failed queue WITHOUT claiming the save failed', async () => {
+    // The two outcomes are separate: the reels are saved and the Library can organise them later.
+    // Collapsing them would tell the user to re-save reels that are already there.
+    const analyze = vi.fn().mockRejectedValue(new Error('One of those Reels is already being organized.'))
+    const { spec } = tool(undefined, analyze)
+    const out = await spec.execute({ urls: [URLS[0]] })
+    expect(String(out)).toContain('Saved 1 of 1')
+    expect(String(out)).toContain('extraction did not start')
+    expect(String(out)).toContain('already being organized')
+  })
+
+  it('does not queue extraction when nothing saved', async () => {
+    const { spec, analyze } = tool()
+    await spec.execute({ urls: ['https://evil.example.com/x'] })
+    expect(analyze).not.toHaveBeenCalled()
   })
 })

@@ -12,6 +12,7 @@ import { toGenerateRequest, type BriefInput, type DraftInspirationItem } from '@
 import { classifyGenerateError, useEntitlement } from '@/lib/entitlement'
 import TrialExhaustedCard from '@/components/entitlement/TrialExhaustedCard'
 import { useSharedMap } from '@/components/map/MapProvider'
+import { useOptionalWebMcpRegistry } from '@/components/webmcp/WebMcpRegistry'
 import { relightDurationMs } from '@/components/map/relight'
 import GenerationScene from '@/components/create/GenerationScene'
 import TraysScreen from './TraysScreen'
@@ -93,6 +94,31 @@ export default function SavedReelsFlow() {
     const nextCards = await listSavedReelCards()
     if (activeRef.current) { setCards(nextCards); setCardsStatus('ready') }
   }
+
+  /* Publish this page's re-fetch so a tool can make the list catch up with what it just saved.
+     Without it a reel saved by the agent existed only in the database: this component keeps
+     rendering the cards it loaded on mount, so the reel appeared solely after a manual reload —
+     which reads as the save having quietly failed. Same mechanism the trip page uses for edits. */
+  const registry = useOptionalWebMcpRegistry()
+  useEffect(() => {
+    const slot = registry?.refreshSavedReels
+    if (!slot) return
+    slot.current = reloadCards
+    return () => { slot.current = null }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [registry])
+
+  /* Extraction is a background job, so a card saved as `queued` would sit there looking stuck
+     until something else caused a render. Poll only while work is actually outstanding, and stop
+     the moment none is — a permanently-running timer on a library page is worse than a reload.
+     Bounded by the statuses themselves: a failed or location_not_found reel is terminal. */
+  const pending = cards.some((c) => c.analysis_status === 'queued' || c.analysis_status === 'processing')
+  useEffect(() => {
+    if (!pending) return
+    const id = setInterval(() => { void reloadCards().catch(() => {}) }, 5000)
+    return () => clearInterval(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pending])
 
   async function handleCapture(url: string) {
     setInboxMessage(null)

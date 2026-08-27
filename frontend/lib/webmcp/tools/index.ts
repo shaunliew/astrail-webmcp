@@ -1,7 +1,7 @@
 import type { ToolSpec } from '../types'
 import { getAppStateTool, type AppStateSnapshot } from './app-state'
 import { getItineraryTool, getPlaceEvidenceTool, listTripsTool, type TripReader } from './trips'
-import { listSavedReelsTool, saveReelsTool, type SavedReelSummary } from './reels'
+import { listSavedReelsTool, saveReelsTool, type SavedReelLike, type SavedReelSummary } from './reels'
 import { getTripProgressTool, planTripFromReelsTool, type GenerationDeps } from './generation'
 import { addPlaceTool, movePlaceTool, removePlaceTool, replanTripTool, setTripDatesTool, type EditDeps } from './edit'
 import { getMapViewTool, setMapModeTool, showOnMapTool, type MapDeps } from './map'
@@ -17,7 +17,10 @@ export type ToolContext = {
   readAppState: () => AppStateSnapshot
   trips: TripReader
   /** Saves one already-validated Instagram Reel URL. Validation stays in the tool. */
-  saveReel: (url: string) => Promise<unknown>
+  saveReel: (url: string) => Promise<SavedReelLike>
+  /** Queues place extraction for saved reels. One background job per batch — the backend permits
+   *  a single active organize job per user, so the tool batches rather than looping. */
+  analyzeReels: (savedReelIds: string[]) => Promise<unknown>
   /** Reads the saved-reel library so the agent can plan from it without re-pasting links. */
   loadSavedReels: () => Promise<SavedReelSummary[]>
   generation: GenerationDeps
@@ -36,7 +39,7 @@ export function globalTools(ctx: ToolContext): ToolSpec[] {
   return [
     getAppStateTool(ctx.readAppState),
     listTripsTool(ctx.trips),
-    saveReelsTool({ save: ctx.saveReel }),
+    saveReelsTool({ save: ctx.saveReel, analyze: ctx.analyzeReels }),
     listSavedReelsTool({ load: ctx.loadSavedReels }),
     getItineraryTool(ctx.trips),
     getPlaceEvidenceTool(ctx.trips),

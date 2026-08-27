@@ -6,7 +6,7 @@ import type { Trip, TripBundle } from '@/lib/trip/backend-types'
 import { getTrip, listTrips } from '@/lib/trip/supabase-api'
 import { addTripPlace, deleteTripPlace, editTripDates, editTripPlace, generateTrip, replanTrip, streamGeneration } from '@/lib/trip/api'
 import { createGenerationStore } from '@/lib/webmcp/generation'
-import { captureSavedReel, listSavedReelCards } from '@/lib/reels/api'
+import { captureSavedReel, listSavedReelCards, startOrganize } from '@/lib/reels/api'
 import { getAccessToken } from '@/lib/supabase/session'
 import { globalTools } from '@/lib/webmcp/tools'
 import type { AppStateSnapshot } from '@/lib/webmcp/tools/app-state'
@@ -36,7 +36,7 @@ function labelFor(pathname: string): string {
 
 export default function GlobalTools() {
   const pathname = usePathname() ?? '/app'
-  const { requestConfirm, openTrip, refreshOpenTrip } = useWebMcpRegistry()
+  const { requestConfirm, openTrip, refreshOpenTrip, refreshSavedReels } = useWebMcpRegistry()
   // One store for the session. It must outlive any single tool call — the stream runs for
   // 60-180s while `plan_trip_from_reels` returns in about a second.
   const storeRef = useRef(createGenerationStore())
@@ -136,8 +136,24 @@ export default function GlobalTools() {
     const res = await captureSavedReel(url, token)
     // Keep get_app_state honest immediately after a save, rather than until the next navigation.
     void refreshReels()
+    // ...and the Saved Reels list too, if the user is looking at it. Its cards live in that
+    // page's own state, so without this the reel is in the database and nowhere on screen.
+    void refreshSavedReels.current?.()
+    return res.saved_reel
+  }, [refreshReels, refreshSavedReels])
+
+  /* Saving through the TOOL used to stop here, while saving through the app's own form
+     (SavedReelsFlow) went on to call startOrganize — so a reel added by the agent stayed
+     `not_analyzed` forever and had no places to plan from. Same second half, same endpoint. */
+  const analyzeReels = useCallback(async (savedReelIds: string[]) => {
+    const token = await getAccessToken()
+    const res = await startOrganize(savedReelIds, token)
+    // Extraction runs in the background; the count in get_app_state moves as places land, and
+    // the open list starts polling itself once a card reads queued/processing.
+    void refreshReels()
+    void refreshSavedReels.current?.()
     return res
-  }, [refreshReels])
+  }, [refreshReels, refreshSavedReels])
 
   const generation = useMemo(
     () => ({
@@ -198,7 +214,7 @@ export default function GlobalTools() {
     }))
   }, [])
 
-  const specs = globalTools({ readAppState, trips: tripReader, saveReel, loadSavedReels, generation, edit })
+  const specs = globalTools({ readAppState, trips: tripReader, saveReel, analyzeReels, loadSavedReels, generation, edit })
 
   return <RegisterTools specs={specs} />
 }

@@ -71,6 +71,14 @@ type RegistryValue = {
    * refresher here so a tool can make the UI catch up with what it just changed.
    */
   refreshOpenTrip: React.MutableRefObject<(() => Promise<TripBundle | null>) | null>
+  /**
+   * The open Saved Reels page's own re-fetch, published the same way and for the same reason.
+   *
+   * A reel saved by a tool landed in the database and nowhere on screen: the card list lives in
+   * SavedReelsFlow's state, so it kept rendering what it had loaded on mount. The reel only
+   * appeared after a manual page reload, which reads as the save having silently failed.
+   */
+  refreshSavedReels: React.MutableRefObject<(() => Promise<void>) | null>
   /** Visible log of what the agent did. Reads included — a silent read cannot be consented to. */
   activity: ActivityEntry[]
   beginActivity: (tool: string) => number
@@ -103,6 +111,7 @@ export function WebMcpRegistryProvider({ children }: { children: React.ReactNode
   const activitySeq = useRef(0)
   const openTrip = useRef<unknown>(null)
   const refreshOpenTrip = useRef<(() => Promise<TripBundle | null>) | null>(null)
+  const refreshSavedReels = useRef<(() => Promise<void>) | null>(null)
 
   // Stable by construction. The render-loop bug earlier came from depending on the CONTEXT VALUE
   // (memoized on state) instead of on callbacks like these, so keep these dependency-free.
@@ -149,7 +158,7 @@ export function WebMcpRegistryProvider({ children }: { children: React.ReactNode
 
   const value = useMemo<RegistryValue>(
     () => ({
-      tools, supported, pending, requestConfirm, activity, beginActivity, endActivity, openTrip, refreshOpenTrip,
+      tools, supported, pending, requestConfirm, activity, beginActivity, endActivity, openTrip, refreshOpenTrip, refreshSavedReels,
       report, withdraw, setSupported,
     }),
     [tools, supported, pending, requestConfirm, activity, beginActivity, endActivity, report, withdraw],

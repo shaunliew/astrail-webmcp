@@ -712,3 +712,47 @@ describe('SavedReelsFlow', () => {
     expect(requestSeat).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('reels being analysed refresh themselves', () => {
+  /* Extraction is a background job, so a reel saved as `queued` rendered once and then sat there
+     looking stuck. The user's own report: "i need to refresh the page only can reflect the latest
+     added post", and after that it still read "Not analyzed". */
+  it('polls while a reel is still queued or processing, and stops once none are', async () => {
+    vi.useFakeTimers()
+    try {
+      const queued: SavedReelCard[] = [{ ...cards[0], analysis_status: 'queued' }]
+      const done: SavedReelCard[] = [{ ...organizedCards[0], analysis_status: 'organized' }]
+      listSavedReelCards.mockResolvedValue(queued)
+      render(<MapProvider><SavedReelsFlow /></MapProvider>)
+      await act(async () => { await Promise.resolve() })
+
+      const afterMount = listSavedReelCards.mock.calls.length
+      listSavedReelCards.mockResolvedValue(done)
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+      expect(listSavedReelCards.mock.calls.length).toBeGreaterThan(afterMount)
+
+      // Now nothing is outstanding: a library page must not hold a timer open forever.
+      const afterSettled = listSavedReelCards.mock.calls.length
+      await act(async () => { await vi.advanceTimersByTimeAsync(20000) })
+      expect(listSavedReelCards.mock.calls.length).toBe(afterSettled)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not poll at all when every reel is settled', async () => {
+    vi.useFakeTimers()
+    try {
+      listSavedReelCards.mockResolvedValue([{ ...cards[0], analysis_status: 'not_analyzed' }])
+      render(<MapProvider><SavedReelsFlow /></MapProvider>)
+      await act(async () => { await Promise.resolve() })
+
+      const settled = listSavedReelCards.mock.calls.length
+      await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+      // `not_analyzed` is a resting state, not work in progress — nothing will change on its own.
+      expect(listSavedReelCards.mock.calls.length).toBe(settled)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

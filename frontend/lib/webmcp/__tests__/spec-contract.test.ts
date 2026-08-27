@@ -32,7 +32,8 @@ const ctx: ToolContext = {
     list: async () => [TOKYO_TRIP.trip],
     load: async () => TOKYO_TRIP,
   },
-  saveReel: async () => ({}),
+  saveReel: async () => ({ id: 'sr_1', analysis_status: 'not_analyzed' }),
+  analyzeReels: async () => ({ job_id: 'job_1' }),
   loadSavedReels: async () => [],
   generation: {
     store: createGenerationStore(),

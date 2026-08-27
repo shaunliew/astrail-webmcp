@@ -11,8 +11,15 @@ import { normalizeReelUrl } from '@/lib/trip/parse-inspiration'
  */
 
 export type SaveReelsDeps = {
-  save: (url: string) => Promise<unknown>
+  /** Records the URL. Returns the saved reel, whose id and analysis_status decide what to do next. */
+  save: (url: string) => Promise<SavedReelLike>
+  /** Queues extraction for reels that have not been analysed. One job for the whole batch. */
+  analyze: (savedReelIds: string[]) => Promise<unknown>
 }
+
+/** Only the two fields this tool reads. Narrow on purpose: a wider type would invite the tool to
+ *  start reporting reel internals it has no business echoing back to an agent. */
+export type SavedReelLike = { id: string, analysis_status: string }
 
 const MAX_REELS = 5
 
@@ -20,7 +27,7 @@ export function saveReelsTool(deps: SaveReelsDeps): ToolSpec {
   return {
     name: 'save_reels',
     description:
-      'Saves Instagram Reel or post URLs to the user\'s Astrail library so their places can be extracted. Accepts up to 5 at once. Only instagram.com reel/reels/p/tv links are accepted; anything else is rejected before any request is made. Saving is cheap and reversible, so no confirmation is needed. Report per-URL results to the user.',
+      'Saves Instagram Reel or post URLs to the user\'s library AND starts extracting the places in them, as the app\'s save button does. Up to 5 at once; only instagram.com reel/reels/p/tv links are accepted, anything else is rejected before any request is made. Extraction runs in the background, so this returns immediately \u2014 call list_saved_reels after ~30s for results. A daily limit bounds it and an already-analysed reel is never re-analysed, so no confirmation is needed. Report per-URL results.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -40,6 +47,7 @@ export function saveReelsTool(deps: SaveReelsDeps): ToolSpec {
       if (raw.length > MAX_REELS) return `Too many at once — ${MAX_REELS} is the limit. Got ${raw.length}.`
 
       const results: string[] = []
+      const toAnalyze: string[] = []
       for (const candidate of raw) {
         const url = typeof candidate === 'string' ? normalizeReelUrl(candidate) : null
         if (!url) {
@@ -49,7 +57,11 @@ export function saveReelsTool(deps: SaveReelsDeps): ToolSpec {
           continue
         }
         try {
-          await deps.save(url)
+          const reel = await deps.save(url)
+          // Re-saving is an upsert, so an already-analysed reel comes back organized. Sending it
+          // for extraction again would spend an Apify run and a slot of the daily cap to
+          // recompute what is already there.
+          if (reel?.analysis_status !== 'organized' && reel?.id) toAnalyze.push(reel.id)
           results.push(`✓ ${url}`)
         } catch (e) {
           const msg = e instanceof Error ? e.message : 'failed'
@@ -57,7 +69,24 @@ export function saveReelsTool(deps: SaveReelsDeps): ToolSpec {
         }
       }
       const saved = results.filter((r) => r.startsWith('✓')).length
-      return `Saved ${saved} of ${raw.length}.\n${results.join('\n')}`
+
+      /* ONE job for the batch, not one per reel: the backend allows a single active organize job
+         per user, so a per-reel loop would 409 on the second. Failing to queue extraction must
+         not read as failing to save — the reels ARE saved, and the app's own Library can organise
+         them later — so this reports the two outcomes separately. */
+      let analysis = ''
+      if (toAnalyze.length > 0) {
+        try {
+          await deps.analyze(toAnalyze)
+          analysis = `\nExtracting places from ${toAnalyze.length} of them now — call list_saved_reels in ~30s to see what was found.`
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : 'could not start'
+          analysis = `\nSaved, but extraction did not start: ${msg.slice(0, 120)}`
+        }
+      } else if (saved > 0) {
+        analysis = '\nAll of them were already analysed, so nothing was re-extracted.'
+      }
+      return `Saved ${saved} of ${raw.length}.\n${results.join('\n')}${analysis}`
     },
   }
 }

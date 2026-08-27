@@ -26,8 +26,11 @@ const ctx: ToolContext = {
     ],
     blocked: [],
   }),
-  loadTrips: async () => [TOKYO_TRIP.trip],
-  readBundle: () => TOKYO_TRIP,
+  trips: {
+    current: () => TOKYO_TRIP,
+    list: async () => [TOKYO_TRIP.trip],
+    load: async () => TOKYO_TRIP,
+  },
   saveReel: async () => ({}),
 }
 
@@ -99,7 +102,9 @@ describe('tool scoping', () => {
     const g = globalTools(ctx).map((s) => s.name)
     const t = tripTools(ctx).map((s) => s.name)
     expect(g).toContain('get_app_state')
-    expect(t).toContain('get_itinerary')
+    // Data tools are global on purpose — see tools/index.ts. Only live-map tools will be scoped.
+    expect(g).toContain('get_itinerary')
+    expect(t).not.toContain('get_itinerary')
     // Overlap would mean a duplicate-name rejection the moment a trip page mounts.
     expect(g.filter((n) => t.includes(n))).toEqual([])
   })

@@ -1,9 +1,9 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import type { Trip } from '@/lib/trip/backend-types'
-import { listTrips } from '@/lib/trip/supabase-api'
+import { getTrip, listTrips } from '@/lib/trip/supabase-api'
 import { captureSavedReel, listSavedReelCards } from '@/lib/reels/api'
 import { getAccessToken } from '@/lib/supabase/session'
 import { globalTools } from '@/lib/webmcp/tools'
@@ -97,11 +97,20 @@ export default function GlobalTools() {
     }
   }, [])
 
-  const loadTrips = useCallback(async () => {
-    const fresh = await listTrips()
-    setTrips(fresh)
-    return fresh
-  }, [])
+  const tripReader = useMemo(
+    () => ({
+      // No open-trip cache at shell level: TripWorkspace owns that bundle. Returning null here
+      // makes the tools fall through to an explicit load, which is correct and one round-trip.
+      current: () => null,
+      list: async () => {
+        const fresh = await listTrips()
+        setTrips(fresh)
+        return fresh
+      },
+      load: (tripId: string) => getTrip(tripId),
+    }),
+    [],
+  )
 
   const refreshReels = useCallback(async () => {
     try {
@@ -123,12 +132,7 @@ export default function GlobalTools() {
     return res
   }, [refreshReels])
 
-  const specs = globalTools({
-    readAppState,
-    loadTrips,
-    saveReel,
-    readBundle: () => null, // trip tools register on the trip page, not here
-  })
+  const specs = globalTools({ readAppState, trips: tripReader, saveReel })
 
   return <RegisterTools specs={specs} />
 }

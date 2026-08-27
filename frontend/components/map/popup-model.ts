@@ -81,6 +81,31 @@ function isReelEvidence(kind: string): boolean {
   return kind === 'reel_quote'
 }
 
+/**
+ * The Instagram Reel a stop came from, if it can be attributed honestly.
+ *
+ * Shared by the popup and the map pin so a stop never shows one Reel's photo and another's link.
+ * Order: the backend's recorded source_reel_url, then an Instagram source_url, then — for rows
+ * written before source_reel_url existed — the trip's single Reel, which is unambiguous. Several
+ * Reels and no recorded attribution means we cannot say which, so we say none.
+ */
+export function reelUrlFor(bundle: TripBundle, tripPlace: TripPlace): string | null {
+  const e = tripPlace.evidence_json
+  const unique = [...new Set(
+    bundle.inspiration.map((i) => i.normalized_reel_url).filter((u): u is string => isInstagram(u)),
+  )]
+  return (isInstagram(e.source_reel_url ?? null) ? e.source_reel_url! : null)
+    ?? (isInstagram(e.source_url) ? e.source_url! : null)
+    ?? (unique.length === 1 ? unique[0] : null)
+}
+
+/** The Reel's own thumbnail, when the trip still holds that Reel. */
+export function thumbnailFor(bundle: TripBundle, tripPlace: TripPlace): string | null {
+  const reel = reelUrlFor(bundle, tripPlace)
+  if (!reel) return null
+  return bundle.inspiration.find((i) => i.normalized_reel_url === reel)?.thumbnail_url ?? null
+}
+
 export function buildPopupModel(bundle: TripBundle, tripPlace: TripPlace): PopupModel {
   const pin = buildTrailNumbers(bundle).get(tripPlace.id) ?? null
   const placeIndex = buildPlaceIndex(bundle)
@@ -174,20 +199,7 @@ export function buildPopupModel(bundle: TripBundle, tripPlace: TripPlace): Popup
   //   3. legacy rows only: the trip's single Reel, which is unambiguous
   //   4. nothing. A legacy multi-Reel trip gives no honest way to say WHICH one this came from,
   //      and guessing would put a wrong citation under a verbatim quote.
-  const tripReels = bundle.inspiration
-    .map((i) => i.normalized_reel_url)
-    .filter((u): u is string => isInstagram(u))
-  const uniqueReels = [...new Set(tripReels)]
-
-  const reelUrl =
-    // The backend now records which Reel a place came from, so this is exact rather than a guess.
-    (isInstagram(e.source_reel_url ?? null) ? e.source_reel_url! : null)
-    // `source_url` is a research/venue page by design and is almost never Instagram, but a
-    // user-pasted place can put one there.
-    ?? (isInstagram(e.source_url) ? e.source_url! : null)
-    // Legacy rows persisted before source_reel_url existed. One Reel on the trip means the
-    // attribution is unambiguous; several means it cannot be made honest, so we show none.
-    ?? (uniqueReels.length === 1 ? uniqueReels[0] : null)
+  const reelUrl = reelUrlFor(bundle, tripPlace)
 
   const reel = reelUrl ? { url: reelUrl, label: 'Watch the Reel ↗' } : null
 
@@ -196,10 +208,7 @@ export function buildPopupModel(bundle: TripBundle, tripPlace: TripPlace): Popup
     e.source_url && !isInstagram(e.source_url) ? { url: e.source_url, label: 'Reference ↗' } : null
 
   // The Reel's own thumbnail, matched through the trip's inspiration items.
-  const imageUrl =
-    (reelUrl
-      ? bundle.inspiration.find((i) => i.normalized_reel_url === reelUrl)?.thumbnail_url
-      : null) ?? null
+  const imageUrl = thumbnailFor(bundle, tripPlace)
 
   return {
     eyebrow,

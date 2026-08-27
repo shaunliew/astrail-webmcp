@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react'
 import mapboxgl from 'mapbox-gl'
-import { buildPopupModel, type PopupModel } from './popup-model'
+import { buildPopupModel, thumbnailFor, type PopupModel } from './popup-model'
 import type { Place, RestaurantSuggestion, TripBundle, TripPlace } from '@/lib/trip/backend-types'
 import {
   trailCoordinates, buildTrailNumbers, buildPlaceIndex, placesForDay, hasRealCoords,
@@ -38,6 +38,78 @@ function safeWebUrl(raw: string): string | null {
   } catch {
     return null
   }
+}
+
+const SVG_NS = 'http://www.w3.org/2000/svg'
+let pinClipSeq = 0
+
+/**
+ * A teardrop pin whose head holds the Reel's own still.
+ *
+ * Built as SVG rather than the usual rotated-square CSS teardrop, for a specific reason: the
+ * classic trick is `border-radius: 50% 50% 50% 0; transform: rotate(-45deg)`, and
+ * marker-css-contract.test.ts forbids `transform` on a marker ROOT — Mapbox positions the root
+ * with its own inline transform, and a second one drags the pin off its coordinate. SVG needs no
+ * transform anywhere, and stays crisp at any density.
+ *
+ * The stop NUMBER survives as a badge even when there is a photo. It is not decoration: the
+ * WebMCP tools address stops by it ("move stop 7"), and `buildTrailNumbers` is the shared
+ * vocabulary between what the agent says and what the user can see.
+ */
+function buildPinGraphic(photoUrl: string | null, number: number | null): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg')
+  svg.setAttribute('viewBox', '0 0 40 52')
+  svg.setAttribute('class', 'constellation-pin__drop')
+  svg.setAttribute('aria-hidden', 'true')
+
+  const clipId = `pin-clip-${++pinClipSeq}`
+  const defs = document.createElementNS(SVG_NS, 'defs')
+  const clip = document.createElementNS(SVG_NS, 'clipPath')
+  clip.setAttribute('id', clipId)
+  const clipCircle = document.createElementNS(SVG_NS, 'circle')
+  clipCircle.setAttribute('cx', '20'); clipCircle.setAttribute('cy', '19'); clipCircle.setAttribute('r', '14')
+  clip.append(clipCircle); defs.append(clip); svg.append(defs)
+
+  // Teardrop: a circular head over a tapered tip that lands exactly on the coordinate.
+  const body = document.createElementNS(SVG_NS, 'path')
+  body.setAttribute('d', 'M20 51C20 51 37 30.5 37 19A17 17 0 1 0 3 19C3 30.5 20 51 20 51Z')
+  body.setAttribute('class', 'constellation-pin__drop-body')
+  svg.append(body)
+
+  if (photoUrl) {
+    const img = document.createElementNS(SVG_NS, 'image')
+    img.setAttribute('href', photoUrl)
+    img.setAttribute('x', '6'); img.setAttribute('y', '5')
+    img.setAttribute('width', '28'); img.setAttribute('height', '28')
+    img.setAttribute('preserveAspectRatio', 'xMidYMid slice')
+    img.setAttribute('clip-path', `url(#${clipId})`)
+    // A dead Instagram CDN link must fall back to the number, not leave a hole in the pin.
+    img.addEventListener('error', () => {
+      img.remove()
+      if (number !== null) svg.append(numberText(number))
+    })
+    svg.append(img)
+  } else if (number !== null) {
+    svg.append(numberText(number))
+  }
+  return svg
+}
+
+function numberText(number: number): SVGTextElement {
+  const text = document.createElementNS(SVG_NS, 'text')
+  text.setAttribute('x', '20'); text.setAttribute('y', '19')
+  text.setAttribute('text-anchor', 'middle'); text.setAttribute('dominant-baseline', 'central')
+  text.setAttribute('class', 'constellation-pin__drop-number')
+  text.textContent = String(number)
+  return text
+}
+
+/** Small badge so the stop number stays visible even when the head shows a photo. */
+function buildPinBadge(number: number): HTMLElement {
+  const badge = document.createElement('span')
+  badge.className = 'constellation-pin__badge'
+  badge.textContent = String(number)
+  return badge
 }
 
 /**
@@ -323,10 +395,10 @@ export default function TripMap({
           number === null ? 'constellation-pin--receding' : '',
           tp.place_id === selectedPlaceId ? 'constellation-pin--selected' : '',
         ].filter(Boolean).join(' ')
-        const numberEl = document.createElement('span')
-        numberEl.className = 'constellation-pin__number'
-        numberEl.textContent = number === null ? '' : String(number)
-        el.append(numberEl)
+        // The Reel still that this stop came from, when we can attribute one honestly.
+        const photoUrl = thumbnailFor(bundle, tp)
+        el.append(buildPinGraphic(photoUrl, number))
+        if (photoUrl && number !== null) el.append(buildPinBadge(number))
         if (number !== null) {
           const label = document.createElement('span')
           label.className = 'constellation-pin__label'
@@ -363,7 +435,10 @@ export default function TripMap({
             )
             .addTo(map)
         })
-        return new mapboxgl.Marker({ element: el }).setLngLat([tp.place.lng, tp.place.lat]).addTo(map)
+        // anchor:'bottom' puts the teardrop's TIP on the coordinate. The default 'center' would
+        // float the whole pin half its height above the place it is pointing at.
+        return new mapboxgl.Marker({ element: el, anchor: 'bottom' })
+          .setLngLat([tp.place.lng, tp.place.lat]).addTo(map)
       })
     // Hub mode: pin the selected PLACED hotel as the hub. Honest empty-state (Guardrail #1 / C5):
     // a null/unresolved/coordless selection draws no hub — the panel/toggle owns the messaging, and

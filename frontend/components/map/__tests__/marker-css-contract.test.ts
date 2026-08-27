@@ -63,6 +63,11 @@ describe('marker CSS contract: Mapbox owns marker-root positioning', () => {
       '.constellation-pin--receding.constellation-pin--selected',
       '.constellation-pin--reel_extracted',
       '.constellation-pin--selected',
+      // Descendant selector: it targets a CHILD (the SVG teardrop path), which is free to
+      // transform. The parser attributes it to the root because it starts with a root class,
+      // and being over-covered is the safe direction — a transform added here would still be
+      // caught, and the rule declares only fill/stroke.
+      '.constellation-pin--selected .constellation-pin__drop-body',
       '.constellation-pin--user_requested',
       '.hotel-hub-pin',
     ])

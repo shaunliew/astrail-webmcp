@@ -135,6 +135,28 @@ describe('TripMap', () => {
 
   // With one persistent instance the camera no longer resets on navigation, so the trip
   // view has to frame its own places rather than inherit the generation globe.
+  it('anchors the teardrop by its tip, not its middle', async () => {
+    // anchor:'bottom' is what puts the point ON the coordinate. The default 'center' floats the
+    // whole pin half its height above the place it claims to mark.
+    renderMap()
+    await flush()
+    fireLoad()
+    await flush()
+    const opts = MarkerCtor.mock.calls.map((c) => c[0])
+    expect(opts.every((o) => o?.anchor === 'bottom')).toBe(true)
+  })
+
+  it('keeps the stop number visible even when the pin carries a photo', async () => {
+    renderMap()
+    await flush()
+    fireLoad()
+    await flush()
+    const marker = markerElements.find((e) => e.getAttribute('aria-label') === 'Senso-ji Temple')!
+    const n = marker.querySelector('.constellation-pin__drop-number')?.textContent
+      ?? marker.querySelector('.constellation-pin__badge')?.textContent
+    expect(n).toBe('1')
+  })
+
   it('never asks for more padding than the canvas can give', async () => {
     // The bug: framePadding derived `bottom` from window.innerHeight (394px on a phone) and
     // applied it to a shorter canvas. Mapbox logs "Map cannot fit within canvas with the given
@@ -268,7 +290,13 @@ describe('TripMap', () => {
       (element) => element.getAttribute('aria-label') === 'Senso-ji Temple',
     )!
     const chip = marker.querySelector<HTMLElement>('.constellation-pin__label')!
-    expect(marker.querySelector('.constellation-pin__number')).toHaveTextContent('1')
+    // The stop number must survive whatever the pin looks like: the WebMCP tools address stops
+    // by it ("move stop 7"), so it is the shared vocabulary between the agent and the screen.
+    // It renders inside the teardrop when there is no photo, and as a badge when there is.
+    const shownNumber =
+      marker.querySelector('.constellation-pin__drop-number')?.textContent
+      ?? marker.querySelector('.constellation-pin__badge')?.textContent
+    expect(shownNumber).toBe('1')
     expect(chip).toHaveTextContent('Senso-ji Temple')
     expect(chip).toHaveClass('constellation-pin__label--visible')
 

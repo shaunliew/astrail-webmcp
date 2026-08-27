@@ -124,25 +124,70 @@ export async function getTrip(tripId: string): Promise<TripBundle | null> {
      user has since removed from Saved Reels simply yields no cover, and the pin falls back
      to the universal placeholder, which is the correct degradation. */
   const eventRows = (events.data ?? []) as GenerationEvent[]
+  const placeRows = (places.data ?? []) as unknown as TripPlace[]
+  const tripPlaceIds = new Set(placeRows.map((tp) => tp.place_id))
 
-  /* ⚠ `trip_inspiration_items` HAS NO PRODUCER. Nothing in the backend or the frontend writes
-     it — components/trip/OrchestratorSummary.tsx documents this in place ("grep for a producer
-     — there is none"), which is why it dropped its SOURCES stat. So on every real trip this
-     table is EMPTY, and every consumer keyed off it is inert in production while passing its
-     fixture tests, because the Tokyo fixture hand-writes rows the live table never receives.
+  /* ⚠ TWO SEPARATE REASONS THE REEL BEHIND A STOP GOES MISSING, both verified against live rows.
 
-     The URLs a trip was actually generated from are recorded in its `create_trip` generation
-     event (backend/main.py builds that payload from `req.reel_urls`), and getTrip already loads
-     those events. Recover the trip's Reels from there when the table has nothing, which is the
-     normal case. Synthesised here rather than at each call site so that everything downstream —
-     pin covers, popup attribution, `reelUrlFor`'s single-Reel fallback — sees one consistent
-     list. The event payload holds the URLs as the user pasted them, while `saved_reels` stores
-     normalized ones, so they are normalized before anything tries to match them. */
+     1. `trip_inspiration_items` HAS NO PRODUCER. Nothing writes it — OrchestratorSummary.tsx
+        documents this in place ("grep for a producer — there is none"). It is empty on every
+        real trip, so anything keyed off it is inert in production while passing fixture tests,
+        because the Tokyo fixture hand-writes rows the live table never receives.
+
+     2. A TRIP NEED NOT HAVE REEL URLS AT ALL. `create_trip` records `reel_urls` OR `place_ids`
+        (backend/api/schemas.py rejects both together). Trips built from the Library — pick
+        places out of already-organized Reels — carry `reel_urls: []`, so a trip-level Reel list
+        is simply the wrong place to look. Their attribution lives per PLACE, in
+        `reel_place_mentions`, surfaced to the browser through `saved_reel_cards.places`.
+
+     `reelKey` exists because the two normalizers disagree: backend/scrape/reel_url.py returns
+     `.../reel/ABC` while lib/trip/parse-inspiration.ts returns `.../reel/ABC/`. Matching the
+     frontend form against the stored form finds nothing, silently. Stored form wins downstream,
+     since that is what `saved_reel_cards.places[].source_reel_url` carries. */
+  const reelKey = (u: string) => u.replace(/\/+$/, '')
+
   const inspirationTable = (inspiration.data ?? []) as TripInspirationItem[]
-  const inspirationRows = inspirationTable.length > 0
-    ? inspirationTable
-    : reelUrlsFromEvents(eventRows).map((url, i) => ({
-      id: `evt-reel-${i}`,
+  const declaredReelKeys = [...new Set([
+    ...inspirationTable.map((i) => i.normalized_reel_url).filter((u): u is string => Boolean(u)),
+    ...reelUrlsFromEvents(eventRows),
+  ].map(reelKey))]
+
+  // Filter server-side when the trip names its Reels. A Library-built trip names none, so fall
+  // back to the owner's saved Reels — a bounded personal list the Library page already reads
+  // whole — and narrow it to this trip's places below.
+  const cardQuery = supabase.from('saved_reel_cards').select('normalized_url, thumbnail_url, places')
+  const { data: cardData } = declaredReelKeys.length > 0
+    ? await cardQuery.in('normalized_url', declaredReelKeys)
+    : await cardQuery
+
+  type MentionRow = { place_id: string | null, source_reel_url: string | null }
+  type CardRow = { normalized_url: string, thumbnail_url: string | null, places: MentionRow[] | null }
+
+  const coverByReel = new Map<string, string>()
+  const reelByPlaceId = new Map<string, string>()
+  const contributingReels = new Set<string>()
+  for (const card of (cardData ?? []) as CardRow[]) {
+    if (card.thumbnail_url) coverByReel.set(reelKey(card.normalized_url), card.thumbnail_url)
+    for (const m of card.places ?? []) {
+      // Only this trip's stops: the owner's other Reels describe places on other trips, and
+      // citing one of those would be a true fact about the wrong trip.
+      if (m.place_id && m.source_reel_url && tripPlaceIds.has(m.place_id)) {
+        reelByPlaceId.set(m.place_id, reelKey(m.source_reel_url))
+        contributingReels.add(reelKey(m.source_reel_url))
+      }
+    }
+  }
+
+  /* The trip's Reels, reconstructed: the ones it declared, else the ones that actually put its
+     places on the map. Synthesised once here rather than at each call site so pin covers, popup
+     attribution and `reelUrlFor`'s single-Reel fallback all read one consistent list. */
+  const inspirationRows: TripInspirationItem[] = inspirationTable.length > 0
+    ? inspirationTable.map((i) => ({
+      ...i,
+      thumbnail_url: (i.normalized_reel_url && coverByReel.get(reelKey(i.normalized_reel_url))) || null,
+    }))
+    : [...new Set([...declaredReelKeys, ...contributingReels])].map((url, i) => ({
+      id: `derived-reel-${i}`,
       trip_id: tripId,
       item_type: 'reel_url' as const,
       source: 'manual_paste' as const,
@@ -151,40 +196,13 @@ export async function getTrip(tripId: string): Promise<TripBundle | null> {
       requested_place_text: null,
       resolved_place_id: null,
       status: 'valid' as const,
-      thumbnail_url: null,
+      thumbnail_url: coverByReel.get(url) ?? null,
     }))
-  const reelUrls = [...new Set(
-    inspirationRows.map((i) => i.normalized_reel_url).filter((u): u is string => Boolean(u)),
-  )]
-  const covers = new Map<string, string>()
-  /* Which Reel a stop came from, for trips whose rows predate `evidence_json.source_reel_url`.
-     Without this the popup can only offer `source_url` — the RESEARCH page — so a stop scraped
-     from a Japanese venue directory showed a Yahoo Maps link under the heading "From your
-     Instagram Reel", and no way to reach the Reel at all. The legacy fallback in `reelUrlFor`
-     cannot rescue those: it needs the trip to have exactly ONE Reel, and a multi-Reel trip has
-     no honest way to guess which. `reel_place_mentions` recorded the answer all along, and
-     `saved_reel_cards.places` is where a browser can read it. */
-  const reelByPlaceId = new Map<string, string>()
-  if (reelUrls.length > 0) {
-    const { data: cards } = await supabase
-      .from('saved_reel_cards')
-      .select('normalized_url, thumbnail_url, places').in('normalized_url', reelUrls)
-    type MentionRow = { place_id: string | null, source_reel_url: string | null }
-    type CardRow = { normalized_url: string, thumbnail_url: string | null, places: MentionRow[] | null }
-    for (const card of (cards ?? []) as CardRow[]) {
-      if (card.thumbnail_url) covers.set(card.normalized_url, card.thumbnail_url)
-      for (const mention of card.places ?? []) {
-        if (mention.place_id && mention.source_reel_url) {
-          reelByPlaceId.set(mention.place_id, mention.source_reel_url)
-        }
-      }
-    }
-  }
 
-  /* Backfill only — a row the backend already attributed is left exactly as it is, and only
-     reel-extracted stops are touched, so the bundle never claims a Reel origin for a stop the
-     user typed even before `reelUrlFor`'s provenance gate sees it. */
-  const tripPlaces = ((places.data ?? []) as unknown as TripPlace[]).map((tp) => (
+  /* Backfill only — never overwrites an attribution the backend recorded, and only reel-extracted
+     stops, so a place the user typed that a Reel happens to mention is not relabelled as coming
+     from it (guardrail #1). */
+  const tripPlaces = placeRows.map((tp) => (
     tp.evidence_json.source_reel_url || tp.source_type !== 'reel_extracted'
       ? tp
       : {
@@ -192,6 +210,7 @@ export async function getTrip(tripId: string): Promise<TripBundle | null> {
         evidence_json: { ...tp.evidence_json, source_reel_url: reelByPlaceId.get(tp.place_id) ?? null },
       }
   ))
+
   const restaurantRows = (restaurants.data ?? []) as RestaurantSuggestion[]
 
   /* Suggestion places are NOT trip stops, so the `trip_places` join above never
@@ -211,10 +230,7 @@ export async function getTrip(tripId: string): Promise<TripBundle | null> {
 
   return {
     trip: trip as Trip,
-    inspiration: inspirationRows.map((i) => ({
-      ...i,
-      thumbnail_url: (i.normalized_reel_url && covers.get(i.normalized_reel_url)) || null,
-    })),
+    inspiration: inspirationRows,
     places: tripPlaces,
     days: (days.data ?? []) as TripDay[],
     transport_legs: (legs.data ?? []) as TransportLeg[],

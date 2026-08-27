@@ -17,8 +17,12 @@ vi.mock('@/lib/auth/mock-auth', () => ({ MOCK_AUTH_ENABLED: false, MOCK_USER: {}
 vi.mock('@/lib/backend-url', () => ({ resolveBackendUrl: () => 'http://backend.test' }))
 
 const TRIP_ID = 'trip-1'
-const REEL_A = 'https://www.instagram.com/reel/AAA/'
-const REEL_B = 'https://www.instagram.com/reel/BBB/'
+// The STORED form, verified against live rows: backend/scrape/reel_url.py normalises to
+// `.../reel/ABC` with NO trailing slash, and that is what `saved_reels.normalized_url` holds.
+// lib/trip/parse-inspiration.ts normalises the same URL WITH a trailing slash, so matching the
+// frontend form against the stored one finds nothing — silently. Stored form is canonical here.
+const REEL_A = 'https://www.instagram.com/reel/AAA'
+const REEL_B = 'https://www.instagram.com/reel/BBB'
 
 /** Rows keyed by table, exactly as PostgREST would return them — note that
  *  `trip_inspiration_items` has NO thumbnail_url column, because the table has none. */
@@ -252,14 +256,19 @@ describe('getTrip: recovering the trip Reels when trip_inspiration_items is empt
     expect(bundle!.places[0].evidence_json.source_reel_url).toBe(REEL_A)
   })
 
-  it('prefers the table when it does have rows, rather than second-guessing it', async () => {
+  it('lets the table define the trip Reels, while still looking up both sources', async () => {
+    // Two different behaviours, deliberately. The LOOKUP asks for the union — one extra card is
+    // cheap, and a trip whose table rows and event payload disagree should not lose a cover over
+    // it. What is PRESENTED as the trip's inspiration still comes from the table when it has
+    // rows, so a real producer (once one exists) always outranks anything reconstructed here.
     const spy: { savedReelQuery?: unknown[] } = {}
-    await loadTrip({
+    const bundle = await loadTrip({
       trip_inspiration_items: [inspirationRow(REEL_A, 'i1')],
       generation_events: [createTripEvent([REEL_B])],
       saved_reel_cards: [],
     }, spy)
-    expect(spy.savedReelQuery).toEqual([REEL_A])
+    expect(spy.savedReelQuery).toEqual([REEL_A, REEL_B])
+    expect(bundle!.inspiration.map((i) => i.normalized_reel_url)).toEqual([REEL_A])
   })
 
   it('survives a trip with no create_trip event and a malformed payload', async () => {
@@ -273,5 +282,81 @@ describe('getTrip: recovering the trip Reels when trip_inspiration_items is empt
       expect(spy.savedReelQuery).toBeUndefined()
       expect(bundle!.inspiration).toEqual([])
     }
+  })
+})
+
+// ⚠ THE REPORTED CASE, reproduced from live rows.
+//
+// A trip built from the Library — pick places out of already-organized Reels — records
+// `reel_urls: []` and `place_ids: [...]` in its create_trip event, because
+// backend/api/schemas.py accepts one or the other and rejects both together. So the trip names
+// NO Reels at all, `trip_inspiration_items` is empty as always, and every trip-level lookup
+// finds nothing. The stop still renders "From your Instagram Reel" over a verbatim quote,
+// because its evidence_kind IS reel_quote — but the only link was the research page.
+//
+// The attribution was never missing. It is per PLACE, in reel_place_mentions.
+describe('getTrip: a trip built from place_ids, which names no Reels', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    createClient.mockReset()
+  })
+
+  const libraryTripEvent = {
+    id: 'ev1', trip_id: TRIP_ID, event_type: 'stage', stage: 'create_trip',
+    message: 'Starting your trip',
+    payload: { reel_urls: [], place_ids: ['pl_umeda'], requested_places: [] },
+    created_at: '2026-08-01T00:00:00Z',
+  }
+
+  it('attributes each stop through reel_place_mentions and gives the pin its cover', async () => {
+    const spy: { savedReelQuery?: unknown[] } = {}
+    const bundle = await loadTrip({
+      trip_inspiration_items: [],
+      generation_events: [libraryTripEvent],
+      trip_places: [tripPlace('pl_umeda', 'reel_extracted')],
+      saved_reel_cards: [
+        { normalized_url: REEL_A, thumbnail_url: 'https://cdn.test/a.jpg', places: [mention('pl_umeda', REEL_A)] },
+        // Another of the owner's Reels, describing a place on a DIFFERENT trip.
+        { normalized_url: REEL_B, thumbnail_url: 'https://cdn.test/b.jpg', places: [mention('pl_elsewhere', REEL_B)] },
+      ],
+    }, spy)
+
+    // No declared Reels, so the owner's saved Reels are read unfiltered rather than `in ([])`,
+    // which would have matched nothing — the bug that made this trip unfixable.
+    expect(spy.savedReelQuery).toBeUndefined()
+    expect(bundle!.places[0].evidence_json.source_reel_url).toBe(REEL_A)
+    // Only the Reel that actually placed a stop on THIS trip becomes its inspiration...
+    expect(bundle!.inspiration.map((i) => i.normalized_reel_url)).toEqual([REEL_A])
+    // ...and it carries the cover, so the pin stops falling back to the placeholder.
+    expect(bundle!.inspiration[0].thumbnail_url).toBe('https://cdn.test/a.jpg')
+  })
+
+  it('does not borrow a Reel that only describes another trip\'s places', async () => {
+    const bundle = await loadTrip({
+      trip_inspiration_items: [],
+      generation_events: [libraryTripEvent],
+      trip_places: [tripPlace('pl_umeda', 'reel_extracted')],
+      saved_reel_cards: [
+        { normalized_url: REEL_B, thumbnail_url: 'https://cdn.test/b.jpg', places: [mention('pl_elsewhere', REEL_B)] },
+      ],
+    })
+    expect(bundle!.places[0].evidence_json.source_reel_url).toBeNull()
+    expect(bundle!.inspiration).toEqual([])
+  })
+
+  it('matches the stored URL form, not the frontend-normalised one', async () => {
+    // backend/scrape/reel_url.py stores `.../reel/ABC`; lib/trip/parse-inspiration.ts produces
+    // `.../reel/ABC/`. Comparing the two forms finds nothing, and nothing errors — the pin just
+    // stays a placeholder forever.
+    const bundle = await loadTrip({
+      trip_inspiration_items: [],
+      generation_events: [{ ...libraryTripEvent, payload: { reel_urls: [`${REEL_A}/`] } }],
+      trip_places: [tripPlace('pl_umeda', 'reel_extracted')],
+      saved_reel_cards: [
+        { normalized_url: REEL_A, thumbnail_url: 'https://cdn.test/a.jpg', places: [mention('pl_umeda', REEL_A)] },
+      ],
+    })
+    expect(bundle!.places[0].evidence_json.source_reel_url).toBe(REEL_A)
+    expect(bundle!.inspiration[0].thumbnail_url).toBe('https://cdn.test/a.jpg')
   })
 })

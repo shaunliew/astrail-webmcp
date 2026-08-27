@@ -842,6 +842,39 @@ describe('an agent-started extraction shows progress without a reload', () => {
     expect(polled).toContain('job-2')
   })
 
+  it('stops following the oldest job once the batch is full', async () => {
+    /* A job is normally retired when it reaches a terminal status. One that NEVER does - deleted,
+       permanently unreadable - is never retired, so an unbounded set would poll it for the life of
+       the page and grow the batch on every save_reels call. Oldest out at the cap. */
+    listSavedReelCards.mockResolvedValue([{ ...cards[0], analysis_status: 'not_analyzed' }])
+    getOrganizeStatus.mockClear()
+    getOrganizeStatus.mockResolvedValue(job('processing', 'processing'))
+    let slot: { current: ((id: string) => void) | null } | null = null
+    function Capture() {
+      slot = useWebMcpRegistry().adoptOrganizeJob
+      return null
+    }
+    render(
+      <WebMcpRegistryProvider>
+        <MapProvider><SavedReelsFlow /></MapProvider>
+        <Capture />
+      </WebMcpRegistryProvider>,
+    )
+    await act(async () => { await Promise.resolve() })
+    for (let i = 1; i <= 10; i += 1) {
+      await act(async () => { slot?.current?.(`job-${i}`); await Promise.resolve() })
+    }
+
+    getOrganizeStatus.mockClear()
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    const polled = new Set(getOrganizeStatus.mock.calls.map((c) => c[0]))
+    expect(polled.size).toBe(8)
+    expect(polled.has('job-1')).toBe(false)   // dropped
+    expect(polled.has('job-2')).toBe(false)
+    expect(polled.has('job-3')).toBe(true)    // the 8 most recent survive
+    expect(polled.has('job-10')).toBe(true)
+  })
+
   it('keeps other jobs moving when one job\'s status read fails', async () => {
     /* Promise.all rejected the whole batch on a single bad read, so one unreadable job id stalled
        EVERY adopted job for the rest of the page mount — and nothing evicts a permanently bad id.

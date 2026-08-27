@@ -154,10 +154,16 @@ export function statusExplanation(card: SavedReelCard, now: number = Date.now())
  * already has always reported "Saved to your library" — cheerfully telling them they did
  * something they did not.
  *
- * `updated_at !== created_at` is exact, and needs no clocks compared across machines: the table's
- * trigger is BEFORE UPDATE, so the conflict branch bumps `updated_at` while a fresh insert leaves
- * both set by the same `now()` in one statement. Any row that existed before is therefore either
- * touched by this upsert or already carries a later `updated_at` from its own analysis.
+ * `updated_at !== created_at` is the signal, and it needs no clocks compared across machines: the
+ * table's trigger is BEFORE UPDATE, so the conflict branch bumps `updated_at` while a fresh insert
+ * leaves both set by the same `now()` in one statement. Any row that existed before is therefore
+ * either touched by this upsert or already carries a later `updated_at` from its own analysis.
+ *
+ * Reliable rather than exact, and the difference is worth naming: `now()` is transaction-stable,
+ * so two captures inside ONE database transaction would share a timestamp and the second would
+ * read as new. Each capture is its own PostgREST request today, so that cannot happen here — but
+ * the guarantee comes from the transport, not from the comparison. A capture RPC returning an
+ * explicit inserted-vs-conflicted flag would be exact; this infers it.
  */
 export function wasAlreadySaved(reel: Pick<SavedReel, 'created_at' | 'updated_at'>): boolean {
   return reel.updated_at !== reel.created_at

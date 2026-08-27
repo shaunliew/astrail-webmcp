@@ -46,6 +46,10 @@ export function toReelBriefItem(place: SavedReelPlaceProof): DraftInspirationIte
   }
 }
 
+/** Most adopted organize jobs followed at once. Real use adds one per `save_reels` call; the cap
+ *  only bites on a job that never reaches a terminal status and so is never retired. */
+const MAX_ADOPTED_JOBS = 8
+
 export default function SavedReelsFlow() {
   const router = useRouter()
   const { setLightPreset } = useSharedMap()
@@ -127,7 +131,12 @@ export default function SavedReelsFlow() {
   useEffect(() => {
     const slot = registry?.adoptOrganizeJob
     if (!slot) return
-    slot.current = (id: string) => setToolJobIds((prev) => (prev.includes(id) ? prev : [...prev, id]))
+    // Bounded: a job is normally retired when it reaches a terminal status, but one that never
+    // does (deleted, permanently unreadable) would otherwise be polled for the life of the page
+    // and grow the batch forever. Oldest out — a stalled job is the least likely to still matter.
+    slot.current = (id: string) => setToolJobIds((prev) => (
+      prev.includes(id) ? prev : [...prev, id].slice(-MAX_ADOPTED_JOBS)
+    ))
     return () => { slot.current = null }
   }, [registry])
 
@@ -138,7 +147,12 @@ export default function SavedReelsFlow() {
   useEffect(() => {
     if (toolJobIds.length === 0) return
     let stopped = false
+    let inFlight = false
     const tick = async () => {
+      // One tick at a time. A slow round of status reads would otherwise overlap the next
+      // interval and double every request, exactly when the backend is already struggling.
+      if (inFlight) return
+      inFlight = true
       try {
         const token = await getAccessToken()
         /* allSettled, NOT all: one rejected status read used to reject the whole batch, so a
@@ -184,6 +198,8 @@ export default function SavedReelsFlow() {
         }
       } catch {
         // Transient: the next tick retries, and nothing has been retired in the meantime.
+      } finally {
+        inFlight = false
       }
     }
     void tick()

@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import type { TripBundle } from '@/lib/trip/backend-types'
 import { getTrip } from '@/lib/trip/supabase-api'
+import TripTools from '@/components/webmcp/TripTools'
 import {
   orderedDays, placesForDay, legsForDay, restaurantsForDay,
   tripHotels, buildPlaceIndex, findTripPlace, recommendedHotelId,
@@ -177,6 +178,17 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
   }
 
   return (
+    <>
+      {/* Map-driving tools live only where a map exists. key={tripId} guarantees trip A's
+          registrations unmount before trip B's mount, so two same-named tools never overlap. */}
+      <TripTools
+        key={tripId}
+        bundle={bundle}
+        showDay={setActiveDayNumber}
+        selectPlace={setSelectedPlaceId}
+        setLayerMode={setLayerMode}
+        openPanel={() => setPanelOpen(true)}
+      />
     // The interactive Mapbox canvas is a FIXED layer behind this route (MapProvider's
     // `.shared-map`). This overlay must be click-through, or it swallows every pan/zoom/
     // pin-tap before the map beneath ever sees it. Interactive children re-enable
@@ -379,5 +391,6 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
         <Chevron className="-rotate-90 md:rotate-0" />
       </button>
     </main>
+    </>
   )
 }

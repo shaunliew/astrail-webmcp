@@ -4,6 +4,7 @@ import { getItineraryTool, getPlaceEvidenceTool, listTripsTool, type TripReader 
 import { saveReelsTool } from './reels'
 import { getTripProgressTool, planTripFromReelsTool, type GenerationDeps } from './generation'
 import { movePlaceTool, removePlaceTool, type EditDeps } from './edit'
+import { getMapViewTool, setMapModeTool, showOnMapTool, type MapDeps } from './map'
 
 /**
  * Every tool, assembled from plain readers.
@@ -44,13 +45,13 @@ export function globalTools(ctx: ToolContext): ToolSpec[] {
 }
 
 /**
- * Reserved for tools that act on the LIVE map instance, which exists only on a trip page:
- * show_on_map, set_map_mode. Registering those globally would just fail with "no map here".
+ * Tools that act on the LIVE map instance, which exists only on a trip page. Registering these
+ * globally would just fail with "no map here" — noise the agent has to learn to route around.
  */
-export function tripTools(_ctx: ToolContext): ToolSpec[] {
-  return []
+export function tripTools(deps: MapDeps): ToolSpec[] {
+  return [showOnMapTool(deps), setMapModeTool(deps), getMapViewTool(deps)]
 }
 
-export function allTools(ctx: ToolContext): ToolSpec[] {
-  return [...globalTools(ctx), ...tripTools(ctx)]
+export function allTools(ctx: ToolContext, map: MapDeps): ToolSpec[] {
+  return [...globalTools(ctx), ...tripTools(map)]
 }

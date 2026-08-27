@@ -47,11 +47,20 @@ const ctx: ToolContext = {
   },
 }
 
-const specs = allTools(ctx)
+const mapDeps = {
+  bundle: () => TOKYO_TRIP,
+  showDay: () => {},
+  selectPlace: () => {},
+  setLayerMode: () => {},
+  openPanel: () => {},
+  view: () => ({ lng: 139.7, lat: 35.7, zoom: 12 }),
+}
+
+const specs = allTools(ctx, mapDeps)
 
 describe('tool spec contract', () => {
   it('registers at least the tools built so far', () => {
-    expect(specs.length).toBeGreaterThanOrEqual(9)
+    expect(specs.length).toBeGreaterThanOrEqual(12)
   })
 
   it('has globally unique names — a duplicate is REJECTED at registration, silently', () => {
@@ -118,11 +127,12 @@ describe('tool spec contract', () => {
 describe('tool scoping', () => {
   it('separates always-on tools from trip-page tools', () => {
     const g = globalTools(ctx).map((s) => s.name)
-    const t = tripTools(ctx).map((s) => s.name)
+    const t = tripTools(mapDeps).map((s) => s.name)
     expect(g).toContain('get_app_state')
     // Data tools are global on purpose — see tools/index.ts. Only live-map tools will be scoped.
     expect(g).toContain('get_itinerary')
     expect(t).not.toContain('get_itinerary')
+    expect(t).toContain('show_on_map')
     // Overlap would mean a duplicate-name rejection the moment a trip page mounts.
     expect(g.filter((n) => t.includes(n))).toEqual([])
   })

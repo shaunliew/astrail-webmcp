@@ -1,7 +1,6 @@
 'use client'
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { suppressUnregisterAborts } from '@/lib/webmcp/harden'
+import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react'
 
 /**
  * Agent actions are announced in the app's words, never the tool's. A user should read
@@ -90,10 +89,6 @@ export function WebMcpRegistryProvider({ children }: { children: React.ReactNode
   const [tools, setTools] = useState<RegisteredToolView[]>([])
   const [supported, setSupported] = useState(false)
   const [pending, setPending] = useState<PendingConfirm | null>(null)
-
-  // Stops a tool UNREGISTRATION from surfacing as a full-screen AbortError overlay.
-  // Purely cosmetic, and written so that any failure inside it leaves the app working.
-  useEffect(() => suppressUnregisterAborts(), [])
   const [activity, setActivity] = useState<ActivityEntry[]>([])
   const activitySeq = useRef(0)
   const openTrip = useRef<unknown>(null)

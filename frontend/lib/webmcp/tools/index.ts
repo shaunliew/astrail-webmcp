@@ -10,7 +10,7 @@ import { getMapViewTool, setMapModeTool, showOnMapTool, type MapDeps } from './m
  * Every tool, assembled from plain readers.
  *
  * Readers are functions rather than values so a spec never closes over a stale snapshot:
- * `use-webmcp-tool` registers once and keeps the execute callback stable, so anything captured
+ * `useRegisterTool` registers once and keeps the execute callback stable, so anything captured
  * by value at registration would still be first-render data days later.
  */
 export type ToolContext = {

@@ -1,7 +1,7 @@
 /**
  * Local mirror of the WebMCP tool shape.
  *
- * We register through `use-webmcp-tool` (Chrome's hook), but the SPECS are plain data produced
+ * We register through our own `useRegisterTool`, but the SPECS are plain data produced
  * by pure factory functions. That separation is what lets the contract test validate every
  * tool's name, description length and schema without mounting React — and a tool whose
  * registration is silently rejected (duplicate name, empty description, bad schema) is an

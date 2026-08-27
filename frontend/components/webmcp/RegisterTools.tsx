@@ -1,18 +1,18 @@
 'use client'
 
 import { useEffect } from 'react'
-import { useWebMCP } from 'use-webmcp-tool'
+import { useRegisterTool } from '@/lib/webmcp/use-register-tool'
 import type { ToolSpec } from '@/lib/webmcp/types'
 import { useOptionalWebMcpRegistry } from './WebMcpRegistry'
 
 /**
  * One component per tool, deliberately.
  *
- * `useWebMCP` is a hook, so it cannot be called in a loop whose length varies. Giving each tool
+ * `useRegisterTool` is a hook, so it cannot be called in a loop whose length varies. Giving each tool
  * its own component means React handles the lifecycle: mount registers, unmount unregisters, and
  * a trip page navigating away takes its tools with it without any manual AbortController.
  *
- * The hook already solves the trap this would otherwise hit — a changing `execute` does NOT
+ * The hook solves the trap this would otherwise hit — a changing `execute` does NOT
  * trigger re-registration, so the callback always sees current state without the tool churning.
  * That is why our specs take reader FUNCTIONS rather than values.
  */
@@ -33,31 +33,25 @@ function ToolRegistration({ spec, enabled = true }: { spec: ToolSpec; enabled?: 
   const beginActivity = registry?.beginActivity
   const endActivity = registry?.endActivity
 
-  const { supported, registered, error } = useWebMCP({
-    name: spec.name,
-    description: spec.description,
-    inputSchema: spec.inputSchema,
-    annotations: spec.annotations,
-    // Wrapping here rather than in each tool means EVERY call is announced, including reads.
-    // A read the user never sees is a read they could not consent to.
-    execute: async (args: Record<string, unknown>) => {
-      const id = beginActivity?.(spec.name)
-      try {
-        const result = await spec.execute(args)
-        if (id !== undefined) endActivity?.(id, 'done', typeof result === 'string' ? result.split('\n')[0] : undefined)
-        return result
-      } catch (e) {
-        if (id !== undefined) endActivity?.(id, 'failed', e instanceof Error ? e.message : undefined)
-        throw e
-      }
+  const { supported, registered, error } = useRegisterTool(
+    {
+      ...spec,
+      // Wrapping here rather than in each tool means EVERY call is announced, including reads.
+      // A read the user never sees is a read they could not consent to.
+      execute: async (args: Record<string, unknown>) => {
+        const id = beginActivity?.(spec.name)
+        try {
+          const result = await spec.execute(args)
+          if (id !== undefined) endActivity?.(id, 'done', typeof result === 'string' ? result.split('\n')[0] : undefined)
+          return result
+        } catch (e) {
+          if (id !== undefined) endActivity?.(id, 'failed', e instanceof Error ? e.message : undefined)
+          throw e
+        }
+      },
     },
     enabled,
-    onError: (e) => {
-      // A rejected registration is an ABSENT tool: nothing throws, nothing logs, it is simply
-      // missing from the agent's list. Surfacing it is the only way to notice before a judge does.
-      console.error(`[webmcp] tool "${spec.name}" failed:`, e)
-    },
-  })
+  )
 
   useEffect(() => {
     setSupported?.(supported)

@@ -38,6 +38,18 @@ export const metadata: Metadata = {
   title: "Astrail · Plan trips from your saved travel Reels",
   description:
     "Paste your saved travel Reels. Astrail extracts the places, verifies them, and builds a day-by-day itinerary with the reasoning attached. Beta opening soon.",
+  // This repository deploys a separate hackathon surface. Keep every route out of search so it
+  // cannot compete with the production product at astrail.xyz.
+  robots: {
+    index: false,
+    follow: false,
+    nocache: true,
+    googleBot: {
+      index: false,
+      follow: false,
+      noimageindex: true,
+    },
+  },
 };
 
 export default function RootLayout({

@@ -1,8 +1,93 @@
-# Astrail
+# Astrail · WebMCP Challenge build
 
-**Astrail turns scattered travel inspiration into the route you actually take.**
+> This repository currently describes the WebMCP Challenge build. It is an experiment, not the production deployment at [astrail.xyz](https://astrail.xyz).
 
-Astrail is an AI-native travel product that turns messy saved travel inspiration — social posts, links, places, preferences, dates, and constraints — into a realistic route you can inspect, refine, and eventually book.
+Astrail turns Instagram Reel URLs into an evidence-backed travel itinerary on a Mapbox 3D map. Its existing pipeline extracts and verifies real places, deduplicates them, enriches the route, and attaches the source evidence to every stop. WebMCP changes the interface: an agent in ChatGPT's built-in browser can now inspect the signed-in page, start and follow a trip, retrieve its evidence, and operate the same live map and itinerary state the person is watching.
+
+## Why this exists
+
+The motivating feedback was direct: users said it is **“unclear how to navigate the website — where to click, how to choose the reels, how to start generating a trip.”** The challenge pivot is to stop making users find the button and let them say what they want. `get_app_state` is the first tool the agent can call. It reports the current route, what the user already has, what actions are available next, and known blockers without turning failed reads into misleading zero counts.
+
+A backend MCP server could return JSON about a trip. WebMCP can also move the 3D map the person is actually looking at because its tools execute inside the page, inherit the browser session and loaded trip, and call the same React state setters as a click.
+
+## WebMCP tools
+
+The current code registers **13 tools**: 10 throughout the signed-in `/app` shell and 3 only while a trip map is mounted. The brief originally counted 12; `list_saved_reels` is also mounted by `globalTools()` and is included here so this table matches the source.
+
+| Tool | Scope | Reads / changes | Purpose |
+|---|---|---|---|
+| `get_app_state` | Global app | Reads page and session state | Explains where the user is, what they have, what is possible next, and what is blocked. |
+| `list_trips` | Global app | Reads trips | Lists the user's trips with destination, dates, status, and a short trip ID. |
+| `save_reels` | Global app | Changes Reel library | Validates and saves up to five Instagram Reel or post URLs, reporting each result. |
+| `list_saved_reels` | Global app | Reads Reel library | Groups saved Reels by verified country and exposes the places needed to plan without re-pasting links. |
+| `get_itinerary` | Global app | Reads a trip | Returns a compact day-by-day route with the same pin numbers the user sees on the map. |
+| `get_place_evidence` | Global app | Reads evidence | Returns the verbatim Reel-caption quote, source URL, and confidence for one stop. |
+| `plan_trip_from_reels` | Global app | Creates a trip | Shows an in-page approval card, starts the pipeline, and returns a trip ID without pretending generation is finished. |
+| `get_trip_progress` | Global app | Reads generation state | Reports the live pipeline stage and elapsed time until the agent can fetch the itinerary. |
+| `move_place` | Global app | Changes itinerary | Moves a stop to another day or position, refreshes the trip, and reports how to reverse the move. |
+| `remove_place` | Global app | Changes itinerary | Requests explicit in-page approval, removes a stop, then warns that the remaining pins were renumbered. |
+| `show_on_map` | Trip page | Changes visible map state | Flies the live camera to a trip, day, stop, or hotel-hub view and opens the matching panel. |
+| `set_map_mode` | Trip page | Changes visible map state | Switches the live map between day-by-day route and hotel-hub views. |
+| `get_map_view` | Trip page | Reads visible map state | Reports the current camera and trip size so the agent can ground words such as “here” or “up north.” |
+
+`move_place` and `remove_place` are built and unit-tested, but **never live-tested** against the shared Supabase project. Their FastAPI `PATCH` and `DELETE` endpoints are protected by owner, pair, trip-status, running-job, and dense-ordering guards, and `WEBMCP_EDITS_ENABLED` is **off by default**. Do not describe itinerary editing as live until that flag is deliberately enabled in the isolated challenge environment and the flow is verified.
+
+## How WebMCP is implemented
+
+The browser primitive at the center of the integration is deliberately visible in this repository:
+
+```ts
+document.modelContext.registerTool({ name, description, inputSchema, execute })
+```
+
+The React implementation uses Chrome's [`use-webmcp-tool`](https://www.npmjs.com/package/use-webmcp-tool) hook to make that native registration follow component lifecycle. [`frontend/lib/webmcp/`](frontend/lib/webmcp/) contains the schemas, tool factories, resolution and formatting logic. [`frontend/components/webmcp/`](frontend/components/webmcp/) wires those factories to authenticated Supabase and backend clients, registers global tools in the app shell, mounts map tools only when a real trip map exists, and shows registration status in the WebMCP chip. Tool callbacks read through refs so a long-lived registration sees the current route, trip, and map rather than first-render state.
+
+Every string derived from an Instagram caption is treated as untrusted content. Read tools declare `untrustedContentHint`, URL-writing tools validate Instagram origins before making a request, and destructive removal requires a visible user approval card.
+
+## Run locally
+
+Prerequisites: Node.js with npm, Python 3.11+, [`uv`](https://docs.astral.sh/uv/), a Supabase project, and a public Mapbox token.
+
+Create `frontend/.env.local` with these browser-safe values:
+
+```dotenv
+NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN=pk.your-public-token
+NEXT_PUBLIC_SITE_URL=http://localhost:3000
+```
+
+Then start the two services in separate terminals:
+
+```bash
+# Terminal 1: API
+cd backend
+uv sync
+uv run uvicorn main:app --reload
+
+# Terminal 2: web app
+cd frontend
+npm install
+npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000). A real generation needs valid backend credentials for Supabase, Apify, and OpenAI; unit tests do not make those network calls.
+
+## Test in ChatGPT
+
+1. Open the deployed challenge URL in the **ChatGPT desktop app's built-in browser**, not Safari or Chrome.
+2. Select **GPT-5.6 Sol or Terra**. Luna has WebMCP disabled.
+3. Turn on **Settings > Browser > Permissions > Enable site tools**.
+4. Sign in with the submission account, then look for the **Site tools** arrow in the address bar and the **WebMCP chip** at the bottom-right of Astrail.
+5. Start with “What can I do here?” so the agent calls `get_app_state`, then ask it to inspect a trip and show a stop's evidence on the map.
+
+**TODO: Demo credentials — add the submission account before judging.**
+
+## Submission documentation
+
+- [Devpost submission answers](docs/webmcp/SUBMISSION.md)
+- [What is new vs pre-existing](docs/webmcp/WHATS-NEW.md)
 
 ## Name
 
@@ -30,7 +115,7 @@ The earlier TripCanvas project is used as a reference implementation only. Astra
 
 ## Status
 
-Early private repository. Initial product direction and architecture are still being shaped.
+The core product predates the challenge. The browser-side WebMCP layer, its tool and contract tests, and the guarded itinerary edit endpoints were added during the challenge period. See the [dated eligibility record](docs/webmcp/WHATS-NEW.md) for the exact split.
 
 ---
 

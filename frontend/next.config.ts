@@ -76,7 +76,10 @@ const nextConfig: NextConfig = {
   // Side effect worth knowing: Next rewrites tsconfig.json to add "<distDir>/types" to
   // `include` (and reformats the file while it is there). Run
   // `git checkout frontend/tsconfig.json` after a harness session.
-  distDir: process.env.NEXT_DIST_DIR || ".next",
+  // Gated on NODE_ENV: the knob exists solely so two LOCAL dev servers stop fighting over one
+  // build dir. Ungated, a stray NEXT_DIST_DIR in Vercel's env would silently repoint a
+  // production build's output — a deployment risk taken on for a dev convenience.
+  distDir: (!isProduction && process.env.NEXT_DIST_DIR) || ".next",
   poweredByHeader: false,
   async redirects() {
     return [

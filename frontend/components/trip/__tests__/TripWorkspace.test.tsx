@@ -4,7 +4,7 @@ import { TOKYO_TRIP } from '@/lib/trip/fixtures'
 import { placesForDay } from '@/lib/trip/selectors'
 import type { TripBundle } from '@/lib/trip/backend-types'
 
-const { getTrip, MapCtor, mapInstance } = vi.hoisted(() => {
+const { getTrip, MapCtor, mapInstance, mapProps } = vi.hoisted(() => {
   const handler = () => ({ enable: vi.fn(), disable: vi.fn() })
   const mapInstance = {
     on: vi.fn(), setConfigProperty: vi.fn(),
@@ -13,11 +13,20 @@ const { getTrip, MapCtor, mapInstance } = vi.hoisted(() => {
     scrollZoom: handler(), boxZoom: handler(), dragRotate: handler(), dragPan: handler(),
     keyboard: handler(), doubleClickZoom: handler(), touchZoomRotate: handler(), touchPitch: handler(),
   }
-  return { getTrip: vi.fn(), MapCtor: vi.fn(() => mapInstance), mapInstance }
+  // Captures TripMap's props so a test can drive a real pin tap through onSelectPlace.
+  return {
+    getTrip: vi.fn(), MapCtor: vi.fn(() => mapInstance), mapInstance,
+    mapProps: { current: null as null | { onSelectPlace: (id: string) => void } },
+  }
 })
 
 vi.mock('@/lib/trip/supabase-api', () => ({ getTrip }))
-vi.mock('@/components/map/TripMap', () => ({ default: () => <div data-testid="trip-map" /> }))
+vi.mock('@/components/map/TripMap', () => ({
+  default: (props: { onSelectPlace: (id: string) => void }) => {
+    mapProps.current = props
+    return <div data-testid="trip-map" />
+  },
+}))
 vi.mock('mapbox-gl', () => ({
   default: { Map: MapCtor, Marker: vi.fn(), LngLatBounds: vi.fn(), accessToken: '' },
 }))
@@ -63,6 +72,29 @@ describe('TripWorkspace', () => {
     const firstDay1Place = placesForDay(TOKYO_TRIP, 1)[0].place.name
     expect(await screen.findByText(firstDay1Place)).toBeInTheDocument()
     expect(await screen.findByTestId('trip-map')).toBeInTheDocument()
+  })
+
+  it('activates a pin\'s own day when it is selected from the map', async () => {
+    // The map shows every day's pins; the itinerary list shows only the active day. Selecting a
+    // Day 3 pin while Day 1 was open opened the panel on a list that did not contain it — no
+    // card to highlight, and ItineraryCards' scroll-into-view silently found nothing.
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    renderWorkspace(TOKYO_TRIP.trip.id)
+
+    // Assert on the itinerary CARD, not the place name: the fixture's routing warning also says
+    // "Tokyo Disneyland", so a text query matches before the day ever switches.
+    const card = (id: string) => document.querySelector(`[data-place-id="${id}"]`)
+    const day1 = placesForDay(TOKYO_TRIP, 1)[0]
+    const day3 = placesForDay(TOKYO_TRIP, 3)[0]
+
+    await waitFor(() => expect(card(day1.place_id)).not.toBeNull())
+    expect(card(day3.place_id)).toBeNull()          // day 3's card is absent while day 1 is open
+
+    await act(async () => { mapProps.current!.onSelectPlace(day3.place_id) })
+
+    expect(card(day3.place_id)).not.toBeNull()
+    expect(card(day3.place_id)).toHaveAttribute('aria-current', 'true')
+    expect(card(day1.place_id)).toBeNull()          // the day switched, not merely appended
   })
 
   it('toggles the panel open/closed from the single edge control', async () => {

@@ -183,6 +183,49 @@ describe('buildPopupModel', () => {
     expect(buildPopupModel(trip as never, added).reel).toBeNull()
   })
 
+  // The URL fields alone were enough to earn a Reel citation, because provenance was checked
+  // only on the legacy fallback. A row can hold an Instagram URL without having come from that
+  // Reel: `source_url` is the research page for agent picks, dedup can rewrite source_type to
+  // user_requested while the representative's Reel URL survives, and rows reach the client
+  // through an unvalidated cast. Each of these would have shown the brass "from Reel" frame.
+  it.each([
+    ['a stop the user asked for', 'user_requested', 'requested_by_you'],
+    ['a stop Astrail suggested', 'agent_suggested', 'suggested_by_astrail'],
+  ])('cites no Reel for %s that merely carries an Instagram URL', (_label, sourceType, kind) => {
+    const reel = TOKYO_TRIP.inspiration.find((i) => i.normalized_reel_url)!
+    for (const field of ['source_reel_url', 'source_url'] as const) {
+      const row = {
+        ...first,
+        source_type: sourceType as never,
+        evidence_json: {
+          ...first.evidence_json,
+          evidence_kind: kind as never,
+          source_url: null,
+          source_reel_url: null,
+          [field]: reel.normalized_reel_url,
+        },
+      }
+      const model = buildPopupModel(TOKYO_TRIP as never, row as never)
+      expect(model.reel, `${sourceType} via ${field}`).toBeNull()
+      expect(model.imageUrl, `${sourceType} via ${field}`).toBeNull()
+    }
+  })
+
+  // Inconsistent row: dedup rewrote source_type but the representative's reel_quote survived.
+  it('cites no Reel when source_type and evidence_kind disagree', () => {
+    const reel = TOKYO_TRIP.inspiration.find((i) => i.normalized_reel_url)!
+    const row = {
+      ...first,
+      source_type: 'user_requested' as never,
+      evidence_json: {
+        ...first.evidence_json,
+        evidence_kind: 'reel_quote' as const,          // stale — survived the source_type rewrite
+        source_reel_url: reel.normalized_reel_url,
+      },
+    }
+    expect(buildPopupModel(TOKYO_TRIP as never, row as never).imageUrl).toBeNull()
+  })
+
   it('omits the image when the trip no longer holds that Reel', () => {
     // The cover comes from the trip's own inspiration rows. If the Reel is not among them there
     // is no image to show, and nothing else may be substituted.

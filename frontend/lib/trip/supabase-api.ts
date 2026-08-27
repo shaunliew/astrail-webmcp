@@ -98,6 +98,27 @@ export async function getTrip(tripId: string): Promise<TripBundle | null> {
       .order('created_at').order('id'),
   ])
 
+  /* Map pins show the source Reel's cover as EVIDENCE, and that cover lives on `reel_cache`,
+     not on `trip_inspiration_items` (which carries only `reel_cache_id`). A client-side
+     PostgREST embed of reel_cache is not merely empty but DENIED: migration
+     20260718130000 runs `revoke all on public.reel_cache from public, anon, authenticated`.
+     `saved_reel_cards` is the user-scoped view that already performs the join server-side —
+     the same surface the Saved Reels tray reads — so resolve covers through it. A Reel the
+     user has since removed from Saved Reels simply yields no cover, and the pin falls back
+     to the universal placeholder, which is the correct degradation. */
+  const inspirationRows = (inspiration.data ?? []) as TripInspirationItem[]
+  const reelUrls = [...new Set(
+    inspirationRows.map((i) => i.normalized_reel_url).filter((u): u is string => Boolean(u)),
+  )]
+  const covers = new Map<string, string>()
+  if (reelUrls.length > 0) {
+    const { data: cards } = await supabase
+      .from('saved_reel_cards').select('normalized_url, thumbnail_url').in('normalized_url', reelUrls)
+    for (const card of (cards ?? []) as { normalized_url: string, thumbnail_url: string | null }[]) {
+      if (card.thumbnail_url) covers.set(card.normalized_url, card.thumbnail_url)
+    }
+  }
+
   const tripPlaces = (places.data ?? []) as unknown as TripPlace[]
   const restaurantRows = (restaurants.data ?? []) as RestaurantSuggestion[]
 
@@ -118,7 +139,10 @@ export async function getTrip(tripId: string): Promise<TripBundle | null> {
 
   return {
     trip: trip as Trip,
-    inspiration: (inspiration.data ?? []) as TripInspirationItem[],
+    inspiration: inspirationRows.map((i) => ({
+      ...i,
+      thumbnail_url: (i.normalized_reel_url && covers.get(i.normalized_reel_url)) || null,
+    })),
     places: tripPlaces,
     days: (days.data ?? []) as TripDay[],
     transport_legs: (legs.data ?? []) as TransportLeg[],

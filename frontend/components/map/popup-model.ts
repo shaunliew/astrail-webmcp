@@ -91,15 +91,26 @@ function isReelEvidence(kind: string): boolean {
  */
 export function reelUrlFor(bundle: TripBundle, tripPlace: TripPlace): string | null {
   const e = tripPlace.evidence_json
+  /* Provenance gates EVERY path, not only the legacy fallback. A URL field is not provenance:
+     an Instagram link can sit in `source_url` on a stop the user typed, and citing it would
+     claim a Reel we did not get the place from (guardrail #1).
+
+     Both discriminators are required because the backend writes them from ONE total mapping
+     (persist.py::_evidence_kind), so they agree on every row it wrote — which means demanding
+     both costs nothing there, and is exactly what protects against rows it did not write:
+     dedup can rewrite source_type to user_requested while the representative's evidence_kind
+     and Reel URL survive, and legacy or hand-repaired rows reach the client through an
+     unvalidated cast with no runtime schema check. */
+  if (tripPlace.source_type !== 'reel_extracted' || !isReelEvidence(e.evidence_kind)) return null
+
   const unique = [...new Set(
     bundle.inspiration.map((i) => i.normalized_reel_url).filter((u): u is string => isInstagram(u)),
   )]
   return (isInstagram(e.source_reel_url ?? null) ? e.source_reel_url! : null)
     ?? (isInstagram(e.source_url) ? e.source_url! : null)
-    // Legacy rows only, and only for places that actually CAME from a Reel. Applying this to a
-    // stop the user typed, or one Astrail suggested from its own research, would cite a Reel
-    // that had nothing to do with it — a false citation is worse than no citation.
-    ?? (isReelEvidence(e.evidence_kind) && unique.length === 1 ? unique[0] : null)
+    // Rows written before source_reel_url existed: the trip's single Reel is unambiguous.
+    // Several Reels and no recorded attribution means we cannot say which, so we say none.
+    ?? (unique.length === 1 ? unique[0] : null)
 }
 
 /**

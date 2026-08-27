@@ -229,6 +229,20 @@ describe('TripMap', () => {
     expect(pad.top + pad.bottom).toBeLessThan(H)   // and never so greedy Mapbox abandons the fit
   })
 
+  it('trusts a zero-sized canvas measurement instead of substituting the window', async () => {
+    // `canvas?.clientHeight || window.innerHeight` treated a real 0 as "not measured" and
+    // substituted the much larger window — recreating the padding/canvas mismatch the 70% cap
+    // exists to prevent, in the transient mid-layout case. A zero canvas must yield zero pads.
+    mapInstance.getCanvas.mockReturnValue({ clientWidth: 0, clientHeight: 0 })
+    renderMap()
+    await flush()
+    fireLoad()
+    await flush()
+
+    const pad = mapInstance.fitBounds.mock.calls.at(-1)![1].padding
+    expect(pad).toEqual({ top: 0, right: 0, bottom: 0, left: 0 })
+  })
+
   it('frames its own places instead of inheriting the generation camera', async () => {
     renderMap()
     await flush()

@@ -292,3 +292,32 @@ Two caveats recorded so the next session does not rediscover them:
 structurally cannot see, and the third (8.4) was a consistency gap between two call sites of one
 value. None would have been caught by more unit tests — 860 were already passing. Measuring
 `getBoundingClientRect` in a real browser at three viewports is what found them.
+
+### Codex cross-model review of batch 8 — 5 findings, 1 false positive
+
+Dispatched to the Herdr `reviewer` pane (Codex, gpt-5.6-sol). Its first pass was lost to a context
+compaction mid-run; **re-dispatched asking for the report as a FILE**, which is the documented
+Herdr fallback and should have been the first move for a long review.
+
+Verdict: CHANGES REQUESTED. Findings, each verified against the code before acting:
+
+| # | Finding | Verdict | Action |
+|---|---|---|---|
+| 1 | **`thumbnail_url` is never supplied on the live path**, so every pin renders a placeholder in production | ✅ **Real, and the most valuable finding of the sprint.** `trip_inspiration_items` has no such column — it carries `reel_cache_id`; the cover lives on `reel_cache`. `select('*')` cannot return it. The fixture hand-injects it, so 863 green tests said nothing | Resolved through **`saved_reel_cards`**, the user-scoped view that already joins `reel_cache` server-side. **A client-side embed would have been *denied*, not empty** — migration 20260718130000 runs `revoke all on public.reel_cache from public, anon, authenticated`. **No migration needed**, which matters: prod DB changes are gated by `astrail-release` |
+| 2 | A non-Reel place can be given a Reel cover and link | ✅ Real. `reelUrlFor` gated only the *legacy* fallback on provenance; the `source_reel_url` and `source_url` paths did not. An agent pick's research URL, or a dedup-rewritten row, could take the brass "from Reel" frame — a false provenance claim (guardrail #1) | Provenance is now the **outer** gate on every path, requiring `source_type === 'reel_extracted'` **and** `evidence_kind === 'reel_quote'`. The backend writes both from one total mapping, so demanding both is free on rows it wrote and is the protection for rows it did not |
+| 3a | Cross-day pin selection is a silent no-op | ✅ Real. The map shows every day's pins; the card list shows only the active day. `onSelectPlace` never set the day | Fixed at the parent, where day state lives. The agent's `show_on_map` already did this itself (`map.ts:79`), so only the pin path was affected |
+| 3b | `CSS.escape` absent in this jsdom, so the new tests must throw | ❌ **False positive.** Probed directly: `CSS=object, escape=function`, and the tests pass. Codex's probe ran a bare Node/jsdom rather than the project's configured vitest environment | None |
+| 4 | Pin image bypasses `safeWebUrl` | ✅ Real — **already fixed in `329ba91`** before this review landed. Codex read a stale tree and correctly reported implementation and test contradicting each other, which was true at the commit it saw | None |
+| 5 | Zero-sized canvas bypasses the padding cap | ✅ Real, narrow. `canvas?.clientHeight || window.innerHeight` treats a true `0` as "unmeasured" and substitutes the much larger window — recreating the exact mismatch the 70% cap exists to prevent | `??` instead of `||`. A zero canvas now yields zero padding |
+| 6 | `NEXT_DIST_DIR` reachable from a production build | ✅ Fair. The comment "unset everywhere else" was an assumption, not enforcement | Gated on `!isProduction`, so a stray Vercel env var cannot repoint a production build's output |
+
+Codex also confirmed two things were fine, with reasoning I checked: the `pinClipSeq` counter cannot
+collide or leak (markers are `remove()`d and the counter holds only a number), and the popup-room
+algebra is correct (`0.6H = top + H − bottom → bottom = top + 0.4H`).
+
+**All six fixes are fault-injection tested** — each fails with its guard removed. 873 tests / 101 files.
+
+**The lesson worth keeping:** finding 1 is a class of bug no amount of unit testing would have caught,
+because *the fixture and the schema disagreed* and every test trusted the fixture. The check that
+found it was reading the migration. Fixtures assert what we believe the shape is; only the schema
+says what it is.

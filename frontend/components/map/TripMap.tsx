@@ -674,8 +674,13 @@ export default function TripMap({
     // Defensive: the map may not be ready, and framing must never throw — a padding helper
     // taking down the whole map effect would be a far worse bug than a loosely framed camera.
     const canvas = typeof map?.getCanvas === 'function' ? map.getCanvas() : null
-    const width = canvas?.clientWidth || (typeof window === 'undefined' ? 1024 : window.innerWidth)
-    const height = canvas?.clientHeight || (typeof window === 'undefined' ? 768 : window.innerHeight)
+    // `?? `, not `|| `: a canvas measured at ZERO (transiently, mid-layout) is a real
+    // measurement, and `||` treated it as missing and substituted the much larger window —
+    // reintroducing the very mismatch the 70% cap below exists to prevent. No canvas at all
+    // still falls back to the window.
+    const win = typeof window === 'undefined' ? { w: 1024, h: 768 } : { w: window.innerWidth, h: window.innerHeight }
+    const width = canvas?.clientWidth ?? win.w
+    const height = canvas?.clientHeight ?? win.h
 
     const wide = width >= 768
     const wanted = wide

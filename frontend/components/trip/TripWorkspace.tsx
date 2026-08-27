@@ -187,6 +187,22 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
     )
   }
 
+  /* The map shows every day's pins, but the itinerary list below shows only the ACTIVE day —
+     so selecting a Day 3 pin while Day 1 is open used to open the panel on a list that does not
+     contain it: no card to highlight, and nothing to scroll to. Activating the place's own day
+     is the parent's job, since the day is the parent's state. Both setters run in one handler,
+     so the list and the selection arrive on the same render. An undayed stop (the base hotel)
+     leaves the day alone — there is no day to switch to. */
+  function selectPlaceFromMap(placeId: string) {
+    // Optional chain only to satisfy TS: a hoisted function declaration is not narrowed by the
+    // early return above, though at runtime bundle is non-null by the time this can be called.
+    const day = bundle?.places.find((tp) => tp.place_id === placeId)?.day_number
+    if (typeof day === 'number') setActiveDayNumber(day)
+    setSelectedPlaceId(placeId)
+    setExpanded(true)
+    setPanelOpen(true)
+  }
+
   return (
     <>
       {/* Map-driving tools live only where a map exists. key={tripId} guarantees trip A's
@@ -211,7 +227,7 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
           activeDayNumber={activeDayNumber}
           selectedPlaceId={selectedPlaceId}
           selectedRestaurantPlaceId={selectedRestaurantPlaceId}
-          onSelectPlace={(id) => { setSelectedPlaceId(id); setExpanded(true); setPanelOpen(true) }}
+          onSelectPlace={(id) => selectPlaceFromMap(id)}
           selectedHotelId={selectedHotelId}
           layerMode={layerMode}
         />

@@ -84,17 +84,25 @@ describe('buildPopupModel', () => {
     expect(m.reference?.url).not.toContain('instagram.com')
   })
 
-  it('recovers the Reel when a trip has exactly one, even if source_url is a website', () => {
-    // Enrichment can overwrite source_url with a research link. With a single Reel on the trip
-    // the attribution is unambiguous, so the traveller still gets the thing they saved.
+  it('recovers the Reel for a REEL-sourced stop whose source_url is a website', () => {
+    // Enrichment overwrites source_url with a research link. For a stop that genuinely came
+    // from a Reel, a trip with exactly one Reel makes the attribution unambiguous, so the
+    // traveller still gets the thing they saved. (Only reel-derived stops qualify — see the
+    // test above; citing a Reel for a place the user typed would be a false citation.)
     const single = {
       ...TOKYO_TRIP,
       inspiration: [{ ...(TOKYO_TRIP.inspiration[0] ?? ({} as never)), normalized_reel_url: 'https://www.instagram.com/reel/ONLY/' }],
     }
-    const researched = stops.find((s) => s.evidence_json.evidence_kind === 'suggested_by_astrail')
-    if (!researched) return
-    const m = buildPopupModel(single as never, researched)
-    expect(m.reel?.url).toBe('https://www.instagram.com/reel/ONLY/')
+    const reelSourced = {
+      ...first,
+      evidence_json: {
+        ...first.evidence_json,
+        evidence_kind: 'reel_quote' as const,
+        source_url: 'https://map.yahoo.co.jp/v3/place/X',
+        source_reel_url: null,
+      },
+    }
+    expect(buildPopupModel(single as never, reelSourced).reel?.url).toBe('https://www.instagram.com/reel/ONLY/')
   })
 
   it('refuses to guess WHICH Reel when a trip has several', () => {
@@ -109,6 +117,63 @@ describe('buildPopupModel', () => {
     const researched = stops.find((s) => s.evidence_json.evidence_kind === 'suggested_by_astrail')
     if (!researched) return
     expect(buildPopupModel(many as never, researched).reel).toBeNull()
+  })
+
+  it('will not put one Reel cover under several different places', () => {
+    // reel_cache.thumbnail_url is one image per REEL. A Reel about five spots has a single
+    // cover, so reusing it per place claims the photo depicts five different things. Images
+    // read as documentary evidence, which makes that a stronger false claim than an inferred
+    // opening hour — and this file already refuses those.
+    const twoFromOneReel = {
+      ...TOKYO_TRIP,
+      places: stops.slice(0, 2).map((tp) => ({
+        ...tp,
+        evidence_json: { ...tp.evidence_json, source_reel_url: 'https://www.instagram.com/reel/SHARED/' },
+      })),
+      inspiration: [{
+        ...(TOKYO_TRIP.inspiration[0] ?? ({} as never)),
+        normalized_reel_url: 'https://www.instagram.com/reel/SHARED/',
+        thumbnail_url: 'https://cdn.example/cover.jpg',
+      }],
+    }
+    for (const tp of twoFromOneReel.places) {
+      expect(buildPopupModel(twoFromOneReel as never, tp).imageUrl).toBeNull()
+    }
+  })
+
+  it('uses the cover when a Reel contributed exactly one place — then it really is that place', () => {
+    const oneFromOneReel = {
+      ...TOKYO_TRIP,
+      places: [{
+        ...first,
+        evidence_json: { ...first.evidence_json, source_reel_url: 'https://www.instagram.com/reel/SOLO/' },
+      }],
+      inspiration: [{
+        ...(TOKYO_TRIP.inspiration[0] ?? ({} as never)),
+        normalized_reel_url: 'https://www.instagram.com/reel/SOLO/',
+        thumbnail_url: 'https://cdn.example/cover.jpg',
+      }],
+    }
+    expect(buildPopupModel(oneFromOneReel as never, oneFromOneReel.places[0]).imageUrl)
+      .toBe('https://cdn.example/cover.jpg')
+  })
+
+  it('never cites a Reel for a place that did not come from one', () => {
+    // The legacy single-Reel fallback used to apply to every place, so a stop the user typed
+    // would be captioned with someone else's Reel.
+    const added = {
+      ...first,
+      evidence_json: {
+        ...first.evidence_json,
+        evidence_kind: 'requested_by_you' as const,
+        source_url: null, source_reel_url: null,
+      },
+    }
+    const trip = {
+      ...TOKYO_TRIP,
+      inspiration: [{ ...(TOKYO_TRIP.inspiration[0] ?? ({} as never)), normalized_reel_url: 'https://www.instagram.com/reel/OTHER/' }],
+    }
+    expect(buildPopupModel(trip as never, added).reel).toBeNull()
   })
 
   it('omits the image unless the trip still holds that Reel', () => {

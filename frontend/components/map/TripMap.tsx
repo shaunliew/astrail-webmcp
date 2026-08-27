@@ -56,7 +56,25 @@ let pinClipSeq = 0
  * WebMCP tools address stops by it ("move stop 7"), and `buildTrailNumbers` is the shared
  * vocabulary between what the agent says and what the user can see.
  */
-function buildPinGraphic(photoUrl: string | null, number: number | null): SVGSVGElement {
+/**
+ * A tint per place type, so pins are distinguishable at a glance without inventing a photo.
+ *
+ * `place_type` is real, stored data — unlike a stock image of "a temple", which would be a claim
+ * about a specific named venue that we cannot support. Colour is the honest signal available.
+ */
+const TYPE_TINT: Record<string, string> = {
+  restaurant: '#E0A356',
+  attraction: '#7FA9C9',
+  hotel: '#B79BD0',
+  station: '#89B58F',
+  shop: '#D89AA6',
+  area: '#C0B08A',
+  city: '#C0B08A',
+  country: '#C0B08A',
+  other: '#A9A9A9',
+}
+
+function buildPinGraphic(photoUrl: string | null, number: number | null, placeType = 'other'): SVGSVGElement {
   const svg = document.createElementNS(SVG_NS, 'svg')
   svg.setAttribute('viewBox', '0 0 40 52')
   svg.setAttribute('class', 'constellation-pin__drop')
@@ -89,8 +107,15 @@ function buildPinGraphic(photoUrl: string | null, number: number | null): SVGSVG
       if (number !== null) svg.append(numberText(number))
     })
     svg.append(img)
-  } else if (number !== null) {
-    svg.append(numberText(number))
+  } else {
+    // No honest photo for this stop. Tint the head by place type rather than leaving every pin
+    // identical, and keep the number — it is how the agent refers to the stop.
+    const tint = document.createElementNS(SVG_NS, 'circle')
+    tint.setAttribute('cx', '20'); tint.setAttribute('cy', '19'); tint.setAttribute('r', '13')
+    tint.setAttribute('fill', TYPE_TINT[placeType] ?? TYPE_TINT.other)
+    tint.setAttribute('fill-opacity', '0.32')
+    svg.append(tint)
+    if (number !== null) svg.append(numberText(number))
   }
   return svg
 }
@@ -397,7 +422,7 @@ export default function TripMap({
         ].filter(Boolean).join(' ')
         // The Reel still that this stop came from, when we can attribute one honestly.
         const photoUrl = thumbnailFor(bundle, tp)
-        el.append(buildPinGraphic(photoUrl, number))
+        el.append(buildPinGraphic(photoUrl, number, tp.place.place_type))
         if (photoUrl && number !== null) el.append(buildPinBadge(number))
         if (number !== null) {
           const label = document.createElement('span')

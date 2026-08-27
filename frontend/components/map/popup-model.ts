@@ -96,13 +96,34 @@ export function reelUrlFor(bundle: TripBundle, tripPlace: TripPlace): string | n
   )]
   return (isInstagram(e.source_reel_url ?? null) ? e.source_reel_url! : null)
     ?? (isInstagram(e.source_url) ? e.source_url! : null)
-    ?? (unique.length === 1 ? unique[0] : null)
+    // Legacy rows only, and only for places that actually CAME from a Reel. Applying this to a
+    // stop the user typed, or one Astrail suggested from its own research, would cite a Reel
+    // that had nothing to do with it — a false citation is worse than no citation.
+    ?? (isReelEvidence(e.evidence_kind) && unique.length === 1 ? unique[0] : null)
 }
 
-/** The Reel's own thumbnail, when the trip still holds that Reel. */
+/**
+ * The Reel's cover, but ONLY when it can honestly stand for this one place.
+ *
+ * `reel_cache.thumbnail_url` is one image per REEL, not per place. A Reel about five Osaka spots
+ * has a single cover, so returning it for each of them puts the same photograph under five
+ * different names — five claims that the image depicts something it does not. Images read as
+ * documentary evidence, which makes that a stronger false claim than an inferred opening hour,
+ * and this file already refuses those (see the note at the end).
+ *
+ * There is an honest subset: when a Reel contributed exactly ONE place to this trip, its cover
+ * really is a picture of that place. That is the only case we use.
+ *
+ * Nothing else in or addable to the stack has a photo of an ordinary venue — Wikipedia covers
+ * landmarks and not the ramen shop a Reel is actually about, and stock imagery of "a temple"
+ * under a specifically named temple is the same class of error. So the fallback is deliberately
+ * non-photographic.
+ */
 export function thumbnailFor(bundle: TripBundle, tripPlace: TripPlace): string | null {
   const reel = reelUrlFor(bundle, tripPlace)
   if (!reel) return null
+  const placesFromThisReel = bundle.places.filter((tp) => reelUrlFor(bundle, tp) === reel).length
+  if (placesFromThisReel !== 1) return null
   return bundle.inspiration.find((i) => i.normalized_reel_url === reel)?.thumbnail_url ?? null
 }
 

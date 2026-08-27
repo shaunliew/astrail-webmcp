@@ -142,7 +142,7 @@ describe('TripMap', () => {
     await flush()
     fireLoad()
     await flush()
-    const opts = MarkerCtor.mock.calls.map((c) => c[0])
+    const opts = MarkerCtor.mock.calls.map((c) => c[0] as { anchor?: string })
     expect(opts.every((o) => o?.anchor === 'bottom')).toBe(true)
   })
 

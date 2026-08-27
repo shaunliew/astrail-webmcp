@@ -30,6 +30,8 @@ export type PopupModel = {
   imageUrl: string | null
   /** The trip-relative "what you're doing here" lines. */
   context: string[]
+  /** Where to eat around this stop, nearest-anchored first. */
+  eats: { name: string; note: string | null }[]
   evidenceLabel: string
   evidence: string
   confidence: number | null
@@ -121,16 +123,27 @@ export function buildPopupModel(bundle: TripBundle, tripPlace: TripPlace): Popup
       }
     }
 
+
+  }
+
+  // ---- Where to eat ----
+  // The trip panel already lists the day's restaurants, but the map is where someone asks
+  // "what's around HERE". `near_place_id` exists precisely to tie a suggestion to a stop, so
+  // anchor to this place first and fall back to the rest of the day — the answer to "where do I
+  // eat" should not depend on which panel you happen to be looking at.
+  const eats: PopupModel['eats'] = []
+  if (day !== null) {
+    const dayMeta = orderedDays(bundle).find((d) => d.day_number === day)
     if (dayMeta) {
-      // `near_place_id` exists precisely so a suggestion can be tied to a stop. Prefer the one
-      // anchored to THIS place; only fall back to the day's first if none is.
       const forDay = restaurantsForDay(bundle, dayMeta.id)
-      const eat = forDay.find((r) => r.near_place_id === place.id) ?? forDay[0]
-      if (eat) {
-        const named = eat.restaurant_place_id ? placeIndex.get(eat.restaurant_place_id)?.name : null
-        const label = named ? cleanName(named) : eat.summary
-        const anchored = eat.near_place_id === place.id
-        context.push(`${anchored ? 'Nearby' : 'Nearby that day'}: ${label}${eat.cuisine ? ` (${eat.cuisine})` : ''}`)
+      const anchored = forDay.filter((r) => r.near_place_id === place.id)
+      const rest = forDay.filter((r) => r.near_place_id !== place.id)
+      for (const r of [...anchored, ...rest].slice(0, 3)) {
+        const named = r.restaurant_place_id ? placeIndex.get(r.restaurant_place_id)?.name : null
+        eats.push({
+          name: named ? cleanName(named) : r.summary,
+          note: r.cuisine ?? null,
+        })
       }
     }
   }
@@ -179,6 +192,7 @@ export function buildPopupModel(bundle: TripBundle, tripPlace: TripPlace): Popup
     where,
     imageUrl,
     context,
+    eats,
     evidenceLabel,
     evidence,
     confidence: Number.isFinite(e.confidence) ? Math.round(e.confidence * 100) : null,

@@ -104,6 +104,39 @@ describe('buildPopupModel', () => {
     expect(buildPopupModel(withThumb as never, first).imageUrl).toBe('https://cdn.example/thumb.jpg')
   })
 
+  it('answers "where do I eat around here" on the map, not only in the panel', () => {
+    const m = buildPopupModel(TOKYO_TRIP, first)
+    expect(Array.isArray(m.eats)).toBe(true)
+  })
+
+  it('puts a suggestion anchored to THIS stop ahead of the rest of the day', () => {
+    // near_place_id exists precisely to tie a suggestion to a stop; ignoring it would make
+    // "nearby" mean "somewhere on this day", which is not what someone clicking a pin is asking.
+    const day1 = TOKYO_TRIP.days[0]
+    const withEats = {
+      ...TOKYO_TRIP,
+      restaurants: [
+        { ...TOKYO_TRIP.restaurants[0], id: 'r-far', trip_day_id: day1.id, near_place_id: 'someone-else', summary: 'Far Diner', cuisine: 'ramen', restaurant_place_id: null },
+        { ...TOKYO_TRIP.restaurants[0], id: 'r-near', trip_day_id: day1.id, near_place_id: first.place.id, summary: 'Right Here Cafe', cuisine: 'cafe', restaurant_place_id: null },
+      ],
+    }
+    const m = buildPopupModel(withEats as never, first)
+    expect(m.eats[0].name).toBe('Right Here Cafe')
+    expect(m.eats.map((e) => e.name)).toContain('Far Diner')
+  })
+
+  it('caps the eats list so the popup stays readable', () => {
+    const day1 = TOKYO_TRIP.days[0]
+    const many = {
+      ...TOKYO_TRIP,
+      restaurants: Array.from({ length: 8 }, (_, i) => ({
+        ...TOKYO_TRIP.restaurants[0], id: `r-${i}`, trip_day_id: day1.id,
+        near_place_id: null, summary: `Place ${i}`, cuisine: null, restaurant_place_id: null,
+      })),
+    }
+    expect(buildPopupModel(many as never, first).eats.length).toBeLessThanOrEqual(3)
+  })
+
   it('reports confidence as a whole percent', () => {
     expect(buildPopupModel(TOKYO_TRIP, first).confidence).toBe(94)
   })

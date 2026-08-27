@@ -105,6 +105,20 @@ function evidencePopupContent(
     content.append(label, list)
   }
 
+  if (model.eats.length) {
+    const eatsLabel = document.createElement('p')
+    eatsLabel.className = 'evidence-popup__label'
+    eatsLabel.textContent = 'Where to eat'
+    const list = document.createElement('ul')
+    list.className = 'evidence-popup__context'
+    for (const eat of model.eats) {
+      const li = document.createElement('li')
+      li.textContent = eat.note ? `${eat.name} · ${eat.note}` : eat.name
+      list.append(li)
+    }
+    content.append(eatsLabel, list)
+  }
+
   const evidenceLabel = document.createElement('p')
   evidenceLabel.className = 'evidence-popup__label'
   evidenceLabel.textContent = model.evidenceLabel

@@ -144,7 +144,14 @@ export type HotelSuggestion = {
   star_rating: number | null
   price_snapshot: Record<string, unknown>
   travala_hotel_id: string | null
-  // travala_session_id, travala_package_id, travala_result_json (DB columns) omitted — backend-only Travala search metadata not consumed by the frontend.
+  /* travala_session_id / travala_package_id / travala_result_json stay OUT of this type — they are
+     search-session artifacts with no meaning to a reader. The three fields below are PROJECTED
+     from that blob by getTrip (see supabase-api.ts), the same convenience pattern as
+     TripInspirationItem.thumbnail_url: derived, not DB columns, so no Pydantic mirror is owed.
+     Exposing the whole blob instead would put packageId and session ids on the wire for nothing. */
+  guest_rating: number | null           // Travala's guest score, 0–10 (distinct from star_rating)
+  refundable: boolean | null            // null when Travala did not say
+  free_cancellation_until: string | null // ISO instant, AS AT searched_at — may already be past
   preference_match_json: Record<string, unknown>
   source: 'travala' | 'manual' | 'agent'
   status: HotelStatus

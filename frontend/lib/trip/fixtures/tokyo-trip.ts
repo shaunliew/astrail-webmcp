@@ -194,6 +194,10 @@ const hotels: HotelSuggestion[] = [
     // Hotel-hub: geocoded + ranked #1 (the route-central recommended hub). Coords match pl_hotelbase.
     // route_score is the mean route duration to the trip's places in SECONDS (not a 0-1 score).
     lat: 35.6938, lng: 139.7034, geo_status: 'placed', route_score: 420, rank: 1, is_recommended: true,
+    // Projected by getTrip from travala_result_json (guest score is 0-10, NOT the 1-5 star class).
+    // The deadline is a snapshot taken at searched_at, so it can be in the past by the time a
+    // trip is reopened — this one deliberately is, to exercise that.
+    guest_rating: 9.4, refundable: true, free_cancellation_until: '2026-08-10T14:59:00Z',
     place_durations: { pl_senso: 4500, pl_teamlab: 6000, pl_shibuya: 2700, pl_ichiran: 2700, pl_disney: 11000 },
   },
   // Baked partial failure (PRD §17): a skipped hotel search → honest-failure: unresolved, no coords, no pin.
@@ -204,6 +208,7 @@ const hotels: HotelSuggestion[] = [
     source: 'travala', status: 'skipped', searched_at: null,
     // Hotel-hub: never placed on the map (Guardrail #1) — nullable geo/rank fields stay null.
     lat: null, lng: null, geo_status: 'unresolved', route_score: null, rank: null, is_recommended: false,
+    guest_rating: null, refundable: null, free_cancellation_until: null,
     place_durations: {},
   },
 ]

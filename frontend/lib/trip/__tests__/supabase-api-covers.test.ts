@@ -360,3 +360,45 @@ describe('getTrip: a trip built from place_ids, which names no Reels', () => {
     expect(bundle!.inspiration[0].thumbnail_url).toBe('https://cdn.test/a.jpg')
   })
 })
+
+describe('getTrip: hotel fields projected out of Travala\'s raw result', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    createClient.mockReset()
+  })
+
+  const rawHotel = {
+    id: 'h1', trip_id: TRIP_ID, name: 'Mitsui Garden Hotel', star_rating: 4,
+    price_snapshot: { currency: 'USD', pricePerNight: 261.49 },
+    travala_result_json: {
+      rating: 9.6, star: 4, refundability: 'refundable',
+      hotelId: '102100364', packageId: 'GpfcxInfrc4SxdHB',
+      cancellation: { free_cancellation_until_utc: '2026-09-16T14:59:00Z' },
+    },
+  }
+
+  it('lifts the guest score, refundability and deadline onto typed fields', async () => {
+    const bundle = await loadTrip({ trip_inspiration_items: [], hotel_suggestions: [rawHotel] })
+    const h = bundle!.hotels[0]
+    expect(h.guest_rating).toBe(9.6)
+    expect(h.refundable).toBe(true)
+    expect(h.free_cancellation_until).toBe('2026-09-16T14:59:00Z')
+  })
+
+  it('leaves the raw Travala blob server-side', async () => {
+    // packageId and session ids are search-session artifacts. They mean nothing to a reader and
+    // have no business crossing to the browser just to carry two numbers across with them.
+    const bundle = await loadTrip({ trip_inspiration_items: [], hotel_suggestions: [rawHotel] })
+    expect(JSON.stringify(bundle!.hotels[0])).not.toContain('GpfcxInfrc4SxdHB')
+    expect('travala_result_json' in bundle!.hotels[0]).toBe(false)
+  })
+
+  it('degrades to nulls when Travala returned nothing usable', async () => {
+    const bare = { id: 'h2', trip_id: TRIP_ID, name: 'Skipped', travala_result_json: {} }
+    const bundle = await loadTrip({ trip_inspiration_items: [], hotel_suggestions: [bare] })
+    const h = bundle!.hotels[0]
+    expect(h.guest_rating).toBeNull()
+    expect(h.refundable).toBeNull()
+    expect(h.free_cancellation_until).toBeNull()
+  })
+})

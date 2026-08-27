@@ -76,6 +76,27 @@ export async function getMemoryPreferences(): Promise<SettingsPreferencesRespons
   }
 }
 
+/** Lift the three readable facts out of Travala's raw result blob and drop the rest.
+ *
+ *  `travala_result_json` also carries `packageId`, `hotelId` and session ids — search-session
+ *  artifacts that mean nothing to a reader and have no business crossing to the browser. The
+ *  guest score, refundability and free-cancellation deadline are the parts a person actually
+ *  decides on, so those three are projected onto typed fields and the blob stays server-side. */
+function projectHotels(rows: unknown[]): HotelSuggestion[] {
+  return (rows as (HotelSuggestion & { travala_result_json?: Record<string, unknown> })[])
+    .map(({ travala_result_json: raw, ...hotel }) => {
+      const t = raw ?? {}
+      const cancellation = (t.cancellation ?? {}) as Record<string, unknown>
+      const until = cancellation.free_cancellation_until_utc
+      return {
+        ...hotel,
+        guest_rating: typeof t.rating === 'number' && Number.isFinite(t.rating) ? t.rating : null,
+        refundable: typeof t.refundability === 'string' ? t.refundability === 'refundable' : null,
+        free_cancellation_until: typeof until === 'string' ? until : null,
+      } as HotelSuggestion
+    })
+}
+
 /** The Reel URLs a trip was generated from, read out of its `create_trip` generation event.
  *  The only durable per-trip record of them: `trip_inspiration_items` is never written, and
  *  `trips` has no reel_urls column. Normalized so they can be matched against `saved_reels`. */
@@ -235,7 +256,7 @@ export async function getTrip(tripId: string): Promise<TripBundle | null> {
     days: (days.data ?? []) as TripDay[],
     transport_legs: (legs.data ?? []) as TransportLeg[],
     restaurants: restaurantRows,
-    hotels: (hotels.data ?? []) as HotelSuggestion[],
+    hotels: projectHotels(hotels.data ?? []),
     events: eventRows,
     suggestion_places: suggestionPlaces as Place[],
   }

@@ -222,6 +222,7 @@ const testHotel = (over: Partial<HotelSuggestion> = {}): HotelSuggestion => ({
   id: 'hotel_x', trip_id: 'trip_x', trip_day_id: null, base_place_id: null,
   name: 'Test Hotel', area: null, star_rating: null, price_snapshot: {},
   travala_hotel_id: null, preference_match_json: {}, source: 'travala',
+  guest_rating: null, refundable: null, free_cancellation_until: null,
   status: 'suggested', searched_at: null,
   lat: HUB[1], lng: HUB[0], geo_status: 'placed', route_score: null,
   rank: null, is_recommended: false, place_durations: {},

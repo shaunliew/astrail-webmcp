@@ -89,10 +89,14 @@ export function buildEatPopup(r: RestaurantSuggestion, place: Place): HTMLElemen
   return content
 }
 
-/** "Where to stay": the numbers that actually decide a hotel — class, nightly rate, trip total.
- *  Travala's guest score and cancellation policy live in `travala_result_json`, which the frontend
- *  type deliberately does not carry, so they are absent here rather than guessed at. */
-export function buildStayPopup(h: HotelSuggestion): HTMLElement {
+/** "Where to stay": the numbers that actually decide a hotel — class, guest score, nightly rate,
+ *  trip total, and how cancellable it was.
+ *
+ *  `now` is injectable because the cancellation deadline is a SNAPSHOT taken at `searched_at`, not
+ *  a live quote: a trip reopened weeks later can hold a deadline that has already passed, and
+ *  printing "Free cancellation until 16 July" in August states something untrue. Past deadlines
+ *  degrade to a plainly-worded past-tense line instead. */
+export function buildStayPopup(h: HotelSuggestion, now: number = Date.now()): HTMLElement {
   const content = el('article', 'evidence-popup suggestion-popup')
   const eyebrow = ['Where to stay', h.is_recommended ? 'Recommended' : null].filter(Boolean).join(' · ')
   content.append(el('p', 'evidence-popup__eyebrow', eyebrow))
@@ -105,11 +109,20 @@ export function buildStayPopup(h: HotelSuggestion): HTMLElement {
     content.append(el('p', 'suggestion-popup__stars', `${'★'.repeat(Math.round(h.star_rating))} ${h.star_rating} star`))
   }
 
+  // Travala's guest score is 0–10 and is a DIFFERENT measure from the star class. Labelled so the
+  // two never read as one number — "4 star · 9.4" alone invites reading 9.4 as nine stars.
+  if (h.guest_rating !== null) {
+    content.append(el('p', 'suggestion-popup__body', `${h.guest_rating}/10 guest score`))
+  }
+
   const currency = typeof h.price_snapshot.currency === 'string' ? h.price_snapshot.currency : null
   const nightly = money(currency, num(h.price_snapshot, 'pricePerNight'))
   const total = money(currency, num(h.price_snapshot, 'totalPrice'))
   const price = [nightly && `${nightly} / night`, total && `${total} total`].filter(Boolean).join(' · ')
   if (price) content.append(el('p', 'suggestion-popup__body', price))
+
+  const cancellation = cancellationLine(h, now)
+  if (cancellation) content.append(el('p', 'suggestion-popup__body', cancellation))
 
   appendMatches(content, matchedPreferences(h.preference_match_json))
 
@@ -117,4 +130,19 @@ export function buildStayPopup(h: HotelSuggestion): HTMLElement {
   // the number came from rather than implying we are holding it.
   content.append(el('p', 'suggestion-popup__note', 'Search result from Travala — prices change; Astrail does not book.'))
   return content
+}
+
+/** A live deadline is worth stating precisely; an expired one is only worth stating in the past
+ *  tense. Neither is worth inventing, so an unknown refundability produces no line at all. */
+function cancellationLine(h: HotelSuggestion, now: number): string | null {
+  const until = h.free_cancellation_until ? Date.parse(h.free_cancellation_until) : NaN
+  if (Number.isFinite(until) && until > now) {
+    const when = new Date(until).toLocaleDateString(undefined, {
+      day: 'numeric', month: 'short', year: 'numeric',
+    })
+    return `Free cancellation until ${when}`
+  }
+  if (h.refundable === true) return 'Was refundable when we searched — check current terms'
+  if (h.refundable === false) return 'Non-refundable when we searched'
+  return null
 }

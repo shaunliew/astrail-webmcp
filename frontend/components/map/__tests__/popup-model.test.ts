@@ -170,6 +170,33 @@ describe('buildPopupModel', () => {
     expect(buildPopupModel(TOKYO_TRIP, noQuote).evidence).toContain('No caption quote')
   })
 
+  it('does not quote a user-added place\'s own name back as evidence', () => {
+    // Reported: adding Osaka Castle produced "Why it is here / Osaka Castle / Confidence 100%".
+    // The name is not evidence, and 100% confidence in a name the user typed says nothing.
+    const added = {
+      ...first,
+      evidence_json: {
+        ...first.evidence_json,
+        evidence_kind: 'requested_by_you' as const,
+        quote: 'Osaka Castle',
+        confidence: 1,
+        source_url: null,
+        source_reel_url: null,
+      },
+      place: { ...first.place, name: 'Osaka Castle' },
+    }
+    const m = buildPopupModel(TOKYO_TRIP, added)
+    expect(m.evidenceLabel).toBe('Added by you')
+    expect(m.evidence).toContain('You asked for this stop')
+    expect(m.evidence).not.toBe('Osaka Castle')
+    expect(m.confidence).toBeNull()
+    expect(m.reel).toBeNull()
+  })
+
+  it('still shows confidence for a Reel-derived stop', () => {
+    expect(buildPopupModel(TOKYO_TRIP, first).confidence).toBe(94)
+  })
+
   it('invents no opening hours, price or rating', () => {
     // Guardrail #1 applies hardest here: this is the surface that promises every claim has
     // evidence. None of those fields exists in the schema, so none may appear.

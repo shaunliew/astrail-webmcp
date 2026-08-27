@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import type { TripBundle } from '@/lib/trip/backend-types'
@@ -80,6 +80,8 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
   const [layerMode, setLayerMode] = useState<'route' | 'hub'>('route')
   const [expanded, setExpanded] = useState(false)
   const [panelOpen, setPanelOpen] = useState(true)
+  // A "Where to eat" suggestion the user picked from the panel, so the map can show where it is.
+  const [selectedRestaurantPlaceId, setSelectedRestaurantPlaceId] = useState<string | null>(null)
 
   useEffect(() => {
     let active = true
@@ -93,6 +95,14 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
       setStatus('ready')
     })
     return () => { active = false }
+  }, [tripId])
+
+  // Re-reads the trip INTO this page's state. Published to the WebMCP registry so an agent edit
+  // becomes visible immediately; previously every change needed a manual page refresh.
+  const refreshBundle = useCallback(async () => {
+    const fresh = await getTrip(tripId)
+    if (fresh) setBundle(fresh)
+    return fresh
   }, [tripId])
 
   const days = useMemo(() => (bundle ? orderedDays(bundle) : []), [bundle])
@@ -188,6 +198,7 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
         selectPlace={setSelectedPlaceId}
         setLayerMode={setLayerMode}
         openPanel={() => setPanelOpen(true)}
+        refresh={refreshBundle}
       />
     // The interactive Mapbox canvas is a FIXED layer behind this route (MapProvider's
     // `.shared-map`). This overlay must be click-through, or it swallows every pan/zoom/
@@ -199,6 +210,7 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
           bundle={bundle}
           activeDayNumber={activeDayNumber}
           selectedPlaceId={selectedPlaceId}
+          selectedRestaurantPlaceId={selectedRestaurantPlaceId}
           onSelectPlace={(id) => { setSelectedPlaceId(id); setExpanded(true); setPanelOpen(true) }}
           selectedHotelId={selectedHotelId}
           layerMode={layerMode}
@@ -329,7 +341,12 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
           </Section>
 
           <Section title="Where to eat">
-            <RestaurantStrip restaurants={dayRestaurants} placeIndex={placeIndex} />
+            <RestaurantStrip
+              restaurants={dayRestaurants}
+              placeIndex={placeIndex}
+              selectedPlaceId={selectedRestaurantPlaceId}
+              onSelect={setSelectedRestaurantPlaceId}
+            />
           </Section>
 
           <Section title="Where to stay">

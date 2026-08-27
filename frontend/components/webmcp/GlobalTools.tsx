@@ -36,7 +36,7 @@ function labelFor(pathname: string): string {
 
 export default function GlobalTools() {
   const pathname = usePathname() ?? '/app'
-  const { requestConfirm, openTrip } = useWebMcpRegistry()
+  const { requestConfirm, openTrip, refreshOpenTrip } = useWebMcpRegistry()
   // One store for the session. It must outlive any single tool call — the stream runs for
   // 60-180s while `plan_trip_from_reels` returns in about a second.
   const storeRef = useRef(createGenerationStore())
@@ -174,7 +174,14 @@ export default function GlobalTools() {
         deleteTripPlace(tripId, tpId, await getAccessToken()),
       // The shell has no open bundle, so a refresh is a re-read. TripWorkspace will supply its
       // own in-memory refresh when the map tools land, avoiding this round-trip on the trip page.
-      refresh: (tripId: string) => getTrip(tripId),
+      // Prefer the open page's own refresher: it writes the result into the rendered state.
+      // A bare getTrip() here pulls fresh rows and drops them, which is why every agent edit
+      // used to need a manual reload before it showed up.
+      refresh: async (tripId: string) => {
+        const pageRefresh = refreshOpenTrip.current
+        if (pageRefresh) return pageRefresh()
+        return getTrip(tripId)
+      },
       confirm: requestConfirm,
     }),
     [requestConfirm],

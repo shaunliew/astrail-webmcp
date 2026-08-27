@@ -23,12 +23,15 @@ export default function TripTools({
   selectPlace,
   setLayerMode,
   openPanel,
+  refresh,
 }: {
   bundle: TripBundle | null
   showDay: (day: number) => void
   selectPlace: (placeId: string | null) => void
   setLayerMode: (mode: 'route' | 'hub') => void
   openPanel: () => void
+  /** Re-reads the trip INTO this page's state, so an agent edit shows without a manual reload. */
+  refresh: () => Promise<TripBundle | null>
 }) {
   const { getMap } = useSharedMap()
   const registry = useOptionalWebMcpRegistry()
@@ -37,7 +40,12 @@ export default function TripTools({
   // Written to a ref, so this costs no render anywhere.
   const openTripRef = registry?.openTrip
   if (openTripRef) openTripRef.current = bundle
-  useEffect(() => () => { if (openTripRef) openTripRef.current = null }, [openTripRef])
+  const refreshRef = registry?.refreshOpenTrip
+  if (refreshRef) refreshRef.current = refresh
+  useEffect(() => () => {
+    if (openTripRef) openTripRef.current = null
+    if (refreshRef) refreshRef.current = null
+  }, [openTripRef, refreshRef])
 
   // Read through refs at call time. `useWebMCP` keeps the execute callback stable by design,
   // so a bundle captured at registration would stay first-render data for the whole session.

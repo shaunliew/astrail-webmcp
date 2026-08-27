@@ -1212,3 +1212,56 @@ button:focus-visible {
     transition: none;
   }
 }
+
+/* --- "Where to eat" pins ---------------------------------------------------------------------
+   Suggestions were listed in the panel but never drawn, so clicking one told you nothing about
+   where it is. Deliberately quieter than a trail pin: these are options, not stops on the route. */
+
+.eat-pin {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  /* Sized with width/height only — never transform. See marker-css-contract.test.ts: a transform
+     on the marker root fights Mapbox's own inline transform and drifts the pin off its anchor. */
+}
+
+.eat-pin__dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: #f5f0e6;
+  border: 1.5px solid #8a6a3a;
+  box-shadow: 0 0 0 2px rgb(0 0 0 / 0.28);
+}
+
+.eat-pin--selected .eat-pin__dot {
+  width: 0.75rem;
+  height: 0.75rem;
+  background: #c9974e;
+  border-color: #f5f0e6;
+}
+
+.eat-pin__label {
+  font-size: 0.625rem;
+  letter-spacing: 0.01em;
+  color: #f5f0e6;
+  background: rgb(0 0 0 / 0.55);
+  padding: 0.05rem 0.3rem;
+  border-radius: 0.25rem;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.eat-pin:hover .eat-pin__label,
+.eat-pin--selected .eat-pin__label {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eat-pin__label { transition: none; }
+}

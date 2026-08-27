@@ -150,9 +150,20 @@ export function buildPopupModel(bundle: TripBundle, tripPlace: TripPlace): Popup
 
   // ---- Provenance ----
   const fromReel = isReelEvidence(e.evidence_kind)
-  const evidenceLabel = e.quote && fromReel ? 'From your Instagram Reel' : 'Why it is here'
-  const evidence =
-    e.quote ?? e.rationale ?? 'No caption quote is available for this stop.'
+  const youAsked = e.evidence_kind === 'requested_by_you'
+
+  // A place the user asked for stores its own NAME as the quote, so the naive rendering was
+  // "Why it is here / Osaka Castle / Confidence 100%" — quoting the title back as though it were
+  // evidence. Honest provenance for these is simply: you asked for it.
+  const evidenceLabel = youAsked
+    ? 'Added by you'
+    : e.quote && fromReel
+      ? 'From your Instagram Reel'
+      : 'Why it is here'
+
+  const evidence = youAsked
+    ? 'You asked for this stop, so it has no Reel behind it.'
+    : e.quote ?? e.rationale ?? 'No caption quote is available for this stop.'
 
   // The traveller saved a Reel, not a restaurant's homepage. So the primary link is ALWAYS the
   // Instagram Reel when one can be attributed, and a scraped site is never dressed up as one.
@@ -200,7 +211,9 @@ export function buildPopupModel(bundle: TripBundle, tripPlace: TripPlace): Popup
     eats,
     evidenceLabel,
     evidence,
-    confidence: Number.isFinite(e.confidence) ? Math.round(e.confidence * 100) : null,
+    // Confidence is a measure of how well a Reel caption was matched. For a place the user typed
+    // in, "100%" says nothing and reads like a claim we cannot back.
+    confidence: youAsked || !Number.isFinite(e.confidence) ? null : Math.round(e.confidence * 100),
     reel,
     reference,
   }

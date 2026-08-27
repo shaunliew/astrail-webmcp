@@ -3,10 +3,11 @@
 import { useEffect, useRef } from 'react'
 import mapboxgl from 'mapbox-gl'
 import { buildPopupModel, type PopupModel } from './popup-model'
-import type { TripBundle, TripPlace } from '@/lib/trip/backend-types'
+import type { Place, RestaurantSuggestion, TripBundle, TripPlace } from '@/lib/trip/backend-types'
 import {
   trailCoordinates, buildTrailNumbers, buildPlaceIndex, placesForDay, hasRealCoords,
   selectedHotel, hubSpokeFeatures, isHotelBasePlace, hotelBasePlaceIds,
+  orderedDays, restaurantsForDay,
 } from '@/lib/trip/selectors'
 import { consumeTripFramed } from '@/lib/trip/map-handoff'
 import { useSharedMap } from '@/components/map/MapProvider'
@@ -221,11 +222,15 @@ function dayTrailFeatureCollection(
 export default function TripMap({
   bundle, activeDayNumber, selectedPlaceId, onSelectPlace,
   selectedHotelId = null, layerMode = 'route',
+  selectedRestaurantPlaceId = null,
 }: {
   bundle: TripBundle
   activeDayNumber: number
   selectedPlaceId: string | null
   onSelectPlace: (placeId: string) => void
+  /** A restaurant picked from the "Where to eat" strip. Suggestions were listed but never
+   *  drawn, so clicking one told you nothing about where it actually is. */
+  selectedRestaurantPlaceId?: string | null
   // Hotel-hub map (plan 2026-08-04-hotel-hub-map, T9). Optional with route-preserving defaults so
   // today's caller (TripWorkspace, pre-T8) keeps the itinerary-only behavior untouched; T8 passes
   // both explicitly (`string | null` / `'route' | 'hub'`) to drive the Route/Hotel toggle.
@@ -380,7 +385,58 @@ export default function TripMap({
       }
     }
     markerLabelsRef.current = labels
-    setMarkers(markers)
+    // "Where to eat" was text-only: a suggestion you could read but not locate. These are
+    // deliberately quieter than trail pins — they are options, not stops on the route.
+    const dayMeta = orderedDays(bundle).find((d) => d.day_number === activeDayNumber)
+    const eatMarkers = (dayMeta ? restaurantsForDay(bundle, dayMeta.id) : [])
+      .map((r) => {
+        const place = r.restaurant_place_id
+          ? bundle.suggestion_places.find((p) => p.id === r.restaurant_place_id)
+          : undefined
+        return place && hasRealCoords(place.lng, place.lat) ? { r, place } : null
+      })
+      .filter((x): x is { r: RestaurantSuggestion; place: Place } => x !== null)
+      .map(({ r, place }) => {
+        const el = document.createElement('button')
+        el.type = 'button'
+        el.setAttribute('aria-label', `${place.name}${r.cuisine ? `, ${r.cuisine}` : ''}`)
+        el.className = [
+          'eat-pin',
+          place.id === selectedRestaurantPlaceId ? 'eat-pin--selected' : '',
+        ].filter(Boolean).join(' ')
+        const dot = document.createElement('span')
+        dot.className = 'eat-pin__dot'
+        el.append(dot)
+        const label = document.createElement('span')
+        label.className = 'eat-pin__label'
+        label.textContent = shortPlaceName(place.name)
+        label.title = place.name
+        el.append(label)
+        el.addEventListener('click', (e) => {
+          e.stopPropagation()
+          activePopupRef.current?.remove()
+          const content = document.createElement('article')
+          content.className = 'evidence-popup'
+          const eyebrow = document.createElement('p')
+          eyebrow.className = 'evidence-popup__eyebrow'
+          eyebrow.textContent = ['Where to eat', r.cuisine].filter(Boolean).join(' · ')
+          const title = document.createElement('h3')
+          title.className = 'evidence-popup__title'
+          title.textContent = place.name
+          const why = document.createElement('p')
+          why.className = 'evidence-popup__where'
+          // Suggestion text is model-written, not caption-derived, but it goes in as text anyway.
+          why.textContent = r.summary
+          content.append(eyebrow, title, why)
+          activePopupRef.current = new mapboxgl.Popup({
+            className: 'astrail-evidence-popup',
+            closeButton: true, closeOnClick: true, offset: 14, maxWidth: '300px',
+          }).setLngLat([place.lng, place.lat]).setDOMContent(content).addTo(map)
+        })
+        return new mapboxgl.Marker({ element: el }).setLngLat([place.lng, place.lat]).addTo(map)
+      })
+
+    setMarkers([...markers, ...eatMarkers])
     syncMarkerLabelVisibility()
   }
 

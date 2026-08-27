@@ -1,5 +1,6 @@
 'use client'
 
+import type { TripBundle } from '@/lib/trip/backend-types'
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react'
 
 /**
@@ -61,6 +62,15 @@ type RegistryValue = {
    * render loop fixed earlier; a ref gives the tools a live read with zero re-render.
    */
   openTrip: React.MutableRefObject<unknown>
+  /**
+   * The open trip page's own re-fetch.
+   *
+   * An edit tool that only calls getTrip() pulls fresh rows and then drops them on the floor:
+   * the rendered bundle lives in TripWorkspace's state, not in the shell. That is why every
+   * agent edit required a manual page refresh to become visible. The page publishes its
+   * refresher here so a tool can make the UI catch up with what it just changed.
+   */
+  refreshOpenTrip: React.MutableRefObject<(() => Promise<TripBundle | null>) | null>
   /** Visible log of what the agent did. Reads included — a silent read cannot be consented to. */
   activity: ActivityEntry[]
   beginActivity: (tool: string) => number
@@ -92,6 +102,7 @@ export function WebMcpRegistryProvider({ children }: { children: React.ReactNode
   const [activity, setActivity] = useState<ActivityEntry[]>([])
   const activitySeq = useRef(0)
   const openTrip = useRef<unknown>(null)
+  const refreshOpenTrip = useRef<(() => Promise<TripBundle | null>) | null>(null)
 
   // Stable by construction. The render-loop bug earlier came from depending on the CONTEXT VALUE
   // (memoized on state) instead of on callbacks like these, so keep these dependency-free.
@@ -138,7 +149,7 @@ export function WebMcpRegistryProvider({ children }: { children: React.ReactNode
 
   const value = useMemo<RegistryValue>(
     () => ({
-      tools, supported, pending, requestConfirm, activity, beginActivity, endActivity, openTrip,
+      tools, supported, pending, requestConfirm, activity, beginActivity, endActivity, openTrip, refreshOpenTrip,
       report, withdraw, setSupported,
     }),
     [tools, supported, pending, requestConfirm, activity, beginActivity, endActivity, report, withdraw],

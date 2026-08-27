@@ -50,7 +50,10 @@ export type Place = {
 
 export type TripPlaceEvidence = {
   confidence: number
+  /** Independent research/venue page. Deliberately NOT the Reel — see source_reel_url. */
   source_url: string | null
+  /** The Instagram Reel this place was extracted from, when there is one. */
+  source_reel_url?: string | null
   quote: string | null            // primary verbatim reel/user quote (PRD §11/§12)
   quotes: string[]                // all merged-source quotes (dedup flywheel)
   rationale: string | null        // agent_suggested rationale

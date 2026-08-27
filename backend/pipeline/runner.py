@@ -250,6 +250,7 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                 lat=row["lat"], lng=row["lng"], confidence=row.get("confidence", 0.0),
                 evidence_quote=row.get("evidence_quote", "Organized from a Saved Reel"),
                 source_type="reel_extracted", source_url=row.get("source_url"),
+                source_reel_url=row.get("source_reel_url"),
                 city_or_region_guess=row.get("city"),
             ) for row in selected]
             await record_event(client, trip_id, event_type="stage", stage="cache_hit",
@@ -316,7 +317,14 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                             except Exception:
                                 pass
 
-            places = [p for r in results if r for p in r]
+            # `results[i]` is aligned to `reel_urls[i]` (see the per-reel loop above). Flattening
+            # is where that provenance was being thrown away, which is why every reel-extracted
+            # place carried a research URL under a `reel_quote` label. Capture it here.
+            places = [
+                p.model_copy(update={"source_reel_url": reel_urls[i]})
+                for i, r in enumerate(results) if r
+                for p in r
+            ]
         if not places:
             return await _fail(client, trip_id, user_id, job_id, "extract",
                                 "no verified places after extraction", lease_token=lease_token)

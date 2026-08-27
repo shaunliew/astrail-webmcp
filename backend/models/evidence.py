@@ -17,7 +17,8 @@ EvidenceKind = Literal[
 
 class TripPlaceEvidence(BaseModel):
     confidence: float
-    source_url: str | None = None
+    source_url: str | None = None      # third-party research/venue page (see PlaceResult)
+    source_reel_url: str | None = None # the Instagram Reel it came from, when there is one
     quote: str | None = None
     quotes: list[str] = Field(default_factory=list)
     rationale: str | None = None

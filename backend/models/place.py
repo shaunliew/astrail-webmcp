@@ -29,6 +29,16 @@ class PlaceResult(BaseModel):
     evidence_quote: str
     source_type: PlaceSourceType = "reel_extracted"
     source_url: str | None = None
+    # The Instagram Reel this place was extracted FROM.
+    #
+    # Distinct from `source_url`, which is deliberately a third-party venue/research page: the
+    # extractor prompt requires it (place_extractor.py) and `is_independent_source_url()` drops
+    # any place whose source_url is not independent research. So the reel URL never had anywhere
+    # to live, and every reel-extracted place ended up labelled `reel_quote` while carrying a
+    # research link. Populated after extraction, in the runner, where the reel index is still in
+    # scope — so no EXTRACTOR_VERSION bump, which would cold-invalidate every cache row and
+    # re-charge every user's quota.
+    source_reel_url: str | None = None
     city_or_region_guess: str | None = None
     formatted_address: str | None = None
     name_local: str | None = Field(

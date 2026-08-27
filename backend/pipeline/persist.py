@@ -68,7 +68,8 @@ def _evidence_json(place: CanonicalPlace) -> dict:
     # Per-trip evidence — typed to the frontend TripPlaceEvidence contract (guardrail #4).
     return TripPlaceEvidence(
         confidence=place.confidence,
-        source_url=place.source_url,
+        source_url=place.source_url,                                  # research page, NOT the reel
+        source_reel_url=getattr(place, "source_reel_url", None),      # the reel, when known
         quote=place.evidence_quote,                                   # primary verbatim quote
         quotes=list(getattr(place, "evidence_quotes", []) or []),     # dedup flywheel
         rationale=None,                                               # seam for agent_suggested "why"
@@ -187,7 +188,9 @@ async def _ground_all(client, canonical: list[CanonicalPlace], *,
     `pipeline/dedup.py`. Most of those short-circuit before any network call — a user-typed
     place has no source_url, so `is_placeholder_url` rejects it — but NOT all: `_merge_cluster`
     marks a cluster `user_requested` if ANY member is, while the canonical inherits its
-    highest-confidence representative's `source_url`, which can be a real reel URL. So an
+    highest-confidence representative's `source_url`, which is an independent research/venue page
+    (the extractor's `is_independent_source_url` gate guarantees this — it is NEVER a reel URL;
+    the reel now lives in `source_reel_url`). So an
     over-cap trip can still make calls. Harmless at this scale (the DEFAULT Geocoding rate limit
     is 1000/min, adjustable per account), but do not read the cap as a hard bound on provider calls.
 

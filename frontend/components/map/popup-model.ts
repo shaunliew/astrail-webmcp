@@ -158,20 +158,25 @@ export function buildPopupModel(bundle: TripBundle, tripPlace: TripPlace): Popup
   // Instagram Reel when one can be attributed, and a scraped site is never dressed up as one.
   //
   // Attribution order:
-  //   1. source_url, when it is already an Instagram link
-  //   2. the trip's single Reel, when there is exactly one — then it is unambiguous
-  //   3. nothing. A trip with several Reels gives no honest way to say WHICH one this came from,
+  //   1. evidence.source_reel_url — recorded by the backend, exact
+  //   2. source_url, if it happens to be Instagram (a user-pasted place can be)
+  //   3. legacy rows only: the trip's single Reel, which is unambiguous
+  //   4. nothing. A legacy multi-Reel trip gives no honest way to say WHICH one this came from,
   //      and guessing would put a wrong citation under a verbatim quote.
   const tripReels = bundle.inspiration
     .map((i) => i.normalized_reel_url)
     .filter((u): u is string => isInstagram(u))
   const uniqueReels = [...new Set(tripReels)]
 
-  const reelUrl = isInstagram(e.source_url)
-    ? e.source_url
-    : uniqueReels.length === 1
-      ? uniqueReels[0]
-      : null
+  const reelUrl =
+    // The backend now records which Reel a place came from, so this is exact rather than a guess.
+    (isInstagram(e.source_reel_url ?? null) ? e.source_reel_url! : null)
+    // `source_url` is a research/venue page by design and is almost never Instagram, but a
+    // user-pasted place can put one there.
+    ?? (isInstagram(e.source_url) ? e.source_url! : null)
+    // Legacy rows persisted before source_reel_url existed. One Reel on the trip means the
+    // attribution is unambiguous; several means it cannot be made honest, so we show none.
+    ?? (uniqueReels.length === 1 ? uniqueReels[0] : null)
 
   const reel = reelUrl ? { url: reelUrl, label: 'Watch the Reel ↗' } : null
 

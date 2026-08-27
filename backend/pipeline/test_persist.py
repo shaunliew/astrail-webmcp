@@ -2588,7 +2588,7 @@ def test_evidence_json_conforms_to_TripPlaceEvidence(src, kind):
     p = _cp("Senso-ji", 35.71, 139.79, source_type=src)
     ev = persist._evidence_json(p)
     # exact contract key set — no legacy keys (evidence_quote/evidence_quotes must be GONE)
-    assert set(ev.keys()) == {"confidence", "source_url", "quote", "quotes",
+    assert set(ev.keys()) == {"confidence", "source_url", "source_reel_url", "quote", "quotes",
                               "rationale", "evidence_kind"}
     assert "evidence_quote" not in ev and "evidence_quotes" not in ev
     assert ev["quote"] == "📍Senso-ji"
@@ -2626,3 +2626,40 @@ def test_persist_tradeoffs_is_owner_scoped():
     # wrong user -> no row matches -> nothing written
     asyncio.run(persist_tradeoffs(c, "t1", "WRONG", notes=[], comparisons=[]))
     assert c.db["trips"][0]["tradeoffs"] == {"notes": [], "comparisons": []}
+
+
+# --- source_reel_url: the Reel a place came from ------------------------------------------
+#
+# `source_url` is deliberately an independent research/venue page — the extractor prompt demands
+# it and `is_independent_source_url()` DROPS any place whose source_url is not third-party
+# research. So the reel URL had nowhere to live, and every reel-extracted place was persisted
+# with a research link under a `reel_quote` label. Users saw "From reel · 95%" next to a
+# map.yahoo.co.jp URL.
+
+def test_evidence_carries_the_reel_url_separately_from_the_research_url():
+    p = _cp("Senso-ji", 35.71, 139.79, source_type="reel_extracted")
+    p = p.model_copy(update={
+        "source_url": "https://map.yahoo.co.jp/v3/place/JpggG2MZB5o",
+        "source_reel_url": "https://www.instagram.com/reel/AAA/",
+    })
+    ev = persist._evidence_json(p)
+    assert ev["evidence_kind"] == "reel_quote"
+    # Both survive: the research page is honest provenance and the eval scores it.
+    assert ev["source_url"] == "https://map.yahoo.co.jp/v3/place/JpggG2MZB5o"
+    assert ev["source_reel_url"] == "https://www.instagram.com/reel/AAA/"
+
+
+def test_evidence_reel_url_is_none_when_a_place_did_not_come_from_a_reel():
+    p = _cp("Ichiran", 35.66, 139.70, source_type="agent_suggested")
+    ev = persist._evidence_json(p)
+    assert ev["source_reel_url"] is None
+    assert ev["evidence_kind"] == "suggested_by_astrail"
+
+
+def test_evidence_tolerates_a_place_object_without_the_field():
+    # Cached PlaceResult rows written before this field existed must not break persistence.
+    class Legacy:
+        confidence, evidence_quote, source_url = 0.9, "quote", "https://example.com"
+        source_type, evidence_quotes = "reel_extracted", []
+    ev = persist._evidence_json(Legacy())
+    assert ev["source_reel_url"] is None

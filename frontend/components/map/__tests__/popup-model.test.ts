@@ -44,6 +44,30 @@ describe('buildPopupModel', () => {
     expect(m.context.join(' ')).toMatch(/Stop \d of \d on Day 1/)
   })
 
+  it('uses the exact Reel the backend recorded, over any fallback', () => {
+    // source_reel_url is the whole point of the backend fix: no more guessing which Reel.
+    const exact = {
+      ...first,
+      evidence_json: {
+        ...first.evidence_json,
+        source_url: 'https://map.yahoo.co.jp/v3/place/X',
+        source_reel_url: 'https://www.instagram.com/reel/EXACT/',
+      },
+    }
+    const many = {
+      ...TOKYO_TRIP,
+      inspiration: [
+        { ...(TOKYO_TRIP.inspiration[0] ?? ({} as never)), normalized_reel_url: 'https://www.instagram.com/reel/AAA/' },
+        { ...(TOKYO_TRIP.inspiration[0] ?? ({} as never)), normalized_reel_url: 'https://www.instagram.com/reel/BBB/' },
+      ],
+    }
+    const m = buildPopupModel(many as never, exact)
+    expect(m.reel?.url).toBe('https://www.instagram.com/reel/EXACT/')
+    // The research page survives, demoted and never called a Reel.
+    expect(m.reference?.url).toContain('map.yahoo.co.jp')
+    expect(m.reference?.label).not.toContain('Reel')
+  })
+
   it('surfaces the Instagram Reel as the primary link', () => {
     const m = buildPopupModel(TOKYO_TRIP, first)
     expect(m.reel?.url).toContain('instagram.com')

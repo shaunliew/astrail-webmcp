@@ -162,9 +162,13 @@ async def authorize_place_ids(client, user_id: str, place_ids: list[str]) -> lis
         if row.get("verification_version") == LOCATION_VERIFICATION_VERSION
     ]
     cache_ids = {row["reel_cache_id"] for row in mentions}
-    owned = (await client.table("saved_reels").select("reel_cache_id").eq("user_id", user_id)
+    # `normalized_url` rides along on a query that already runs for the ownership check, so the
+    # originating Reel costs no extra round-trip. Without it, organized places land with a
+    # research URL under a `reel_quote` label — the same defect as the direct-reel branch.
+    owned = (await client.table("saved_reels").select("reel_cache_id,normalized_url").eq("user_id", user_id)
              .eq("analysis_status", "organized").in_("reel_cache_id", list(cache_ids)).execute()).data or []
     owned_cache_ids = {row["reel_cache_id"] for row in owned}
+    reel_url_by_cache_id = {row["reel_cache_id"]: row.get("normalized_url") for row in owned}
     allowed_mentions = [row for row in mentions if row["reel_cache_id"] in owned_cache_ids]
     allowed_ids = {row["place_id"] for row in allowed_mentions}
     if allowed_ids != set(place_ids):
@@ -174,8 +178,14 @@ async def authorize_place_ids(client, user_id: str, place_ids: list[str]) -> lis
     if set(by_id) != allowed_ids:
         raise PermissionError("Canonical place not found")
     evidence = {row["place_id"]: row for row in allowed_mentions}
-    return [{**by_id[place_id], **{k: evidence[place_id].get(k) for k in ("evidence_quote", "source_url", "confidence")}}
-            for place_id in place_ids]
+    return [
+        {
+            **by_id[place_id],
+            **{k: evidence[place_id].get(k) for k in ("evidence_quote", "source_url", "confidence")},
+            "source_reel_url": reel_url_by_cache_id.get(evidence[place_id].get("reel_cache_id")),
+        }
+        for place_id in place_ids
+    ]
 
 
 async def get_organize_status(client, job_id: str, user_id: str) -> dict:

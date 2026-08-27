@@ -186,7 +186,7 @@ export default function TraysScreen({
   function handleOpenReel(card: SavedReelCard) { setViewingReel(card) }
 
   // Gate the empty state on the absence of an error too: a transient trays-fetch failure must
-  // surface the error banner, not the misleading "No trails yet" state (they'd otherwise co-render).
+  // surface the error banner, not the misleading empty state (they'd otherwise co-render).
   const isEmpty = !loading && !error && cards.length === 0 && collections.length === 0
 
   const traysWithReel = useMemo(
@@ -229,6 +229,7 @@ export default function TraysScreen({
         cards={trayCards}
         cardsStatus={cardsStatus}
         memberCount={openMemberIds.length}
+        onOrganize={onOrganize}
         existingNames={collections.filter((c) => c.id !== openTray.id).map((c) => c.name)}
         onRemoveReel={async (rid) => {
           await removeReelFromCollection(openTray.id, rid)
@@ -382,9 +383,11 @@ export default function TraysScreen({
       {isEmpty ? (
         <div className="flex flex-col items-center gap-4 rounded-2xl border border-dashed border-[color:var(--line-soft)] px-6 py-16 text-center">
           <span aria-hidden className="h-[72px] w-[72px] rounded-full border border-dashed border-[color:var(--line-soft)]" />
-          <h2 className="font-display text-[18px] font-medium text-[color:var(--text)]">No trails yet</h2>
+          <h2 className="font-display text-[18px] font-medium text-[color:var(--text)]">No trays yet</h2>
           <p className="max-w-[42ch] text-[14px] text-[color:var(--text-muted)]">
-            Paste the Reels you saved and Astrail will pull out the real places, check they exist, and connect them into a route you can follow.
+            A tray is a group of saved Reels &mdash; one per trip you are thinking about. Paste the
+            Reels you saved and Astrail will pull out the real places, check they exist, and connect
+            them into a route you can follow.
           </p>
         </div>
       ) : (

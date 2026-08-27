@@ -236,7 +236,23 @@ describe('TraysScreen', () => {
   it('shows the empty state when there are no reels and no trays', async () => {
     render(<TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
 
-    expect(await screen.findByText(/no trails yet/i)).toBeInTheDocument()
+    expect(await screen.findByText(/no trays yet/i)).toBeInTheDocument()
+  })
+
+  it('names the same thing in the empty state as in the section header', async () => {
+    /* It said "No trails yet" above a section headed "Your trays" — two different nouns for two
+       different things, describing an absence the user was not looking at. A trail is the TRIP you
+       generate from a tray; what is missing on an empty screen is trays. */
+    render(<TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
+    await screen.findByText(/no trays yet/i)
+    expect(screen.queryByText(/no trails yet/i)).toBeNull()
+  })
+
+  it('defines "tray" where the word is first used', async () => {
+    // Neither "tray" nor "trail" is self-evident, and neither was defined anywhere. The empty
+    // state is the one screen with room to say it, and the first place anyone meets the word.
+    render(<TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />)
+    expect(await screen.findByText(/a tray is a group of saved reels/i)).toBeInTheDocument()
   })
 
   it('shows the error banner (not the empty state) when the trays fetch fails with no reels', async () => {
@@ -246,7 +262,7 @@ describe('TraysScreen', () => {
 
     // A transient listCollections failure must surface the error, not the misleading empty state.
     expect(await screen.findByText(/could not load your trays/i)).toBeInTheDocument()
-    expect(screen.queryByText(/no trails yet/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/no trays yet/i)).not.toBeInTheDocument()
   })
 
   it('keeps capture working and surfaces a soft error when the trays fetch fails', async () => {

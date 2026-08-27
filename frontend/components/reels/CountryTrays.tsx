@@ -9,6 +9,9 @@ import VerifiedPlacesMap from './VerifiedPlacesMap'
 /* Map-first tray: the collection over a full-bleed map (DESIGN.md — the map is the
    canvas). A retractable paper sheet (bottom on mobile / left rail on desktop, tap the
    grip to collapse) holds the grounded places grouped by country, each selectable; a FAB
+   ("grounded" is the internal term for verified-against-the-map — the chip says "Places we
+   found", because the word appears nowhere else a user can see and the chip has no room to
+   define it)
    plans a trip from the selection. Full-bleed (fixed) so it escapes the /app sidebar shell.
 
    NOTE: grouped by country (SavedReelPlaceProof has country_code/name, not place_type —
@@ -55,7 +58,7 @@ export default function CountryTrays({
           </button>
         ) : null}
         <span className="rounded-full bg-[color:var(--brass-bright)] px-4 py-2 text-[14px] font-medium text-[color:var(--night-900)] shadow-[0_2px_12px_rgba(0,0,0,0.35)]">
-          Your grounded places
+          Places we found
         </span>
         <span className="text-[13px] text-[color:var(--starlight-70)]">
           {total} {total === 1 ? 'place' : 'places'} · {countries} {countries === 1 ? 'country' : 'countries'}

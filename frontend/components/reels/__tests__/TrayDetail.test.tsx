@@ -275,3 +275,61 @@ describe('TrayDetail', () => {
     expect(screen.getByText('Untitled reel')).toBeInTheDocument()
   })
 })
+
+describe('TrayDetail: the "organize these first" dead end', () => {
+  /* "Create trail" was disabled with the hint "Organize these reels first to plan a trip." and no
+     way to do it. The user had to independently know to leave, open the library, select the same
+     reels, and organize them there. The tray already knows which of its reels have no places. */
+  const noPlaces = (id: string): SavedReelCard => ({
+    id, user_id: 'u1', normalized_url: `https://www.instagram.com/reel/${id}`,
+    source_platform: 'instagram', reel_cache_id: null, has_current_cache: false,
+    analysis_status: 'not_analyzed', personal_label: null, retry_after: null, analyzed_at: null,
+    created_at: '2026-08-27T00:00:00Z', updated_at: '2026-08-27T00:00:00Z',
+    caption: null, thumbnail_url: null, places: [],
+  })
+
+  const tray = { id: 'c1', user_id: 'u1', name: 'Tokyo', created_at: '', updated_at: '' } as never
+
+  it('offers to find the places, instead of telling you to go elsewhere', async () => {
+    const onOrganize = vi.fn().mockResolvedValue(undefined)
+    render(
+      <TrayDetail
+        collection={tray} cards={[noPlaces('r1'), noPlaces('r2')]} existingNames={[]}
+        onRemoveReel={vi.fn()} onRename={vi.fn()} onDelete={vi.fn()}
+        onCreateTrail={vi.fn()} onOrganize={onOrganize} onBack={vi.fn()}
+      />,
+    )
+    const button = await screen.findByRole('button', { name: /find places in 2 reels/i })
+    fireEvent.click(button)
+    await waitFor(() => expect(onOrganize).toHaveBeenCalledWith(['r1', 'r2']))
+  })
+
+  it('keeps the old wording when the screen cannot organize', async () => {
+    // Without the capability, naming the blocker is still better than silence.
+    render(
+      <TrayDetail
+        collection={tray} cards={[noPlaces('r1')]} existingNames={[]}
+        onRemoveReel={vi.fn()} onRename={vi.fn()} onDelete={vi.fn()}
+        onCreateTrail={vi.fn()} onBack={vi.fn()}
+      />,
+    )
+    expect(await screen.findByText(/organize these reels first/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /find places in/i })).toBeNull()
+  })
+
+  it('does not offer it once the tray has places to plan from', async () => {
+    const withPlaces = {
+      ...noPlaces('r1'),
+      places: [{ place_id: 'p1', name: 'X', lat: 1, lng: 1, country_code: 'JP', country_name: 'Japan', evidence_quote: 'q', source_url: null, source_reel_url: 'u', confidence: 0.9 }],
+    }
+    render(
+      <TrayDetail
+        collection={tray} cards={[withPlaces]} existingNames={[]}
+        onRemoveReel={vi.fn()} onRename={vi.fn()} onDelete={vi.fn()}
+        onCreateTrail={vi.fn()} onOrganize={vi.fn()} onBack={vi.fn()}
+      />,
+    )
+    await screen.findByRole('button', { name: /create trail/i })
+    expect(screen.queryByRole('button', { name: /find places in/i })).toBeNull()
+  })
+})

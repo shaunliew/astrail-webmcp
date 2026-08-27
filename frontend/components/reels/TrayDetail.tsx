@@ -53,6 +53,7 @@ export default function TrayDetail({
   onRename,
   onDelete,
   onCreateTrail,
+  onOrganize,
   onBack,
 }: {
   collection: ReelCollection
@@ -64,6 +65,9 @@ export default function TrayDetail({
   // Membership count from the parent (source of truth), so the header count matches the
   // grid even while the cards are mid-load; falls back to resolved cards when omitted.
   memberCount?: number
+  /** Analyse this tray's un-analysed reels. Without it the "organize these first" hint was a
+   *  dead end: the user had to independently know to leave, open the library, and select them. */
+  onOrganize?: (savedReelIds: string[]) => Promise<void>
   existingNames: string[]
   onRemoveReel: (savedReelId: string) => Promise<void>
   onRename: (name: string) => Promise<void>
@@ -95,11 +99,15 @@ export default function TrayDetail({
   const hasGroundedPlaces = cards.some((card) => card.places.length > 0)
   const createTrailDisabled = mutating || !hasGroundedPlaces
   // Two distinct zero cases: no reels at all vs reels that are not organized/grounded yet.
+  const unorganized = cards.filter((card) => card.places.length === 0).map((card) => card.id)
+  const canOrganizeHere = Boolean(onOrganize) && unorganized.length > 0
   const createTrailHint =
     cards.length === 0
       ? 'Add reels to plan a trip'
       : !hasGroundedPlaces
-        ? 'Organize these reels first to plan a trip.'
+        // The button beside this does the organizing now, so the hint no longer has to send
+        // someone somewhere else to find it.
+        ? (canOrganizeHere ? 'These reels have no places yet.' : 'Organize these reels first to plan a trip.')
         : null
 
   // Every write funnels through one guarded runner: it holds the mutation-wide lock, clears
@@ -284,6 +292,19 @@ export default function TrayDetail({
         <button type="button" disabled={createTrailDisabled} onClick={onCreateTrail} className={BTN_PRIMARY}>
           Create trail
         </button>
+        {/* The way OUT of the dead end. "Organize these reels first" named the blocker and left
+            the user to work out that the fix lived on another screen; the tray already knows
+            which of its reels have no places, so it can just do it. */}
+        {!hasGroundedPlaces && canOrganizeHere ? (
+          <button
+            type="button"
+            disabled={mutating}
+            onClick={() => { void runMutation(() => onOrganize!(unorganized)) }}
+            className={BTN_SECONDARY}
+          >
+            {`Find places in ${unorganized.length} ${unorganized.length === 1 ? 'reel' : 'reels'}`}
+          </button>
+        ) : null}
         {createTrailHint ? (
           <span className="text-[13px] text-[color:var(--text-muted)]">{createTrailHint}</span>
         ) : null}

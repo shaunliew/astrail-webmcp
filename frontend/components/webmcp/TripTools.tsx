@@ -1,10 +1,11 @@
 'use client'
 
-import { useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import type { TripBundle } from '@/lib/trip/backend-types'
 import { useSharedMap } from '@/components/map/MapProvider'
 import { tripTools } from '@/lib/webmcp/tools'
 import { RegisterTools } from './RegisterTools'
+import { useOptionalWebMcpRegistry } from './WebMcpRegistry'
 
 /**
  * The page-scoped half of the tool surface.
@@ -30,6 +31,13 @@ export default function TripTools({
   openPanel: () => void
 }) {
   const { getMap } = useSharedMap()
+  const registry = useOptionalWebMcpRegistry()
+
+  // Publish the open trip so the GLOBAL data tools can use it instead of asking "which trip?".
+  // Written to a ref, so this costs no render anywhere.
+  const openTripRef = registry?.openTrip
+  if (openTripRef) openTripRef.current = bundle
+  useEffect(() => () => { if (openTripRef) openTripRef.current = null }, [openTripRef])
 
   // Read through refs at call time. `useWebMCP` keeps the execute callback stable by design,
   // so a bundle captured at registration would stay first-render data for the whole session.

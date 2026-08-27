@@ -51,6 +51,16 @@ type RegistryValue = {
   pending: PendingConfirm | null
   /** Called from inside a tool's execute; resolves when the user answers. */
   requestConfirm: (summary: string) => Promise<boolean>
+  /**
+   * The trip currently open on screen, if any.
+   *
+   * A REF, not state, and deliberately so. Data tools are registered globally (an agent must be
+   * able to answer "what's on day 2 of my Kyoto trip?" from anywhere), but when the user IS
+   * looking at a trip, the tool should use that one rather than asking "which trip?". Holding it
+   * in state would re-create the context value on every trip load and re-trigger the exact
+   * render loop fixed earlier; a ref gives the tools a live read with zero re-render.
+   */
+  openTrip: React.MutableRefObject<unknown>
   /** Visible log of what the agent did. Reads included — a silent read cannot be consented to. */
   activity: ActivityEntry[]
   beginActivity: (tool: string) => number
@@ -81,6 +91,7 @@ export function WebMcpRegistryProvider({ children }: { children: React.ReactNode
   const [pending, setPending] = useState<PendingConfirm | null>(null)
   const [activity, setActivity] = useState<ActivityEntry[]>([])
   const activitySeq = useRef(0)
+  const openTrip = useRef<unknown>(null)
 
   // Stable by construction. The render-loop bug earlier came from depending on the CONTEXT VALUE
   // (memoized on state) instead of on callbacks like these, so keep these dependency-free.
@@ -127,7 +138,7 @@ export function WebMcpRegistryProvider({ children }: { children: React.ReactNode
 
   const value = useMemo<RegistryValue>(
     () => ({
-      tools, supported, pending, requestConfirm, activity, beginActivity, endActivity,
+      tools, supported, pending, requestConfirm, activity, beginActivity, endActivity, openTrip,
       report, withdraw, setSupported,
     }),
     [tools, supported, pending, requestConfirm, activity, beginActivity, endActivity, report, withdraw],

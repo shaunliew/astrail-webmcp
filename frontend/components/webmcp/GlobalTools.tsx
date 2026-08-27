@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePathname } from 'next/navigation'
-import type { Trip } from '@/lib/trip/backend-types'
+import type { Trip, TripBundle } from '@/lib/trip/backend-types'
 import { getTrip, listTrips } from '@/lib/trip/supabase-api'
 import { deleteTripPlace, editTripPlace, generateTrip, streamGeneration } from '@/lib/trip/api'
 import { createGenerationStore } from '@/lib/webmcp/generation'
@@ -36,7 +36,7 @@ function labelFor(pathname: string): string {
 
 export default function GlobalTools() {
   const pathname = usePathname() ?? '/app'
-  const { requestConfirm } = useWebMcpRegistry()
+  const { requestConfirm, openTrip } = useWebMcpRegistry()
   // One store for the session. It must outlive any single tool call — the stream runs for
   // 60-180s while `plan_trip_from_reels` returns in about a second.
   const storeRef = useRef(createGenerationStore())
@@ -106,9 +106,9 @@ export default function GlobalTools() {
 
   const tripReader = useMemo(
     () => ({
-      // No open-trip cache at shell level: TripWorkspace owns that bundle. Returning null here
-      // makes the tools fall through to an explicit load, which is correct and one round-trip.
-      current: () => null,
+      // Use the trip on screen when there is one. Without this, asking "what's on day 2" while
+      // looking at a trip answered "Which trip?" — technically correct, obviously wrong.
+      current: () => (openTrip.current as TripBundle | null) ?? null,
       list: async () => {
         const fresh = await listTrips()
         setTrips(fresh)

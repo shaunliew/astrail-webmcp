@@ -22,6 +22,22 @@ const withRegistry = (tools: { name: string; description: string; readOnly: bool
     </WebMcpRegistryProvider>,
   )
 
+describe('RegisterTools without a provider', () => {
+  it('renders tools outside a WebMcpRegistryProvider without throwing', async () => {
+    // Regression: TripWorkspace mounts tool registration, and hard-requiring the registry made
+    // that core product component crash in every context where the agent layer is not mounted.
+    // Registration targets document.modelContext; the registry only feeds the status chip.
+    const { RegisterTools } = await import('../RegisterTools')
+    const spec = {
+      name: 'demo_tool',
+      description: 'x'.repeat(30),
+      execute: () => 'ok',
+      annotations: { readOnlyHint: true },
+    }
+    expect(() => render(<RegisterTools specs={[spec]} />)).not.toThrow()
+  })
+})
+
 describe('WebMcpStatus', () => {
   it('renders nothing outside a provider rather than throwing', () => {
     // The landing page has no provider; a crash there would take the marketing page down.

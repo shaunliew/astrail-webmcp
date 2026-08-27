@@ -3,7 +3,7 @@
 import { useEffect } from 'react'
 import { useWebMCP } from 'use-webmcp-tool'
 import type { ToolSpec } from '@/lib/webmcp/types'
-import { useWebMcpRegistry } from './WebMcpRegistry'
+import { useOptionalWebMcpRegistry } from './WebMcpRegistry'
 
 /**
  * One component per tool, deliberately.
@@ -17,7 +17,11 @@ import { useWebMcpRegistry } from './WebMcpRegistry'
  * That is why our specs take reader FUNCTIONS rather than values.
  */
 function ToolRegistration({ spec, enabled = true }: { spec: ToolSpec; enabled?: boolean }) {
-  const { report, withdraw, setSupported } = useWebMcpRegistry()
+  // OPTIONAL on purpose. Tool registration goes to `document.modelContext`; the registry only
+  // feeds the in-page status chip. Hard-requiring it would mean TripWorkspace — a core product
+  // component — crashes anywhere the agent layer is not mounted, which is a bad trade for a
+  // cosmetic feature. Without a provider the tool still registers; it just is not listed.
+  const registry = useOptionalWebMcpRegistry()
 
   const { supported, registered, error } = useWebMCP({
     name: spec.name,
@@ -34,23 +38,24 @@ function ToolRegistration({ spec, enabled = true }: { spec: ToolSpec; enabled?: 
   })
 
   useEffect(() => {
-    setSupported(supported)
-  }, [supported, setSupported])
+    registry?.setSupported(supported)
+  }, [supported, registry])
 
   useEffect(() => {
     if (error) console.error(`[webmcp] "${spec.name}" registration error:`, error)
+    if (!registry) return
     if (!enabled) {
-      withdraw(spec.name)
+      registry.withdraw(spec.name)
       return
     }
-    report({
+    registry.report({
       name: spec.name,
       description: spec.description,
       readOnly: spec.annotations?.readOnlyHint === true,
       registered,
     })
-    return () => withdraw(spec.name)
-  }, [spec.name, spec.description, spec.annotations?.readOnlyHint, registered, enabled, error, report, withdraw])
+    return () => registry.withdraw(spec.name)
+  }, [spec.name, spec.description, spec.annotations?.readOnlyHint, registered, enabled, error, registry])
 
   return null
 }

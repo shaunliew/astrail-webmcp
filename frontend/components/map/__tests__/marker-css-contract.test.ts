@@ -42,7 +42,9 @@ const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
 
 // `.constellation-pin` or `.constellation-pin--modifier`, but never
 // `.constellation-pin-card…` (single hyphen = child element, not a marker root).
-const MARKER_ROOT = /\.(?:constellation-pin(?:--[\w-]+)?|hotel-hub-pin)(?![\w-])/
+// `.eat-pin` joined this list once it became a real marker rather than an 8px dot: it is
+// positioned by Mapbox through the same inline transform and carries the identical hazard.
+const MARKER_ROOT = /\.(?:constellation-pin(?:--[\w-]+)?|eat-pin(?:--[\w-]+)?|hotel-hub-pin)(?![\w-])/
 
 // Case-insensitive (CSS property names are), vendor-prefix tolerant (-webkit-transform).
 const POSITIONING_PROPS = /(?:^|[;\s])(?:-\w+-)?(transform|scale|translate|rotate)\s*:/i
@@ -71,6 +73,15 @@ describe('marker CSS contract: Mapbox owns marker-root positioning', () => {
       '.constellation-pin--selected',
       '.constellation-pin--selected .constellation-pin__drop-body',
       '.constellation-pin--user_requested .constellation-pin__drop-body',
+      // "Where to eat" markers. They sized with width/height from the start, but were outside
+      // this contract until they became real pins — an 8px dot nobody could find on the map.
+      '.eat-pin',
+      '.eat-pin--selected',
+      '.eat-pin--selected .eat-pin__chip',
+      '.eat-pin--selected .eat-pin__glyph',
+      // One rule, three selectors: the zoom-driven class plus the hover/selection overrides.
+      // The parser keeps a selector LIST verbatim, so it is asserted as written.
+      '.eat-pin__label--visible,\n.eat-pin:hover .eat-pin__label,\n.eat-pin--selected .eat-pin__label',
       '.hotel-hub-pin',
     ])
   })

@@ -142,8 +142,14 @@ describe('TripMap', () => {
     await flush()
     fireLoad()
     await flush()
-    const opts = MarkerCtor.mock.calls.map((c) => c[0] as { anchor?: string })
-    expect(opts.every((o) => o?.anchor === 'bottom')).toBe(true)
+    // Trail pins only. An eat marker is a round chip, and a circle's ANCHOR IS ITS CENTRE —
+    // bottom-anchoring one would float it above the restaurant it marks. Different shape,
+    // different correct anchor; asserting "every marker" conflated the two.
+    const trailMarkers = MarkerCtor.mock.calls
+      .map((c) => c[0] as { element: HTMLElement, anchor?: string })
+      .filter((o) => o?.element?.classList.contains('constellation-pin'))
+    expect(trailMarkers.length).toBeGreaterThan(0)
+    expect(trailMarkers.every((o) => o.anchor === 'bottom')).toBe(true)
   })
 
   it('keeps the stop number visible even when the pin carries a photo', async () => {
@@ -243,6 +249,65 @@ describe('TripMap', () => {
     expect(pad).toEqual({ top: 0, right: 0, bottom: 0, left: 0 })
   })
 
+  // "Where to eat" was a list you could read but not locate. The markers DID exist — an 8px
+  // cream dot whose name only appeared on :hover — which on a dense street map beside 40x52
+  // photo teardrops is invisible, and on a touch device is unreachable, since there is no hover.
+  // The shared fixture cannot exercise this at all: its one restaurant points at a place already
+  // on the trip, and `suggestion_places` is empty, so zero eat markers are ever built from it.
+  const withEatSuggestion = () => ({
+    ...TOKYO_TRIP,
+    suggestion_places: [
+      { id: 'pl_koma', name: 'Koma Sushi', place_type: 'restaurant', lat: 34.6758, lng: 135.6512,
+        area: 'Osaka', city: 'Osaka', country_code: 'JP', country_name: 'Japan',
+        name_local: null, formatted_address: null, mapbox_id: null } as never,
+    ],
+    restaurants: [{
+      id: 'rest_koma', trip_id: TOKYO_TRIP.trip.id, trip_day_id: 'day_1',
+      restaurant_place_id: 'pl_koma', near_place_id: TOKYO_TRIP.places[0].place_id,
+      cuisine: 'sushi', summary: 'Counter sushi two minutes from your first stop.',
+      source_url: null, evidence_json: { evidence_kind: 'suggested_by_astrail' },
+      preference_match_json: {},
+    } as never],
+  })
+
+  it('puts a findable eat marker on the map for each restaurant suggestion', async () => {
+    render(
+      <MapProvider>
+        <TripMap bundle={withEatSuggestion() as never} activeDayNumber={1} selectedPlaceId={null} onSelectPlace={() => {}} />
+      </MapProvider>,
+    )
+    await flush()
+    fireLoad()
+    await flush()
+
+    const eat = markerElements.find((e) => e.classList.contains('eat-pin'))
+    expect(eat, 'no eat marker was added to the map').toBeDefined()
+    // A glyph, not a bare dot: the pin has to say what it IS without being hovered.
+    expect(eat!.querySelector('.eat-pin__glyph')).not.toBeNull()
+    expect(eat!.querySelector('.eat-pin__label')?.textContent).toContain('Koma')
+    expect(eat!.getAttribute('aria-label')).toBe('Koma Sushi, sushi')
+  })
+
+  it('shows the eat label by zoom, not by hover — a phone has no hover', async () => {
+    mapInstance.getZoom.mockReturnValue(13)          // city zoom: labels on
+    render(
+      <MapProvider>
+        <TripMap bundle={withEatSuggestion() as never} activeDayNumber={1} selectedPlaceId={null} onSelectPlace={() => {}} />
+      </MapProvider>,
+    )
+    await flush()
+    fireLoad()
+    await flush()
+
+    const label = markerElements
+      .find((e) => e.classList.contains('eat-pin'))!
+      .querySelector('.eat-pin__label')!
+    expect(label.classList.contains('eat-pin__label--visible')).toBe(true)
+    // ...and the trail label's own class is NOT borrowed: an unscoped shared modifier would
+    // reveal trail labels the zoom gate had just hidden.
+    expect(label.classList.contains('constellation-pin__label--visible')).toBe(false)
+  })
+
   it('frames its own places instead of inheriting the generation camera', async () => {
     renderMap()
     await flush()
@@ -338,7 +403,9 @@ describe('TripMap', () => {
       }),
     }))
 
-    const markers = markerElements.slice(-TOKYO_TRIP.places.length)
+    // Filter by class, not by position: eat markers are appended after the trail pins, so a
+    // trailing slice silently starts grabbing restaurants instead.
+    const markers = markerElements.filter((el) => el.classList.contains('constellation-pin'))
     const byLabel = (name: string) => markers.find((el) => el.getAttribute('aria-label') === name)!
     expect(byLabel('Senso-ji Temple')).toHaveClass('constellation-pin', 'constellation-pin--reel_extracted')
     expect(byLabel('Senso-ji Temple')).toHaveTextContent('1')

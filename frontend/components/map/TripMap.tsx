@@ -113,6 +113,21 @@ function buildPinGraphic(photoUrl: string | null, number: number | null): SVGSVG
   return svg
 }
 
+/** Fork and knife, so an eat pin reads as "somewhere to eat" and not as an unexplained dot.
+ *  Stroked rather than filled: at this size a filled cutlery shape turns to mud, while two
+ *  strokes stay legible down to ~10px. */
+function buildEatGlyph(): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg')
+  svg.setAttribute('viewBox', '0 0 16 16')
+  svg.setAttribute('class', 'eat-pin__glyph')
+  svg.setAttribute('aria-hidden', 'true')
+  const path = document.createElementNS(SVG_NS, 'path')
+  // Fork: three tines meeting a stem. Knife: a tapered blade over a stem.
+  path.setAttribute('d', 'M4 3v3M6 3v3M8 3v3M6 6v7M11.5 3c1.2 0 1.8 1.4 1.8 2.6S12.7 8 11.5 8M11.5 8v5')
+  svg.append(path)
+  return svg
+}
+
 function numberText(number: number): SVGTextElement {
   const text = document.createElementNS(SVG_NS, 'text')
   text.setAttribute('x', '20'); text.setAttribute('y', '19')
@@ -356,7 +371,10 @@ export default function TripMap({
     if (!map) return
     const visible = map.getZoom() >= LABEL_ZOOM
     for (const label of markerLabelsRef.current) {
-      label.classList.toggle('constellation-pin__label--visible', visible)
+      const cls = label.classList.contains('eat-pin__label')
+        ? 'eat-pin__label--visible'
+        : 'constellation-pin__label--visible'
+      label.classList.toggle(cls, visible)
     }
   }
 
@@ -485,7 +503,6 @@ export default function TripMap({
         )
       }
     }
-    markerLabelsRef.current = labels
     // "Where to eat" was text-only: a suggestion you could read but not locate. These are
     // deliberately quieter than trail pins — they are options, not stops on the route.
     const dayMeta = orderedDays(bundle).find((d) => d.day_number === activeDayNumber)
@@ -505,14 +522,18 @@ export default function TripMap({
           'eat-pin',
           place.id === selectedRestaurantPlaceId ? 'eat-pin--selected' : '',
         ].filter(Boolean).join(' ')
-        const dot = document.createElement('span')
-        dot.className = 'eat-pin__dot'
-        el.append(dot)
+        const chip = document.createElement('span')
+        chip.className = 'eat-pin__chip'
+        chip.append(buildEatGlyph())
+        el.append(chip)
         const label = document.createElement('span')
         label.className = 'eat-pin__label'
         label.textContent = shortPlaceName(place.name)
         label.title = place.name
         el.append(label)
+        // Same zoom rule as the trail labels rather than :hover — a touch device has no hover,
+        // so a hover-only name is a name that never appears on a phone.
+        labels.push(label)
         el.addEventListener('click', (e) => {
           e.stopPropagation()
           activePopupRef.current?.remove()
@@ -537,6 +558,7 @@ export default function TripMap({
         return new mapboxgl.Marker({ element: el }).setLngLat([place.lng, place.lat]).addTo(map)
       })
 
+    markerLabelsRef.current = labels     // assigned AFTER the eat labels join the list
     setMarkers([...markers, ...eatMarkers])
     syncMarkerLabelVisibility()
   }

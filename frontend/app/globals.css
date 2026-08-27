@@ -1282,49 +1282,87 @@ button:focus-visible {
 
 .eat-pin {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 0.3rem;
+  gap: 0.15rem;
   padding: 0;
   border: 0;
   background: transparent;
   cursor: pointer;
   /* Sized with width/height only — never transform. See marker-css-contract.test.ts: a transform
      on the marker root fights Mapbox's own inline transform and drifts the pin off its anchor. */
+  width: 22px;
+  height: 22px;
+  transition: width 160ms ease-out, height 160ms ease-out;
 }
 
-.eat-pin__dot {
-  width: 0.5rem;
-  height: 0.5rem;
+/* Was an 8px cream dot with a hover-only name. Against a dense street map, beside 40×52 trail
+   teardrops carrying photographs, that is invisible in practice — the suggestions were on the
+   map the whole time and could not be found. A ringed chip with cutlery reads as "eat here" at a
+   glance while staying visibly subordinate to a numbered stop, which is the correct hierarchy:
+   these are options, not places on the route. */
+.eat-pin__chip {
+  width: 100%;
+  height: 100%;
   border-radius: 999px;
-  background: #f5f0e6;
-  border: 1.5px solid #8a6a3a;
-  box-shadow: 0 0 0 2px rgb(0 0 0 / 0.28);
+  background: rgba(11, 15, 22, 0.92);
+  border: 1.5px solid #EFC98D;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.eat-pin--selected .eat-pin__dot {
-  width: 0.75rem;
-  height: 0.75rem;
-  background: #c9974e;
+.eat-pin__glyph {
+  width: 68%;
+  height: 68%;
+  fill: none;
+  stroke: #EFC98D;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+}
+
+.eat-pin--selected {
+  width: 28px;
+  height: 28px;
+  z-index: 2;
+}
+
+.eat-pin--selected .eat-pin__chip {
+  background: #EFC98D;
   border-color: #f5f0e6;
+}
+
+.eat-pin--selected .eat-pin__glyph {
+  stroke: #0b0f16;
 }
 
 .eat-pin__label {
   font-size: 0.625rem;
   letter-spacing: 0.01em;
   color: #f5f0e6;
-  background: rgb(0 0 0 / 0.55);
+  background: rgb(0 0 0 / 0.62);
   padding: 0.05rem 0.3rem;
   border-radius: 0.25rem;
   white-space: nowrap;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
   opacity: 0;
   transition: opacity 140ms ease;
 }
 
+/* Driven by the map's zoom, exactly like the trail labels — NOT by :hover alone. A touch device
+   has no hover, so the hover-only rule meant these names never appeared on a phone at all.
+   Hover and selection still force it, so it stays readable when deliberately pointed at. */
+.eat-pin__label--visible,
 .eat-pin:hover .eat-pin__label,
 .eat-pin--selected .eat-pin__label {
-  opacity: 1;
+  opacity: 0.95;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .eat-pin__label { transition: none; }
+  .eat-pin { transition: none; }
 }

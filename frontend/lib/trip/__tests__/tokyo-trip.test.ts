@@ -43,17 +43,26 @@ describe('Tokyo fixture invariants', () => {
   })
 
   it('all place references resolve within the bundle', () => {
-    const ids = new Set(TOKYO_TRIP.places.map((p) => p.place_id))
+    /* Suggestion targets resolve through `suggestion_places`, NOT through the trip's stops —
+       the same union `buildPlaceIndex` uses. Requiring a restaurant to BE a stop encoded the
+       opposite of how real trips look (every restaurant suggestion on the reported Osaka trip
+       points at a place that is not a stop) and is why the "Where to eat" markers went
+       untested: a fixture where they all resolve to stops builds no eat markers at all. */
+    const ids = new Set([
+      ...TOKYO_TRIP.places.map((p) => p.place_id),
+      ...TOKYO_TRIP.suggestion_places.map((p) => p.id),
+    ])
+    const stopIds = new Set(TOKYO_TRIP.places.map((p) => p.place_id))
     for (const l of TOKYO_TRIP.transport_legs) {
-      if (l.from_place_id) expect(ids.has(l.from_place_id)).toBe(true)
-      if (l.to_place_id) expect(ids.has(l.to_place_id)).toBe(true)
+      if (l.from_place_id) expect(stopIds.has(l.from_place_id)).toBe(true)
+      if (l.to_place_id) expect(stopIds.has(l.to_place_id)).toBe(true)
     }
     for (const r of TOKYO_TRIP.restaurants) {
       if (r.restaurant_place_id) expect(ids.has(r.restaurant_place_id)).toBe(true)
       if (r.near_place_id) expect(ids.has(r.near_place_id)).toBe(true)
     }
     for (const h of TOKYO_TRIP.hotels) {
-      if (h.base_place_id) expect(ids.has(h.base_place_id)).toBe(true)
+      if (h.base_place_id) expect(stopIds.has(h.base_place_id)).toBe(true)
     }
   })
 

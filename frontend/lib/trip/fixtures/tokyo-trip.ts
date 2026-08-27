@@ -161,7 +161,18 @@ const transport_legs: TransportLeg[] = [
     'Long transfer. Public transit may be preferable; detailed train routing is not available in v1.'),
 ]
 
+const suggestionOnlyRestaurant = place(
+  'pl_komasushi', 'Koma Sushi', 'restaurant', 35.7160, 139.7980, 'Asakusa',
+)
+
 const restaurants: RestaurantSuggestion[] = [
+  {
+    id: 'rest_2', trip_id: TRIP_ID, trip_day_id: 'day_1',
+    restaurant_place_id: 'pl_komasushi', near_place_id: 'pl_senso', cuisine: 'sushi',
+    summary: 'Counter sushi a few minutes from Senso-ji, for after the sunrise visit.',
+    source_url: null, evidence_json: { evidence_kind: 'suggested_by_astrail' },
+    preference_match_json: { matched: ['walkable'] },
+  },
   {
     id: 'rest_1', trip_id: TRIP_ID, trip_day_id: 'day_2',
     restaurant_place_id: 'pl_ichiran', near_place_id: 'pl_shibuya', cuisine: 'Ramen',
@@ -240,7 +251,10 @@ const events: GenerationEvent[] = [
 
 export const TOKYO_TRIP: TripBundle = {
   trip, inspiration, places, days, transport_legs, restaurants, hotels, events,
-  // The mock's restaurants point at places already on the trip, so nothing extra
-  // is needed to resolve their names.
-  suggestion_places: [],
+  /* `rest_1` points at a place already ON the trip, so it resolves through the trip's own
+     places and produces NO eat marker — correct (that stop already has a trail pin), but it
+     meant the fixture could not exercise the "Where to eat" markers at all, and a real trip is
+     the opposite shape: its restaurant suggestions are overwhelmingly places that are NOT
+     stops. `rest_2` is that case, so the eat-pin path is now covered. */
+  suggestion_places: [suggestionOnlyRestaurant],
 }

@@ -119,16 +119,20 @@ describe('buildPopupModel', () => {
     expect(buildPopupModel(many as never, researched).reel).toBeNull()
   })
 
-  it('will not put one Reel cover under several different places', () => {
-    // reel_cache.thumbnail_url is one image per REEL. A Reel about five spots has a single
-    // cover, so reusing it per place claims the photo depicts five different things. Images
-    // read as documentary evidence, which makes that a stronger false claim than an inferred
-    // opening hour — and this file already refuses those.
+  it('shows the source Reel frame, and labels it as the Reel rather than the place', () => {
+    // Product decision: one Reel yields one cover, so several stops from the same Reel share a
+    // frame. That is acceptable because of HOW it is presented — as the source we found the
+    // place in, not as a portrait of the venue. The label is what carries that, so it is
+    // asserted alongside the image; if the framing ever changes, the image needs rethinking too.
     const twoFromOneReel = {
       ...TOKYO_TRIP,
       places: stops.slice(0, 2).map((tp) => ({
         ...tp,
-        evidence_json: { ...tp.evidence_json, source_reel_url: 'https://www.instagram.com/reel/SHARED/' },
+        evidence_json: {
+          ...tp.evidence_json,
+          evidence_kind: 'reel_quote' as const,
+          source_reel_url: 'https://www.instagram.com/reel/SHARED/',
+        },
       })),
       inspiration: [{
         ...(TOKYO_TRIP.inspiration[0] ?? ({} as never)),
@@ -137,7 +141,10 @@ describe('buildPopupModel', () => {
       }],
     }
     for (const tp of twoFromOneReel.places) {
-      expect(buildPopupModel(twoFromOneReel as never, tp).imageUrl).toBeNull()
+      const m = buildPopupModel(twoFromOneReel as never, tp)
+      expect(m.imageUrl).toBe('https://cdn.example/cover.jpg')
+      expect(m.evidenceLabel).toBe('From your Instagram Reel')
+      expect(m.reel?.url).toBe('https://www.instagram.com/reel/SHARED/')
     }
   })
 
@@ -176,54 +183,18 @@ describe('buildPopupModel', () => {
     expect(buildPopupModel(trip as never, added).reel).toBeNull()
   })
 
-  it('omits the image unless the trip still holds that Reel', () => {
-    const m = buildPopupModel(TOKYO_TRIP, first)
-    expect(m.imageUrl).toBeNull()
-
-    const withThumb = {
+  it('omits the image when the trip no longer holds that Reel', () => {
+    // The cover comes from the trip's own inspiration rows. If the Reel is not among them there
+    // is no image to show, and nothing else may be substituted.
+    const dropped = {
       ...TOKYO_TRIP,
-      inspiration: [
-        {
-          ...(TOKYO_TRIP.inspiration[0] ?? ({} as never)),
-          normalized_reel_url: first.evidence_json.source_url,
-          thumbnail_url: 'https://cdn.example/thumb.jpg',
-        },
-      ],
+      inspiration: [{
+        ...(TOKYO_TRIP.inspiration[0] ?? ({} as never)),
+        normalized_reel_url: 'https://www.instagram.com/reel/SOMETHING_ELSE/',
+        thumbnail_url: 'https://cdn.example/other.jpg',
+      }],
     }
-    expect(buildPopupModel(withThumb as never, first).imageUrl).toBe('https://cdn.example/thumb.jpg')
-  })
-
-  it('answers "where do I eat around here" on the map, not only in the panel', () => {
-    const m = buildPopupModel(TOKYO_TRIP, first)
-    expect(Array.isArray(m.eats)).toBe(true)
-  })
-
-  it('puts a suggestion anchored to THIS stop ahead of the rest of the day', () => {
-    // near_place_id exists precisely to tie a suggestion to a stop; ignoring it would make
-    // "nearby" mean "somewhere on this day", which is not what someone clicking a pin is asking.
-    const day1 = TOKYO_TRIP.days[0]
-    const withEats = {
-      ...TOKYO_TRIP,
-      restaurants: [
-        { ...TOKYO_TRIP.restaurants[0], id: 'r-far', trip_day_id: day1.id, near_place_id: 'someone-else', summary: 'Far Diner', cuisine: 'ramen', restaurant_place_id: null },
-        { ...TOKYO_TRIP.restaurants[0], id: 'r-near', trip_day_id: day1.id, near_place_id: first.place.id, summary: 'Right Here Cafe', cuisine: 'cafe', restaurant_place_id: null },
-      ],
-    }
-    const m = buildPopupModel(withEats as never, first)
-    expect(m.eats[0].name).toBe('Right Here Cafe')
-    expect(m.eats.map((e) => e.name)).toContain('Far Diner')
-  })
-
-  it('caps the eats list so the popup stays readable', () => {
-    const day1 = TOKYO_TRIP.days[0]
-    const many = {
-      ...TOKYO_TRIP,
-      restaurants: Array.from({ length: 8 }, (_, i) => ({
-        ...TOKYO_TRIP.restaurants[0], id: `r-${i}`, trip_day_id: day1.id,
-        near_place_id: null, summary: `Place ${i}`, cuisine: null, restaurant_place_id: null,
-      })),
-    }
-    expect(buildPopupModel(many as never, first).eats.length).toBeLessThanOrEqual(3)
+    expect(buildPopupModel(dropped as never, first).imageUrl).toBeNull()
   })
 
   it('reports confidence as a whole percent', () => {

@@ -33,7 +33,11 @@ function shortPlaceName(name: string): string {
 
 function safeWebUrl(raw: string): string | null {
   try {
-    const parsed = new URL(raw)
+    // Resolved against our own origin so same-origin paths ("/landing/x.webp") work — an
+    // absolute-only parse silently dropped them. The protocol check still runs afterwards, so a
+    // javascript: or data: URL lifted from a caption is rejected exactly as before.
+    const base = typeof window === 'undefined' ? 'https://astrail.xyz' : window.location.origin
+    const parsed = new URL(raw, base)
     return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.href : null
   } catch {
     return null
@@ -56,25 +60,7 @@ let pinClipSeq = 0
  * WebMCP tools address stops by it ("move stop 7"), and `buildTrailNumbers` is the shared
  * vocabulary between what the agent says and what the user can see.
  */
-/**
- * A tint per place type, so pins are distinguishable at a glance without inventing a photo.
- *
- * `place_type` is real, stored data — unlike a stock image of "a temple", which would be a claim
- * about a specific named venue that we cannot support. Colour is the honest signal available.
- */
-const TYPE_TINT: Record<string, string> = {
-  restaurant: '#E0A356',
-  attraction: '#7FA9C9',
-  hotel: '#B79BD0',
-  station: '#89B58F',
-  shop: '#D89AA6',
-  area: '#C0B08A',
-  city: '#C0B08A',
-  country: '#C0B08A',
-  other: '#A9A9A9',
-}
-
-function buildPinGraphic(photoUrl: string | null, number: number | null, placeType = 'other'): SVGSVGElement {
+function buildPinGraphic(photoUrl: string | null, number: number | null): SVGSVGElement {
   const svg = document.createElementNS(SVG_NS, 'svg')
   svg.setAttribute('viewBox', '0 0 40 52')
   svg.setAttribute('class', 'constellation-pin__drop')
@@ -107,14 +93,21 @@ function buildPinGraphic(photoUrl: string | null, number: number | null, placeTy
       if (number !== null) svg.append(numberText(number))
     })
     svg.append(img)
+    // Marks the frame as coming FROM a Reel. One Reel yields one cover, so stops from the same
+    // Reel share it; the badge is what keeps that honest — the image is the source, not a
+    // portrait of the venue.
+    const ring = document.createElementNS(SVG_NS, 'circle')
+    ring.setAttribute('cx', '20'); ring.setAttribute('cy', '19'); ring.setAttribute('r', '14')
+    ring.setAttribute('class', 'constellation-pin__reel-ring')
+    svg.append(ring)
   } else {
-    // No honest photo for this stop. Tint the head by place type rather than leaving every pin
-    // identical, and keep the number — it is how the agent refers to the stop.
-    const tint = document.createElementNS(SVG_NS, 'circle')
-    tint.setAttribute('cx', '20'); tint.setAttribute('cy', '19'); tint.setAttribute('r', '13')
-    tint.setAttribute('fill', TYPE_TINT[placeType] ?? TYPE_TINT.other)
-    tint.setAttribute('fill-opacity', '0.32')
-    svg.append(tint)
+    // One universal placeholder for every stop with no Reel behind it — typed by the user, or
+    // surfaced by Astrail's own research. Deliberately not a photograph: borrowing an image for
+    // a place we have no picture of would be a claim we cannot support.
+    const disc = document.createElementNS(SVG_NS, 'circle')
+    disc.setAttribute('cx', '20'); disc.setAttribute('cy', '19'); disc.setAttribute('r', '13')
+    disc.setAttribute('class', 'constellation-pin__placeholder')
+    svg.append(disc)
     if (number !== null) svg.append(numberText(number))
   }
   return svg
@@ -422,7 +415,7 @@ export default function TripMap({
         ].filter(Boolean).join(' ')
         // The Reel still that this stop came from, when we can attribute one honestly.
         const photoUrl = thumbnailFor(bundle, tp)
-        el.append(buildPinGraphic(photoUrl, number, tp.place.place_type))
+        el.append(buildPinGraphic(photoUrl, number))
         if (photoUrl && number !== null) el.append(buildPinBadge(number))
         if (number !== null) {
           const label = document.createElement('span')
@@ -662,7 +655,13 @@ export default function TripMap({
   // was shorter than that. Mapbox then logs "Map cannot fit within canvas with the given bounds,
   // padding, and/or offset" and REFUSES TO MOVE — so opening a Tokyo trip on mobile showed the
   // default globe over the Indian Ocean, with no error anyone would notice.
-  function framePadding() {
+  // `popupRoom` biases the pin into the upper third so an evidence popup has somewhere to go.
+  // Mapbox picks a popup anchor by asking "is there room ABOVE?" before "is there room BELOW?",
+  // and when neither fits it falls through to placing the popup below and simply overflows the
+  // canvas. Centring a selected place on a 720px-tall laptop canvas is exactly that case: a
+  // ~395px popup fits in neither direction. Fixing it at the camera (land the pin high) is what
+  // map apps do, and it leaves the popup component itself unconstrained.
+  function framePadding(opts?: { popupRoom?: boolean }) {
     const map = getMap()
     // Defensive: the map may not be ready, and framing must never throw — a padding helper
     // taking down the whole map effect would be a far worse bug than a loosely framed camera.
@@ -674,6 +673,11 @@ export default function TripMap({
     const wanted = wide
       ? { top: 80, right: 80, bottom: 80, left: 480 }   // desktop: clear the left panel
       : { top: 72, right: 48, bottom: Math.round(height * 0.42) + 32, left: 48 }
+
+    // Solving `0.3H = top + (H - top - bottom)/2` for bottom. Only desktop needs it: the mobile
+    // bottom-sheet pad above already pushes the pin well above centre. Applied BEFORE the cap
+    // below, so an extreme viewport degrades to "framed tight" rather than an abandoned camera.
+    if (opts?.popupRoom && wide) wanted.bottom = wanted.top + Math.round(height * 0.4)
 
     // Never let opposing pads consume the canvas: Mapbox abandons the fit entirely rather than
     // doing its best, so a too-greedy pad costs the whole camera move. Cap each axis at 70% and
@@ -780,7 +784,10 @@ export default function TripMap({
     if (!map || !selectedPlaceId) return
     const place = buildPlaceIndex(bundle).get(selectedPlaceId)
     if (place && hasRealCoords(place.lng, place.lat)) {
-      map.flyTo({ center: [place.lng, place.lat], zoom: 14, pitch: 55, padding: framePadding(), duration: 1400, essential: true })
+      map.flyTo({
+        center: [place.lng, place.lat], zoom: 14, pitch: 55,
+        padding: framePadding({ popupRoom: true }), duration: 1400, essential: true,
+      })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPlaceId])

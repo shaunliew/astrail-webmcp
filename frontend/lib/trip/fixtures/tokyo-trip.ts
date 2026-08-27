@@ -202,19 +202,19 @@ const inspiration: TripInspirationItem[] = [
     id: 'insp_1', trip_id: TRIP_ID, item_type: 'reel_url', source: 'manual_paste',
     normalized_reel_url: 'https://www.instagram.com/reel/AAA/', reel_cache_id: 'rc_1',
     requested_place_text: null, resolved_place_id: 'pl_senso', status: 'places_found',
-    thumbnail_url: null,
+    thumbnail_url: '/landing/globe-japan.webp',
   },
   {
     id: 'insp_2', trip_id: TRIP_ID, item_type: 'reel_url', source: 'clipboard',
     normalized_reel_url: 'https://www.instagram.com/reel/BBB/', reel_cache_id: 'rc_2',
     requested_place_text: null, resolved_place_id: 'pl_teamlab', status: 'places_found',
-    thumbnail_url: null,
+    thumbnail_url: '/landing/coldopen-hero.webp',
   },
   {
     id: 'insp_3', trip_id: TRIP_ID, item_type: 'requested_place', source: 'manual_input',
     normalized_reel_url: null, reel_cache_id: null,
     requested_place_text: 'Tokyo Disneyland', resolved_place_id: 'pl_disney', status: 'resolved',
-    thumbnail_url: null,
+    thumbnail_url: '/landing/cta.webp',
   },
 ]
 

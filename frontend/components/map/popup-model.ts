@@ -103,27 +103,24 @@ export function reelUrlFor(bundle: TripBundle, tripPlace: TripPlace): string | n
 }
 
 /**
- * The Reel's cover, but ONLY when it can honestly stand for this one place.
+ * The cover frame of the Reel this place came from.
  *
- * `reel_cache.thumbnail_url` is one image per REEL, not per place. A Reel about five Osaka spots
- * has a single cover, so returning it for each of them puts the same photograph under five
- * different names — five claims that the image depicts something it does not. Images read as
- * documentary evidence, which makes that a stronger false claim than an inferred opening hour,
- * and this file already refuses those (see the note at the end).
+ * A product decision, made knowingly: `reel_cache.thumbnail_url` is one image per REEL, so a Reel
+ * that yielded three stops shows the same frame on all three. That is acceptable HERE and would
+ * not be elsewhere, because of how it is framed — the popup labels it "From your Instagram Reel"
+ * and the pin carries a reel marker, so the image reads as *the source we found this in*, not as
+ * a portrait of the venue. It is real evidence, shown as evidence.
  *
- * There is an honest subset: when a Reel contributed exactly ONE place to this trip, its cover
- * really is a picture of that place. That is the only case we use.
+ * What was rejected, and why it is a different thing: a stock photo of "a ramen shop" under a
+ * specifically named ramen shop, or a Wikipedia geosearch hit (which resolves "Ichiran Shibuya"
+ * to a competitor chain nearby). Those invent a depiction. This one shows the actual Reel.
  *
- * Nothing else in or addable to the stack has a photo of an ordinary venue — Wikipedia covers
- * landmarks and not the ramen shop a Reel is actually about, and stock imagery of "a temple"
- * under a specifically named temple is the same class of error. So the fallback is deliberately
- * non-photographic.
+ * Places with no Reel behind them — typed by the user, or surfaced by Astrail's own research —
+ * get a placeholder rather than a borrowed image.
  */
 export function thumbnailFor(bundle: TripBundle, tripPlace: TripPlace): string | null {
   const reel = reelUrlFor(bundle, tripPlace)
   if (!reel) return null
-  const placesFromThisReel = bundle.places.filter((tp) => reelUrlFor(bundle, tp) === reel).length
-  if (placesFromThisReel !== 1) return null
   return bundle.inspiration.find((i) => i.normalized_reel_url === reel)?.thumbnail_url ?? null
 }
 

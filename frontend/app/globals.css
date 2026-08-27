@@ -622,6 +622,24 @@ button:focus-visible {
   font-weight: 700;
 }
 
+/* The Reel cover in the pin head is EVIDENCE, not decoration, and the brass ring is what says
+   so — the same brass that marks a source Reel everywhere else in the app. A stop with no Reel
+   behind it gets the placeholder disc below instead; it never borrows someone else's photo. */
+.constellation-pin__reel-ring {
+  fill: none;
+  stroke: #EFC98D;
+  stroke-width: 2;
+}
+
+/* One universal disc for every stop with no Reel cover — surfaced by Astrail's research or
+   typed by the user. A deliberate blank that keeps the stop number legible, rather than a
+   stand-in image that would imply evidence we do not have. */
+.constellation-pin__placeholder {
+  fill: rgba(11, 15, 22, 0.07);
+  stroke: rgba(11, 15, 22, 0.16);
+  stroke-width: 1;
+}
+
 /* Shown only when the head carries a photo, so the stop number the agent refers to
    ("move stop 7") is never hidden behind an image. */
 .constellation-pin__badge {
@@ -642,24 +660,10 @@ button:focus-visible {
   justify-content: center;
 }
 
-.constellation-pin--selected {
-  width: 50px;
-  height: 65px;
-  z-index: 2;
-}
-
 .constellation-pin--selected .constellation-pin__drop-body {
   fill: #ffffff;
   stroke: #EFC98D;
   stroke-width: 2;
-}
-
-/* Stops that are not numbered points on the trail (an undayed base hotel, unresolved
-   coordinates) recede rather than competing with the route. */
-.constellation-pin--receding {
-  width: 26px;
-  height: 34px;
-  opacity: 0.75;
 }
 
 .constellation-pin__number {
@@ -705,39 +709,35 @@ button:focus-visible {
   visibility: visible;
 }
 
-.constellation-pin--reel_extracted {
-  border-style: solid;
+/* Where a stop came from, drawn ON the teardrop rather than around it. The dot-era rules
+   these replace used `border-style` (a no-op against `border: 0`) and an `outline` on the
+   marker root — which framed the teardrop in a rectangle, since an outline follows the
+   bounding box, not the shape. A reel-sourced stop needs no rule here: its head already
+   carries the Reel cover inside a brass ring. */
+.constellation-pin--user_requested .constellation-pin__drop-body {
+  stroke: #EFC98D;
+  stroke-width: 1.5;
 }
 
-.constellation-pin--user_requested {
-  outline: 1px solid #EFC98D;
-  outline-offset: 3px;
-}
-
-.constellation-pin--agent_suggested {
-  border-style: dashed;
+.constellation-pin--agent_suggested .constellation-pin__drop-body {
+  stroke-dasharray: 3 2;
 }
 
 .constellation-pin--receding {
-  border-width: 1px;
-  box-shadow: 0 0 0 4px rgba(239, 201, 141, 0.08), 0 0 10px rgba(239, 201, 141, 0.16);
-  font-size: 0;
-  height: 16px;
-  opacity: 0.45;
-  width: 16px;
+  height: 34px;
+  opacity: 0.7;
+  width: 26px;
 }
 
 .constellation-pin--selected {
-  box-shadow: 0 0 0 7px rgba(239, 201, 141, 0.22), 0 0 24px rgba(239, 201, 141, 0.55);
-  /* Grown via width/height (26px × 1.15 ≈ 30px), NEVER scale/transform: Mapbox
-     positions the marker through an inline transform (translate(pos)
-     translate(-50%,-50%)), and the individual `scale` property composes OUTSIDE
-     that transform — multiplying the pixel translation and dragging the pin off
-     its anchor. Size changes keep the -50% self-relative centering intact.
+  /* Grown via width/height, NEVER scale/transform: Mapbox positions the marker through an
+     inline transform (translate(pos) translate(-50%,-50%)), and the individual `scale`
+     property composes OUTSIDE that transform — multiplying the pixel translation and
+     dragging the pin off its anchor. Size changes keep the self-relative anchoring intact.
      Contract-tested in components/map/__tests__/marker-css-contract.test.ts. */
-  font-size: 13px;
-  height: 30px;
-  width: 30px;
+  height: 65px;
+  width: 50px;
+  z-index: 2;
 }
 
 /* A receding pin (unnumbered — the undayed base hotel, unresolved coords) stays small
@@ -745,9 +745,8 @@ button:focus-visible {
    glow, not a jump to full 30px prominence the pin's role never earned. Keeps the
    pre-fix visual hierarchy (scale 1.15 on a 16px pin) without the anchoring bug. */
 .constellation-pin--receding.constellation-pin--selected {
-  font-size: 0;
-  height: 18px;
-  width: 18px;
+  height: 44px;
+  width: 34px;
 }
 
 /* Landing reveal map (StoryRevealMap): always-visible place card beside each numbered

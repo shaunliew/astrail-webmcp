@@ -58,17 +58,19 @@ describe('marker CSS contract: Mapbox owns marker-root positioning', () => {
     const selectors = [...new Set(markerRules.map((r) => r.selector))].sort()
     expect(selectors).toEqual([
       '.constellation-pin',
-      '.constellation-pin--agent_suggested',
+      // The three source-kind rules below are DESCENDANT selectors: they target a CHILD (the
+      // SVG teardrop path), which is free to transform. The parser attributes them to the root
+      // because they start with a root class, and being over-covered is the safe direction — a
+      // transform added here would still be caught, and they declare only fill/stroke.
+      // They replaced root-level `.constellation-pin--<kind>` rules from the dot era, which
+      // styled a `border` against `border: 0` and drew an `outline` — a RECTANGLE around the
+      // teardrop's bounding box, since an outline follows the box and not the shape.
+      '.constellation-pin--agent_suggested .constellation-pin__drop-body',
       '.constellation-pin--receding',
       '.constellation-pin--receding.constellation-pin--selected',
-      '.constellation-pin--reel_extracted',
       '.constellation-pin--selected',
-      // Descendant selector: it targets a CHILD (the SVG teardrop path), which is free to
-      // transform. The parser attributes it to the root because it starts with a root class,
-      // and being over-covered is the safe direction — a transform added here would still be
-      // caught, and the rule declares only fill/stroke.
       '.constellation-pin--selected .constellation-pin__drop-body',
-      '.constellation-pin--user_requested',
+      '.constellation-pin--user_requested .constellation-pin__drop-body',
       '.hotel-hub-pin',
     ])
   })

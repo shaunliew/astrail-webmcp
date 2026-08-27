@@ -173,6 +173,36 @@ describe('TripMap', () => {
     expect(pad.left + pad.right).toBeLessThan(390)
   })
 
+  it('leaves room below a selected place for its popup', async () => {
+    // Mapbox picks a popup anchor by asking "is there room ABOVE?" before "is there room
+    // BELOW?", and when neither fits it falls through to placing the popup below and overflows
+    // the canvas. Centring the selected place on a 720px-tall laptop canvas is exactly that
+    // case: a ~395px evidence popup fits in neither direction, so the CTAs fell off-screen.
+    // Fixed at the camera — land the pin high — so assert the pin's resulting screen position
+    // rather than the padding numbers, which is what actually has to hold.
+    const H = 720
+    mapInstance.getCanvas.mockReturnValue({ clientWidth: 1280, clientHeight: H })
+    const view = renderMap()
+    await flush()
+    fireLoad()
+    await flush()
+    // Select AFTER load: the effect keys on [selectedPlaceId], so a selection present at mount
+    // resolves before the map is ready and never flies. This is how the app reaches it too.
+    mapInstance.flyTo.mockClear()
+    view.rerender(
+      <MapProvider>
+        <TripMap bundle={TOKYO_TRIP} activeDayNumber={1} selectedPlaceId="pl_senso" onSelectPlace={() => {}} />
+      </MapProvider>,
+    )
+    await flush()
+
+    const pad = mapInstance.flyTo.mock.calls.at(-1)![0].padding
+    // Centre of the padded viewport, which is where flyTo lands the place.
+    const pinY = pad.top + (H - pad.top - pad.bottom) / 2
+    expect(pinY).toBeLessThan(H / 3)          // upper third, so a popup has somewhere to go
+    expect(pad.top + pad.bottom).toBeLessThan(H)   // and never so greedy Mapbox abandons the fit
+  })
+
   it('frames its own places instead of inheriting the generation camera', async () => {
     renderMap()
     await flush()

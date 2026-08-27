@@ -132,22 +132,27 @@ function evidencePopupContent(
   zoom.addEventListener('click', onZoom)
   actions.append(zoom)
 
-  if (model.source) {
-    const safeUrl = safeWebUrl(model.source.url)
+  // The Reel first and prominently: it is what the traveller actually saved.
+  for (const link of [model.reel, model.reference]) {
+    if (!link) continue
+    const safeUrl = safeWebUrl(link.url)
     if (safeUrl) {
-      const source = document.createElement('a')
-      source.className = 'evidence-popup__source'
-      source.href = safeUrl
-      source.target = '_blank'
-      source.rel = 'noopener noreferrer'
-      source.textContent = model.source.label
-      actions.append(source)
+      const a = document.createElement('a')
+      a.className =
+        link === model.reel
+          ? 'evidence-popup__source'
+          : 'evidence-popup__source evidence-popup__source--secondary'
+      a.href = safeUrl
+      a.target = '_blank'
+      a.rel = 'noopener noreferrer'
+      a.textContent = link.label
+      actions.append(a)
     } else {
       // A javascript: or data: URL lifted from a caption renders as inert text, never a link.
-      const unsafeSource = document.createElement('p')
-      unsafeSource.className = 'evidence-popup__source evidence-popup__source--invalid'
-      unsafeSource.textContent = model.source.url
-      actions.append(unsafeSource)
+      const inert = document.createElement('p')
+      inert.className = 'evidence-popup__source evidence-popup__source--invalid'
+      inert.textContent = link.url
+      actions.append(inert)
     }
   }
 

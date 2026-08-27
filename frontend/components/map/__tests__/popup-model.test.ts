@@ -44,20 +44,47 @@ describe('buildPopupModel', () => {
     expect(m.context.join(' ')).toMatch(/Stop \d of \d on Day 1/)
   })
 
-  it('labels a Reel-sourced link as the Reel, not as generic research', () => {
+  it('surfaces the Instagram Reel as the primary link', () => {
     const m = buildPopupModel(TOKYO_TRIP, first)
-    expect(m.source?.url).toContain('instagram.com')
-    expect(m.source?.label).toContain('Reel')
+    expect(m.reel?.url).toContain('instagram.com')
+    expect(m.reel?.label).toContain('Reel')
     expect(m.evidenceLabel).toContain('Instagram Reel')
   })
 
-  it('does NOT call a scraped website a Reel', () => {
-    // The reported bug: an official-site URL was surfaced as "Open source Reel".
+  it('never dresses a scraped website up as a Reel', () => {
+    // The reported bug: an official-site URL surfaced as "Open source Reel".
     const researched = stops.find((s) => s.evidence_json.evidence_kind === 'suggested_by_astrail')
     if (!researched) return
     const m = buildPopupModel(TOKYO_TRIP, researched)
-    expect(m.source?.label).not.toContain('Reel')
-    expect(m.evidenceLabel).not.toContain('Reel')
+    expect(m.reference?.label).not.toContain('Reel')
+    expect(m.reference?.url).not.toContain('instagram.com')
+  })
+
+  it('recovers the Reel when a trip has exactly one, even if source_url is a website', () => {
+    // Enrichment can overwrite source_url with a research link. With a single Reel on the trip
+    // the attribution is unambiguous, so the traveller still gets the thing they saved.
+    const single = {
+      ...TOKYO_TRIP,
+      inspiration: [{ ...(TOKYO_TRIP.inspiration[0] ?? ({} as never)), normalized_reel_url: 'https://www.instagram.com/reel/ONLY/' }],
+    }
+    const researched = stops.find((s) => s.evidence_json.evidence_kind === 'suggested_by_astrail')
+    if (!researched) return
+    const m = buildPopupModel(single as never, researched)
+    expect(m.reel?.url).toBe('https://www.instagram.com/reel/ONLY/')
+  })
+
+  it('refuses to guess WHICH Reel when a trip has several', () => {
+    // A wrong citation under a verbatim quote is worse than no citation.
+    const many = {
+      ...TOKYO_TRIP,
+      inspiration: [
+        { ...(TOKYO_TRIP.inspiration[0] ?? ({} as never)), normalized_reel_url: 'https://www.instagram.com/reel/AAA/' },
+        { ...(TOKYO_TRIP.inspiration[0] ?? ({} as never)), normalized_reel_url: 'https://www.instagram.com/reel/BBB/' },
+      ],
+    }
+    const researched = stops.find((s) => s.evidence_json.evidence_kind === 'suggested_by_astrail')
+    if (!researched) return
+    expect(buildPopupModel(many as never, researched).reel).toBeNull()
   })
 
   it('omits the image unless the trip still holds that Reel', () => {

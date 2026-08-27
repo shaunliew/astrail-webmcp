@@ -33,7 +33,21 @@ export type PopupModel = {
   evidenceLabel: string
   evidence: string
   confidence: number | null
-  source: { url: string; label: string } | null
+  /** Always an Instagram Reel when one can be attributed. Never a scraped website. */
+  reel: { url: string; label: string } | null
+  /** A research/official link, shown quietly and never called a Reel. */
+  reference: { url: string; label: string } | null
+}
+
+const INSTAGRAM_HOST = /(^|\.)instagram\.com$/i
+
+function isInstagram(raw: string | null): boolean {
+  if (!raw) return false
+  try {
+    return INSTAGRAM_HOST.test(new URL(raw).hostname)
+  } catch {
+    return false
+  }
 }
 
 /**
@@ -123,22 +137,39 @@ export function buildPopupModel(bundle: TripBundle, tripPlace: TripPlace): Popup
 
   // ---- Provenance ----
   const fromReel = isReelEvidence(e.evidence_kind)
-  const evidenceLabel = e.quote
-    ? fromReel ? 'From your Instagram Reel' : 'Why it is here'
-    : 'Why it is here'
+  const evidenceLabel = e.quote && fromReel ? 'From your Instagram Reel' : 'Why it is here'
   const evidence =
     e.quote ?? e.rationale ?? 'No caption quote is available for this stop.'
 
-  // The Reel is the interesting link; a scraped official site is not what the traveller saved.
-  // So label the link for what it actually is rather than always calling it a Reel.
-  const source = e.source_url
-    ? { url: e.source_url, label: fromReel ? 'Watch the Reel ↗' : 'Read more ↗' }
-    : null
+  // The traveller saved a Reel, not a restaurant's homepage. So the primary link is ALWAYS the
+  // Instagram Reel when one can be attributed, and a scraped site is never dressed up as one.
+  //
+  // Attribution order:
+  //   1. source_url, when it is already an Instagram link
+  //   2. the trip's single Reel, when there is exactly one — then it is unambiguous
+  //   3. nothing. A trip with several Reels gives no honest way to say WHICH one this came from,
+  //      and guessing would put a wrong citation under a verbatim quote.
+  const tripReels = bundle.inspiration
+    .map((i) => i.normalized_reel_url)
+    .filter((u): u is string => isInstagram(u))
+  const uniqueReels = [...new Set(tripReels)]
+
+  const reelUrl = isInstagram(e.source_url)
+    ? e.source_url
+    : uniqueReels.length === 1
+      ? uniqueReels[0]
+      : null
+
+  const reel = reelUrl ? { url: reelUrl, label: 'Watch the Reel ↗' } : null
+
+  // Kept, but demoted and never mislabelled: it is a reference, not the thing they saved.
+  const reference =
+    e.source_url && !isInstagram(e.source_url) ? { url: e.source_url, label: 'Reference ↗' } : null
 
   // The Reel's own thumbnail, matched through the trip's inspiration items.
   const imageUrl =
-    (fromReel && e.source_url
-      ? bundle.inspiration.find((i) => i.normalized_reel_url === e.source_url)?.thumbnail_url
+    (reelUrl
+      ? bundle.inspiration.find((i) => i.normalized_reel_url === reelUrl)?.thumbnail_url
       : null) ?? null
 
   return {
@@ -151,7 +182,8 @@ export function buildPopupModel(bundle: TripBundle, tripPlace: TripPlace): Popup
     evidenceLabel,
     evidence,
     confidence: Number.isFinite(e.confidence) ? Math.round(e.confidence * 100) : null,
-    source,
+    reel,
+    reference,
   }
 }
 

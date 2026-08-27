@@ -368,3 +368,47 @@ migrations and grepping for a writer — never the tests.
 it would restore the SOURCES stat and the "not planned yet" list as well. Deferred past the
 hackathon deadline because it is a new pipeline write path needing its own RLS and idempotency
 review, and the event-recovery path above already yields the same answer for old and new trips.
+
+## Batch 9 — overnight, 27→28 Aug (Shaun asleep, four items he picked)
+
+Ingest was proven live before he went to bed: save → extract → live status → places, through the
+agent, on the real backend. `plan_trip_from_reels` remains the one unrun path.
+
+| # | Item | Gate | Result |
+|---|---|---|---|
+| 9.1 | Real status during the 60–180s wait | vitest + fault-inject | ✅ The longest-standing red T4 item, on the screen a judge sits through. `OrganizeGlobe` cycled decorative words — explicitly "never a progress claim" — while the REAL status rode an `sr-only` region. So a screen-reader user was told what was happening and a sighted user was not. Now one element, seen and heard, plus elapsed seconds (measured, so it cannot be wrong) |
+| 9.2 | Hotels warn when the search finds nothing | vitest + fault-inject | ✅ Only the exception path spoke; a successful empty search recorded nothing, so "found none" and "failed silently" were indistinguishable. Worded WITHOUT claiming a search ran — zero rows also means "no city and no destination hint, so nothing was called" |
+| 9.3 | Three T4 items | vitest + fault-inject | ✅ The organize dead end now offers "Find places in N reels" instead of naming a blocker and leaving the user to find the fix on another screen; "No trails yet" over "Your trays" became one noun, defined where it is first used; "Your grounded places" became "Places we found" |
+| 9.4 | Re-pasted link reported as a new save | vitest + fault-inject | ✅ `capture_saved_reel` upserts, so a duplicate looked identical to a new save. `updated_at != created_at` is exact and compares no clocks across machines: the table's trigger is BEFORE UPDATE, so the conflict branch bumps it while a fresh insert leaves both set by one `now()` |
+| 9.5 | Cross-model review of 9.1–9.4 | Codex, Herdr pane | ⚠ **Three HIGH, three MEDIUM — all real, all in code written hours earlier.** Fixed in `d14552d` |
+| 9.6 | WHATS-NEW.md + README | manual + a script diffing the table against the registry | ✅ |
+
+### What the Codex pass caught, and why it mattered
+
+The most valuable finding was one I had asserted in a comment: **the backend does NOT enforce one
+active organize job per user.** The active unique index is on `(user_id, idempotency_key)`, and
+creation rejects only a batch that OVERLAPS an active job's reels — two disjoint batches run side
+by side. A judge calling `save_reels` twice with different URLs would have silently orphaned the
+first run, because the page held a single job slot.
+
+Two more of the same family: at job-terminal the code cleared its state and THEN awaited the card
+reload, so one transient read failure stopped the poll for good — reinstating the exact stale card
+the mechanism exists to prevent; and item ids were marked settled *before* their refetch
+succeeded, retiring a reel forever on a single blip. Both are now ordered so nothing is retired
+until the read that justifies it has landed.
+
+The fourth: the live overlay yielded to the row whenever the row was non-default — but a reel
+being RE-analysed still carries its previous `failed` / `organized` outcome, so the row looked
+caught up while the new run was only starting.
+
+**Lesson, and it is the same one as batch 8:** every one of these passed a green suite written by
+the same author in the same hour. Fault-injection proves a guard is load-bearing; it does not
+prove the guard is the right one. A second reader is what found the wrong invariant.
+
+### Docs
+
+`WHATS-NEW.md` was an eligibility requirement and was **badly stale** — it claimed four tools when
+sixteen exist and listed the shipped ones as "planned, not yet claimed as complete", understating
+the work to a judge. Rewritten against the branch, with all 21 cited SHAs verified to exist. The
+README's tool table is now checked against the registry by a script rather than by eye, and its
+status section says plainly what has been run live and what has not.

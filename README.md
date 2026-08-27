@@ -1,6 +1,6 @@
 # Astrail · WebMCP Challenge build
 
-> This repository currently describes the WebMCP Challenge build. It is an experiment, not the production deployment at [astrail.xyz](https://astrail.xyz).
+> This repository is the WebMCP Challenge build of Astrail — an experiment in planning trips with an agent, not a product you can sign up for.
 
 Astrail turns Instagram Reel URLs into an evidence-backed travel itinerary on a Mapbox 3D map. Its existing pipeline extracts and verifies real places, deduplicates them, enriches the route, and attaches the source evidence to every stop. WebMCP changes the interface: an agent in ChatGPT's built-in browser can now inspect the signed-in page, start and follow a trip, retrieve its evidence, and operate the same live map and itinerary state the person is watching.
 
@@ -12,7 +12,7 @@ A backend MCP server could return JSON about a trip. WebMCP can also move the 3D
 
 ## WebMCP tools
 
-The current code registers **13 tools**: 10 throughout the signed-in `/app` shell and 3 only while a trip map is mounted. The brief originally counted 12; `list_saved_reels` is also mounted by `globalTools()` and is included here so this table matches the source.
+The current code registers **16 tools**: 13 throughout the signed-in `/app` shell and 3 only while a trip map is mounted. The table is generated from the source — `grep -rn "name: '" frontend/lib/webmcp/tools/` returns exactly these.
 
 | Tool | Scope | Reads / changes | Purpose |
 |---|---|---|---|
@@ -26,11 +26,16 @@ The current code registers **13 tools**: 10 throughout the signed-in `/app` shel
 | `get_trip_progress` | Global app | Reads generation state | Reports the live pipeline stage and elapsed time until the agent can fetch the itinerary. |
 | `move_place` | Global app | Changes itinerary | Moves a stop to another day or position, refreshes the trip, and reports how to reverse the move. |
 | `remove_place` | Global app | Changes itinerary | Requests explicit in-page approval, removes a stop, then warns that the remaining pins were renumbered. |
+| `add_place` | Global app | Changes itinerary | Adds a stop the user asked for, recorded as `requested_by_you` with no invented evidence behind it. |
+| `set_trip_dates` | Global app | Changes a trip | Moves the trip's dates, keeping day numbering and the itinerary intact. |
+| `replan_trip` | Global app | Changes a trip | Re-routes the legs and re-narrates the days, so the prose matches the stops after edits. |
 | `show_on_map` | Trip page | Changes visible map state | Flies the live camera to a trip, day, stop, or hotel-hub view and opens the matching panel. |
 | `set_map_mode` | Trip page | Changes visible map state | Switches the live map between day-by-day route and hotel-hub views. |
 | `get_map_view` | Trip page | Reads visible map state | Reports the current camera and trip size so the agent can ground words such as “here” or “up north.” |
 
-`move_place` and `remove_place` are built and unit-tested, but **never live-tested** against the shared Supabase project. Their FastAPI `PATCH` and `DELETE` endpoints are protected by owner, pair, trip-status, running-job, and dense-ordering guards, and `WEBMCP_EDITS_ENABLED` is **off by default**. Do not describe itinerary editing as live until that flag is deliberately enabled in the isolated challenge environment and the flow is verified.
+**What has actually been run, and what has not.** `save_reels` and the extraction it starts are verified end to end against the live backend, including the per-reel progress the page shows while it runs. The edit tools (`move_place`, `remove_place`, `add_place`) have been exercised live through an agent against a real trip. `plan_trip_from_reels` is implemented, unit-tested and **not yet run end to end** — it spends real Apify and OpenAI credit, so it is the one path still marked unproven. `replan_trip` is in the same state.
+
+The FastAPI endpoints behind the edit tools are protected by owner, pair, trip-status, running-job and dense-ordering guards, and `WEBMCP_EDITS_ENABLED` is **off by default** — the write surface 404s entirely unless a deployment opts in.
 
 ## How WebMCP is implemented
 

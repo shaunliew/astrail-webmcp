@@ -2,16 +2,13 @@
 
 import { useEffect, useState } from 'react'
 
-// Decorative, on-theme progress words for the organize interstitial. They cycle on a timer
-// (NOT per backend stage) — cosmetic motion, never a progress claim. The real durable-job
-// status still rides the sr-only role="status" region below, so screen readers hear it.
-const ORGANIZE_WORDS = [
-  'Stargazing…',
-  'Reading your Reels…',
-  'Pinning places…',
-  'Connecting the dots…',
-  'Plotting your trail…',
-]
+/* The decorative word cycle that used to be the ONLY visible text here is gone.
+
+   It was explicitly "cosmetic motion, never a progress claim", cycling on a timer while the real
+   durable-job status rode an sr-only region — so a screen-reader user was told what was happening
+   and a sighted user was not. Across a 60-180 second job that leaves no way to tell working from
+   stuck, on the exact screen a judge sits through. The status was already being passed in; it
+   just was not shown. The constellation below still supplies the motion the words were there for. */
 
 // A small asterism: five stars the line threads into a trail. pathLength=100 normalizes the
 // stroke-dash animation so the draw is independent of the actual segment lengths.
@@ -25,13 +22,13 @@ const STARS = [
 const TRAIL = 'M16 62 L48 30 L80 54 L112 24 L144 48'
 
 export default function OrganizeGlobe({ message }: { message: string }) {
-  const [wordIndex, setWordIndex] = useState(0)
-
-  // Cycle the decorative word — unless the user prefers reduced motion, where we hold the
-  // first word and the CSS freezes the constellation to a static, fully-drawn trail.
+  /* Elapsed seconds, counted here rather than predicted. A wait with a number moving on it reads
+     as alive even while one slow stage holds the message still — and unlike a percentage or an
+     ETA, it cannot be wrong: it is a measurement, not a forecast. */
+  const [elapsed, setElapsed] = useState(0)
   useEffect(() => {
-    if (typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
-    const id = setInterval(() => setWordIndex((i) => (i + 1) % ORGANIZE_WORDS.length), 1300)
+    const started = Date.now()
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000)
     return () => clearInterval(id)
   }, [])
 
@@ -59,12 +56,21 @@ export default function OrganizeGlobe({ message }: { message: string }) {
         ))}
       </svg>
 
-      <p key={wordIndex} aria-hidden className="organize-word text-sm tracking-[0.08em] text-[color:var(--starlight)]">
-        {ORGANIZE_WORDS[wordIndex]}
+      {/* ONE status, seen and heard. `key` restarts the fade on each change so a new stage reads
+          as an event rather than text quietly swapping. */}
+      <p
+        key={message}
+        role="status"
+        aria-live="polite"
+        className="organize-word max-w-[34ch] text-center text-sm tracking-[0.08em] text-[color:var(--starlight)]"
+      >
+        {message}
       </p>
 
-      {/* The real durable-job status, for screen readers — the visible word above is decorative. */}
-      <span role="status" aria-live="polite" className="sr-only">{message}</span>
+      <p className="text-xs tabular-nums tracking-[0.08em] text-[color:var(--muted)]">
+        {elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`}
+        <span className="ml-2 text-[color:var(--faint)]">this usually takes 1&ndash;3 minutes</span>
+      </p>
     </main>
   )
 }

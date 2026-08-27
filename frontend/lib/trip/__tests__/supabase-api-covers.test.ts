@@ -186,3 +186,92 @@ describe('getTrip: Reel attribution for rows written before source_reel_url exis
     expect(bundle!.places[0].evidence_json.source_reel_url).toBeNull()
   })
 })
+
+// ⚠ THE CASE THAT ACTUALLY HAPPENS IN PRODUCTION.
+//
+// `trip_inspiration_items` has no producer — nothing writes it, which
+// components/trip/OrchestratorSummary.tsx documents in place. So on every real trip that table
+// is EMPTY, and every consumer keyed off it (pin covers, popup Reel attribution, reelUrlFor's
+// single-Reel fallback) was inert in production while passing its fixture tests, because the
+// Tokyo fixture hand-writes rows the live table never receives. The tests above use the same
+// hand-written shape and therefore could not see it either.
+//
+// The durable record is the `create_trip` generation event, which carries the URLs as pasted.
+describe('getTrip: recovering the trip Reels when trip_inspiration_items is empty', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    createClient.mockReset()
+  })
+
+  const createTripEvent = (reelUrls: unknown) => ({
+    id: 'ev1', trip_id: TRIP_ID, event_type: 'stage', stage: 'create_trip',
+    message: 'Starting your trip', payload: { reel_urls: reelUrls }, created_at: '2026-08-01T00:00:00Z',
+  })
+
+  it('reads the Reels from the create_trip event and resolves covers from them', async () => {
+    const spy: { savedReelQuery?: unknown[] } = {}
+    const bundle = await loadTrip({
+      trip_inspiration_items: [],                       // the real production state
+      generation_events: [createTripEvent([REEL_A, REEL_B])],
+      saved_reel_cards: [
+        { normalized_url: REEL_A, thumbnail_url: 'https://cdn.test/a.jpg', places: [] },
+        { normalized_url: REEL_B, thumbnail_url: 'https://cdn.test/b.jpg', places: [] },
+      ],
+    }, spy)
+
+    expect(spy.savedReelQuery).toEqual([REEL_A, REEL_B])
+    expect(bundle!.inspiration.map((i) => i.thumbnail_url))
+      .toEqual(['https://cdn.test/a.jpg', 'https://cdn.test/b.jpg'])
+  })
+
+  it('normalises the pasted URLs so they can match saved_reels', async () => {
+    // The event stores `req.reel_urls` exactly as the user pasted them — share links carry
+    // tracking params and the host varies. `saved_reels.normalized_url` is canonical, so an
+    // unnormalised `in()` would match nothing and silently yield no covers.
+    const spy: { savedReelQuery?: unknown[] } = {}
+    await loadTrip({
+      trip_inspiration_items: [],
+      generation_events: [createTripEvent([
+        'https://instagram.com/reel/AAA/?igsh=tracking',
+        'https://www.instagram.com/reels/BBB',
+      ])],
+      saved_reel_cards: [],
+    }, spy)
+    expect(spy.savedReelQuery).toEqual([REEL_A, REEL_B])
+  })
+
+  it('also recovers per-place attribution, which is what puts the Reel link in the popup', async () => {
+    const bundle = await loadTrip({
+      trip_inspiration_items: [],
+      generation_events: [createTripEvent([REEL_A])],
+      trip_places: [tripPlace('pl_dekasan', 'reel_extracted')],
+      saved_reel_cards: [
+        { normalized_url: REEL_A, thumbnail_url: null, places: [mention('pl_dekasan', REEL_A)] },
+      ],
+    })
+    expect(bundle!.places[0].evidence_json.source_reel_url).toBe(REEL_A)
+  })
+
+  it('prefers the table when it does have rows, rather than second-guessing it', async () => {
+    const spy: { savedReelQuery?: unknown[] } = {}
+    await loadTrip({
+      trip_inspiration_items: [inspirationRow(REEL_A, 'i1')],
+      generation_events: [createTripEvent([REEL_B])],
+      saved_reel_cards: [],
+    }, spy)
+    expect(spy.savedReelQuery).toEqual([REEL_A])
+  })
+
+  it('survives a trip with no create_trip event and a malformed payload', async () => {
+    // Older trips, or a payload shape that drifted. Must degrade to "no Reels", never throw:
+    // a crash here takes down the whole trip page, not just the covers.
+    for (const events of [[], [createTripEvent(null)], [createTripEvent('not-an-array')], [createTripEvent([42, null])]]) {
+      const spy: { savedReelQuery?: unknown[] } = {}
+      const bundle = await loadTrip({
+        trip_inspiration_items: [], generation_events: events, saved_reel_cards: [],
+      }, spy)
+      expect(spy.savedReelQuery).toBeUndefined()
+      expect(bundle!.inspiration).toEqual([])
+    }
+  })
+})

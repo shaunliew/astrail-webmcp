@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client'
 import { MOCK_AUTH_ENABLED } from '@/lib/auth/mock-auth'
 import { resolveBackendUrl } from '@/lib/backend-url'
 import * as mockApi from '@/lib/trip/mock-api'
+import { normalizeReelUrl } from '@/lib/trip/parse-inspiration'
 import { DEMO_MEMORY_FACTS } from '@/lib/trip/fixtures'
 import type { ProfileInput } from '@/lib/onboarding/onboarding'
 import type {
@@ -75,6 +76,22 @@ export async function getMemoryPreferences(): Promise<SettingsPreferencesRespons
   }
 }
 
+/** The Reel URLs a trip was generated from, read out of its `create_trip` generation event.
+ *  The only durable per-trip record of them: `trip_inspiration_items` is never written, and
+ *  `trips` has no reel_urls column. Normalized so they can be matched against `saved_reels`. */
+function reelUrlsFromEvents(events: GenerationEvent[]): string[] {
+  const urls = events
+    .filter((e) => e.stage === 'create_trip')
+    .flatMap((e) => {
+      const raw = (e.payload as { reel_urls?: unknown }).reel_urls
+      return Array.isArray(raw) ? raw : []
+    })
+    .filter((u): u is string => typeof u === 'string')
+    .map((u) => normalizeReelUrl(u))
+    .filter((u): u is string => Boolean(u))
+  return [...new Set(urls)]
+}
+
 export async function getTrip(tripId: string): Promise<TripBundle | null> {
   if (MOCK_AUTH_ENABLED) return mockApi.getTrip(tripId)
   const supabase = createClient()
@@ -106,7 +123,36 @@ export async function getTrip(tripId: string): Promise<TripBundle | null> {
      the same surface the Saved Reels tray reads — so resolve covers through it. A Reel the
      user has since removed from Saved Reels simply yields no cover, and the pin falls back
      to the universal placeholder, which is the correct degradation. */
-  const inspirationRows = (inspiration.data ?? []) as TripInspirationItem[]
+  const eventRows = (events.data ?? []) as GenerationEvent[]
+
+  /* ⚠ `trip_inspiration_items` HAS NO PRODUCER. Nothing in the backend or the frontend writes
+     it — components/trip/OrchestratorSummary.tsx documents this in place ("grep for a producer
+     — there is none"), which is why it dropped its SOURCES stat. So on every real trip this
+     table is EMPTY, and every consumer keyed off it is inert in production while passing its
+     fixture tests, because the Tokyo fixture hand-writes rows the live table never receives.
+
+     The URLs a trip was actually generated from are recorded in its `create_trip` generation
+     event (backend/main.py builds that payload from `req.reel_urls`), and getTrip already loads
+     those events. Recover the trip's Reels from there when the table has nothing, which is the
+     normal case. Synthesised here rather than at each call site so that everything downstream —
+     pin covers, popup attribution, `reelUrlFor`'s single-Reel fallback — sees one consistent
+     list. The event payload holds the URLs as the user pasted them, while `saved_reels` stores
+     normalized ones, so they are normalized before anything tries to match them. */
+  const inspirationTable = (inspiration.data ?? []) as TripInspirationItem[]
+  const inspirationRows = inspirationTable.length > 0
+    ? inspirationTable
+    : reelUrlsFromEvents(eventRows).map((url, i) => ({
+      id: `evt-reel-${i}`,
+      trip_id: tripId,
+      item_type: 'reel_url' as const,
+      source: 'manual_paste' as const,
+      normalized_reel_url: url,
+      reel_cache_id: null,
+      requested_place_text: null,
+      resolved_place_id: null,
+      status: 'valid' as const,
+      thumbnail_url: null,
+    }))
   const reelUrls = [...new Set(
     inspirationRows.map((i) => i.normalized_reel_url).filter((u): u is string => Boolean(u)),
   )]
@@ -174,7 +220,7 @@ export async function getTrip(tripId: string): Promise<TripBundle | null> {
     transport_legs: (legs.data ?? []) as TransportLeg[],
     restaurants: restaurantRows,
     hotels: (hotels.data ?? []) as HotelSuggestion[],
-    events: (events.data ?? []) as GenerationEvent[],
+    events: eventRows,
     suggestion_places: suggestionPlaces as Place[],
   }
 }

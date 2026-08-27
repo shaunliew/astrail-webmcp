@@ -321,3 +321,50 @@ algebra is correct (`0.6H = top + H − bottom → bottom = top + 0.4H`).
 because *the fixture and the schema disagreed* and every test trusted the fixture. The check that
 found it was reading the migration. Fixtures assert what we believe the shape is; only the schema
 says what it is.
+
+### Codex adversarial review of the backfill migration — verdict: DO NOT RUN
+
+Dispatched to the Herdr `reviewer` pane before Shaun applied anything by hand. **It found that
+both the migration AND the frontend fix from `532a635` were inert in production**, for the same
+reason, and the finding is worth recording in full because it is the third instance of one pattern.
+
+**BLOCKER 1 — `trip_inspiration_items` has no producer.** Nothing in the backend or the frontend
+writes it. The repo already knew: `components/trip/OrchestratorSummary.tsx` dropped its SOURCES
+stat over exactly this ("grep for a producer — there is none"). So the migration's inner join
+eliminated every candidate row, and the frontend cover/attribution fix — which derives the trip's
+Reel list from `bundle.inspiration` — resolved nothing. **Both passed all their tests**, because
+the Tokyo fixture hand-writes inspiration rows the live table never receives.
+
+**BLOCKER 2 — set membership is not lineage.** "Exactly one currently-organized Reel mentions this
+place" does not prove that Reel supplied *this stop's* verbatim quote. If Reel A produced the stop
+but is no longer `organized`, and Reel B also mentions the place, the filters hide A *before* the
+distinct count runs and the migration writes B **under A's quote** — a false citation directly
+beneath verbatim evidence, which is precisely what guardrail #1 forbids. The safe policy is false
+negatives: require the stop's quote to equal the mention's `evidence_quote`, else leave it absent.
+
+Also found, and all correct on inspection:
+
+| Sev | Finding |
+|---|---|
+| HIGH | The blank-key predicate lived only in the source CTE. Under Read Committed the final `UPDATE` re-evaluates its own `WHERE` against the newer row version — but that check was not there, so a concurrent legitimate write could be overwritten |
+| HIGH | `on conflict do nothing` silently keeps a stale ledger row while the update writes a new value, so the reversal ledger stops being an exact inverse |
+| MED | The rollback treated value equality as proof of ownership. Equality is not provenance: a pipeline-written row carrying the same URL would be stripped |
+| MED | No date cutoff, no terminal-status guard, no `lock_timeout`/`statement_timeout` on an `UPDATE` against a shared production table |
+| LOW | Two of my own comments were wrong: I described a `having` clause that isn't there, and claimed `on conflict` protects a run "killed mid-statement without `-1`" — a single statement is atomic, so it cannot |
+
+**Outcome.** Migration withdrawn, not fixed — with the source table empty there is nothing for it
+to join against, so the correct move was to solve the real problem instead. The durable record of
+a trip's Reels is its `create_trip` generation event (`backend/main.py` builds that payload from
+`req.reel_urls`), which `getTrip` already loads. The loader now recovers the Reel list from there
+when the table is empty, normalising the pasted URLs so they match `saved_reels.normalized_url`.
+
+**The pattern, three times in one evening:** `thumbnail_url` (column does not exist),
+`trip_inspiration_items` (table never written), and a migration joining through it. Every one
+passed a full green suite. **The fixture is a statement of what we believe the shape is; only the
+schema and the producers say what it is.** The check that caught all three was reading the
+migrations and grepping for a writer — never the tests.
+
+**Deferred, with a trigger:** writing `trip_inspiration_items` during generation is the real fix —
+it would restore the SOURCES stat and the "not planned yet" list as well. Deferred past the
+hackathon deadline because it is a new pipeline write path needing its own RLS and idempotency
+review, and the event-recovery path above already yields the same answer for old and new trips.

@@ -528,6 +528,50 @@ async def test_runner_persists_normalized_rows_on_success():
 
 
 @pytest.mark.asyncio
+async def test_each_place_records_the_reel_it_was_extracted_from():
+    """The flatten is where provenance was being thrown away.
+
+    `results[i]` is aligned to `reel_urls[i]`, and the old `[p for r in results if r for p in r]`
+    collapsed that index away. Every reel-extracted place then reached the popup labelled
+    `reel_quote` while carrying only `source_url` — which is the RESEARCH page by construction
+    (`is_independent_source_url` drops places whose source_url is not independent). The result a
+    user saw was "From your Instagram Reel" above a link to a scraped venue directory.
+
+    Two reels, two distinct places, so this fails on a mis-ALIGNMENT and not merely on a missing
+    field: asserting "some reel url is present" would pass even if every place got reel 1's URL.
+    """
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "status": "pending"}])
+    reels = ["https://ig/r1", "https://ig/r2"]
+    by_reel = {"https://ig/r1": "Tokyo Tower", "https://ig/r2": "Senso-ji"}
+
+    async def scrape(url):
+        return _reel(url)
+
+    async def extract(reel):
+        # Distinct coords too: dedup clusters on distance, and two places at the same point would
+        # merge into one canonical row, quietly destroying what this test is trying to observe.
+        name = by_reel[reel.reel_url]
+        return [_place(name, lat=35.6586 if name == "Tokyo Tower" else 35.7148,
+                       lng=139.7454 if name == "Tokyo Tower" else 139.7967)]
+
+    await runner.run_generation("trip-1", "user-1", reels, "2026-08-01", "2026-08-02",
+                                job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                mem0=None, weather=_no_weather, transport=_no_transport,
+                                restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
+
+    places_by_id = {row["id"]: row["name"] for row in c.db["places"]}
+    attribution = {
+        places_by_id[tp["place_id"]]: tp["evidence_json"].get("source_reel_url")
+        for tp in c.db["trip_places"]
+    }
+    assert attribution == {"Tokyo Tower": "https://ig/r1", "Senso-ji": "https://ig/r2"}
+    # And the research URL is still its own separate field — the two must never be conflated.
+    for tp in c.db["trip_places"]:
+        assert tp["evidence_json"]["source_url"] == "https://example.org/a"
+        assert tp["evidence_json"]["evidence_kind"] == "reel_quote"
+
+
+@pytest.mark.asyncio
 async def test_runner_degrades_to_saved_with_gaps_when_persist_fails(monkeypatch):
     c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "status": "pending"}])
 

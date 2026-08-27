@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import type { Trip } from '@/lib/trip/backend-types'
 import { listTrips } from '@/lib/trip/supabase-api'
-import { captureSavedReel } from '@/lib/reels/api'
+import { captureSavedReel, listSavedReelCards } from '@/lib/reels/api'
 import { getAccessToken } from '@/lib/supabase/session'
 import { globalTools } from '@/lib/webmcp/tools'
 import type { AppStateSnapshot } from '@/lib/webmcp/tools/app-state'
@@ -33,41 +33,65 @@ function labelFor(pathname: string): string {
 
 export default function GlobalTools() {
   const pathname = usePathname() ?? '/app'
-  const [trips, setTrips] = useState<Trip[]>([])
+  // `null` = not loaded (or failed). Never collapse that to an empty array: an empty array
+  // renders as a confident "you have none", which is a different claim entirely.
+  const [trips, setTrips] = useState<Trip[] | null>(null)
+  const [reels, setReels] = useState<{ count: number; places: number } | null>(null)
 
   const pathRef = useRef(pathname)
   pathRef.current = pathname
   const tripsRef = useRef(trips)
   tripsRef.current = trips
+  const reelsRef = useRef(reels)
+  reelsRef.current = reels
 
   useEffect(() => {
     let live = true
     listTrips()
       .then((t) => { if (live) setTrips(t) })
-      .catch(() => { /* not signed in, or offline: tools still register and say so */ })
+      .catch(() => { if (live) setTrips(null) })
+    listSavedReelCards()
+      .then((cards) => {
+        if (!live) return
+        // Distinct places across reels — the same spot appearing in three reels is one place.
+        const distinct = new Set(cards.flatMap((c) => c.places.map((p) => p.name.toLowerCase())))
+        setReels({ count: cards.length, places: distinct.size })
+      })
+      .catch(() => { if (live) setReels(null) })
     return () => { live = false }
   }, [pathname])
 
   const readAppState = useCallback((): AppStateSnapshot => {
     const all = tripsRef.current
-    const complete = all.filter((t) => t.status === 'complete' || t.status === 'saved_with_gaps').length
+    const savedReels = reelsRef.current
     const path = pathRef.current
 
+    const complete =
+      all === null ? null : all.filter((t) => t.status === 'complete' || t.status === 'saved_with_gaps').length
+
     const nextSteps: AppStateSnapshot['nextSteps'] = []
-    if (complete > 0) nextSteps.push({ label: 'open a finished trip and edit it', tool: 'list_trips' })
+    if (complete !== null && complete > 0) {
+      nextSteps.push({ label: 'open a finished trip and edit it', tool: 'list_trips' })
+    }
     nextSteps.push({ label: 'plan a new trip from saved Instagram Reels', tool: 'plan_trip_from_reels', needs: 'dates' })
+    nextSteps.push({ label: 'save more Instagram Reels', tool: 'save_reels' })
     if (!path.startsWith('/app/trip/')) {
       nextSteps.push({ label: 'see what is on the map for a trip', tool: 'get_itinerary', needs: 'a trip open' })
     }
 
+    // Only claim something is blocked when we actually KNOW it is. An unknown count blocks nothing.
     const blocked: string[] = []
-    if (all.length === 0) blocked.push('no trips yet — save some Reels first')
+    if (all !== null && all.length === 0 && savedReels !== null && savedReels.count === 0) {
+      blocked.push('nothing saved yet — start by saving a Reel')
+    }
 
     return {
       where: labelFor(path),
-      savedReels: 0,
-      verifiedPlaces: 0,
-      trips: { total: all.length, complete, unfinished: all.length - complete },
+      savedReels: savedReels?.count ?? null,
+      verifiedPlaces: savedReels?.places ?? null,
+      trips: all === null || complete === null
+        ? null
+        : { total: all.length, complete, unfinished: all.length - complete },
       nextSteps,
       blocked,
     }
@@ -79,12 +103,25 @@ export default function GlobalTools() {
     return fresh
   }, [])
 
+  const refreshReels = useCallback(async () => {
+    try {
+      const cards = await listSavedReelCards()
+      const distinct = new Set(cards.flatMap((c) => c.places.map((p) => p.name.toLowerCase())))
+      setReels({ count: cards.length, places: distinct.size })
+    } catch {
+      setReels(null)
+    }
+  }, [])
+
   // The JWT is fetched at call time and never crosses the tool boundary in either direction:
   // no tool accepts a token argument, and none returns one.
   const saveReel = useCallback(async (url: string) => {
     const token = await getAccessToken()
-    return captureSavedReel(url, token)
-  }, [])
+    const res = await captureSavedReel(url, token)
+    // Keep get_app_state honest immediately after a save, rather than until the next navigation.
+    void refreshReels()
+    return res
+  }, [refreshReels])
 
   const specs = globalTools({
     readAppState,

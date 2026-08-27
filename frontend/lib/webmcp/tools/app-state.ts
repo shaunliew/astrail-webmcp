@@ -14,20 +14,39 @@ import type { ToolSpec } from '../types'
 
 export type AppStateSnapshot = {
   where: string
-  savedReels: number
-  verifiedPlaces: number
-  trips: { total: number; complete: number; unfinished: number }
+  /**
+   * `null` means "we could not load this", NOT "there are none".
+   *
+   * This distinction is load-bearing and was found the hard way: an early build reported a
+   * hardcoded 0 for saved reels, and the agent told a user with a full library that they had
+   * nothing saved — then recommended they start by pasting a reel. To an agent, "0" and
+   * "unknown" are completely different facts, and it will reason confidently off either.
+   */
+  savedReels: number | null
+  verifiedPlaces: number | null
+  trips: { total: number; complete: number; unfinished: number } | null
   /** Actions available right now, already filtered for what the current state allows. */
   nextSteps: { label: string; tool: string; needs?: string }[]
   /** Anything that would make an obvious next step fail, so the agent doesn't try it. */
   blocked: string[]
 }
 
+const count = (n: number | null, noun: string): string =>
+  n === null ? `an unknown number of ${noun}` : `${n} ${noun}`
+
 export function formatAppState(s: AppStateSnapshot): string {
+  const trips =
+    s.trips === null
+      ? 'an unknown number of trips'
+      : `${s.trips.total} trips (${s.trips.complete} complete, ${s.trips.unfinished} unfinished)`
   const lines = [
     `You are on: ${s.where}`,
-    `You have:   ${s.savedReels} saved reels · ${s.verifiedPlaces} verified places · ${s.trips.total} trips (${s.trips.complete} complete, ${s.trips.unfinished} unfinished)`,
+    `You have:   ${count(s.savedReels, 'saved reels')} · ${count(s.verifiedPlaces, 'verified places')} · ${trips}`,
   ]
+  if (s.savedReels === null || s.verifiedPlaces === null || s.trips === null) {
+    // Say it plainly. An agent that knows a number is missing asks; one handed a false zero acts.
+    lines.push("Note:       some counts could not be loaded — do not tell the user they have none; check the page or ask them.")
+  }
   if (s.nextSteps.length) {
     lines.push('Next steps:')
     for (const n of s.nextSteps) {

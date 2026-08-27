@@ -829,14 +829,17 @@ button:focus-visible {
   border-radius: 9999px;
   box-shadow: 0 0 0 6px var(--brass-glow), 0 0 22px rgba(239, 201, 141, 0.55);
   color: #0b0f16;
-  cursor: default;  /* the hub pin is a non-interactive marker (selection happens in HotelPanel) */
+  /* Interactive now: the hub opens its own popup (class, nightly rate, trip total), so selection
+     is no longer HotelPanel's alone. Grown to 40px with it — the old 34px was a fine passive
+     marker and a poor tap target, and it now sits beside 30px eat chips. */
+  cursor: pointer;
   display: flex;
-  font-size: 17px;
-  height: 34px;
+  font-size: 19px;
+  height: 40px;
   justify-content: center;
   line-height: 1;
   padding: 0;
-  width: 34px;
+  width: 40px;
 }
 
 /* Mapbox evidence popup. Caption text is inserted with textContent/setDOMContent in TripMap;
@@ -1291,8 +1294,8 @@ button:focus-visible {
   cursor: pointer;
   /* Sized with width/height only — never transform. See marker-css-contract.test.ts: a transform
      on the marker root fights Mapbox's own inline transform and drifts the pin off its anchor. */
-  width: 22px;
-  height: 22px;
+  width: 30px;
+  height: 30px;
   transition: width 160ms ease-out, height 160ms ease-out;
 }
 
@@ -1323,8 +1326,8 @@ button:focus-visible {
 }
 
 .eat-pin--selected {
-  width: 28px;
-  height: 28px;
+  width: 38px;
+  height: 38px;
   z-index: 2;
 }
 
@@ -1365,4 +1368,38 @@ button:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   .eat-pin__label { transition: none; }
   .eat-pin { transition: none; }
+}
+
+
+/* Suggestion popups ("Where to eat" / "Where to stay"). They share the evidence popup's shell so
+   the map speaks one language, and add only the rows a suggestion actually has. Deliberately
+   without an image or an hours row: neither exists in the schema, and a plausible-looking
+   "Open until 18:00" on an evidence-first product is the failure guardrail #1 exists to prevent. */
+.suggestion-popup__body {
+  color: var(--muted, #b9b3a7);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  margin-top: 0.35rem;
+}
+
+.suggestion-popup__stars {
+  color: #EFC98D;
+  font-size: 0.8125rem;
+  letter-spacing: 0.06em;
+  margin-top: 0.3rem;
+}
+
+.suggestion-popup__matches {
+  color: #EFC98D;
+  font-size: 0.75rem;
+  margin-top: 0.15rem;
+}
+
+/* A search result, not a held price. Quiet, but present — the alternative is a number that reads
+   like an offer Astrail cannot honour, on a product that deliberately does not book. */
+.suggestion-popup__note {
+  color: var(--faint, #7d776c);
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  margin-top: 0.55rem;
 }

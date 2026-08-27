@@ -227,6 +227,7 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
           activeDayNumber={activeDayNumber}
           selectedPlaceId={selectedPlaceId}
           selectedRestaurantPlaceId={selectedRestaurantPlaceId}
+          onSelectRestaurant={setSelectedRestaurantPlaceId}
           onSelectPlace={(id) => selectPlaceFromMap(id)}
           selectedHotelId={selectedHotelId}
           layerMode={layerMode}

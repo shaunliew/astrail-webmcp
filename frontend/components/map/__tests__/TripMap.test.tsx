@@ -308,6 +308,98 @@ describe('TripMap', () => {
     expect(label.classList.contains('constellation-pin__label--visible')).toBe(false)
   })
 
+  it('flies to a restaurant chosen from the sidebar and opens its card', async () => {
+    // Selecting from "Where to eat" set `selectedRestaurantPlaceId`, TripMap added
+    // `eat-pin--selected`, and that was the entire interaction — so the click highlighted
+    // something off-screen and read as doing nothing at all.
+    const bundle = withEatSuggestion()
+    const view = render(
+      <MapProvider>
+        <TripMap bundle={bundle as never} activeDayNumber={1} selectedPlaceId={null} onSelectPlace={() => {}} />
+      </MapProvider>,
+    )
+    await flush()
+    fireLoad()
+    await flush()
+    mapInstance.flyTo.mockClear()
+    popupElements.length = 0
+
+    view.rerender(
+      <MapProvider>
+        <TripMap bundle={bundle as never} activeDayNumber={1} selectedPlaceId={null}
+          onSelectPlace={() => {}} selectedRestaurantPlaceId="pl_koma" />
+      </MapProvider>,
+    )
+    await flush()
+
+    expect(mapInstance.flyTo).toHaveBeenCalledWith(
+      expect.objectContaining({ center: [135.6512, 34.6758] }),
+    )
+    const card = popupElements.at(-1)!
+    expect(card.textContent).toContain('Where to eat')
+    expect(card.textContent).toContain('sushi')                       // cuisine
+    expect(card.textContent).toContain('Counter sushi')               // why Astrail picked it
+  })
+
+  it('shows a hotel hub its class and price, and says the price is not an offer', async () => {
+    // Toggled to HOTEL after load, the way the layer switch reaches it — the effect keys on
+    // [selectedHotelId, layerMode], so a value present at mount resolves before the map is ready.
+    const view = render(
+      <MapProvider>
+        <TripMap bundle={TOKYO_TRIP} activeDayNumber={1} selectedPlaceId={null} onSelectPlace={() => {}} />
+      </MapProvider>,
+    )
+    await flush()
+    fireLoad()
+    await flush()
+    popupElements.length = 0
+
+    view.rerender(
+      <MapProvider>
+        <TripMap bundle={TOKYO_TRIP} activeDayNumber={1} selectedPlaceId={null}
+          onSelectPlace={() => {}} layerMode="hub" selectedHotelId="hotel_1" />
+      </MapProvider>,
+    )
+    await flush()
+
+    const card = popupElements.find((e) => e.textContent?.includes('Where to stay'))
+    expect(card, 'the hub opened no popup').toBeDefined()
+    expect(card!.textContent).toContain('Shinjuku Granbell Hotel')
+    expect(card!.textContent).toContain('4 star')
+    expect(card!.textContent).toContain('USD 128 / night')
+    expect(card!.textContent).toContain('USD 384 total')
+    expect(card!.textContent).toContain('central')                    // matched preference
+    // Astrail does not book. A bare number reads as a held price, which it is not.
+    expect(card!.textContent).toContain('Astrail does not book')
+  })
+
+  it('invents neither opening hours nor a photo for a suggestion', async () => {
+    // The schema has no hours, price-per-person, phone or image for a restaurant, and Travala
+    // returns no image. Guardrail #1: a plausible "Open until 18:00" is the exact failure this
+    // product promises not to make, and a popup is where it would look most authoritative.
+    const bundle = withEatSuggestion()
+    const view = render(
+      <MapProvider>
+        <TripMap bundle={bundle as never} activeDayNumber={1} selectedPlaceId={null} onSelectPlace={() => {}} />
+      </MapProvider>,
+    )
+    await flush()
+    fireLoad()
+    await flush()
+    popupElements.length = 0
+    view.rerender(
+      <MapProvider>
+        <TripMap bundle={bundle as never} activeDayNumber={1} selectedPlaceId={null}
+          onSelectPlace={() => {}} selectedRestaurantPlaceId="pl_koma" />
+      </MapProvider>,
+    )
+    await flush()
+
+    const card = popupElements.at(-1)!
+    expect(card.querySelector('img')).toBeNull()
+    expect(card.textContent).not.toMatch(/open(s|ing)?\b.*\d|hours|closed/i)
+  })
+
   it('frames its own places instead of inheriting the generation camera', async () => {
     renderMap()
     await flush()

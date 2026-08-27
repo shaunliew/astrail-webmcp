@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react'
 import mapboxgl from 'mapbox-gl'
 import { buildPopupModel, thumbnailFor, type PopupModel } from './popup-model'
+import { buildEatPopup, buildStayPopup } from './suggestion-popup'
 import type { Place, RestaurantSuggestion, TripBundle, TripPlace } from '@/lib/trip/backend-types'
 import {
   trailCoordinates, buildTrailNumbers, buildPlaceIndex, placesForDay, hasRealCoords,
@@ -328,6 +329,7 @@ export default function TripMap({
   bundle, activeDayNumber, selectedPlaceId, onSelectPlace,
   selectedHotelId = null, layerMode = 'route',
   selectedRestaurantPlaceId = null,
+  onSelectRestaurant,
 }: {
   bundle: TripBundle
   activeDayNumber: number
@@ -336,6 +338,9 @@ export default function TripMap({
   /** A restaurant picked from the "Where to eat" strip. Suggestions were listed but never
    *  drawn, so clicking one told you nothing about where it actually is. */
   selectedRestaurantPlaceId?: string | null
+  /** Clicking an eat pin selects it in the sidebar strip too, so the two never disagree
+   *  about which suggestion is current. */
+  onSelectRestaurant?: (placeId: string) => void
   // Hotel-hub map (plan 2026-08-04-hotel-hub-map, T9). Optional with route-preserving defaults so
   // today's caller (TripWorkspace, pre-T8) keeps the itinerary-only behavior untouched; T8 passes
   // both explicitly (`string | null` / `'route' | 'hub'`) to drive the Route/Hotel toggle.
@@ -364,6 +369,18 @@ export default function TripMap({
     if (!map) return
     if (map.getLayer(BUILDING_LAYER_ID)) map.removeLayer(BUILDING_LAYER_ID)
     buildingLayerAddedRef.current = false
+  }
+
+  /* One popup at a time across every layer — a stop, a restaurant and a hotel opening three
+     stacked cards over the map is how the panel-versus-map hierarchy falls apart. */
+  function openSuggestionPopup(at: [number, number], content: HTMLElement) {
+    const map = getMap()
+    if (!map) return
+    activePopupRef.current?.remove()
+    activePopupRef.current = new mapboxgl.Popup({
+      className: 'astrail-evidence-popup',
+      closeButton: true, closeOnClick: true, offset: 16, maxWidth: '300px',
+    }).setLngLat(at).setDOMContent(content).addTo(map)
   }
 
   function syncMarkerLabelVisibility() {
@@ -498,9 +515,12 @@ export default function TripMap({
         el.setAttribute('aria-label', hub.name)
         el.className = 'hotel-hub-pin'
         el.textContent = '🏨'
-        markers.push(
-          new mapboxgl.Marker({ element: el }).setLngLat([hub.lng, hub.lat]).addTo(map),
-        )
+        const at: [number, number] = [hub.lng, hub.lat]
+        el.addEventListener('click', (e) => {
+          e.stopPropagation()
+          openSuggestionPopup(at, buildStayPopup(hub))
+        })
+        markers.push(new mapboxgl.Marker({ element: el }).setLngLat(at).addTo(map))
       }
     }
     // "Where to eat" was text-only: a suggestion you could read but not locate. These are
@@ -536,24 +556,8 @@ export default function TripMap({
         labels.push(label)
         el.addEventListener('click', (e) => {
           e.stopPropagation()
-          activePopupRef.current?.remove()
-          const content = document.createElement('article')
-          content.className = 'evidence-popup'
-          const eyebrow = document.createElement('p')
-          eyebrow.className = 'evidence-popup__eyebrow'
-          eyebrow.textContent = ['Where to eat', r.cuisine].filter(Boolean).join(' · ')
-          const title = document.createElement('h3')
-          title.className = 'evidence-popup__title'
-          title.textContent = place.name
-          const why = document.createElement('p')
-          why.className = 'evidence-popup__where'
-          // Suggestion text is model-written, not caption-derived, but it goes in as text anyway.
-          why.textContent = r.summary
-          content.append(eyebrow, title, why)
-          activePopupRef.current = new mapboxgl.Popup({
-            className: 'astrail-evidence-popup',
-            closeButton: true, closeOnClick: true, offset: 14, maxWidth: '300px',
-          }).setLngLat([place.lng, place.lat]).setDOMContent(content).addTo(map)
+          onSelectRestaurant?.(place.id)      // keep the sidebar strip in step with the map
+          openSuggestionPopup([place.lng, place.lat], buildEatPopup(r, place))
         })
         return new mapboxgl.Marker({ element: el }).setLngLat([place.lng, place.lat]).addTo(map)
       })
@@ -827,6 +831,28 @@ export default function TripMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedPlaceId])
 
+  /* Selecting from the sidebar has to move the map, not just restyle a pin. "Where to eat" set
+     `selectedRestaurantPlaceId`, TripMap added `eat-pin--selected`, and that was the whole
+     interaction — so clicking a restaurant highlighted something off-screen, which read as the
+     click doing nothing. Mirrors the trip-stop behaviour, popup included, so a suggestion
+     behaves like every other thing on this map. */
+  useEffect(() => {
+    if (!ready) return
+    drawMarkers()
+    const map = getMap()
+    if (!map || !selectedRestaurantPlaceId) return
+    const place = bundle.suggestion_places.find((p) => p.id === selectedRestaurantPlaceId)
+      ?? buildPlaceIndex(bundle).get(selectedRestaurantPlaceId)
+    if (!place || !hasRealCoords(place.lng, place.lat)) return
+    map.flyTo({
+      center: [place.lng, place.lat], zoom: 15, pitch: 45,
+      padding: framePadding({ popupRoom: true }), duration: 1200, essential: true,
+    })
+    const suggestion = bundle.restaurants.find((r) => r.restaurant_place_id === selectedRestaurantPlaceId)
+    if (suggestion) openSuggestionPopup([place.lng, place.lat], buildEatPopup(suggestion, place))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRestaurantPlaceId])
+
   // Hotel-hub map (T9): redraw when the hub selection or the layer mode changes — swap the itinerary
   // trail for the hub's spokes (or back), (re)pin the hub, and toggle base-hotel marker suppression.
   // Gated on framedRef so it never races the first paint on a SHARED map that is already loaded (the
@@ -836,6 +862,19 @@ export default function TripMap({
     if (!ready || !framedRef.current) return
     drawMarkers()
     drawRouteLayer()
+    // Fly to the chosen hub and show its numbers. The original "no camera move" note was scoped
+    // to T9, when a hub was an emoji with nothing behind it; picking one is now a real decision
+    // (class, nightly rate, trip total), so leaving the camera elsewhere hides the answer.
+    const map = getMap()
+    if (!map || layerMode !== 'hub') return
+    const hub = selectedHotel(bundle, selectedHotelId)
+    if (!hub || hub.geo_status !== 'placed' || hub.lng === null || hub.lat === null) return
+    if (!hasRealCoords(hub.lng, hub.lat)) return
+    map.flyTo({
+      center: [hub.lng, hub.lat], zoom: 14, pitch: 45,
+      padding: framePadding({ popupRoom: true }), duration: 1200, essential: true,
+    })
+    openSuggestionPopup([hub.lng, hub.lat], buildStayPopup(hub))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedHotelId, layerMode])
 

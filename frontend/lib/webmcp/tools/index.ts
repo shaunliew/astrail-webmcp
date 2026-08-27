@@ -2,6 +2,7 @@ import type { ToolSpec } from '../types'
 import { getAppStateTool, type AppStateSnapshot } from './app-state'
 import { getItineraryTool, getPlaceEvidenceTool, listTripsTool, type TripReader } from './trips'
 import { saveReelsTool } from './reels'
+import { getTripProgressTool, planTripFromReelsTool, type GenerationDeps } from './generation'
 
 /**
  * Every tool, assembled from plain readers.
@@ -15,6 +16,7 @@ export type ToolContext = {
   trips: TripReader
   /** Saves one already-validated Instagram Reel URL. Validation stays in the tool. */
   saveReel: (url: string) => Promise<unknown>
+  generation: GenerationDeps
 }
 
 /**
@@ -31,6 +33,8 @@ export function globalTools(ctx: ToolContext): ToolSpec[] {
     saveReelsTool({ save: ctx.saveReel }),
     getItineraryTool(ctx.trips),
     getPlaceEvidenceTool(ctx.trips),
+    planTripFromReelsTool(ctx.generation),
+    getTripProgressTool(ctx.generation.store),
   ]
 }
 

@@ -4,11 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import type { Trip } from '@/lib/trip/backend-types'
 import { getTrip, listTrips } from '@/lib/trip/supabase-api'
+import { generateTrip, streamGeneration } from '@/lib/trip/api'
+import { createGenerationStore } from '@/lib/webmcp/generation'
 import { captureSavedReel, listSavedReelCards } from '@/lib/reels/api'
 import { getAccessToken } from '@/lib/supabase/session'
 import { globalTools } from '@/lib/webmcp/tools'
 import type { AppStateSnapshot } from '@/lib/webmcp/tools/app-state'
 import { RegisterTools } from './RegisterTools'
+import { useWebMcpRegistry } from './WebMcpRegistry'
 
 /**
  * The always-on tools, wired to real data.
@@ -33,6 +36,10 @@ function labelFor(pathname: string): string {
 
 export default function GlobalTools() {
   const pathname = usePathname() ?? '/app'
+  const { requestConfirm } = useWebMcpRegistry()
+  // One store for the session. It must outlive any single tool call — the stream runs for
+  // 60-180s while `plan_trip_from_reels` returns in about a second.
+  const storeRef = useRef(createGenerationStore())
   // `null` = not loaded (or failed). Never collapse that to an empty array: an empty array
   // renders as a confident "you have none", which is a different claim entirely.
   const [trips, setTrips] = useState<Trip[] | null>(null)
@@ -132,7 +139,30 @@ export default function GlobalTools() {
     return res
   }, [refreshReels])
 
-  const specs = globalTools({ readAppState, trips: tripReader, saveReel })
+  const generation = useMemo(
+    () => ({
+      store: storeRef.current,
+      create: async (req: Parameters<typeof generateTrip>[0]) => {
+        const token = await getAccessToken()
+        const res = await generateTrip(req, token)
+        return res.trip_id
+      },
+      openStream: (tripId: string) => {
+        // Fire-and-forget by design: the stream must survive the tool call returning, and the
+        // job is durable server-side, so a dropped stream never loses the trip.
+        void (async () => {
+          const token = await getAccessToken()
+          storeRef.current.start(tripId, (onEvent, onFail) =>
+            streamGeneration(tripId, token, onEvent, undefined, onFail),
+          )
+        })()
+      },
+      confirm: requestConfirm,
+    }),
+    [requestConfirm],
+  )
+
+  const specs = globalTools({ readAppState, trips: tripReader, saveReel, generation })
 
   return <RegisterTools specs={specs} />
 }

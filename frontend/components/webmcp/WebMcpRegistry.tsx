@@ -18,8 +18,17 @@ export type RegisteredToolView = {
   registered: boolean
 }
 
+export type PendingConfirm = {
+  summary: string
+  resolve: (approved: boolean) => void
+}
+
 type RegistryValue = {
   tools: RegisteredToolView[]
+  /** An approval the agent is waiting on. Rendered by <AgentConfirm/>. */
+  pending: PendingConfirm | null
+  /** Called from inside a tool's execute; resolves when the user answers. */
+  requestConfirm: (summary: string) => Promise<boolean>
   /** Whether `document.modelContext` exists at all — false in an ordinary browser. */
   supported: boolean
   report: (view: RegisteredToolView) => void
@@ -43,6 +52,23 @@ export function useOptionalWebMcpRegistry(): RegistryValue | null {
 export function WebMcpRegistryProvider({ children }: { children: React.ReactNode }) {
   const [tools, setTools] = useState<RegisteredToolView[]>([])
   const [supported, setSupported] = useState(false)
+  const [pending, setPending] = useState<PendingConfirm | null>(null)
+
+  /**
+   * One approval at a time. A queue would let an agent stack irreversible actions behind a
+   * dialog the user has not read yet, which is exactly what the gate exists to prevent.
+   */
+  const requestConfirm = useCallback((summary: string) => {
+    return new Promise<boolean>((resolve) => {
+      setPending((existing) => {
+        if (existing) { resolve(false); return existing }   // busy: decline rather than queue
+        return {
+          summary,
+          resolve: (approved: boolean) => { setPending(null); resolve(approved) },
+        }
+      })
+    })
+  }, [])
 
   const report = useCallback((view: RegisteredToolView) => {
     setTools((prev) => {
@@ -57,8 +83,8 @@ export function WebMcpRegistryProvider({ children }: { children: React.ReactNode
   }, [])
 
   const value = useMemo<RegistryValue>(
-    () => ({ tools, supported, report, withdraw, setSupported }),
-    [tools, supported, report, withdraw],
+    () => ({ tools, supported, pending, requestConfirm, report, withdraw, setSupported }),
+    [tools, supported, pending, requestConfirm, report, withdraw],
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

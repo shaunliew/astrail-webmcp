@@ -3,6 +3,7 @@ import { TOKYO_TRIP } from '@/lib/trip/fixtures/tokyo-trip'
 import { allTools, globalTools, tripTools, type ToolContext } from '../tools'
 import { LIMITS, type ToolSpec } from '../types'
 import { envelopeLength, OUTPUT_LIMIT } from '../fit'
+import { createGenerationStore } from '../generation'
 
 /**
  * The contract every registered tool must satisfy.
@@ -32,13 +33,19 @@ const ctx: ToolContext = {
     load: async () => TOKYO_TRIP,
   },
   saveReel: async () => ({}),
+  generation: {
+    store: createGenerationStore(),
+    create: async () => 'trip-1',
+    openStream: () => {},
+    confirm: async () => false,   // never approves inside a contract test
+  },
 }
 
 const specs = allTools(ctx)
 
 describe('tool spec contract', () => {
   it('registers at least the tools built so far', () => {
-    expect(specs.length).toBeGreaterThanOrEqual(5)
+    expect(specs.length).toBeGreaterThanOrEqual(7)
   })
 
   it('has globally unique names — a duplicate is REJECTED at registration, silently', () => {
@@ -90,6 +97,11 @@ describe('tool spec contract', () => {
       const args: Record<string, unknown> = {}
       if (req.includes('place')) args.place = '1'
       if (req.includes('urls')) args.urls = ['https://www.instagram.com/reel/Cabc123/']
+      if (req.includes('reel_urls')) {
+        args.reel_urls = ['https://www.instagram.com/reel/Cabc123/']
+        args.start_date = '2026-03-03'
+        args.end_date = '2026-03-07'
+      }
       const out = await spec.execute(args)
       const text = typeof out === 'string' ? out : JSON.stringify(out)
       expect(envelopeLength(text), `${spec.name} exceeded the output budget`).toBeLessThanOrEqual(OUTPUT_LIMIT)

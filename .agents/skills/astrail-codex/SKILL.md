@@ -119,6 +119,34 @@ herdr agent prompt checker  "$P2" --wait --timeout 900000 >/dev/null 2>&1 &
 herdr agent wait reviewer --timeout 900000; herdr agent read reviewer --source recent-unwrapped --lines 300
 ```
 
+### An idle pane is wasted wall-clock — check after every cycle
+
+Make this a habit, not a decision: **after every dispatch, every verification run, and every time a
+subagent reports, run `herdr agent list`.** A Codex pane sitting `idle` while you wait on something
+else is minutes you do not get back, and the failure is invisible — nothing errors, the night is
+just shorter than it should have been.
+
+```bash
+herdr agent list 2>&1 | python3 -c "
+import json,sys
+for a in json.load(sys.stdin)['result']['agents']:
+    print(f\"  {a.get('name','(unnamed)'):10} {a['agent']:8} {a['agent_status']}\")"
+```
+
+**There is always something to give it.** When no diff is waiting, work the standing backlog — none
+of these touch files an implementer owns, so they never conflict:
+
+1. **Verify a subagent's factual claims** against the code, before you build on them.
+2. **Judge-eye a document** — the submission text, the README, a tool description — as someone who
+   will score it without opening the app.
+3. **Feasibility on the NEXT item**, so the blocker surfaces before you plan around it rather than
+   at 4am.
+4. **Audit a seam nobody has looked at** — auth, entitlement, an error path, a lifecycle.
+5. **Re-verify a finding you fixed two rounds ago.** This branch has a documented history of a fix
+   being worse than the finding; a cold re-read of an old fix is cheap.
+
+Prefer a job whose answer changes what you do next. "Review everything again" is not a job.
+
 ### What `checker` is genuinely good for
 
 - **Verifying a research subagent's claims against the code** before you build on them. A research

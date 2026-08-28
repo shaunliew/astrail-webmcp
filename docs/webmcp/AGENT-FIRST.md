@@ -13,6 +13,29 @@ touch nothing — not the entry, not the repo, not the live site — until winne
 
 **Judged on:** WebMCP Leverage · Execution · Potential Impact · Creativity & Ambition.
 
+## The product, stated properly (Shaun, 2026-08-29)
+
+Everything below serves one shape, and the plan was under-encoding it:
+
+> **The agent is the primary user of Astrail. The human inspects and steers.**
+
+Concretely — the human talks to their agent, the agent operates Astrail. The human watches the trip
+and the map appear, and adjusts it by *saying so*, not by clicking. Success is a session where the
+user never types a Reel URL into Astrail at all.
+
+That reframes two things:
+
+- **The pain point is the copy-paste.** Astrail's whole premise is turning scattered Reels into a
+  route you actually take, and the pasting was always the tax on that. The agent removes it — that
+  is the WebMCP argument, not "we added tools".
+- **The manual UI becomes an inspection surface**, not the primary path. It is not being demoted for
+  neatness; it is being demoted because a human clicking through pickers is the workflow this
+  product exists to end. It stays reachable because a judge may want it and because an agent cannot
+  always help.
+
+The test of every item below: **does it reduce what the human has to do by hand, or does it only
+make the manual path prettier?**
+
 ## The one-line diagnosis
 
 The trip page is genuinely agent-first. `/app` is not. A judge lands on a paste box, and the
@@ -29,6 +52,7 @@ single sentence the whole submission rests on — *the agent moves the map the h
 | 3 | Persistent receipts + undo (replace the 8s fade) | High — Execution | ~1 d | ☐ not started |
 | 4 | Tool-contract gaps + truthful SUBMISSION.md | Med-high Leverage, protects every score | <1 d | ☐ not started |
 | 2b | **Agent-first layout for `/app`** — the visual redesign | High — Execution, Creativity | ~1 d | ☐ researching |
+| 2c | **Edits leave the trip's prose stale** — the agent is never told to replan | High — Execution, and it is a live bug | ~2 h | ☐ dispatched |
 | 5 | `get_trip_notes` / `resolve_trip_note` (JSONB) | Highest Leverage + Creativity | ~1 d | ☐ stretch — only if the days hold |
 
 ---
@@ -135,6 +159,31 @@ pair can do next rather than which buttons exist.
 
 Research in flight — the layout, the demotion mechanics and the actual empty-state copy land here
 when it returns.
+
+## 2c. An edited trip still describes the old itinerary
+
+**Reported from real use, 2026-08-29.** Shaun asked the agent to add Osaka Castle to a generated
+trip. It was added — and the trip description and day plan still described the itinerary without it.
+The stops changed; the prose did not.
+
+`replan_trip` already does exactly this job. The defect is that **nothing tells the agent to call it
+at the moment it matters.** Verified across all four mutation tools in `lib/webmcp/tools/edit.ts`:
+
+- `move_place`, `remove_place`, `add_place`, `set_trip_dates` — **not one** mentions replanning, in
+  its description or in its return value.
+- `add_place` returns *"Pin numbers have shifted — call get_itinerary before using them again"*. It
+  names one follow-up tool and stays silent about the stale prose.
+- `replan_trip`'s own description says *"use this after adding, moving or removing stops"* — but an
+  agent only reads that if it is already considering the tool. Right guidance, wrong place.
+
+The fix is the pattern this codebase already established for the same problem: `plan_trip_from_reels`
+returns `next_tool` as a **structured field**, with a comment recording that agents follow a
+structured field far more reliably than the same instruction in prose. Do that, do not auto-replan —
+`replan_trip` costs credit and owns its own approval card, so the agent must be told, not overruled.
+
+Why this matters more than its size: in the product shape above, an edit *is* the human's whole
+interaction. If the trip silently disagrees with itself afterwards, the collaboration is not
+trustworthy, and a judge trying "add Osaka Castle" will see it immediately.
 
 ## 3. Persistent receipts + undo
 

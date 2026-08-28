@@ -15,7 +15,7 @@ description: The mandatory loop for building anything in Astrail — plan with a
 
 | Stage | Owner | Never |
 |---|---|---|
-| 1 · Research an unfamiliar API, algorithm or seam | `astrail-researcher` subagent | guessing from memory |
+| 1 · Research an unfamiliar API, algorithm or seam | `astrail-researcher` subagent, **then Codex `checker` verifies its repo claims** | guessing from memory; building on unverified file:line claims |
 | 2 · Write the plan | `astrail-plan-and-review` skill, or a Plan subagent | planning inline while editing |
 | 3 · **Review the plan** | **Codex via `astrail-codex`** (Herdr pane) | building on an unreviewed plan |
 | 4 · **Implement, task by task** | **`astrail-developer` subagent** | **Claude writing the code** |
@@ -50,6 +50,40 @@ suites, hold the RUNLOG, judge the findings, and decide what to cut. Also the sm
 dispatch would cost more than it saves — a one-line copy fix, a comment, a doc.
 
 The line: **if it needs a test, it needs the implementer.**
+
+## Running items in parallel
+
+Two implementers at once is worth real wall-clock, and the gate is **file overlap, not tooling**.
+Check it before you plan the parallelism, not after a merge conflict.
+
+```bash
+# Do the two tasks touch the same files? If yes, they are sequential. No exceptions.
+git diff --name-only <base>...HEAD          # what is already in flight
+```
+
+**Same tree** when the tasks are file-disjoint and short — two `astrail-developer` dispatches with
+non-overlapping allowlists, which is what the allowlist is for. Verify disjointness yourself; do
+not take the plan's word for it.
+
+**A worktree** when a task is long, touches many files, or you want to keep `main`-tree tests green
+while it runs:
+
+```bash
+git worktree add ../astrail-<item> feat/webmcp   # or dispatch with isolation: "worktree"
+```
+
+`.claude/settings.local.json` symlinks `frontend/node_modules` and `backend/.venv` into new trees —
+without that a worktree of this repo needs a 685 MB install before it can run a single test. Check
+that setting still exists before promising a parallel run.
+
+**What never parallelizes here:** anything touching `SavedReelsFlow.tsx` or the `webmcp/` layer.
+Nearly every item in `docs/webmcp/AGENT-FIRST.md` lands there, so in practice the headline items are
+sequential and the parallel budget goes to the disjoint edges — a new route, a tool contract, a doc.
+
+**Merging back:** rebase the worktree branch on `feat/webmcp` and run the FULL suite in the main
+tree before removing it. A worktree that passed in isolation has proved nothing about the merge.
+`git worktree remove` when done — a stale worktree holding a branch reference is a confusing thing
+to find in the morning.
 
 ## The findings loop
 

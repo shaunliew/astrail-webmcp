@@ -72,6 +72,51 @@ Four things learned the hard way; none of them are obvious from the CLI help.
    `backend/pipeline/runner.py` line 528 verbatim so I know you read the repo."* An agent answering
    from your prompt instead of the code produces confident, groundless findings.
 
+## Run more than one — Codex is cheap, wall-clock is not
+
+One pane used sequentially is the common mistake, and it was mine for a whole evening. A Codex
+pass takes 3-6 minutes; two independent passes take the same 3-6 minutes if you run them in
+parallel panes. Keep two standing agents with different jobs:
+
+| Pane | Job |
+|---|---|
+| `reviewer` | reviews a diff or a plan — the gate on work about to land |
+| `checker` | verifies claims, cross-checks research, investigates a seam — never blocks the gate |
+
+The split matters because they queue differently: `reviewer` is on the critical path of a task
+and `checker` is not, so a long `checker` run costs nothing while `reviewer` is what you wait on.
+
+```bash
+herdr agent list                                            # who exists, and their VENDOR
+herdr pane layout --pane "$HERDR_PANE_ID"                   # wide -> split right, tall -> down
+herdr pane split --pane <busy-pane> --direction down --cwd "$PWD" --no-focus
+herdr agent start checker --kind codex --pane <new-pane-id>
+```
+
+Split **down** off an existing column rather than right again — two right-splits leave ~45 columns
+each, which is unusable for reading a review.
+
+Dispatch both, then collect:
+
+```bash
+herdr agent prompt reviewer "$P1" --wait --timeout 900000 >/dev/null 2>&1 &
+herdr agent prompt checker  "$P2" --wait --timeout 900000 >/dev/null 2>&1 &
+# ...do other work...
+herdr agent wait reviewer --timeout 900000; herdr agent read reviewer --source recent-unwrapped --lines 300
+```
+
+### What `checker` is genuinely good for
+
+- **Verifying a research subagent's claims against the code** before you build on them. A research
+  pass that reads the web is not reading your repo; ask Codex to check the file:line claims. This
+  has already caught load-bearing errors.
+- **Answering "is X actually true here"** while the implementer works — entitlement paths, whether
+  a fixture is complete, whether a layout is transplantable.
+- **A second opinion on a finding you doubt**, without stalling the review that gates the merge.
+
+Do not use it to re-review what `reviewer` just reviewed. Two same-vendor passes over one diff is
+not a second opinion, it is the same opinion twice.
+
 ## Cross-vendor means cross-VENDOR
 
 A cross-model pass must cross vendors. This session's main agent is Claude, so the pane must be

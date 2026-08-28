@@ -28,6 +28,7 @@ single sentence the whole submission rests on — *the agent moves the map the h
 | 2 | Invited empty state + one-click seeded demo trip | High — Execution, Impact | ~1 d | ☐ not started — **confirmed live, see below** |
 | 3 | Persistent receipts + undo (replace the 8s fade) | High — Execution | ~1 d | ☐ not started |
 | 4 | Tool-contract gaps + truthful SUBMISSION.md | Med-high Leverage, protects every score | <1 d | ☐ not started |
+| 2b | **Agent-first layout for `/app`** — the visual redesign | High — Execution, Creativity | ~1 d | ☐ researching |
 | 5 | `get_trip_notes` / `resolve_trip_note` (JSONB) | Highest Leverage + Creativity | ~1 d | ☐ stretch — only if the days hold |
 
 ---
@@ -103,6 +104,37 @@ than what the pair can do together.
 **Done when:** an empty `/app` leads with the invitation and a runnable prompt, one click opens a
 seeded trip with real evidence quotes and pins — no Instagram URL required, no generation spent —
 and `get_app_state` offers a next action the agent can *take*, not a button to go press.
+
+## 2b. Agent-first layout for `/app`
+
+**Added 2026-08-29 on Shaun's call, and he is right that the plan was missing it.** Items 2 and 3
+change *behaviour and copy*; neither restructures the screen. The information architecture still
+puts the manual path first — a paste box and a library own the viewport while every agent-aware
+component (`WebMcpStatus`, `WebMcpDock`, `ExamplePrompts`, `AgentActivityRail`) is a dismissible
+corner dock.
+
+That hierarchy is why the live test failed the way it did. With all 13 tools registered and
+executing correctly, `get_app_state` still answered *"start by pasting up to five Instagram
+Reel/post links"* and then listed Trails, New trail and Settings. **The agent described the screen
+it was given.** No amount of tool work fixes that; the screen has to change.
+
+Constraints, so this does not become a restyle:
+
+- **Stay inside Night & Daybreak.** Brass accents, constellation pins, the existing tokens. This is
+  a hierarchy change, not a new visual language.
+- **Do not delete the manual path.** Demote it. A judge who wants to paste a URL must still be able
+  to, and every existing test that drives the form must still pass.
+- **No in-page chat panel.** The agent lives in ChatGPT's browser; a second chat competes with the
+  judge's real surface, and every OpenAI reference app avoids one.
+- **A static screenshot has to read as collaborative.** A judge may only ever see one, plus a
+  3-minute video.
+
+**Done when:** the primary position on an empty `/app` belongs to the invitation and something the
+agent can act on; the paste box is reachable but secondary; and `get_app_state` describes what the
+pair can do next rather than which buttons exist.
+
+Research in flight — the layout, the demotion mechanics and the actual empty-state copy land here
+when it returns.
 
 ## 3. Persistent receipts + undo
 

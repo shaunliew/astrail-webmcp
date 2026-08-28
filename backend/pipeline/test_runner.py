@@ -1254,6 +1254,16 @@ async def test_run_persists_tradeoff_notes_and_comparisons():
 # Completions are `decision`, not a second `stage`: a repeated stage id makes finished work read
 # as the currently-running stage (GenerationProgress pulses the last stage event; get_trip_progress
 # reports it as live).
+#
+# WHAT IS NOT TRUE OF THESE EVENTS: "exactly one outcome signal per stage". The ordinary path is
+# one, but a partial transport result deliberately emits TWO — a warning for the legs that did not
+# route and a decision for the ones that did — and they are complementary, not contradictory
+# (pinned by `test_partial_transport_says_BOTH_...` below). Other paths emit none on purpose or by
+# best-effort: a hotel `LeaseLost` returns silently so it cannot pollute the replacement worker's
+# stream, a failed status read has nothing honest to say about routing, and every outcome write is
+# wrapped in a swallowing `try` because guardrail #3 forbids failing a saved trip over an event
+# row. The invariant that IS true, and the one to hold: an outcome signal on the ordinary paths,
+# sometimes two for a partial result.
 # ---------------------------------------------------------------------------------------------
 
 def _msgs(client, stage: str, kind: str) -> list[str]:
@@ -1261,9 +1271,24 @@ def _msgs(client, stage: str, kind: str) -> list[str]:
             if e["stage"] == stage and e["event_type"] == kind]
 
 
-def _late_stage_client():
-    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0,
-                       "started_at": None, "status": "pending"}])
+class _SelectRaises(_Table):
+    """Every WRITE lands; only a SELECT fails. Isolates "the read failed" from "the work failed",
+    which is the whole distinction the transport stage has to make."""
+
+    async def execute(self):
+        if self._op[0] == "select":
+            raise RuntimeError("statement timeout reading transport_legs")
+        return await super().execute()
+
+
+class _LegStatusReadFails(_Client):
+    def table(self, name):
+        return _SelectRaises(name, self.db) if name == "transport_legs" else super().table(name)
+
+
+def _late_stage_client(cls=_Client):
+    c = cls(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0,
+                   "started_at": None, "status": "pending"}])
     c.db["trips"] = [{"id": "trip-1", "user_id": "user-1", "start_date": "2026-08-01",
                       "end_date": "2026-08-01", "adult_count": 2, "room_count": 1,
                       "destination_hint": "Tokyo"}]
@@ -1346,6 +1371,47 @@ async def test_legs_that_found_NO_ROUTE_are_reported_not_swallowed():
 
     assert _msgs(c, "transport", "warning"), "an unroutable itinerary reported nothing at all"
     assert not _msgs(c, "transport", "decision"), "claimed routed legs when none routed"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_STATUS_READ_is_never_reported_as_a_routing_failure(caplog):
+    """The legs are persisted BEFORE their statuses are read, so a read that fails observed the
+    routing — it did not do it. Reporting "Couldn't route some stops — check transit" sends the
+    traveller to fix transit that is fine while the actual fault (an unreadable table) reaches
+    nobody. Says nothing to the traveller, and logs the TYPE for the engineer."""
+    import logging
+    caplog.set_level(logging.WARNING, logger="pipeline.runner")
+    c = _late_stage_client(_LegStatusReadFails)
+    await _run_late(c, transport=_leg("Ok"))
+
+    assert c.db["transport_legs"], "the legs never persisted — then this proves nothing"
+    assert _msgs(c, "transport", "warning") == [], (
+        "a failed READ of the leg statuses was reported to the traveller as a routing failure")
+    assert "transport_status_unreadable" in caplog.text, "the swallowed read failure left no trace"
+    assert "RuntimeError" in caplog.text, "the error TYPE names what failed"
+    assert "statement timeout" not in caplog.text, "log the type; an error body can echo the query"
+
+
+@pytest.mark.asyncio
+async def test_partial_transport_says_BOTH_what_routed_and_what_did_not():
+    """The corrected invariant, made load-bearing rather than left as prose: a PARTIAL result is
+    two complementary signals, not one. Only the warning would hide the legs the traveller can
+    use; only the decision would hide the gap in the route."""
+    c = _late_stage_client()
+
+    async def half_routed(coords, *, profile="walking"):
+        # One leg routes, the next does not — the mixed day the single-code fixtures cannot make.
+        return [{"code": ("Ok", "NoRoute")[i % 2], "distance_m": 800, "duration_s": 600,
+                 "geometry": {"type": "LineString",
+                              "coordinates": [[139.70, 35.60], [139.72, 35.62]]}}
+                for i in range(len(coords) - 1)]
+
+    await _run_late(c, transport=half_routed,
+                    places=[_place("A", lat=35.60, lng=139.70), _place("B", lat=35.62, lng=139.72),
+                            _place("C", lat=35.64, lng=139.74)])
+
+    assert _msgs(c, "transport", "warning") == ["Couldn't route some stops — check transit"]
+    assert _msgs(c, "transport", "decision") == ["Routed 1 leg between your stops"]
 
 
 @pytest.mark.asyncio

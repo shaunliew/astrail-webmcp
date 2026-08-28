@@ -450,20 +450,20 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                 # trip_days.weather_summary. Each coroutine is fully self-contained: it swallows its own
                 # errors (a failure can't fail the trip), and return_exceptions=True additionally
                 # guarantees one stage's raise never cancels its siblings.
+                #
+                # The event contract, stated honestly: an outcome signal on the ordinary paths —
+                # and sometimes TWO, because a partial transport result has two complementary
+                # things to say (what routed, and what did not). It is NOT "exactly one per
+                # stage": a hotel LeaseLost returns silently on purpose, an unreadable status
+                # leaves nothing true to say, and every outcome write is swallowed on failure
+                # because guardrail #3 forbids failing a saved trip over an event row.
                 async def _stage_transport():
                     try:
                         await record_event(client, trip_id, event_type="stage", stage="transport",
                                            message="Working out how to get between stops")
-                        await persist_transport(client, trip_id, fetch_legs=transport)
                         # persist_transport isolates per-day fetch failures internally (status="failed"
-                        # rows, never raises) — surface that as the same non-critical warning.
-                        # Select `status` rather than `id`: its RETURN VALUE counts rows written, and
-                        # a row is written for a leg that failed (status="failed") or found no route
-                        # (status="no_route") just as much as for one that routed. Reporting that
-                        # number as legs routed would claim work the traveller cannot use, so both
-                        # counts come from the statuses — still one query, as before.
-                        leg_rows = (await client.table("transport_legs").select("status")
-                                    .eq("trip_id", trip_id).execute()).data or []
+                        # rows, never raises) — surface a raise from HERE as the non-critical warning.
+                        await persist_transport(client, trip_id, fetch_legs=transport)
                     except Exception:
                         try:
                             await record_event(client, trip_id, event_type="warning", stage="transport",
@@ -471,8 +471,29 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                         except Exception:
                             pass   # best-effort — transport failure is non-critical
                         return
-                    # OUTSIDE the try above, deliberately: the legs are already persisted here, so a
-                    # transient failure writing these events must not be reported as a routing
+                    # Everything below only OBSERVES work that is already persisted, so it gets its
+                    # OWN handlers: the routing failure above is the only one entitled to say
+                    # "Couldn't route".
+                    try:
+                        # Select `status` rather than `id`: its RETURN VALUE counts rows written, and
+                        # a row is written for a leg that failed (status="failed") or found no route
+                        # (status="no_route") just as much as for one that routed. Reporting that
+                        # number as legs routed would claim work the traveller cannot use, so both
+                        # counts come from the statuses — still one query, as before.
+                        leg_rows = (await client.table("transport_legs").select("status")
+                                    .eq("trip_id", trip_id).execute()).data or []
+                    except Exception as exc:
+                        # The routing SUCCEEDED and the legs are saved; only the read of their
+                        # statuses failed. Sharing the handler above reported that as a routing
+                        # failure, sending the traveller to check transit that is fine over a fault
+                        # that was never theirs. There is nothing honest left to tell them — the
+                        # counts are exactly what could not be read — so tell the engineer instead:
+                        # the TYPE only, never the text (guardrail: an error body can echo the query).
+                        logger.warning("transport_status_unreadable trip_id=%s error=%s",
+                                       trip_id, type(exc).__name__)
+                        return
+                    # OUTSIDE the persistence try, deliberately: the legs are already persisted here,
+                    # so a transient failure writing these events must not be reported as a routing
                     # failure. Reporting one would send the traveller to check transit that is fine.
                     try:
                         # `no_route` counts as unrouted, not just `failed`. Mapbox answering "there

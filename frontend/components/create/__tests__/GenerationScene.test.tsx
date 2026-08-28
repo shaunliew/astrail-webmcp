@@ -214,6 +214,46 @@ describe('landing pins during the generation', () => {
     expect(markerElements).toHaveLength(TOKYO_TRIP.places.length)
   })
 
+  /* The sequential test above waits for read one to RESOLVE before the second signal arrives,
+     so it only ever proves sequential retry. The failure that actually happens is the overlap:
+     runner.py fires the post-persistence `decision:save` and then dispatches transport,
+     restaurants, hotels and summarize within milliseconds, so the next signal lands while the
+     save-triggered read is still open. Cleanup cancelled that read, the new effect run saw
+     `inFlightRef` and returned, and the ref clearing in `finally` neither rendered nor re-ran
+     the effect — so nothing was ever scheduled again and the pins never landed. */
+  it('retries when the next signal arrives BEFORE the first read resolves', async () => {
+    let resolveFirstRead!: (bundle: unknown) => void
+    // Deliberately never resolved until this test says so: every assertion until then runs
+    // while read one is genuinely open, which is the whole point of this case.
+    getTrip.mockReturnValueOnce(new Promise((resolve) => { resolveFirstRead = resolve }))
+    getTrip.mockResolvedValue(TOKYO_TRIP)
+
+    const { rerender } = renderScene([DEDUP])
+    await flush()
+    fireLoad()
+    await flush()
+    expect(getTrip).toHaveBeenCalledTimes(1)
+    expect(markerElements).toHaveLength(0)      // read one is open: nothing has resolved it
+
+    // Signal two, mid-flight. No await of read one stands between it and the render above.
+    rerender(
+      <MapProvider>
+        <GenerationScene tripId="trip_tokyo_demo" events={[DEDUP, SAVED]} />
+      </MapProvider>,
+    )
+    await flush()
+    expect(getTrip).toHaveBeenCalledTimes(1)    // still the SAME open read — proof of overlap
+    expect(markerElements).toHaveLength(0)
+
+    // Read one answers what a pre-persistence read honestly returns: nothing. Only a retry
+    // can land pins from here, so markers below cannot come from the cancelled attempt.
+    await act(async () => { resolveFirstRead({ ...TOKYO_TRIP, places: [] }) })
+    await flush()
+
+    expect(getTrip).toHaveBeenCalledTimes(2)
+    expect(markerElements).toHaveLength(TOKYO_TRIP.places.length)
+  })
+
   it('lands pins once and does not re-land them on later events', async () => {
     getTrip.mockResolvedValue(TOKYO_TRIP)
     const { rerender } = renderScene([SAVED])

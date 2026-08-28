@@ -603,3 +603,26 @@ two are genuinely unused test imports.
 
 Not enabled. Recorded so the next dead-code sweep knows it must be manual, and so nobody enables the
 flag, sees three errors, and "fixes" the map provider.
+
+### Correction: "exactly one terminal signal per stage" was never true
+
+I wrote that invariant into the commit message for the stage-completion work and then briefed an
+implementer to "correct the claim where it is written down". It was not written down anywhere — not
+in `runner.py`, not in `test_runner.py`, not in `docs/webmcp`. It existed only in my prose about the
+change, which is a worse place for a false invariant than the code, because nothing can fail when it
+drifts.
+
+The true invariant, now written at both sites and pinned by a characterization test: **an outcome
+signal on ordinary paths, sometimes two for a partial result.** Transport deliberately emits both a
+warning and a decision when some legs route and others do not — complementary, not contradictory —
+and a hotel `LeaseLost` emits none by design, because a superseded worker must not pollute the
+replacement's stream.
+
+Third time tonight an implementer corrected my brief rather than implementing it as given. That is
+the loop working, and it is worth more than the fixes.
+
+### Still open in transport
+
+Codex's third sub-point, deliberately not taken because it was outside the task's scope: the warning
+write and the routed-decision write still share one `try`, so a failed warning write suppresses the
+"Routed N legs" decision that should follow it. Two independent `try` blocks close it.

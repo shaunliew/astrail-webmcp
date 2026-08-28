@@ -7,7 +7,7 @@
 // own: it has to outlive this component so the night->dawn relight can run on a live map
 // across the handoff to the trip workspace. The map stays progressive enhancement —
 // without a token (tests, missing env) the rail still narrates over the starfield.
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import mapboxgl from 'mapbox-gl'
 import { getTrip } from '@/lib/trip/supabase-api'
 import type { StreamEvent, GenerationStage } from '@/lib/trip/backend-types'
@@ -39,6 +39,14 @@ export default function GenerationScene({
   const { hasToken, ready, getMap, acquire, release, setMarkers } = useSharedMap()
   const fetchedRef = useRef(false)
   const inFlightRef = useRef(false)
+  // The retry that survives an OVERLAPPING signal, and it is state rather than a ref for the
+  // one reason that matters: changing a ref neither renders nor re-runs an effect. `inFlightRef`
+  // clearing in the `finally` below therefore scheduled nothing, so a signal that arrived while
+  // a read was open was dropped for good — and that overlap is the ordinary case, not a rare
+  // race: runner.py writes the post-persistence `decision:save` and then dispatches transport,
+  // restaurants, hotels and summarize within milliseconds, every one of them landing while the
+  // save-triggered read is still in flight. Bumping this is what wakes the effect to try again.
+  const [retryTick, setRetryTick] = useState(0)
 
   // A COUNT, not a boolean: a boolean flips true once and the effect never runs again, so one
   // too-early read was the only read that ever happened. Counting lets each later signal retry.
@@ -79,7 +87,8 @@ export default function GenerationScene({
   // The latch is set AFTER pins land, never before the read. Setting it up front — which is what
   // this did — meant an empty early read permanently suppressed every retry, and the pins never
   // appeared at all during a real generation. `inFlightRef` keeps the retries from overlapping
-  // now that more than one signal can trigger this.
+  // now that more than one signal can trigger this, and `retryTick` reschedules the one that
+  // arrived while a read was open (see the `finally`).
   useEffect(() => {
     if (!ready || !tripId || placesSignals === 0 || fetchedRef.current || inFlightRef.current) return
     inFlightRef.current = true
@@ -109,10 +118,19 @@ export default function GenerationScene({
         // and the trip page renders the full map after the result event.
       } finally {
         inFlightRef.current = false
+        // An attempt is only ever cancelled by React running this effect's cleanup, which
+        // happens for exactly two reasons: a dep changed (a NEW signal, overwhelmingly) or the
+        // component went away. It applied nothing either way, so unless the pins are already
+        // down another attempt is owed — and the effect run that would have made it returned
+        // early on `inFlightRef`. Bumping state is what schedules it; on the unmount reason the
+        // update is a no-op and the re-run, if any, returns at the guards above. The cancelled
+        // read's bundle is re-fetched rather than salvaged — one extra read of one trip, and the
+        // price of not having to tell "a signal arrived" apart from "we are gone" in a cleanup.
+        if (cancelled && !fetchedRef.current) setRetryTick((tick) => tick + 1)
       }
     })()
     return () => { cancelled = true }
-  }, [ready, tripId, placesSignals, getMap, setMarkers])
+  }, [ready, tripId, placesSignals, retryTick, getMap, setMarkers])
 
   return (
     <main className="relative min-h-[100dvh] overflow-hidden">

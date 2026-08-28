@@ -1,4 +1,6 @@
 import type { GenerateTripRequest, GenerationStage } from '@/lib/trip/backend-types'
+import { ERROR_CODE_RATE_LIMITED, ERROR_CODE_TRIAL_EXHAUSTED } from '@/lib/trip/backend-types'
+import { ApiError } from '@/lib/trip/api'
 import { STAGE_LABEL } from '@/components/create/GenerationProgress'
 import type { ToolSpec } from '../types'
 import type { GenerationStore } from '../generation'
@@ -11,6 +13,21 @@ import { normalizeReelUrl } from '@/lib/trip/parse-inspiration'
  * user already wrote, so nothing in it takes 60-180 seconds. Here the agent has to kick off a real
  * multi-agent pipeline and then say something true about it while the user waits.
  */
+
+/**
+ * What the page can tell us about this account's remaining allowance, read at CALL time.
+ *
+ * `unknown` is an ANSWER, not a missing one, and it must behave exactly like `ok`: an advisory
+ * read that has not landed is evidence of nothing, and a refusal we cannot substantiate costs
+ * the user a trip they were entitled to. The backend RPC stays the authority in every case —
+ * this exists only so we never take consent we cannot honour.
+ *
+ * There is deliberately no `daily_exhausted` member. The beta daily quota lives in
+ * `public.user_daily_usage`, which the browser never reads (the reserving RPC is service-role
+ * only), so a client-side daily refusal would be a guess. That limit gets named on the way back
+ * instead, out of the backend's own rejection.
+ */
+export type TripAllowance = 'ok' | 'trial_exhausted' | 'unknown'
 
 export type GenerationDeps = {
   store: GenerationStore
@@ -34,6 +51,17 @@ export type GenerationDeps = {
    * cost of approving, which is the one direction this card must never be wrong in.
    */
   readLibrary?: () => Promise<{ url: string; hasCurrentCache: boolean }[]>
+  /**
+   * Whether this account can still spend a generation, checked BEFORE the approval card.
+   *
+   * The manual flow gates on the same fact and renders TrialExhaustedCard before anything is
+   * spent; the agent path had no entitlement dependency at all, so an exhausted account got the
+   * card, approved, and was rejected afterwards.
+   *
+   * Optional, and a failure is fail-OPEN by design (see TripAllowance): absent, rejected, or
+   * `unknown` all proceed.
+   */
+  readAllowance?: () => Promise<TripAllowance>
 }
 
 const MAX_REELS = 5
@@ -85,11 +113,68 @@ function describeReuse(alreadyRead: number, total: number): string {
   return `${alreadyRead} of ${total} reels ${verb} already been read; the rest will be read now.`
 }
 
+/**
+ * Returned INSTEAD of showing the approval card. Every clause earns its place: that nothing
+ * happened, that the user was never asked, WHICH limit this is, and that this particular one
+ * does not come back — a trial is spent once, and only a seat lifts it. An agent told merely
+ * "rejected" guesses, and half its guesses are "try again tomorrow", which is false here.
+ */
+const TRIAL_SPENT_BEFORE_ASKING =
+  'Not started, and the user was not asked to approve — nothing was spent. Their free trial is ' +
+  'one trip and it is already planned. A trial does not reset; only a beta seat lifts it. Tell ' +
+  'them that, and point them at the "Request a seat" card on this page.'
+
+/** The same limit, but reached the expensive way: consent already taken, then refused. */
+const TRIAL_SPENT_AFTER_ASKING =
+  'The user approved, but the backend refused: their free trial is one trip and it is already ' +
+  'planned. No trip was created and nothing was spent. A trial does not reset; only a beta seat ' +
+  'lifts it. Say that plainly, and do not retry.'
+
+/**
+ * A 429 is quoted, never paraphrased. `rate_limited` is the slug for BOTH the beta daily quota
+ * and the per-minute burst limiter (api/errors.py maps every 429 to it), and those lift on
+ * completely different clocks — one tomorrow, one in under a minute. Only the backend's own
+ * sentence knows which, so it is what the agent relays.
+ */
+function rateLimitedReply(message: string): string {
+  return `The user approved, but the backend refused: "${message}" No trip was created and ` +
+    'nothing was spent. Relay that sentence to the user — it names the limit and when it lifts. ' +
+    'Do not call this again until they ask.'
+}
+
+/**
+ * Consult the allowance without letting it block. A rejected reader is caught here too: the
+ * contract says it resolves to a verdict, but the ONE outcome this gate must never produce is a
+ * refusal it cannot substantiate, so the failure is handled rather than trusted away.
+ */
+async function resolveAllowance(read: GenerationDeps['readAllowance']): Promise<TripAllowance> {
+  if (!read) return 'unknown'
+  try {
+    return await read()
+  } catch {
+    return 'unknown'
+  }
+}
+
+/**
+ * Turn a rejection from `create` into something the agent can say, or `null` to let it throw.
+ *
+ * NARROW on purpose. A broad catch here would turn a 503, a lost run lock and a dropped
+ * connection into calm sentences the activity rail marks "done" — only the two entitlement
+ * refusals are things that legitimately did not happen.
+ */
+function refusalReply(err: unknown): string | null {
+  if (!(err instanceof ApiError)) return null
+  if (err.code === ERROR_CODE_TRIAL_EXHAUSTED) return TRIAL_SPENT_AFTER_ASKING
+  if (err.code === ERROR_CODE_RATE_LIMITED) return rateLimitedReply(err.message)
+  return null
+}
+
 export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
   return {
     name: 'plan_trip_from_reels',
     description:
-      'Starts building a new trip from 1-5 saved Instagram Reels. The user must approve it on the page first, because it spends their free trip allowance. Returns in about a second with a trip_id — the trip is NOT ready yet. Generation takes 60-180 seconds; then call get_trip_progress about every 20 seconds until status is complete or failed, and narrate each stage to the user. Never call this twice for the same request.',
+      'Starts building a new trip from 1-5 Instagram Reel links — saving them first is optional, raw pasted links work. The user must approve it on the page first, because it spends their free trip allowance. Returns in about a second with a trip_id — the trip is NOT ready yet. Generation takes 60-180 seconds; then call get_trip_progress about every 20 seconds until status is complete or failed, and narrate each stage to the user. Never call this twice for the same request.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -118,6 +203,12 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
 
       const preferences = typeof args.preferences === 'string' ? args.preferences.slice(0, MAX_PREFERENCES) : null
 
+      // Before the card, not after it. The manual flow renders TrialExhaustedCard instead of a
+      // Generate button, so nothing is spent and nothing is consented to; this path used to show
+      // the card, take the approval, and only then be rejected by the backend. Courtesy gate
+      // only — the reserving RPC still enforces it, and an `unknown` verdict proceeds.
+      if (await resolveAllowance(deps.readAllowance) === 'trial_exhausted') return TRIAL_SPENT_BEFORE_ASKING
+
       // What approving actually involves, worked out before the card is shown. Awaited rather
       // than filled in afterwards: a card that appears saying one thing and then revises itself
       // is worse than one that appears a beat later saying the right thing once.
@@ -137,16 +228,27 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
       const approved = await deps.confirm(summary)
       if (!approved) return 'The user declined. Nothing was started and nothing was spent.'
 
-      const tripId = await deps.create({
-        reel_urls: urls,
-        requested_places: [],
-        destination_hint: typeof args.destination_hint === 'string' ? args.destination_hint : null,
-        start_date: start,
-        end_date: end,
-        budget_level: (args.budget_level as GenerateTripRequest['budget_level']) ?? null,
-        origin_city: typeof args.origin_city === 'string' ? args.origin_city : null,
-        preferences,
-      } as GenerateTripRequest)
+      // The gate above is advisory, so a stale client state or a generation started in another
+      // tab still lands here — with the user's consent already taken. What came back then was an
+      // isError text response carrying the backend's own sentence, which never says the run did
+      // not start. Only the two entitlement refusals are translated; everything else throws.
+      let tripId: string
+      try {
+        tripId = await deps.create({
+          reel_urls: urls,
+          requested_places: [],
+          destination_hint: typeof args.destination_hint === 'string' ? args.destination_hint : null,
+          start_date: start,
+          end_date: end,
+          budget_level: (args.budget_level as GenerateTripRequest['budget_level']) ?? null,
+          origin_city: typeof args.origin_city === 'string' ? args.origin_city : null,
+          preferences,
+        } as GenerateTripRequest)
+      } catch (err) {
+        const refused = refusalReply(err)
+        if (refused) return refused
+        throw err
+      }
 
       deps.openStream(tripId)
 

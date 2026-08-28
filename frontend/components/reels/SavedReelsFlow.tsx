@@ -1,28 +1,24 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useRouter } from 'next/navigation'
 import { captureSavedReel, getOrganizeStatus, listSavedReelCards, startOrganize, streamOrganize } from '@/lib/reels/api'
 import type { OrganizeItemStatus, OrganizeJob, OrganizeStreamEvent, SavedReelCard, SavedReelPlaceProof } from '@/lib/reels/backend-types'
-import type { StreamEvent } from '@/lib/trip/backend-types'
 import { groupPlacesByCountry, type CountryTray } from '@/lib/reels/organize'
 import { overlayLiveStatus, wasAlreadySaved } from '@/lib/reels/labels'
 import { getAccessToken } from '@/lib/supabase/session'
-import { generateTrip, streamGeneration } from '@/lib/trip/api'
+import { generateTrip } from '@/lib/trip/api'
 import { toGenerateRequest, type BriefInput, type DraftInspirationItem } from '@/lib/trip/parse-inspiration'
 import { classifyGenerateError, useEntitlement } from '@/lib/entitlement'
 import TrialExhaustedCard from '@/components/entitlement/TrialExhaustedCard'
-import { useSharedMap } from '@/components/map/MapProvider'
 import { useOptionalWebMcpRegistry } from '@/components/webmcp/WebMcpRegistry'
 import { useOptionalGeneration } from '@/components/generation/GenerationProvider'
-import { relightDurationMs } from '@/components/map/relight'
 import GenerationScene from '@/components/create/GenerationScene'
 import TraysScreen from './TraysScreen'
 import OrganizeGlobe from './OrganizeGlobe'
 import CountryTrays from './CountryTrays'
 import PlanSheet from './PlanSheet'
 
-type Phase = 'inbox' | 'organizing' | 'trays' | 'brief' | 'review' | 'generating'
+type Phase = 'inbox' | 'organizing' | 'trays' | 'brief' | 'generating'
 
 const EMPTY_BRIEF: BriefInput = {
   destination_hint: '', start_date: '', end_date: '', origin_city: '', budget_level: '', preferences: '',
@@ -31,10 +27,6 @@ const EMPTY_BRIEF: BriefInput = {
 // The backend GenerateTripRequest caps place_ids at 5 (api/schemas.py, max_length=5);
 // enforce it in the picker so a 6th selection can't produce a terminal 422.
 const MAX_PLACES = 5
-
-function tripIdFromResult(content: string, fallback: string): string {
-  try { return (JSON.parse(content) as { trip_id?: string }).trip_id ?? fallback } catch { return fallback }
-}
 
 export function toReelBriefItem(place: SavedReelPlaceProof): DraftInspirationItem {
   return {
@@ -51,9 +43,14 @@ export function toReelBriefItem(place: SavedReelPlaceProof): DraftInspirationIte
  *  only bites on a job that never reaches a terminal status and so is never retired. */
 const MAX_ADOPTED_JOBS = 8
 
+// What the user is told when a run ends any way but complete. The shell navigates on SUCCESS only,
+// so without these the wait screen is where the session ends. `unknown` is deliberately not worded
+// as a failure: the job is durable and may well still land, and telling someone to start again
+// spends their allowance on a trip they are about to get.
+const RUN_FAILED_MESSAGE = 'Your trip could not be finished. You can try generating it again.'
+const RUN_LOST_MESSAGE = 'We lost contact with your trip while it was being built. It may still finish — check your trips before starting another.'
+
 export default function SavedReelsFlow() {
-  const router = useRouter()
-  const { setLightPreset } = useSharedMap()
   // Optional so this component still renders in tests and any shell without the provider.
   const shell = useOptionalGeneration()
   const shellRun = shell?.run
@@ -341,16 +338,41 @@ export default function SavedReelsFlow() {
   // A terminal run refunds a failed generation in the same transaction that emitted the result,
   // so the entitlement gate must be re-read or it stays a generation behind. It used to happen
   // inline in the stream handler; the stream now belongs to the shell.
+  //
+  // The same effect owns the way OUT of the wait screen. The shell navigates on success only, so
+  // a failed result or a dead stream left `phase` on 'generating' and GenerationScene on screen
+  // for the rest of the session, with no route back and nothing said about why.
+  //
+  // Read through a ref, and keyed on `status` alone — this is about the run's status CHANGING, not
+  // about the phase. A retry sets the phase back to 'generating' while the DEAD run's terminal
+  // status is still the current one; an effect that watched the phase too would fire there,
+  // conclude the fresh run had already ended, and freeze the previous run's reason on screen — so
+  // a second run that merely lost contact would be reported as a trip that died.
   const status = shellRun?.status
+  const phaseRef = useRef(phase)
+  phaseRef.current = phase
   useEffect(() => {
     if (status === 'complete' || status === 'failed') void entRef.current.refetch()
+    if (status !== 'failed' && status !== 'unknown') return
+    // The reason is set whatever phase this page is in. An AGENT-started run takes the viewport
+    // from the inbox, the trays or mid-organize, and when it ends the takeover simply lifts —
+    // dropping the user back where they were with nothing said. Routing the reason to PlanSheet
+    // alone meant they saw it only if they happened to be in the brief.
+    setGenerateError(status === 'failed' ? RUN_FAILED_MESSAGE : RUN_LOST_MESSAGE)
+    // The phase moves only for OUR OWN wait screen. An agent-started run has a workflow
+    // underneath it — trays, a selection, a half-filled brief — and yanking that to the brief
+    // would cost the user work they never offered up.
+    if (phaseRef.current === 'generating') setPhase('brief')
   }, [status])
 
   async function handleGenerate() {
-    // The lock is shared with the agent's `plan_trip_from_reels`. Without it a click and an
-    // approval land two real backend runs, each spending Apify and OpenAI credit, and neither
-    // stops the other. Hiding the button on the next render is not a concurrency guard.
-    if (shell && !shell.canStart()) {
+    /* The lock is shared with the agent's `plan_trip_from_reels`, and it is TAKEN here rather
+       than read. The old check left it free across the token fetch and the POST below, so a
+       click and an approval could both pass it and land two real backend runs — each spending
+       Apify and OpenAI credit, neither stopping the other. Hiding the button on the next render
+       is not a concurrency guard, and neither is a question whose answer goes stale mid-await. */
+    const reservation = shell?.reserve() ?? null
+    if (shell && !reservation) {
       setGenerateError('A trip is already being built. Wait for it to finish, then try again.')
       return
     }
@@ -360,11 +382,15 @@ export default function SavedReelsFlow() {
       const token = await getAccessToken()
       const request = toGenerateRequest(briefItems, brief)
       const response = await generateTrip({ ...request, reel_urls: [], requested_places: [], place_ids: selectedPlaceIds }, token)
-      if (!activeRef.current) return
-      // The shell owns the stream, the event history, the dawn relight and the navigation — so a
-      // run survives this page unmounting, and so the agent's run and this one are the same run.
-      shell?.start(response.trip_id)
+      // Committed before the mounted check, deliberately. The shell owns the stream, the event
+      // history, the dawn relight and the navigation, and it outlives this page — so a user who
+      // navigates away mid-POST still gets the trip they have already paid for. (`begin` refuses
+      // on its own if the SHELL has gone, which is the case where nothing could render it.)
+      reservation?.begin(response.trip_id)
     } catch (err) {
+      // No backend job exists — hand the lock back before anything else, or every later
+      // generation is blocked for the session.
+      reservation?.release()
       if (activeRef.current) {
         setPhase('brief')
         // trial_exhausted → the card; every other backend code (incl. the structured
@@ -403,13 +429,40 @@ export default function SavedReelsFlow() {
     setPhase('trays')
   }
 
-  if (phase === 'organizing') return <OrganizeGlobe message={organizeMessage} />
-  if (phase === 'trays') return <CountryTrays trays={trays} selectedPlaceIds={selectedPlaceIds} maxSelected={MAX_PLACES} onToggle={(id) => setSelectedPlaceIds((current) => current.includes(id) ? current.filter((value) => value !== id) : current.length < MAX_PLACES ? [...current, id] : current)} onPlan={() => setPhase('brief')} onBack={() => setPhase('inbox')} />
-  // `phase` is this page's own workflow; `shell.run` is the trip being built, whoever started it.
-  // Either one showing means the wait screen owns the viewport.
-  if (phase === 'generating' || shellRun?.status === 'generating') {
+  /* The run's ending, rendered wherever the takeover put the user back down.
+
+     FIXED, above everything. CountryTrays is a `fixed inset-0 z-50` overlay, so a notice in
+     normal flow ahead of it is in the DOM and behind the map — present to a test, invisible to
+     the person it is for. It has to sit above the screen it is reporting on.
+
+     PlanSheet already shows this same message through its `error` prop, so the brief branch is
+     deliberately not wrapped — one message, in one place, per screen. */
+  const runNotice = generateError ? (
+    <p
+      role="alert"
+      className="fixed left-1/2 top-4 z-[60] w-[min(32rem,calc(100vw-2rem))] -translate-x-1/2 rounded-lg border border-dashed border-[color:var(--line-soft)] bg-[color:var(--surface-2)] p-3 text-center text-[13px] text-[color:var(--text-muted)] shadow-lg"
+    >
+      {generateError}
+    </p>
+  ) : null
+
+  /* A generation in flight is the FIRST branch, ahead of every phase.
+     `phase` is this page's own workflow; `shell.run` is the trip being built, whoever started it.
+     The phase branches used to come first, so an agent-started run beginning while the user was
+     in the trays or mid-organize never reached this check at all: the agent narrated a trip into
+     chat beside a website showing an unrelated screen. Approval is what makes the takeover
+     intentional, and nothing underneath is destroyed by it — trays, selection and brief are this
+     component's own state and are still there when the run ends. */
+  if (shellRun?.status === 'generating' || phase === 'generating') {
     return <GenerationScene tripId={shellRun?.tripId ?? null} events={shellRun?.events ?? []} />
   }
+  if (phase === 'organizing') return <>{runNotice}<OrganizeGlobe message={organizeMessage} /></>
+  if (phase === 'trays') return (
+    <>
+      {runNotice}
+      <CountryTrays trays={trays} selectedPlaceIds={selectedPlaceIds} maxSelected={MAX_PLACES} onToggle={(id) => setSelectedPlaceIds((current) => current.includes(id) ? current.filter((value) => value !== id) : current.length < MAX_PLACES ? [...current, id] : current)} onPlan={() => setPhase('brief')} onBack={() => setPhase('inbox')} />
+    </>
+  )
   if (phase === 'brief') return (
     <PlanSheet
       places={selectedPlaces}
@@ -432,6 +485,7 @@ export default function SavedReelsFlow() {
   )
   return (
     <div>
+      {runNotice}
       {inboxMessage ? (
         <p role="alert" className="mb-6 rounded-lg border border-dashed border-[color:var(--line-soft)] bg-[color:var(--surface-2)] p-3 text-[13px] text-[color:var(--text-muted)]">
           {inboxMessage}

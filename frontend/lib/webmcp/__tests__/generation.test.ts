@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { StreamEvent } from '@/lib/trip/backend-types'
-import { createGenerationStore } from '../generation'
+import { ERROR_CODE_RATE_LIMITED, ERROR_CODE_TRIAL_EXHAUSTED } from '@/lib/trip/backend-types'
+import { ApiError } from '@/lib/trip/api'
+import { createGenerationStore, readResultVerdict } from '../generation'
 import { getTripProgressTool, planTripFromReelsTool } from '../tools/generation'
 
 /** A stream we drive by hand, so no EventSource and no real time is involved. */
@@ -96,6 +98,60 @@ describe('generation store', () => {
     expect(h.store.snapshot()!.status).toBe('complete')
   })
 
+  it('treats a result carrying {error} as FAILED, not complete', () => {
+    /* A leased backend failure emits exactly this: a terminal result whose payload carries an
+       error, with NO preceding `error` event (runner.py:154 -> streaming.py:53). The status in
+       here is what every consumer reads — get_trip_progress included — so calling it complete
+       makes the agent tell the user a dead run is ready. Fixing only the page left the two
+       disagreeing: page failed, agent complete. */
+    const h = harness()
+    h.start()
+    h.emit({ type: 'result', content: JSON.stringify({ error: 'lease lost' }) })
+    expect(h.store.snapshot()!.status).toBe('failed')
+  })
+
+  it('does not call an unreadable result complete', () => {
+    /* Unreadable is not evidence of failure — calling it one sends the user to pay for a second
+       generation of a trip they already have. It is not evidence of SUCCESS either, and that is
+       the half the first fix got wrong: `complete` makes get_trip_progress say "the trip is
+       ready" and the shell navigate to a trip that may not exist. `unknown` is the only honest
+       verdict on a frame we could not read, and it sends the agent to the page rather than
+       asserting either outcome. */
+    const h = harness()
+    h.start()
+    h.emit({ type: 'result', content: 'not json at all' })
+    expect(h.store.snapshot()!.status).toBe('unknown')
+  })
+
+  it('treats a result carrying a null error as FAILED — presence, not truthiness', () => {
+    // `{"error": null}` reads as a failure frame that lost its message, never as a success.
+    const h = harness()
+    h.start()
+    h.emit({ type: 'result', content: JSON.stringify({ error: null }) })
+    expect(h.store.snapshot()!.status).toBe('failed')
+  })
+
+  it('marks the run unknown when it is stopped, rather than leaving it generating for ever', () => {
+    /* stop() cancels the stream and hands the lock back, but used to leave the snapshot on
+       'generating'. Nothing was watching that run any more, so get_trip_progress answered
+       "generating" for ever and the page kept the wait screen up with no stream behind it.
+       'unknown' is the honest verdict: the durable job may well still land. */
+    const h = harness()
+    h.start()
+    h.store.stop()
+    expect(h.store.snapshot()!.status).toBe('unknown')
+  })
+
+  it('leaves a finished run\'s verdict alone when the store is stopped', () => {
+    // Downgrading a completed trip to 'unknown' on the way out would tell the agent it had lost
+    // contact with a trip the page had already opened.
+    const h = harness()
+    h.start()
+    h.emit({ type: 'result', content: JSON.stringify({ itinerary: {} }) })
+    h.store.stop()
+    expect(h.store.snapshot()!.status).toBe('complete')
+  })
+
   it('goes failed on an error event', () => {
     const h = harness()
     h.start()
@@ -108,6 +164,50 @@ describe('generation store', () => {
     h.start()
     h.fail()
     expect(h.store.snapshot()!.status).toBe('unknown')
+  })
+})
+
+describe('readResultVerdict — success, failed, or unreadable', () => {
+  /* Three outcomes, not two. A boolean `isFailure` collapsed "we could not read this" into
+     "not a failure", which every caller then rendered as a finished trip. */
+
+  it('reads the real success payload as success', () => {
+    // What the backend actually writes on the happy path (pipeline/runner.py:652).
+    expect(readResultVerdict(JSON.stringify({ itinerary: { days: [] } }))).toBe('success')
+  })
+
+  it('reads the real failure payload as failed', () => {
+    expect(readResultVerdict(JSON.stringify({ error: 'lease lost' }))).toBe('failed')
+  })
+
+  it.each([
+    ['a null error', JSON.stringify({ error: null })],
+    ['an empty error', JSON.stringify({ error: '' })],
+    ['a false error', JSON.stringify({ error: false })],
+  ])('treats %s as failed — the field being THERE is the signal', (_label, content) => {
+    /* The first fix tested `Boolean(parsed.error)`, so a failure frame whose message was empty,
+       null or false read as a completed trip. The presence of the key is what the backend means
+       by failure; its contents are only the reason. */
+    expect(readResultVerdict(content)).toBe('failed')
+  })
+
+  it.each([
+    ['not json at all'],
+    [''],
+    ['{"unterminated": '],
+  ])('calls malformed JSON unreadable (%s)', (content) => {
+    expect(readResultVerdict(content)).toBe('unreadable')
+  })
+
+  it.each([
+    ['null', 'null'],
+    ['a bare string', '"done"'],
+    ['a number', '42'],
+    ['an array', '[{"error":"x"}]'],
+  ])('calls non-object JSON unreadable (%s)', (_label, content) => {
+    // `JSON.parse` succeeds on all of these and `.error` is undefined, so a truthiness test
+    // called every one of them a success.
+    expect(readResultVerdict(content)).toBe('unreadable')
   })
 })
 
@@ -181,6 +281,18 @@ describe('get_trip_progress', () => {
     const out = String(await getTripProgressTool(h.store, 0).execute({}))
     expect(out).toContain('complete')
     expect(out).toContain('next_tool: get_itinerary')
+  })
+
+  it('never tells the agent a dead run is ready', async () => {
+    // The whole point of the store fix: get_trip_progress is the agent's only view of the run.
+    const h = harness()
+    h.start()
+    h.emit(stage('narrate', 'Writing your days'))
+    h.emit({ type: 'result', content: JSON.stringify({ error: 'lease lost' }) })
+    const out = String(await getTripProgressTool(h.store, 0).execute({}))
+    expect(out).toContain('failed')
+    expect(out).not.toContain('the trip is ready')
+    expect(out).not.toContain('get_itinerary')
   })
 
   it('reports a failure with the stage it died on', async () => {
@@ -272,6 +384,17 @@ describe('plan_trip_from_reels', () => {
       start_date: '2026-03-07', end_date: '2026-03-03',
     })
     expect(String(out)).toContain('before start_date')
+  })
+
+  it('does not tell the agent the reels have to be SAVED first', () => {
+    /* The same false prerequisite already removed from get_app_state's snapshot, still standing
+       in the sentence the agent reads right beside it: "from 1-5 saved Instagram Reels" sends it
+       to the save form on an empty account instead of asking for links it could plan from. The
+       tool normalizes raw pasted URLs and the backend runs no ownership check on `reel_urls`, so
+       saving is one SOURCE of links and never a precondition. */
+    const description = planTripFromReelsTool(deps()).description
+    expect(description).not.toMatch(/saved Instagram Reels/i)
+    expect(description).toContain('saving them first is optional')
   })
 
   it('returns structured next-step fields, not just prose', async () => {
@@ -376,5 +499,142 @@ describe('plan_trip_from_reels — what the approval card says about cost', () =
     const card = d.confirm.mock.calls[0][0]
     expect(card).toContain('2026-03-03')
     expect(card).toContain('allowance')
+  })
+})
+
+describe('plan_trip_from_reels — an allowance it cannot spend', () => {
+  const url = 'https://www.instagram.com/reel/Cabc123/'
+
+  const deps = (over = {}) => ({
+    store: createGenerationStore(),
+    create: vi.fn().mockResolvedValue('trip-123'),
+    openStream: vi.fn(),
+    confirm: vi.fn().mockResolvedValue(true),
+    ...over,
+  })
+
+  const run = (d: ReturnType<typeof deps>) =>
+    planTripFromReelsTool(d).execute({
+      reel_urls: [url], start_date: '2026-03-03', end_date: '2026-03-07',
+    })
+
+  it('never shows the approval card when the free trial is already spent', async () => {
+    /* The captured defect: the tool had no entitlement dependency at all, so an exhausted
+       account got the approval card, the user approved the spend, and only THEN did the backend
+       refuse. Approve-then-rejected is the worst order to fail in — consent is taken first and
+       nothing comes back that explains why. A trial account has ONE lifetime generation. */
+    const d = deps({ readAllowance: vi.fn().mockResolvedValue('trial_exhausted') })
+    const out = String(await run(d))
+    expect(d.confirm).not.toHaveBeenCalled()
+    expect(d.create).not.toHaveBeenCalled()
+    expect(d.openStream).not.toHaveBeenCalled()
+    expect(out).toMatch(/free trial/i)
+  })
+
+  it('names the LIFETIME trial, and that this one does not come back', async () => {
+    // "Rejected" on its own leaves the agent guessing between a limit that resets overnight and
+    // one that never does. Only one of those is worth telling the user to wait for.
+    const d = deps({ readAllowance: vi.fn().mockResolvedValue('trial_exhausted') })
+    const out = String(await run(d))
+    expect(out).toMatch(/does not reset/i)
+    expect(out).toMatch(/seat/i)
+    expect(out).toMatch(/nothing was spent/i)
+  })
+
+  it('does not even read the reel library for a spend that cannot happen', async () => {
+    const readLibrary = vi.fn().mockResolvedValue([])
+    const d = deps({ readAllowance: vi.fn().mockResolvedValue('trial_exhausted'), readLibrary })
+    await run(d)
+    expect(readLibrary).not.toHaveBeenCalled()
+  })
+
+  it('consults the allowance and PROCEEDS anyway when it is not known', async () => {
+    /* Never a confident zero on data we failed to read. An advisory read that has not landed is
+       evidence of nothing, and a false refusal costs the user a trip they were entitled to —
+       strictly worse than the backend refusing a beat later. The backend RPC stays the authority. */
+    const readAllowance = vi.fn().mockResolvedValue('unknown')
+    const d = deps({ readAllowance })
+    await run(d)
+    expect(readAllowance).toHaveBeenCalled()
+    expect(d.confirm).toHaveBeenCalled()
+    expect(d.create).toHaveBeenCalled()
+  })
+
+  it('proceeds when the allowance read itself throws', async () => {
+    const readAllowance = vi.fn().mockRejectedValue(new Error('offline'))
+    const d = deps({ readAllowance })
+    await run(d)
+    expect(readAllowance).toHaveBeenCalled()
+    expect(d.confirm).toHaveBeenCalled()
+    expect(d.create).toHaveBeenCalled()
+  })
+
+  it('proceeds when no allowance reader is wired at all', async () => {
+    const d = deps()
+    await run(d)
+    expect(d.confirm).toHaveBeenCalled()
+  })
+})
+
+describe('plan_trip_from_reels — refused by the backend after the user approved', () => {
+  const url = 'https://www.instagram.com/reel/Cabc123/'
+
+  const deps = (over = {}) => ({
+    store: createGenerationStore(),
+    create: vi.fn().mockResolvedValue('trip-123'),
+    openStream: vi.fn(),
+    confirm: vi.fn().mockResolvedValue(true),
+    ...over,
+  })
+
+  const run = (d: ReturnType<typeof deps>) =>
+    planTripFromReelsTool(d).execute({
+      reel_urls: [url], start_date: '2026-03-03', end_date: '2026-03-07',
+    })
+
+  it('explains a trial rejection rather than handing back a raw backend error', async () => {
+    /* The pre-gate is a courtesy, not a boundary: a stale client state or a manual generation
+       started in another tab still lands here. What came back was an isError text response
+       carrying the backend's marketing sentence, which never says the run did not start. */
+    const d = deps({
+      create: vi.fn().mockRejectedValue(new ApiError(
+        403, ERROR_CODE_TRIAL_EXHAUSTED,
+        'Your free trip is planned. Beta seats unlock unlimited planning — only 25 exist.',
+      )),
+    })
+    const out = String(await run(d))
+    expect(out).toMatch(/free trial/i)
+    expect(out).toMatch(/does not reset/i)
+    expect(out).toMatch(/no trip was created/i)
+    expect(d.openStream).not.toHaveBeenCalled()
+  })
+
+  it("relays the backend's own sentence for a rate limit, inventing no reset time", async () => {
+    /* 429 `rate_limited` covers BOTH the beta daily quota and the 3/minute burst limiter (they
+       share a slug — backend api/errors.py maps every 429 to it), and those lift on completely
+       different clocks. Quoting the backend is the only way to name the right one. */
+    const d = deps({
+      create: vi.fn().mockRejectedValue(new ApiError(
+        429, ERROR_CODE_RATE_LIMITED, 'Daily trip limit reached. Try again tomorrow.',
+      )),
+    })
+    const out = String(await run(d))
+    expect(out).toContain('Daily trip limit reached. Try again tomorrow.')
+    expect(out).toMatch(/no trip was created/i)
+    expect(out).not.toMatch(/free trial/i)
+  })
+
+  it('still throws on a failure it cannot explain', async () => {
+    // The obvious wrong fix is a broad catch that turns every backend failure into a calm
+    // sentence. A 503 is not a refusal and must stay an error the activity rail marks failed.
+    const d = deps({
+      create: vi.fn().mockRejectedValue(new ApiError(503, 'identity_unavailable', 'nope')),
+    })
+    await expect(run(d)).rejects.toThrow('nope')
+  })
+
+  it('still throws when the in-page run lock is already held', async () => {
+    const d = deps({ create: vi.fn().mockRejectedValue(new Error('A trip is already being built.')) })
+    await expect(run(d)).rejects.toThrow('already being built')
   })
 })

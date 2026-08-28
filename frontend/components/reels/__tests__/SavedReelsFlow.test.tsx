@@ -73,7 +73,7 @@ vi.mock('mapbox-gl/dist/mapbox-gl.css', () => ({}))
 
 import SavedReelsFlow, { toReelBriefItem } from '@/components/reels/SavedReelsFlow'
 import MapProvider from '@/components/map/MapProvider'
-import GenerationProvider from '@/components/generation/GenerationProvider'
+import GenerationProvider, { useGeneration, type GenerationApi } from '@/components/generation/GenerationProvider'
 import { ApiError } from '@/lib/trip/api'
 import type { SavedReelCard, SavedReelPlaceProof } from '@/lib/reels/backend-types'
 
@@ -713,6 +713,86 @@ describe('SavedReelsFlow', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Seat service is down.')
     expect(requestSeat).toHaveBeenCalledTimes(1)
   })
+
+  // --- A run that ends badly must give the user the page back (Codex HIGH #2) ---
+  //
+  // The shell navigates on success ONLY, and this page's own `phase` stays 'generating' until
+  // something moves it. So a terminal {error} result — or a stream that gives up — left the
+  // GenerationScene wait screen on screen for the rest of the session with no route out of it.
+
+  async function generateFromBrief() {
+    await reachBrief()
+    pickTripDates()
+    fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
+  }
+
+  it('returns to the brief with the reason when the run ends in a failed result', async () => {
+    streamGeneration.mockImplementation((_id: string, _token: string, onEvent: (event: unknown) => void) => {
+      onEvent({ type: 'result', content: JSON.stringify({ error: 'lease lost' }) })
+      return { cancel: vi.fn() }
+    })
+    await generateFromBrief()
+
+    expect(await screen.findByRole('button', { name: /generate trip/i })).toBeInTheDocument()
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not be finished/i)
+    expect(push).not.toHaveBeenCalled()
+  })
+
+  it('returns to the brief when the stream gives up, without claiming the trip died', async () => {
+    // 'unknown' is not 'failed': the durable job may well still be running, so the copy must not
+    // send the user to spend a second generation on a trip that is about to land.
+    streamGeneration.mockImplementation((
+      _id: string, _token: string, _onEvent: (event: unknown) => void, _onReset: () => void, onFail: () => void,
+    ) => {
+      onFail()
+      return { cancel: vi.fn() }
+    })
+    await generateFromBrief()
+
+    expect(await screen.findByRole('button', { name: /generate trip/i })).toBeInTheDocument()
+    expect(await screen.findByRole('alert')).toHaveTextContent(/lost contact/i)
+    expect(push).not.toHaveBeenCalled()
+  })
+
+  it('lets the user try again after a failed run, and clears the old error', async () => {
+    // Leaving the wait screen is only half the way out — the retry has to actually reach the
+    // backend, which it cannot if the shell's single-run lock is still held by the dead run.
+    streamGeneration.mockImplementationOnce((_id: string, _token: string, onEvent: (event: unknown) => void) => {
+      onEvent({ type: 'result', content: JSON.stringify({ error: 'lease lost' }) })
+      return { cancel: vi.fn() }
+    })
+    await generateFromBrief()
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not be finished/i)
+
+    fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
+    await waitFor(() => expect(generateTrip).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(push).toHaveBeenCalledWith('/app/trip/trip-1'))
+  })
+
+  it('reports the retry’s own ending, not the previous run’s', async () => {
+    /* The exit has to key off the run's status CHANGING, not off the phase. A retry sets the phase
+       back to 'generating' while the dead run's terminal status is still the current one; an
+       effect that also watches the phase fires again there, decides the fresh run has already
+       ended, and freezes the first run's reason on screen — so a second run that merely lost
+       contact is reported as a trip that died. */
+    streamGeneration
+      .mockImplementationOnce((_id: string, _token: string, onEvent: (event: unknown) => void) => {
+        onEvent({ type: 'result', content: JSON.stringify({ error: 'lease lost' }) })
+        return { cancel: vi.fn() }
+      })
+      .mockImplementationOnce((
+        _id: string, _token: string, _onEvent: (event: unknown) => void, _onReset: () => void, onFail: () => void,
+      ) => {
+        onFail()
+        return { cancel: vi.fn() }
+      })
+    await generateFromBrief()
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not be finished/i)
+
+    fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
+    await waitFor(() => expect(streamGeneration).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(/lost contact/i))
+  })
 })
 
 describe('an agent-started extraction shows progress without a reload', () => {
@@ -973,5 +1053,142 @@ describe('an agent-started extraction shows progress without a reload', () => {
     await act(async () => { await Promise.resolve() })
     await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
     expect(getOrganizeStatus).not.toHaveBeenCalled()
+  })
+})
+
+describe('a run the AGENT started owns the page too, and says why when it ends', () => {
+  /* Codex HIGH: F2 only ever covered the run this page starts itself.
+     An agent-started run from the inbox showed the wait screen and then dropped silently back to
+     the inbox on failure — the reason reached PlanSheet, which the user was not looking at. From
+     the trays or mid-organize it was worse: those returns came BEFORE the shell-run check, so the
+     wait screen never appeared at all and the run was invisible on the page that owns generation.
+
+     The active shell run is now the first render branch, whoever started it. Approval is what
+     makes that takeover intentional, and `phase`, trays, selection and brief all survive it — so
+     a run that dies hands the user back the workflow they were in, with the reason on it. */
+
+  let shellApi: GenerationApi | null = null
+  function ShellProbe() { shellApi = useGeneration(); return null }
+
+  function renderFlow() {
+    return render(
+      <MapProvider><GenerationProvider><ShellProbe /><SavedReelsFlow /></GenerationProvider></MapProvider>,
+    )
+  }
+
+  let emit: ((event: unknown) => void) | null = null
+
+  beforeEach(() => {
+    emit = null
+    shellApi = null
+    push.mockReset()
+    getAccessToken.mockResolvedValue('token')
+    listSavedReelCards.mockReset(); listSavedReelCards.mockResolvedValue(cards)
+    generateTrip.mockReset(); generateTrip.mockResolvedValue({ trip_id: 'trip-1' })
+    useEntitlement.mockReset(); useEntitlement.mockReturnValue(NOT_EXHAUSTED)
+    // Hold the stream open so the test decides when — and how — the run ends.
+    streamGeneration.mockReset()
+    streamGeneration.mockImplementation((_id: string, _token: string, onEvent: (event: unknown) => void) => {
+      emit = onEvent
+      return { cancel: vi.fn() }
+    })
+  })
+
+  /** Starts a run the way plan_trip_from_reels does: through the shell's lock, not this page. */
+  async function agentStarts(tripId = 'trip-agent') {
+    await act(async () => { shellApi!.reserve()!.begin(tripId) })
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    await waitFor(() => expect(streamGeneration).toHaveBeenCalled())
+  }
+
+  async function runEnds(event: unknown) {
+    await act(async () => { emit!(event); await Promise.resolve() })
+  }
+
+  const FAILED_RESULT = { type: 'result', content: JSON.stringify({ error: 'lease lost' }) }
+
+  it('takes the inbox with the wait screen, and hands it back carrying the reason', async () => {
+    renderFlow()
+    await loadedInbox()
+
+    await agentStarts()
+    expect(await screen.findByTestId('generation-progress')).toBeInTheDocument()
+
+    await runEnds(FAILED_RESULT)
+
+    expect(await screen.findByText('Tokyo Tower at sunset')).toBeInTheDocument()
+    expect(await screen.findByText(/could not be finished/i)).toBeInTheDocument()
+    expect(push).not.toHaveBeenCalled()
+  })
+
+  it('takes the TRAYS with the wait screen — those returns used to win outright', async () => {
+    listSavedReelCards.mockResolvedValue([
+      cardWithPlaces('r1', 'One-place reel', [placeProof({ place_id: 'p1', name: 'Place 1' })]),
+    ])
+    renderFlow()
+    await screen.findByText('One-place reel')
+    createTrail()
+    await screen.findByRole('heading', { name: 'Japan' })
+    fireEvent.click(screen.getByRole('checkbox', { name: /select Place 1/i }))
+
+    await agentStarts()
+
+    expect(await screen.findByTestId('generation-progress')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Japan' })).not.toBeInTheDocument()
+  })
+
+  it('gives the trays back with the selection intact, and the reason on them', async () => {
+    // Losing the picked places to somebody else's failed run would make the takeover a cost the
+    // user never agreed to. Nothing about the trays is owned by the shell, so nothing is lost.
+    listSavedReelCards.mockResolvedValue([
+      cardWithPlaces('r1', 'One-place reel', [placeProof({ place_id: 'p1', name: 'Place 1' })]),
+    ])
+    renderFlow()
+    await screen.findByText('One-place reel')
+    createTrail()
+    await screen.findByRole('heading', { name: 'Japan' })
+    fireEvent.click(screen.getByRole('checkbox', { name: /select Place 1/i }))
+
+    await agentStarts()
+    await runEnds(FAILED_RESULT)
+
+    expect(await screen.findByRole('heading', { name: 'Japan' })).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: /select Place 1/i })).toBeChecked()
+    expect(await screen.findByText(/could not be finished/i)).toBeInTheDocument()
+  })
+
+  it('says the reason ONCE when the user is in the brief', async () => {
+    /* PlanSheet renders the same message through its `error` prop. A second copy from the
+       page-level notice would be two alerts saying the same thing, and would break every
+       existing getByRole('alert') on this screen. */
+    listSavedReelCards.mockResolvedValue([
+      cardWithPlaces('r1', 'One-place reel', [placeProof({ place_id: 'p1', name: 'Place 1' })]),
+    ])
+    renderFlow()
+    await screen.findByText('One-place reel')
+    createTrail()
+    await screen.findByRole('heading', { name: 'Japan' })
+    fireEvent.click(screen.getByRole('checkbox', { name: /select Place 1/i }))
+    fireEvent.click(screen.getByRole('button', { name: /plan this trip/i }))
+    await screen.findByRole('heading', { name: /plan this trip/i })
+
+    await agentStarts()
+    await runEnds(FAILED_RESULT)
+
+    const alerts = await screen.findAllByText(/could not be finished/i)
+    expect(alerts).toHaveLength(1)
+  })
+
+  it('does not claim the trip died when the stream merely lost contact', async () => {
+    // 'unknown' is not 'failed': the durable job may still land, and telling the user otherwise
+    // spends their allowance on a trip they are about to receive.
+    renderFlow()
+    await loadedInbox()
+    await agentStarts()
+    await runEnds({ type: 'result', content: 'not json at all' })
+
+    expect(await screen.findByText(/lost contact/i)).toBeInTheDocument()
+    expect(screen.queryByText(/could not be finished/i)).not.toBeInTheDocument()
+    expect(push).not.toHaveBeenCalled()
   })
 })

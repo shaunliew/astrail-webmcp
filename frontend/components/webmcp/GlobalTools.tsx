@@ -4,15 +4,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import type { Trip, TripBundle } from '@/lib/trip/backend-types'
 import { getTrip, listTrips } from '@/lib/trip/supabase-api'
-import { addTripPlace, deleteTripPlace, editTripDates, editTripPlace, generateTrip, replanTrip, streamGeneration } from '@/lib/trip/api'
-import { createGenerationStore } from '@/lib/webmcp/generation'
+import { addTripPlace, deleteTripPlace, editTripDates, editTripPlace, generateTrip, replanTrip } from '@/lib/trip/api'
 import { captureSavedReel, listSavedReelCards, startOrganize } from '@/lib/reels/api'
 import { getAccessToken } from '@/lib/supabase/session'
+import { TRIAL_LIFETIME_LIMIT, readEntitlement } from '@/lib/entitlement'
 import { globalTools } from '@/lib/webmcp/tools'
 import type { AppStateSnapshot } from '@/lib/webmcp/tools/app-state'
+import type { TripAllowance } from '@/lib/webmcp/tools/generation'
 import { RegisterTools } from './RegisterTools'
 import { useWebMcpRegistry } from './WebMcpRegistry'
-import { useGeneration } from '@/components/generation/GenerationProvider'
+import { useGeneration, type RunReservation } from '@/components/generation/GenerationProvider'
 
 /**
  * The always-on tools, wired to real data.
@@ -28,7 +29,9 @@ const ROUTE_LABEL: [RegExp, string][] = [
   [/^\/app\/trips/, 'your saved trips'],
   [/^\/app\/settings/, 'settings'],
   [/^\/app\/onboarding/, 'onboarding'],
-  [/^\/app\/?$/, 'Saved Reels — where trips start'],
+  // A capability, not an inventory. "Saved Reels — where trips start" read as a shelf, and the
+  // agent answered in kind: it described the page instead of offering to use it.
+  [/^\/app\/?$/, 'Saved Reels — plan a trip here, or save Reels to plan from later'],
 ]
 
 function labelFor(pathname: string): string {
@@ -46,6 +49,10 @@ export default function GlobalTools() {
   // renders as a confident "you have none", which is a different claim entirely.
   const [trips, setTrips] = useState<Trip[] | null>(null)
   const [reels, setReels] = useState<{ count: number; places: number } | null>(null)
+  // `create` and `openStream` are two deps of one tool call — the tool creates the job, then
+  // hands the id back for streaming — so the reservation taken by the first has to reach the
+  // second. A ref, because nothing renders from it and a re-render must not drop it.
+  const reservationRef = useRef<RunReservation | null>(null)
 
   const pathRef = useRef(pathname)
   pathRef.current = pathname
@@ -82,17 +89,29 @@ export default function GlobalTools() {
     if (complete !== null && complete > 0) {
       nextSteps.push({ label: 'open a finished trip and edit it', tool: 'list_trips' })
     }
-    nextSteps.push({ label: 'plan a new trip from saved Instagram Reels', tool: 'plan_trip_from_reels', needs: 'dates' })
-    nextSteps.push({ label: 'save more Instagram Reels', tool: 'save_reels' })
+    // Saved reels are one SOURCE of links, never a precondition: the tool takes raw pasted URLs
+    // and the backend does no ownership check on `reel_urls`. Saying "from saved Reels" sent the
+    // agent to the save form on an empty account instead of asking for links it could plan from.
+    nextSteps.push({
+      label: 'plan a trip from Instagram Reel links — saving them first is optional',
+      tool: 'plan_trip_from_reels',
+      needs: '1-5 reel links and dates, YYYY-MM-DD',
+    })
+    // "save more" is a claim about the library, and it is false on an empty account — the same
+    // class of defect as the blocker below. This names the ACTION and what it is for, which is
+    // true whether the user has nothing saved or fifty.
+    nextSteps.push({ label: 'save Instagram Reels to plan from later', tool: 'save_reels' })
     if (!path.startsWith('/app/trip/')) {
       nextSteps.push({ label: 'see what is on the map for a trip', tool: 'get_itinerary', needs: 'a trip open' })
     }
 
-    // Only claim something is blocked when we actually KNOW it is. An unknown count blocks nothing.
+    // Only claim something is blocked when we actually KNOW it is. An unknown count blocks
+    // nothing — and neither does an empty library. That last one was here, and it was wrong:
+    // `plan_trip_from_reels` requires reel_urls + dates, accepts raw pasted links, and the
+    // backend runs no ownership check on them. An account with nothing saved can still plan,
+    // so the empty case belongs in the counts above ("0 saved reels"), not here. Anything added
+    // to this list must be a step that would genuinely FAIL if the agent tried it.
     const blocked: string[] = []
-    if (all !== null && all.length === 0 && savedReels !== null && savedReels.count === 0) {
-      blocked.push('nothing saved yet — start by saving a Reel')
-    }
 
     return {
       where: labelFor(path),
@@ -174,31 +193,76 @@ export default function GlobalTools() {
     }))
   }, [])
 
+  /**
+   * Whether this account can still spend a generation — the same fact the manual flow gates on,
+   * asked at CALL time rather than at mount.
+   *
+   * The plain own-row read, not `useEntitlement`. The hook loads once on mount and only the
+   * flows call its `refetch`, so a value cached here would go stale in the direction that costs
+   * the user something: `complete_trip_run` refunds `lifetime_trip_count` when a run fails, and
+   * a cached "exhausted" would then refuse a trip the backend would have allowed. (It also drags
+   * in a second listTrips() for a canonical-trip link no tool uses.)
+   *
+   * Fail-OPEN, deliberately: a read that throws resolves to `unknown`, which proceeds. A refusal
+   * we cannot substantiate is worse than one the backend delivers a beat later — and the backend
+   * check is still there, so this only ever avoids asking for consent we cannot honour.
+   */
+  const readAllowance = useCallback(async (): Promise<TripAllowance> => {
+    try {
+      const { plan, lifetimeTripCount } = await readEntitlement()
+      // Keyed on the PLAN, not on the raw count: a beta seat is on the daily quota, which lives
+      // in user_daily_usage and the browser never reads. Refusing a seat holder on a lifetime
+      // count would be a guess, and the backend names that limit itself when it refuses.
+      return plan === 'trial' && lifetimeTripCount >= TRIAL_LIFETIME_LIMIT ? 'trial_exhausted' : 'ok'
+    } catch {
+      return 'unknown'
+    }
+  }, [])
+
   const generation = useMemo(
     () => ({
       store: shell.store,
       create: async (req: Parameters<typeof generateTrip>[0]) => {
-        // Checked BEFORE the backend call, and synchronously: a second generation spends real
-        // Apify and OpenAI credit, does not stop the first, and `get_trip_progress` cannot even
-        // recover the abandoned one. The tool description says "never call this twice"; this is
-        // what actually enforces it.
-        if (!shell.canStart()) {
+        /* The lock is TAKEN here, not merely read. `canStart()` answered a question and left the
+           lock free across the token fetch and the POST below, so a manual click and an agent
+           approval could both pass it and both create a real backend job — two lots of Apify and
+           OpenAI credit, neither stopping the other, and `get_trip_progress` unable to recover
+           the abandoned one. The tool description says "never call this twice"; this is what
+           actually enforces it. */
+        const reservation = shell.reserve()
+        if (!reservation) {
           throw new Error('A trip is already being built. Wait for it to finish, then try again.')
         }
-        const token = await getAccessToken()
-        const res = await generateTrip(req, token)
-        return res.trip_id
+        reservationRef.current = reservation
+        try {
+          const token = await getAccessToken()
+          const res = await generateTrip(req, token)
+          return res.trip_id
+        } catch (err) {
+          // No backend job exists, so the lock goes back immediately. Holding it would block
+          // every later generation — the agent's and the user's — for the rest of the session.
+          reservationRef.current = null
+          reservation.release()
+          throw err
+        }
       },
       openStream: (tripId: string) => {
-        // Hands the run to the shell, which opens the one stream, keeps the event history the
-        // wait screen renders from, and navigates when it finishes. Returns immediately — the
-        // tool must resolve in about a second and must never await the stream.
-        shell.start(tripId)
+        // Commits the reservation `create` took: the shell opens the one stream, keeps the event
+        // history the wait screen renders from, and navigates when it finishes. Returns
+        // immediately — the tool must resolve in about a second and must never await the stream.
+        const reservation = reservationRef.current
+        reservationRef.current = null
+        // No reservation means no lock is held by this call, and starting a stream anyway is
+        // exactly the second unowned run the reservation exists to prevent. `begin` applies the
+        // same rule to a reservation that expired while the POST above was in flight: it reports
+        // the job as orphaned rather than opening a stream on a lock it no longer holds.
+        reservation?.begin(tripId)
       },
       confirm: requestConfirm,
       readLibrary: loadSavedReels,
+      readAllowance,
     }),
-    [requestConfirm, loadSavedReels, shell],
+    [requestConfirm, loadSavedReels, readAllowance, shell],
   )
 
   const edit = useMemo(

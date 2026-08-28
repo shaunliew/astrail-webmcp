@@ -100,7 +100,9 @@ export function setMapModeTool(deps: MapDeps): ToolSpec {
       required: ['mode'],
       additionalProperties: false,
     },
-    annotations: { readOnlyHint: false },
+    // Explicitly false, not merely omitted: this tool's every reply is a fixed sentence, and an
+    // absent hint is an unaudited tool rather than a safe one.
+    annotations: { readOnlyHint: false, untrustedContentHint: false },
     execute: (args) => {
       const mode = String(args.mode ?? '')
       if (mode !== 'route' && mode !== 'hub') return 'mode must be "route" or "hub".'

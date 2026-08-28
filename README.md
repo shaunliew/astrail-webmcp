@@ -81,13 +81,36 @@ Open [http://localhost:3000](http://localhost:3000). A real generation needs val
 
 ## Test in ChatGPT
 
-1. Open the deployed challenge URL in the **ChatGPT desktop app's built-in browser**, not Safari or Chrome.
-2. Select **GPT-5.6 Sol or Terra**. Luna has WebMCP disabled.
-3. Turn on **Settings > Browser > Permissions > Enable site tools**.
-4. Sign in with the submission account, then look for the **Site tools** arrow in the address bar and the **WebMCP chip** at the bottom-right of Astrail.
-5. Start with “What can I do here?” so the agent calls `get_app_state`, then ask it to inspect a trip and show a stop's evidence on the map.
+> **Filled in at submission:** the live URL and the judge account below are placeholders until the
+> challenge deployment exists. They are the two things this section cannot be followed without.
 
-**TODO: Demo credentials — add the submission account before judging.**
+- **Live URL:** `<filled at submission>`
+- **Judge account:** `<filled at submission>` — email and password. There is no OAuth in the judged
+  path: Google refuses OAuth inside embedded browsers, so Astrail ships a plain password sign-in
+  for this.
+
+Then:
+
+1. Open the URL in the **ChatGPT desktop app's built-in browser** — not Safari, not Chrome. Site
+   tools do not exist anywhere else.
+2. Select **GPT-5.6 Sol or Terra**. Luna has WebMCP disabled, and site tools are unavailable in
+   Enterprise or Edu workspaces.
+3. Turn on **Settings › Browser › Permissions › Enable site tools**.
+4. Sign in with the judge account. Two redirects to expect, both normal:
+   `/app` sends you to `/sign-in` while signed out (`frontend/middleware.ts:36`), and a brand-new
+   account is sent once through `/app/onboarding` before `/app` opens (`:42`). The judge account is
+   pre-onboarded, so you should land on `/app` directly.
+5. Click the **Site tools** arrow in the address bar → **Available site tools**. You should see
+   **13** tools, and **16** once a trip is open. The on-page **WebMCP chip** shows the same count.
+6. Then, in chat:
+   - *"What can I do here?"* → `get_app_state`
+   - *"Plan me 3 days in Osaka, 14-16 March, from these reels: …"* with any 1-5 public Instagram
+     Reel links. They do **not** need to be saved first. Approve the card that appears on the page.
+   - *"Why is stop 4 on this trip?"* → the verbatim caption quote and its source Reel
+   - *"Show me day 2 in 3D"* and *"move stop 7 to day 3"* → the map changes in front of you
+
+The five edit tools require `WEBMCP_EDITS_ENABLED=true` on the deployment; they return 404 when it
+is unset.
 
 ## Submission documentation
 

@@ -24,7 +24,8 @@ that.
 
 And the agent's vocabulary is the user's vocabulary. Tools address stops by **map-pin number** —
 the numbers the traveller can see. "Move stop 7 to day 3" means the same thing to both parties. No
-UUID crosses the boundary in either direction.
+trip-place UUID enters the agent's vocabulary at all; a trip id remains the trip-level handle, and
+`list_trips` returns it shortened.
 
 ## 2. How does it create a better user experience?
 
@@ -77,9 +78,9 @@ exists. Opening a trip takes the count from 13 to 16 live.
 
 **Annotations are current with the spec.** The W3C draft now keeps only `readOnlyHint` and
 `untrustedContentHint`; `destructiveHint`, `idempotentHint` and `openWorldHint` were removed. We use
-exactly those two. `set_map_view` is deliberately **not** read-only — `readOnlyHint` should mean
-"safe to call speculatively without the user noticing", and a camera flying across the globe is
-extremely noticeable.
+exactly those two. `show_on_map` and `set_map_mode` are deliberately **not** read-only —
+`readOnlyHint` should mean "safe to call speculatively without the user noticing", and a camera
+flying across the globe is extremely noticeable.
 
 **`untrustedContentHint` is literally true here.** Reel captions are attacker-controlled third-party
 text, and every tool whose output can carry a caption-derived string is annotated. `save_reels` runs
@@ -87,11 +88,15 @@ text, and every tool whose output can carry a caption-derived string is annotate
 an SSRF primitive by construction. No tool takes or returns an access token, and there is no
 arbitrary-fetch, navigate, or raw-SQL tool at any price.
 
-**Costly and irreversible actions get an in-page approval card.** `plan_trip_from_reels` spends the
-user's trip allowance plus real Apify and OpenAI credit, so `execute()` renders a card and awaits a
-click, wired to `{signal}` so an agent abort dismisses it. The summary — including any free-text
-preferences — is rendered as **plain text, never innerHTML**, so a prompt-injected caption cannot
-dress itself up as interface chrome.
+**Spending and irreversible actions get an in-page approval card.** `plan_trip_from_reels`,
+`add_place`, `remove_place` and `replan_trip` render a card and await a click before anything is
+spent or destroyed. The summary — including any free-text preferences — is rendered as **plain text,
+never innerHTML**, so a prompt-injected caption cannot dress itself up as interface chrome.
+
+Two honest limits on that sentence. `save_reels` can start a paid extraction **without** a card — it
+is bounded instead by URL validation, a per-account daily limit, and a cache that never re-analyses a
+reel. And the `{signal}` passed at registration governs the tool's registration lifetime, not the
+pending card: an agent abort does not currently dismiss an open approval.
 
 **Output is budgeted against what actually ships.** `fit.ts` measures
 `JSON.stringify(envelope).length`, not `text.length`, because the MCP content envelope costs ~40
@@ -100,18 +105,52 @@ than truncating mid-day. `resolve.ts` maps a pin number to a stop and returns ca
 guessing when a name is ambiguous.
 
 **The registration gate is a test.** `spec-contract.test.ts` enforces unique snake_case names,
-description and parameter limits, valid schemas, required annotations, non-overlapping scopes, and
-the serialized envelope budget against both a real fixture and a synthetic 40-stop trip — because a
-silently rejected registration is an *absent tool*, and a judge would find it before we did. The
-WebMCP and generation layers carry **283 tests**.
+description and parameter limits, structural schema validity, required annotations, non-overlapping
+scopes, and the serialized envelope budget against a real fixture — because a silently rejected
+registration is an *absent tool*, and a judge would find it before we did. The synthetic 40-stop
+budget cases live beside it in `fit.test.ts` and `format.test.ts` rather than inside the gate. The
+suite is **1073 tests**.
 
-## Verified, and not
+## What a judge can do, and what state each path is in
 
-**Verified in ChatGPT desktop's built-in browser:** the address-bar tools arrow appears, "Available
-site tools" lists every tool with its annotations, the on-page WebMCP chip renders, and read tools
-execute and return.
+**The journey, in order.** Open the live URL in ChatGPT desktop's built-in browser on GPT-5.6 Sol or
+Terra, signed in with the supplied credentials. Click the **Site tools** arrow in the address bar and
+open **Available site tools** — 13 are listed on the app, 16 once a trip is open. Then, in chat:
 
-**Not yet verified end to end on that surface:** `plan_trip_from_reels`, which spends real credit.
-Open work is tracked in `docs/webmcp/AGENT-FIRST.md` and every run is logged in
-`docs/webmcp/RUNLOG.md`. What is new for this challenge versus pre-existing is documented in
-`docs/webmcp/WHATS-NEW.md`.
+1. *"What can I do here?"* — `get_app_state` reports where you are and what is available next.
+2. *"Plan me 3 days in Osaka, 14-16 March, from these reels: …"* — paste any 1-5 public Instagram
+   Reel links. They do **not** need to be saved first. An approval card appears on the page; nothing
+   is spent until you accept it. The wait screen then takes over the browser and the map fills in as
+   places are verified.
+3. *"Why is stop 4 on this trip?"* — `get_place_evidence` returns the verbatim caption quote and the
+   Reel it came from.
+4. *"Show me day 2 in 3D"*, *"move stop 7 to day 3"*, *"add Osaka Castle to day 1"* — the map and the
+   itinerary change in front of you, and the reply names `replan_trip` when the day summaries have
+   fallen behind the stops.
+
+**State of each path.** Stated plainly, because a claim a judge can disprove costs more than a
+limitation we name.
+
+| | Path | State |
+|---|---|---|
+| ✅ | Tool registration, the address-bar list, annotations | **Live-verified** in ChatGPT's built-in browser |
+| ✅ | `get_app_state`, `list_saved_reels` | **Live-verified** — executed and returned |
+| ⚙ | `plan_trip_from_reels` end to end, and the page takeover it drives | **Implemented and unit-tested; one live run outstanding** |
+| ⚙ | `replan_trip`, `set_trip_dates` | Implemented and unit-tested; not live-run |
+| ⚠ | The five edit tools | Require `WEBMCP_EDITS_ENABLED=true` on the deployment |
+| ⚙ | The signed-in landing screen | Still visually leads with manual Reel capture. The agent path accepts raw links, starts the same generation, takes over the wait screen and opens the finished map |
+
+## Where this sits against WebMCP's own example
+
+OpenAI's site-tools documentation gives as its canonical illustration *"a travel planner that lets
+the agent compare options and update an itinerary while you inspect the map."* Astrail implements
+that interaction — and then extends it with the parts the example does not reach: untrusted
+social-video input, per-stop evidence lineage back to a caption, a 60-180 second generation pipeline
+behind a tool call that returns in one second, and owner-checked conversational restructuring of a
+trip that was, until this work, frozen at every layer.
+
+The alignment is evidence of fit. The Reel-to-evidence pipeline and the shared visible map are the
+part nobody else is doing.
+
+Open work is tracked in `docs/webmcp/AGENT-FIRST.md`; every run is logged in `docs/webmcp/RUNLOG.md`;
+what is new for this challenge versus pre-existing is documented in `docs/webmcp/WHATS-NEW.md`.

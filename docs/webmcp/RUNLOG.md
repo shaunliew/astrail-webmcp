@@ -563,3 +563,43 @@ one green against baseline. Verifying that claim by reverting and running — ra
 it — is now part of the implementer brief.
 
 Dispatched as one task. **Item 1 is not complete and must not be called complete.**
+
+### Item 1 — the atomic reservation (round 3 findings)
+
+`canStart()` is gone. `reserve(): RunReservation | null` takes the lock **synchronously**, and both
+callers reserve *before* the token fetch and the POST, committing with `begin(tripId)` or handing it
+back with `release()`. Plus: a three-way result verdict (`success` / `failed` / `unreadable`, keyed
+on the **presence** of the `error` key rather than truthiness) with unreadable mapping to `unknown`;
+the active shell run promoted to the first render branch so an agent-started failure surfaces over
+organizing/trays/inbox; a 15s token timeout; and the dead-code sweep. 1012 → **1041 tests**, tsc
+clean.
+
+The implementer did not assert its red-first claim, it proved it — a throwaway probe against the
+old API reproduced the actual defect (`expected "spy" to be called 1 times, but got 2 times`: two
+paid backend jobs), then 12 fault-injection mutations one at a time, each reverted, each producing
+exactly one expected red.
+
+Two things it caught in its own work, both worth keeping:
+
+- **A test that would have lied.** Its first failure notice was a normal-flow `<p>` rendered before
+  `CountryTrays`, which is `fixed inset-0 z-50`. The test found it in the DOM; a real user would
+  have seen nothing behind the overlay. Now a `z-[60]` toast — and jsdom cannot prove that, so it
+  needs a human eye in `/qa`.
+- **A probe that poisoned its own test.** `expect(h.api.reserve()).not.toBeNull()` *takes* the lock,
+  so the next assertion in that test answered wrongly. Now a `canReserve()` helper that reserves and
+  releases.
+
+### Tooling finding: dead code is invisible here
+
+The implementer had to `grep` to confirm it had removed the dead imports, because `tsc` cannot see
+them: `frontend/tsconfig.json` sets neither `noUnusedLocals` nor `noUnusedParameters`, and the repo
+has no ESLint config (`npx next lint` offers to create one).
+
+Turning `noUnusedLocals` on looked nearly free — 3 errors — but one is a **false positive**:
+`MapProvider.tsx:19` is `import type mapboxgl from 'mapbox-gl'`, used as a namespace at six type
+positions (`:46 :51 :71 :96 :97 :135`). `noUnusedLocals` reports it as a value never read, which is
+literally true of a type-only import and useless as advice; deleting it breaks the build. The other
+two are genuinely unused test imports.
+
+Not enabled. Recorded so the next dead-code sweep knows it must be manual, and so nobody enables the
+flag, sees three errors, and "fixes" the map provider.

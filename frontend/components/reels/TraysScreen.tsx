@@ -11,6 +11,7 @@ import {
   renameCollection,
 } from '@/lib/reels/collections'
 import type { ReelCollection, SavedReelCard } from '@/lib/reels/backend-types'
+import { useOptionalWebMcpRegistry } from '@/components/webmcp/WebMcpRegistry'
 import TrayCard, { type TrayCover } from './TrayCard'
 import TrayDetail from './TrayDetail'
 import LibraryPanel from './LibraryPanel'
@@ -35,6 +36,34 @@ const BTN_PRIMARY =
 // generation, so one batch of pastes can feed a full trip. Each link still goes through
 // the one-URL capture endpoint sequentially; the backend contract is unchanged.
 const MAX_CAPTURE_LINKS = 5
+
+/* The three Reels in the starter prompt are the frozen Case 1 demo set from
+   docs/evals/japan-beta-input-template.md — the same URLs backend/evals/fixtures/japan_demo_reels.json
+   holds real captured Apify captions for, that expected_places.json resolves to real Tokyo
+   coordinates, and that scripts/smoke_generate.py plans with. Nothing here is invented, so the
+   prompt cannot send a judge to a dead link. The fourth reel of that set (the Doraemon
+   exhibition) is left out on purpose: its own caption dates the exhibition to 30 September 2026,
+   before any trip dates worth printing here. */
+const STARTER_REEL_URLS = [
+  'https://www.instagram.com/reel/DYGH3jFBZHz/',
+  'https://www.instagram.com/reel/DYM_I5IvLSv/',
+  'https://www.instagram.com/reel/DXwcVVliX3B/',
+] as const
+
+/* `plan_trip_from_reels` REQUIRES start_date and end_date as YYYY-MM-DD, so the prompt states
+   both literally rather than saying "in November" and hoping the agent picks. Hardcoded rather
+   than derived from the clock: a date computed at render time makes this screen's tests
+   non-deterministic, and a judge reading the prompt should see the same trip we tested. Bump
+   these when they stop being comfortably in the future. */
+const STARTER_START_DATE = '2026-11-14'
+const STARTER_END_DATE = '2026-11-19'
+
+/* Runnable as written. Pasted into ChatGPT with this page open it satisfies every required
+   argument of `plan_trip_from_reels` with no edits: 1-5 reel links (saving them first is
+   optional — the tool takes raw pasted URLs) plus both ISO dates. */
+const STARTER_PROMPT = `Plan me a Tokyo trip from these Instagram Reels:
+${STARTER_REEL_URLS.join('\n')}
+Start date ${STARTER_START_DATE}, end date ${STARTER_END_DATE}. Mid-range budget, walkable days.`
 
 export default function TraysScreen({
   cards,
@@ -70,11 +99,18 @@ export default function TraysScreen({
   // Seeds CreateTrayDialog's picker when "New tray…" is chosen from an open reel (T2.1c);
   // reset to [] on dialog close so it never leaks into an ordinary "New tray" open.
   const [createPreselect, setCreatePreselect] = useState<string[]>([])
+  // Idle until the user presses Copy; rendered only when it has something to report, so the
+  // starter block does not reserve a line of empty status and shift the layout on mount.
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
   const activeRef = useRef(true)
   // Monotonic refresh id: overlapping refreshes (e.g. two adds from separate reel-card
   // instances, one opened after Escaping the other) can resolve out of order. Only the newest
   // refresh may write state, so a stale read can never overwrite newer membership (Codex race).
   const refreshGenRef = useRef(0)
+  // OPTIONAL on purpose: TraysScreen renders under the /app shell's provider in the product, but
+  // it must not crash anywhere the agent layer is absent — the same trade RegisterTools makes.
+  // No provider reads as "no agent", which is the safe side of this fork.
+  const registry = useOptionalWebMcpRegistry()
 
   // Single source of truth for collections. Exposed so T1.4's CreateTrayDialog can
   // re-sync the grid after a create/add without a full remount.
@@ -189,6 +225,33 @@ export default function TraysScreen({
   // surface the error banner, not the misleading empty state (they'd otherwise co-render).
   const isEmpty = !loading && !error && cards.length === 0 && collections.length === 0
 
+  /* CONFIRMED empty — stricter than `isEmpty` above, and deliberately a separate derivation.
+     `isEmpty` only chooses which flavour of the manual layout to show, so an unread saved-reel
+     fetch there costs a wrong sentence. This one decides whether to hand the primary position to
+     an agent and fold the manual form away, and a wrong "you have nothing" there sends a judge
+     down a path built for a library we never actually read. `loading`/`error` cover the
+     collections + membership fetch this component runs; `cardsStatus` covers the saved-reel fetch
+     it does NOT run and therefore cannot infer from `cards.length` — an in-flight load, a failed
+     load and a genuinely empty library all arrive here as `cards === []`. */
+  const confirmedEmpty = isEmpty && cardsStatus === 'ready'
+
+  /* The layout is the prompt. On an empty account the screen said "paste a Reel link" and nothing
+     else, so that is what the agent read off the page and repeated back to a user who had no
+     links to paste. The agent gets the primary position only where there IS an agent: without
+     `document.modelContext` this fork would hide the one control that works and leave a dead end. */
+  const agentFirst = confirmedEmpty && registry?.supported === true
+
+  async function copyStarterPrompt() {
+    try {
+      await navigator.clipboard.writeText(STARTER_PROMPT)
+      if (activeRef.current) setCopyState('copied')
+    } catch {
+      // Clipboard access is permission-gated and absent entirely over plain http. The prompt is
+      // rendered as selectable text for exactly this case — say so rather than fail silently.
+      if (activeRef.current) setCopyState('failed')
+    }
+  }
+
   const traysWithReel = useMemo(
     () =>
       new Set(
@@ -290,19 +353,12 @@ export default function TraysScreen({
     )
   }
 
-  return (
+  /* The capture form and its status line, built once and rendered in ONE of two positions: at
+     the top of the page as it always was, or folded into a closed <details> under the agent
+     invitation. Identical markup either way — a demoted form that behaved differently from the
+     one every other account sees would be a second capture flow to keep working. */
+  const capturePanel = (
     <>
-    <div className="mx-auto flex w-full max-w-5xl flex-col">
-      <header className="mb-10">
-        <p className="text-[14px] text-[color:var(--text-muted)]">Welcome back,</p>
-        <span
-          className="mt-1.5 block font-display text-[36px] font-medium leading-[1.1] tracking-[-0.015em] text-[color:var(--text)]"
-          style={{ fontVariationSettings: "'SOFT' 36, 'WONK' 0, 'opsz' 36" }}
-        >
-          {name}
-        </span>
-      </header>
-
       {/* Quick capture — always available (lifted from DashboardHome). Holds up to
           MAX_CAPTURE_LINKS link rows; the "+" below adds a row, Save submits them all. */}
       <form
@@ -374,13 +430,87 @@ export default function TraysScreen({
         </p>
       </form>
       {message ? <p role="status" className="-mt-3 mb-6 text-[13px] text-[color:var(--text-muted)]">{message}</p> : null}
+    </>
+  )
+
+  /* The agent invitation — the primary position on a CONFIRMED-empty account in a browser that
+     has an agent. Compact on purpose: the <details> below it has to stay above the fold on a
+     laptop, or a judge without WebMCP concludes there is no manual route at all. */
+  const agentInvitation = (
+    <section className="mb-4 rounded-2xl border border-[color:var(--brass-deep)] bg-[color:var(--brass-wash)] p-5">
+      <h2 className="font-display text-[18px] font-medium text-[color:var(--text)]">
+        No Reels of your own? Start here.
+      </h2>
+      <p className="mt-1.5 max-w-[62ch] text-[14px] text-[color:var(--text-muted)]">
+        Astrail is built to be driven by an AI agent. With this page open, paste the prompt below
+        into ChatGPT &mdash; it already carries three real Tokyo Reels, so you do not need any of
+        your own.
+      </p>
+      {/* Selectable text, not an input: it is the fallback when the clipboard is unavailable,
+          and it must never look like one more field waiting to be filled in. */}
+      <pre className="mt-3 overflow-x-auto whitespace-pre-wrap rounded-lg border border-[color:var(--line-soft)] bg-[color:var(--surface-1)] p-3 font-mono text-[12px] leading-[1.6] text-[color:var(--text)]">
+        {STARTER_PROMPT}
+      </pre>
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        <button type="button" onClick={() => void copyStarterPrompt()} className={BTN_PRIMARY}>
+          Copy prompt
+        </button>
+        {copyState !== 'idle' ? (
+          <p role="status" className="text-[13px] text-[color:var(--text-muted)]">
+            {copyState === 'copied'
+              ? 'Copied. Paste it into ChatGPT with this page open.'
+              : 'Copy did not work in this browser — select the prompt above and copy it yourself.'}
+          </p>
+        ) : null}
+      </div>
+      <p className="mt-3 text-[13px] text-[color:var(--text-faint)]">
+        Astrail will ask you to approve the plan on this page before anything runs.
+      </p>
+    </section>
+  )
+
+  return (
+    <>
+    <div className="mx-auto flex w-full max-w-5xl flex-col">
+      <header className="mb-10">
+        <p className="text-[14px] text-[color:var(--text-muted)]">Welcome back,</p>
+        <span
+          className="mt-1.5 block font-display text-[36px] font-medium leading-[1.1] tracking-[-0.015em] text-[color:var(--text)]"
+          style={{ fontVariationSettings: "'SOFT' 36, 'WONK' 0, 'opsz' 36" }}
+        >
+          {name}
+        </span>
+      </header>
+
+      {agentFirst ? agentInvitation : null}
+
+      {/* Demoted, never deleted. Closed by default so the agent prompt leads, and kept directly
+          under the invitation so the summary stays above the fold: a judge whose browser has no
+          agent has to be able to SEE that pasting links yourself is still a route. */}
+      {agentFirst ? (
+        <details className="mb-6">
+          {/* Default `list-item` display, NOT inline-flex: any other display drops the native
+              disclosure triangle, and without it the summary reads as a link that goes somewhere
+              else rather than a section that opens here. `list-inside` keeps the marker inside
+              the padding box so it lines up with the content above. */}
+          <summary className="w-fit cursor-pointer list-inside rounded-lg px-1 py-2.5 text-[13px] font-medium text-[color:var(--brass-deep)] transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]">
+            Prefer to paste Reel links here?
+          </summary>
+          <div className="mt-3">{capturePanel}</div>
+        </details>
+      ) : (
+        capturePanel
+      )}
       {error ? (
         <p role="alert" className="mb-6 rounded-lg border border-dashed border-[color:var(--line-soft)] bg-[color:var(--surface-2)] p-3 text-[13px] text-[color:var(--text-muted)]">
           {error}
         </p>
       ) : null}
 
-      {isEmpty ? (
+      {/* `agentFirst` replaces this whole block: the invitation IS the empty state there, and
+          stacking "No trays yet" under it would push the details summary below the fold to
+          re-explain an absence the user is already being given a way out of. */}
+      {agentFirst ? null : isEmpty ? (
         <div className="flex flex-col items-center gap-4 rounded-2xl border border-dashed border-[color:var(--line-soft)] px-6 py-16 text-center">
           <span aria-hidden className="h-[72px] w-[72px] rounded-full border border-dashed border-[color:var(--line-soft)]" />
           <h2 className="font-display text-[18px] font-medium text-[color:var(--text)]">No trays yet</h2>

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { useEffect } from 'react'
 
 const { getUser, listCollections, getMembershipsByCollection, createCollection, addReelsToCollection, renameCollection, deleteCollection, removeReelFromCollection } = vi.hoisted(() => ({
   getUser: vi.fn(async () => ({ data: { user: { email: 'zh@astrail.app', user_metadata: { full_name: 'Zhi Hao' } } } })),
@@ -19,6 +20,7 @@ vi.mock('@/lib/reels/collections', () => ({ listCollections, getMembershipsByCol
 vi.mock('gsap', () => ({ default: { to: vi.fn(), set: vi.fn(), killTweensOf: vi.fn() } }))
 
 import TraysScreen from '@/components/reels/TraysScreen'
+import { WebMcpRegistryProvider, useWebMcpRegistry } from '@/components/webmcp/WebMcpRegistry'
 import type { ReelCollection, SavedReelCard, SavedReelPlaceProof } from '@/lib/reels/backend-types'
 
 function collection(over: Partial<ReelCollection>): ReelCollection {
@@ -53,6 +55,42 @@ const countBadge = (label: string) =>
   screen.getByText(
     (_content, el) => el?.tagName === 'SPAN' && el.textContent?.replace(/\s+/g, ' ').trim() === label,
   )
+
+/* ── Agent-first empty state ───────────────────────────────────────────────────────────────
+   Hardcoded here rather than imported from the component, so these are a SPEC and not a
+   tautology: the prompt has to stay runnable as written, and `plan_trip_from_reels` will
+   refuse it without 1-5 reel URLs AND both dates as YYYY-MM-DD. */
+const STARTER_PROMPT = `Plan me a Tokyo trip from these Instagram Reels:
+https://www.instagram.com/reel/DYGH3jFBZHz/
+https://www.instagram.com/reel/DYM_I5IvLSv/
+https://www.instagram.com/reel/DXwcVVliX3B/
+Start date 2026-11-14, end date 2026-11-19. Mid-range budget, walkable days.`
+
+const INVITATION_HEADING = 'No Reels of your own? Start here.'
+const CAPTURE_SUMMARY = 'Prefer to paste Reel links here?'
+
+/** `supported` is set by RegisterTools in the real app; drive it directly here. */
+function DeclareSupported({ value }: { value: boolean }) {
+  const { setSupported } = useWebMcpRegistry()
+  useEffect(() => { setSupported(value) }, [setSupported, value])
+  return null
+}
+
+function renderWithAgent(ui: React.ReactElement, { supported }: { supported: boolean }) {
+  return render(
+    <WebMcpRegistryProvider>
+      <DeclareSupported value={supported} />
+      {ui}
+    </WebMcpRegistryProvider>,
+  )
+}
+
+/** The prompt block, matched on its FULL text — a partial match would not prove it is runnable. */
+const starterPromptBlock = () =>
+  screen.getByText((_content, el) => el?.tagName === 'PRE' && el.textContent === STARTER_PROMPT)
+
+const captureDetails = () =>
+  screen.getByText(CAPTURE_SUMMARY).closest('details') as HTMLDetailsElement
 
 describe('TraysScreen', () => {
   beforeEach(() => {
@@ -578,5 +616,167 @@ describe('TraysScreen', () => {
     // Local reconciliation removed the tray; the failed refresh cannot resurrect it on the grid.
     expect(await screen.findByRole('button', { name: /create a tray/i })).toBeInTheDocument()
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Tokyo winter' })).not.toBeInTheDocument())
+  })
+
+  /* An empty /app was a paste-a-URL form and nothing else — a dead end for anyone who arrives
+     without Instagram links in hand. Verified live in ChatGPT's browser on an empty account:
+     asked "what can I do here?", the agent answered "start by pasting up to five Reel links",
+     and a reviewer proved it read that off the RENDERED PAGE (it also listed "Trails / New
+     trail / Settings", strings that exist only in Sidebar.tsx). The layout is the prompt. */
+  describe('agent-first empty state', () => {
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+
+    afterEach(() => {
+      if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+      else Reflect.deleteProperty(navigator as object, 'clipboard')
+    })
+
+    function stubClipboard(writeText: () => Promise<void>) {
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    }
+
+    it('gives the primary position to a runnable agent prompt when WebMCP is supported', async () => {
+      renderWithAgent(
+        <TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      expect(await screen.findByText(INVITATION_HEADING)).toBeInTheDocument()
+      // Runnable AS WRITTEN — the three URLs and both ISO dates, verbatim, in one block.
+      expect(starterPromptBlock()).toBeInTheDocument()
+      // A wiped account can have zero reels AND an exhausted trip entitlement; they are
+      // unrelated, so the invitation must promise nothing about what the user may spend.
+      expect(screen.queryByText(/allowance|free trip|credit/i)).toBeNull()
+    })
+
+    it('demotes the capture form into a closed details instead of deleting it', async () => {
+      renderWithAgent(
+        <TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      await screen.findByText(INVITATION_HEADING)
+      expect(captureDetails().open).toBe(false)
+      expect(screen.getByLabelText(/paste a reel or post link/i)).not.toBeVisible()
+    })
+
+    it('keeps the manual-first layout unchanged in a browser with no agent', async () => {
+      // A judge in Safari must never see an agent prompt with the manual form hidden.
+      renderWithAgent(
+        <TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: false },
+      )
+
+      expect(await screen.findByText(/no trays yet/i)).toBeInTheDocument()
+      expect(screen.queryByText(INVITATION_HEADING)).toBeNull()
+      expect(screen.queryByText(CAPTURE_SUMMARY)).toBeNull()
+      expect(screen.getByLabelText(/paste a reel or post link/i)).toBeVisible()
+    })
+
+    it('will not call an account empty while its saved reels are still loading', async () => {
+      // A confident zero on data we have not read is the defect this codebase keeps finding.
+      renderWithAgent(
+        <TraysScreen cards={[]} cardsStatus="loading" onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      // Wait for the collections read to land, so this is not just "the effect has not run yet".
+      await waitFor(() => expect(listCollections).toHaveBeenCalled())
+      expect(screen.queryByText(INVITATION_HEADING)).toBeNull()
+      expect(screen.getByLabelText(/paste a reel or post link/i)).toBeVisible()
+    })
+
+    it('will not call an account empty when the saved-reel fetch failed', async () => {
+      renderWithAgent(
+        <TraysScreen cards={[]} cardsStatus="error" onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      await waitFor(() => expect(listCollections).toHaveBeenCalled())
+      expect(screen.queryByText(INVITATION_HEADING)).toBeNull()
+      expect(screen.getByLabelText(/paste a reel or post link/i)).toBeVisible()
+    })
+
+    it('shows the trays error, not the agent prompt, when the collections read fails', async () => {
+      listCollections.mockRejectedValue(new Error('network down'))
+
+      renderWithAgent(
+        <TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      expect(await screen.findByText(/could not load your trays/i)).toBeInTheDocument()
+      expect(screen.queryByText(INVITATION_HEADING)).toBeNull()
+      expect(screen.getByLabelText(/paste a reel or post link/i)).toBeVisible()
+    })
+
+    it('opens the demoted capture form from its summary', async () => {
+      renderWithAgent(
+        <TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      fireEvent.click(await screen.findByText(CAPTURE_SUMMARY))
+
+      expect(captureDetails().open).toBe(true)
+      expect(screen.getByLabelText(/paste a reel or post link/i)).toBeVisible()
+    })
+
+    it('still captures a Reel URL through the demoted form once it is open', async () => {
+      const onCapture = vi.fn(async () => {})
+      renderWithAgent(
+        <TraysScreen cards={[]} onCapture={onCapture} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      fireEvent.click(await screen.findByText(CAPTURE_SUMMARY))
+      fireEvent.change(screen.getByLabelText(/paste a reel or post link/i), {
+        target: { value: 'https://www.instagram.com/reel/AAA/' },
+      })
+      fireEvent.click(screen.getByRole('button', { name: /^save$/i }))
+
+      await waitFor(() => expect(onCapture).toHaveBeenCalledWith('https://www.instagram.com/reel/AAA/'))
+      expect(await screen.findByText('Saved to your library.')).toBeInTheDocument()
+    })
+
+    it('copies the prompt verbatim', async () => {
+      const writeText = vi.fn(async () => {})
+      stubClipboard(writeText)
+      renderWithAgent(
+        <TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      fireEvent.click(await screen.findByRole('button', { name: /copy prompt/i }))
+
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith(STARTER_PROMPT))
+      expect(await screen.findByText(/copied\./i)).toBeInTheDocument()
+    })
+
+    it('falls back to the selectable text when the clipboard refuses', async () => {
+      // Clipboard access is permission-gated and absent over plain http; the prompt is rendered
+      // as selectable text for exactly this case, so the fallback has to name it.
+      stubClipboard(vi.fn(async () => { throw new Error('denied') }))
+      renderWithAgent(
+        <TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      fireEvent.click(await screen.findByRole('button', { name: /copy prompt/i }))
+
+      expect(await screen.findByText(/select the prompt above/i)).toBeInTheDocument()
+      expect(starterPromptBlock()).toBeInTheDocument()
+    })
+
+    it('does not put the agent prompt in front of an account that already has reels', async () => {
+      renderWithAgent(
+        <TraysScreen cards={[card({ id: 'r1' })]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      expect(await screen.findByText(/your inspiration starts here/i)).toBeInTheDocument()
+      expect(screen.queryByText(INVITATION_HEADING)).toBeNull()
+      expect(screen.queryByText(CAPTURE_SUMMARY)).toBeNull()
+    })
   })
 })

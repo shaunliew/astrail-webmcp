@@ -447,29 +447,70 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                         await persist_transport(client, trip_id, fetch_legs=transport)
                         # persist_transport isolates per-day fetch failures internally (status="failed"
                         # rows, never raises) — surface that as the same non-critical warning.
-                        failed_legs = (await client.table("transport_legs").select("id")
-                                       .eq("trip_id", trip_id).eq("status", "failed").execute()).data
-                        if failed_legs:
-                            await record_event(client, trip_id, event_type="warning", stage="transport",
-                                               message="Couldn't route some stops — check transit")
+                        # Select `status` rather than `id`: its RETURN VALUE counts rows written, and
+                        # a row is written for a leg that failed (status="failed") or found no route
+                        # (status="no_route") just as much as for one that routed. Reporting that
+                        # number as legs routed would claim work the traveller cannot use, so both
+                        # counts come from the statuses — still one query, as before.
+                        leg_rows = (await client.table("transport_legs").select("status")
+                                    .eq("trip_id", trip_id).execute()).data or []
                     except Exception:
                         try:
                             await record_event(client, trip_id, event_type="warning", stage="transport",
                                                message="Couldn't route some stops — check transit")
                         except Exception:
                             pass   # best-effort — transport failure is non-critical
+                        return
+                    # OUTSIDE the try above, deliberately: the legs are already persisted here, so a
+                    # transient failure writing these events must not be reported as a routing
+                    # failure. Reporting one would send the traveller to check transit that is fine.
+                    try:
+                        # `no_route` counts as unrouted, not just `failed`. Mapbox answering "there
+                        # is no route" leaves a stop the traveller cannot reach exactly as a Mapbox
+                        # outage does; warning only on `failed` left a whole class of trips saying
+                        # nothing at all between dispatch and `result`.
+                        unrouted = [r for r in leg_rows if r.get("status") in ("failed", "no_route")]
+                        routed = sum(1 for r in leg_rows if r.get("status") == "ok")
+                        if unrouted:
+                            await record_event(client, trip_id, event_type="warning", stage="transport",
+                                               message="Couldn't route some stops — check transit")
+                        if routed:
+                            await record_event(client, trip_id, event_type="decision", stage="transport",
+                                               message=f"Routed {_n(routed, 'leg')} between your stops")
+                        elif not leg_rows:
+                            # A one-stop-per-day itinerary has no pair to route. That is a normal
+                            # outcome, not a failure — but silence here is indistinguishable from a
+                            # stage that hung, which is the whole defect this change exists to fix.
+                            await record_event(client, trip_id, event_type="decision", stage="transport",
+                                               message="No journeys to plan between stops")
+                    except Exception:
+                        pass   # best-effort — the legs are saved either way
 
                 async def _stage_restaurants():
                     try:
                         await record_event(client, trip_id, event_type="stage", stage="restaurants",
                                            message="Looking for places to eat")
-                        await persist_restaurants(client, trip_id, suggest=restaurant, preference_block=pref_block)
+                        eats = await persist_restaurants(client, trip_id, suggest=restaurant,
+                                                         preference_block=pref_block)
                     except Exception:
                         try:
                             await record_event(client, trip_id, event_type="warning", stage="restaurants",
                                                message="Couldn't find restaurants near your route")
                         except Exception:
                             pass   # best-effort — restaurant failure is non-critical
+                        return
+                    # OUTSIDE the persistence try, deliberately: the rows are already written, so a
+                    # transient failure recording this event must never surface as a domain failure.
+                    # `decision`, not `stage`: a second `stage` event with the same id makes the
+                    # finished work read as the CURRENTLY RUNNING one — GenerationProgress pulses
+                    # the last stage event, and get_trip_progress reports it as the live stage. A
+                    # decision renders as its own beat, wakes the agent's poll, and claims nothing
+                    # about what is still running.
+                    try:
+                        await record_event(client, trip_id, event_type="decision", stage="restaurants",
+                                           message=f"Found {_n(eats, 'place')} to eat")
+                    except Exception:
+                        pass   # best-effort — the restaurants are saved either way
 
                 async def _stage_hotels():
                     try:
@@ -482,22 +523,6 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                         # `_abort_when_lease_lost` race is what actually aborts the run.
                         written = await persist_hotels(client, trip_id, fetch=hotel,
                                                        job_id=job_id, lease_token=lease_token)
-                        if not written:
-                            # An empty result used to record NOTHING, so "we looked and found
-                            # none" and "Travala failed silently" were indistinguishable from
-                            # outside — for the traveller reading the trip and for anyone
-                            # debugging it later. Weather already makes that distinction
-                            # ("No forecast available this far ahead").
-                            #
-                            # Worded WITHOUT claiming a search happened, deliberately. Zero rows
-                            # also means "no search ran": persist_hotels needs a city or a
-                            # destination_hint plus both dates, and a trip whose places carry no
-                            # city and whose hint is empty returns 0 having called nothing.
-                            # "No hotels available for these dates" would report a result for a
-                            # search that never occurred. `phase` in the log tells an engineer
-                            # which it was; the event only has to make the absence visible.
-                            await record_event(client, trip_id, event_type="warning", stage="hotels",
-                                               message="No hotel suggestions for this trip")
                     except LeaseLost:
                         # A superseded run: the fenced hotel RPC refused our write because a
                         # replacement worker owns this job. Return WITHOUT recording a warning — a
@@ -511,19 +536,68 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                                                message="Couldn't find hotels near your route")
                         except Exception:
                             pass   # best-effort — hotel failure is non-critical
+                        return
+                    # OUTSIDE the persistence try, deliberately: the rows are already written, so a
+                    # transient failure recording this event must never surface as a domain failure.
+                    # `decision`, not `stage`: a second `stage` event with the same id makes the
+                    # finished work read as the CURRENTLY RUNNING one — GenerationProgress pulses
+                    # the last stage event, and get_trip_progress reports it as the live stage. A
+                    # decision renders as its own beat, wakes the agent's poll, and claims nothing
+                    # about what is still running.
+                    try:
+                        if not written:
+                            # An empty result used to record NOTHING, so "we looked and found none"
+                            # and "Travala failed silently" were indistinguishable from outside —
+                            # for the traveller reading the trip and for anyone debugging it later.
+                            # Weather already makes that distinction ("No forecast available this
+                            # far ahead").
+                            #
+                            # Worded WITHOUT claiming a search happened, deliberately. Zero rows
+                            # also means "no search ran": persist_hotels needs a city or a
+                            # destination_hint plus both dates, and a trip whose places carry no
+                            # city and whose hint is empty returns 0 having called nothing. "No
+                            # hotels available for these dates" would report a result for a search
+                            # that never occurred. `phase` in the log tells an engineer which it
+                            # was; the event only has to make the absence visible.
+                            #
+                            # Out here rather than beside the persist call: a transient failure
+                            # writing THIS warning used to fall into the generic handler and report
+                            # "Couldn't find hotels near your route" — a search failure, for a
+                            # search that ran fine and simply found nothing.
+                            await record_event(client, trip_id, event_type="warning", stage="hotels",
+                                               message="No hotel suggestions for this trip")
+                        else:
+                            await record_event(client, trip_id, event_type="decision", stage="hotels",
+                                               message=f"Found {_n(written, 'place')} to stay")
+                    except Exception:
+                        pass   # best-effort — the hotels are saved either way
 
                 async def _stage_narration():
                     # MUST run after persist_weather (above): reads trip_days.weather_summary.
                     try:
                         await record_event(client, trip_id, event_type="stage", stage="summarize",
                                            message="Writing your day summaries")
-                        await persist_narration(client, trip_id, user_id, narrate=narrator, preference_block=pref_block)
+                        narrated = await persist_narration(client, trip_id, user_id, narrate=narrator,
+                                                           preference_block=pref_block)
                     except Exception:
                         try:
                             await record_event(client, trip_id, event_type="warning", stage="summarize",
                                                message="Couldn't write the day summaries")
                         except Exception:
                             pass   # best-effort — narration failure is non-critical
+                        return
+                    # OUTSIDE the persistence try, deliberately: the rows are already written, so a
+                    # transient failure recording this event must never surface as a domain failure.
+                    # `decision`, not `stage`: a second `stage` event with the same id makes the
+                    # finished work read as the CURRENTLY RUNNING one — GenerationProgress pulses
+                    # the last stage event, and get_trip_progress reports it as the live stage. A
+                    # decision renders as its own beat, wakes the agent's poll, and claims nothing
+                    # about what is still running.
+                    try:
+                        await record_event(client, trip_id, event_type="decision", stage="summarize",
+                                           message=f"Wrote summaries for {_n(narrated, 'day')}")
+                    except Exception:
+                        pass   # best-effort — the summaries are saved either way
 
                 await asyncio.gather(_stage_transport(), _stage_restaurants(),
                                      _stage_hotels(), _stage_narration(), return_exceptions=True)

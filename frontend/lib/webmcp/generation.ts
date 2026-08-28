@@ -66,7 +66,14 @@ export function createGenerationStore(now: () => number = Date.now) {
       return
     }
     // decision | warning — the substance an agent can actually narrate.
-    bump({ lastMessage: e.msg, stage: e.stage })
+    //
+    // `stage` is deliberately NOT updated. The late pipeline stages run concurrently and each
+    // reports its own completion, so these arrive for a stage that has FINISHED while others are
+    // still working. get_trip_progress presents `stage` to the agent as the stage now running;
+    // letting a finished one overwrite it makes the agent announce the wrong live stage, and
+    // yields self-contradictions like `stage "Writing your day summaries" · last: Wrote summaries
+    // for 3 days`. The message carries the news; the stage field stays the last thing STARTED.
+    bump({ lastMessage: e.msg })
   }
 
   return {

@@ -129,3 +129,52 @@ describe('GenerationScene', () => {
     expect(screen.getByText(/deduping/i)).toBeInTheDocument()
   })
 })
+
+describe('the progress genbar under concurrent stages', () => {
+  /* runner.py gathers transport/restaurants/hotels/narration and each records its `stage` event
+     as its first statement, so the dispatch events themselves arrive out of STAGE_ORDER:
+     transport is index 11, restaurants 9. Reading the LAST stage event verbatim rewinds the bar,
+     which reads to a waiting user as the run losing ground. Completions are `decision` events and
+     must not move the bar at all — they report finished work, not a new pipeline position. */
+  const fill = () => screen.getByTestId('genbar-fill').style.width
+
+  it('does not rewind on the real dispatch order the gather produces', () => {
+    renderScene([
+      { type: 'stage', stage: 'transport', msg: 'Working out how to get between stops' },
+      { type: 'stage', stage: 'restaurants', msg: 'Looking for places to eat' },
+    ])
+    // transport (index 11) → 80%; restaurants (index 9) would drag it back to 67%.
+    expect(fill()).toBe('80%')
+  })
+
+  it('advances for a genuinely later stage but never regresses afterwards', () => {
+    renderScene([
+      { type: 'stage', stage: 'summarize', msg: 'Writing your day summaries' },
+      { type: 'stage', stage: 'restaurants', msg: 'Looking for places to eat' },
+      { type: 'stage', stage: 'hotels', msg: 'Looking for somewhere to stay' },
+    ])
+    expect(fill()).toBe('93%')
+  })
+
+  it('is not moved by a completion — a decision reports finished work, not position', () => {
+    renderScene([
+      { type: 'stage', stage: 'restaurants', msg: 'Looking for places to eat' },
+      { type: 'decision', stage: 'summarize', msg: 'Wrote summaries for 3 days' },
+    ])
+    // summarize is index 13, but it arrived as a decision: the bar stays at restaurants.
+    expect(fill()).toBe('67%')
+  })
+
+  it('holds the 5% floor when no stage in this build is recognised', () => {
+    renderScene([{ type: 'stage', stage: 'not_a_real_stage' as never, msg: 'from a newer backend' }])
+    expect(fill()).toBe('5%')
+  })
+
+  it('a result wins over every stage position', () => {
+    renderScene([
+      { type: 'stage', stage: 'scrape', msg: 'Reading Reels' },
+      { type: 'result', content: '{}' },
+    ])
+    expect(fill()).toBe('100%')
+  })
+})

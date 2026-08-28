@@ -66,6 +66,29 @@ describe('generation store', () => {
     expect(h.store.snapshot()!.lastMessage).toBe('kept 9 of 14 places')
   })
 
+  it('a decision does NOT become the stage now running', () => {
+    /* The late stages run concurrently, so a completion for one arrives while others are still
+       working. get_trip_progress presents `stage` as "the stage now running" in so many words;
+       letting a finished stage overwrite it makes the agent announce summarising as live while
+       transport is mid-flight, and produces self-contradictions like
+       `stage "Writing your day summaries" · last: Wrote summaries for 3 days`. */
+    const h = harness()
+    h.start()
+    h.emit(stage('transport', 'Working out how to get between stops'))
+    h.emit({ type: 'decision', stage: 'summarize' as never, msg: 'Wrote summaries for 3 days' })
+    const s = h.store.snapshot()!
+    expect(s.stage).toBe('transport')
+    expect(s.lastMessage).toBe('Wrote summaries for 3 days')
+  })
+
+  it('a decision still advances version so an awaiting poll wakes', () => {
+    const h = harness()
+    h.start()
+    const before = h.store.snapshot()!.version
+    h.emit({ type: 'decision', stage: 'hotels' as never, msg: 'Found 3 places to stay' })
+    expect(h.store.snapshot()!.version).toBeGreaterThan(before)
+  })
+
   it('goes complete on a result event', () => {
     const h = harness()
     h.start()

@@ -1240,3 +1240,134 @@ async def test_run_persists_tradeoff_notes_and_comparisons():
     assert any(n["kind"] == "long_leg" for n in notes)         # notes are wired, not empty
     assert comps and comps[0]["axis"] == "price_vs_rating"     # comparisons are wired
     assert set(comps[0]["refs"]) and comps[0]["option_a"]["label"] and comps[0]["option_b"]["label"]
+
+
+# ---------------------------------------------------------------------------------------------
+# The 140-second silence.
+#
+# Measured on a real run (trip c1e99a8b, 2026-08-28): all 13 stage events landed in the first
+# 7.3s, then nothing at all for 140.0s until `result`. The cause is structural — runner.py
+# gathers transport/restaurants/hotels/narration concurrently and each coroutine records its
+# `stage` event as its FIRST statement, before doing any work. Every event marks a DISPATCH, and
+# the slowest task decides when the next byte reaches the user.
+#
+# Completions are `decision`, not a second `stage`: a repeated stage id makes finished work read
+# as the currently-running stage (GenerationProgress pulses the last stage event; get_trip_progress
+# reports it as live).
+# ---------------------------------------------------------------------------------------------
+
+def _msgs(client, stage: str, kind: str) -> list[str]:
+    return [e["message"] for e in client.events
+            if e["stage"] == stage and e["event_type"] == kind]
+
+
+def _late_stage_client():
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0,
+                       "started_at": None, "status": "pending"}])
+    c.db["trips"] = [{"id": "trip-1", "user_id": "user-1", "start_date": "2026-08-01",
+                      "end_date": "2026-08-01", "adult_count": 2, "room_count": 1,
+                      "destination_hint": "Tokyo"}]
+    return c
+
+
+async def _hotel_found(location, check_in, check_out, rooms):
+    return "sess-1", [{"name": "Park Hyatt Tokyo", "star": 5, "pricePerNight": 900,
+                       "currency": "USD", "hotelId": 13278, "packageId": "pkg-a"}]
+
+
+def _leg(code: str):
+    async def fetch(*_a, **_k):
+        return [{"code": code, "distance_m": 800, "duration_s": 600,
+                 "geometry": {"type": "LineString",
+                              "coordinates": [[139.70, 35.60], [139.72, 35.62]]}}]
+    return fetch
+
+
+async def _run_late(c, *, hotel=None, transport=None, restaurant=None, narrator=None, places=None):
+    async def scrape(url): return _reel(url)
+    async def extract(reel):
+        return places if places is not None else [_place("A", lat=35.60, lng=139.70),
+                                                  _place("B", lat=35.62, lng=139.72)]
+    await runner.run_generation(
+        "trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+        job_id="job-1", client=c, scrape=scrape, extract=extract, mem0=None, weather=_no_weather,
+        transport=transport if transport is not None else _no_transport,
+        restaurant=restaurant if restaurant is not None else _no_restaurant,
+        narrator=narrator if narrator is not None else _no_narrator,
+        hotel=hotel)
+
+
+@pytest.mark.asyncio
+async def test_every_concurrent_stage_reports_when_it_FINISHES_not_just_when_it_starts():
+    """The point: something reaches the user DURING the gather, not only after it."""
+    c = _late_stage_client()
+    await _run_late(c, hotel=_hotel_found, transport=_leg("Ok"))
+
+    for stage in ("transport", "restaurants", "hotels", "summarize"):
+        assert _msgs(c, stage, "decision"), (
+            f"{stage} announced a start and then went silent until `result` — the exact defect "
+            f"this exists to fix. stage events seen: {_msgs(c, stage, 'stage')}")
+        # A second `stage` event would make finished work render as the live stage.
+        assert len(_msgs(c, stage, "stage")) == 1, f"{stage} emitted a duplicate stage event"
+
+
+@pytest.mark.asyncio
+async def test_completion_events_report_the_EXACT_count_that_was_written():
+    """'Contains a digit' would pass on 'Found 0' after writing one row. Pin the number."""
+    c = _late_stage_client()
+    await _run_late(c, hotel=_hotel_found, transport=_leg("Ok"))
+
+    assert _msgs(c, "hotels", "decision") == ["Found 1 place to stay"]
+    assert _msgs(c, "transport", "decision") == ["Routed 1 leg between your stops"]
+
+
+@pytest.mark.asyncio
+async def test_a_stage_whose_work_RAISES_warns_and_never_claims_a_completion():
+    """Fault injection through a path that genuinely escapes persist_* — a completion after a
+    raise would claim work that did not happen."""
+    c = _late_stage_client()
+
+    async def exploding_restaurant(*_a, **_k):
+        raise RuntimeError("mapbox down")
+
+    await _run_late(c, restaurant=exploding_restaurant)
+
+    assert _msgs(c, "restaurants", "warning"), "a failed restaurant stage said nothing"
+    assert not _msgs(c, "restaurants", "decision"), (
+        "a stage that raised still announced a completion")
+
+
+@pytest.mark.asyncio
+async def test_legs_that_found_NO_ROUTE_are_reported_not_swallowed():
+    """Codex caught this: warning only on status='failed' left every all-no_route trip silent.
+    Mapbox answering 'there is no route' strands the traveller exactly as an outage does."""
+    c = _late_stage_client()
+    await _run_late(c, transport=_leg("NoRoute"))
+
+    assert _msgs(c, "transport", "warning"), "an unroutable itinerary reported nothing at all"
+    assert not _msgs(c, "transport", "decision"), "claimed routed legs when none routed"
+
+
+@pytest.mark.asyncio
+async def test_an_itinerary_with_nothing_to_route_still_says_so():
+    """One stop and no pair to route is a normal outcome — but silence is indistinguishable
+    from a hung stage, which is the defect this whole change exists to remove."""
+    c = _late_stage_client()
+    await _run_late(c, places=[_place("A", lat=35.60, lng=139.70)])
+
+    assert _msgs(c, "transport", "decision") == ["No journeys to plan between stops"]
+    assert not _msgs(c, "transport", "warning")
+
+
+@pytest.mark.asyncio
+async def test_an_empty_hotel_search_warns_and_does_not_also_claim_a_completion():
+    """The absence warning and a 'Found 0 places to stay' would be two events disagreeing."""
+    c = _late_stage_client()
+
+    async def hotel(location, check_in, check_out, rooms):
+        return "sess-1", []
+
+    await _run_late(c, hotel=hotel)
+
+    assert _msgs(c, "hotels", "warning") == ["No hotel suggestions for this trip"]
+    assert not _msgs(c, "hotels", "decision")

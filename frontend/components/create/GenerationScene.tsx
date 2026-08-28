@@ -41,8 +41,25 @@ export default function GenerationScene({
   )
 
   const done = events.some((e) => e.type === 'result')
-  const lastStage = [...events].reverse().find((e): e is Extract<StreamEvent, { type: 'stage' }> => e.type === 'stage')?.stage
-  const progress = done ? 100 : lastStage ? Math.round(((STAGE_ORDER.indexOf(lastStage) + 1) / STAGE_ORDER.length) * 100) : 5
+  // FURTHEST stage DISPATCHED, not the most recent event. The late stages are gathered
+  // concurrently and each records its `stage` event before doing any work, so the dispatches
+  // themselves arrive out of STAGE_ORDER — transport (index 11) is emitted before restaurants
+  // (index 9). Reading the last event verbatim rewinds the bar, and a bar going backwards reads
+  // as lost ground. indexOf returns -1 for a stage this build does not know; Math.max ignores it.
+  //
+  // Completions are `decision` events and are filtered out here on purpose: they report finished
+  // work, not a new pipeline position.
+  //
+  // KNOWN LIMITATION: because summarize (index 13 of 15) dispatches in the first seconds along
+  // with its siblings, this pins at 93% for the ~140s the concurrent work actually takes. It is
+  // the furthest stage STARTED, never percent-complete — do not present it as the latter.
+  const furthestStage = events.reduce(
+    (max, e) => (e.type === 'stage' ? Math.max(max, STAGE_ORDER.indexOf(e.stage)) : max),
+    -1,
+  )
+  const progress = done ? 100
+    : furthestStage >= 0 ? Math.round(((furthestStage + 1) / STAGE_ORDER.length) * 100)
+    : 5
 
   // Night globe backdrop. Inert: this scene is a backdrop, not something to fly around.
   useEffect(() => {
@@ -91,6 +108,7 @@ export default function GenerationScene({
       {/* Top progress genbar — striped brass, advancing by stage. */}
       <div className="absolute inset-x-0 top-0 z-30 h-1 bg-[color:var(--night-800)]">
         <div
+          data-testid="genbar-fill"
           className="h-full bg-[repeating-linear-gradient(-45deg,var(--brass-deep)_0_8px,transparent_8px_16px)] transition-[width] duration-500"
           style={{ width: `${progress}%` }}
         />

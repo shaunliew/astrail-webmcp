@@ -460,3 +460,39 @@ finding introduced a worse failure of the same kind, and its own tests passed.
 Fault injection proves a guard is load-bearing. It does not prove the guard is correct, and it
 never proves the guard is the *right* guard. Only a second reader with a different prior has
 caught any of these — and it caught them in the code most recently declared done.
+
+## Overnight, 28→29 Aug — agent-first item 1
+
+Working from `docs/webmcp/plans/01-agent-generation-drives-the-page.md`, whose ownership model was
+rewritten after Codex rejected the first one. Backend stopped for the night first: `_reap_loop`
+runs every 120s against the shared Supabase and is not flag-gated, so an idle local backend can
+adopt and re-execute a stuck job and spend real credit while nobody is watching.
+
+### Task 1 — pins have never landed progressively
+
+Pulled out of the plan and done first: small, independently verifiable, and it improves the manual
+path today regardless of what happens to the rest.
+
+`GenerationScene` fetched places on the first places-bearing stage and set `fetchedRef.current =
+true` **before** the fetch resolved. `dedup` is emitted at `runner.py:332` and `persist_itinerary`
+does not run until `:391` — even `stage:save` (`:386`) precedes it — so that first read found zero
+rows and the latch suppressed every retry for the rest of the run. The comment above
+`PLACES_READY_STAGES` claimed those stages "only run after places are persisted". None of them does.
+
+Two halves:
+
+- **Backend** — `runner.py` emits `decision` / `save` / `"Saved N stops to your map"` immediately
+  after `persist_itinerary` returns, counting `len(canonical) - dropped`. The first event that
+  actually means the rows are readable, and another beat in the long silent stretch.
+- **Frontend** — `placesReady` (a boolean that flips once, so the effect never ran again) became
+  `placesSignals`, a count including that decision. The latch now moves to *after* pins land, with
+  an in-flight guard so overlapping signals cannot race.
+
+Both new frontend tests fail against the old component: it latches on the empty read, and it
+ignores a `decision` entirely.
+
+```
+frontend  npx tsc --noEmit          exit 0
+frontend  npx vitest run            985 passed
+backend   uv run pytest -q          1965 passed, 13 skipped
+```

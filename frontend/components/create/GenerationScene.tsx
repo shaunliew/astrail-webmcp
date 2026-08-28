@@ -14,8 +14,11 @@ import type { StreamEvent, GenerationStage } from '@/lib/trip/backend-types'
 import { useSharedMap } from '@/components/map/MapProvider'
 import GenerationProgress from './GenerationProgress'
 
-// Stages that only run after places are persisted (progressive persistence, PRD §16) —
-// the earliest safe moments to read trip_places and land pins.
+// Stages after which the persisted places MIGHT be readable. Deliberately "might": `dedup` is
+// emitted at runner.py:332 and persist_itinerary does not run until :391 — even `stage:save`
+// (:386) precedes it — so none of these actually proves a row exists. They are kept as a fallback
+// for a backend that predates the post-persistence `decision` on `save`, which is the only signal
+// that MEANS it. The fetch below therefore retries rather than trusting any one of them.
 const PLACES_READY_STAGES = new Set([
   'dedup', 'enrich', 'weather', 'restaurants', 'hotels', 'transport', 'narrate', 'summarize',
 ])
@@ -35,10 +38,14 @@ export default function GenerationScene({
 }) {
   const { hasToken, ready, getMap, acquire, release, setMarkers } = useSharedMap()
   const fetchedRef = useRef(false)
+  const inFlightRef = useRef(false)
 
-  const placesReady = events.some(
-    (e) => e.type === 'stage' && PLACES_READY_STAGES.has(e.stage),
-  )
+  // A COUNT, not a boolean: a boolean flips true once and the effect never runs again, so one
+  // too-early read was the only read that ever happened. Counting lets each later signal retry.
+  const placesSignals = events.filter(
+    (e) => (e.type === 'decision' && e.stage === 'save')
+      || (e.type === 'stage' && PLACES_READY_STAGES.has(e.stage)),
+  ).length
 
   const done = events.some((e) => e.type === 'result')
   // FURTHEST stage DISPATCHED, not the most recent event. The late stages are gathered
@@ -67,16 +74,22 @@ export default function GenerationScene({
     return () => release()
   }, [acquire, release])
 
-  // First mapped value: fetch the progressively-persisted places once and land them.
+  // First mapped value: land the progressively-persisted places as soon as they exist.
+  //
+  // The latch is set AFTER pins land, never before the read. Setting it up front — which is what
+  // this did — meant an empty early read permanently suppressed every retry, and the pins never
+  // appeared at all during a real generation. `inFlightRef` keeps the retries from overlapping
+  // now that more than one signal can trigger this.
   useEffect(() => {
-    if (!ready || !tripId || !placesReady || fetchedRef.current) return
-    fetchedRef.current = true
+    if (!ready || !tripId || placesSignals === 0 || fetchedRef.current || inFlightRef.current) return
+    inFlightRef.current = true
     let cancelled = false
     ;(async () => {
       try {
         const bundle = await getTrip(tripId)
         const map = getMap()
         if (cancelled || !bundle || !map || bundle.places.length === 0) return
+        fetchedRef.current = true
         const bounds = new mapboxgl.LngLatBounds()
         const markers = bundle.places.map((tp, i) => {
           const el = document.createElement('div')
@@ -94,10 +107,12 @@ export default function GenerationScene({
       } catch {
         // Pins mid-generation are a bonus — the rail still narrates every stage,
         // and the trip page renders the full map after the result event.
+      } finally {
+        inFlightRef.current = false
       }
     })()
     return () => { cancelled = true }
-  }, [ready, tripId, placesReady, getMap, setMarkers])
+  }, [ready, tripId, placesSignals, getMap, setMarkers])
 
   return (
     <main className="relative min-h-[100dvh] overflow-hidden">

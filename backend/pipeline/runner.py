@@ -390,6 +390,16 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
             try:
                 dropped = await persist_itinerary(client, trip_id, canonical, dates,
                                                   job_id=job_id, lease_token=lease_token)
+                # The FIRST moment the places are readable. `stage="save"` above is emitted before
+                # this call, so no stage event has ever meant "the rows exist" — GenerationScene
+                # fetched on the earliest places-bearing stage, found nothing, and latched, which
+                # is why pins have never landed progressively while a trip is being built.
+                # Best-effort: a failed event write must not fail a trip that is already saved.
+                try:
+                    await record_event(client, trip_id, event_type="decision", stage="save",
+                                       message=f"Saved {_n(len(canonical) - dropped, 'stop')} to your map")
+                except Exception:
+                    pass
                 try:
                     # Owner-checked (guardrail #6) + best-effort: never fail the trip on this write.
                     await client.table("trips").update(

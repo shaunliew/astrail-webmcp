@@ -1371,3 +1371,25 @@ async def test_an_empty_hotel_search_warns_and_does_not_also_claim_a_completion(
 
     assert _msgs(c, "hotels", "warning") == ["No hotel suggestions for this trip"]
     assert not _msgs(c, "hotels", "decision")
+
+
+@pytest.mark.asyncio
+async def test_the_map_is_told_when_stops_are_ACTUALLY_persisted():
+    """`stage="save"` is emitted at runner.py:386; persist_itinerary does not run until :391.
+
+    So no stage event has ever meant "the places exist". GenerationScene fetched on the first
+    places-bearing stage, found zero rows, and latched — which is why pins have never landed
+    progressively during a generation. A post-persistence event is the only honest trigger, and
+    it doubles as another beat in the long silent stretch.
+    """
+    c = _late_stage_client()
+    await _run_late(c)
+
+    saved = [e for e in c.events
+             if e["stage"] == "save" and e["event_type"] == "decision"]
+    assert saved, "nothing marks the moment the stops became readable"
+    assert "2" in saved[0]["message"], f"the count is not the stops persisted: {saved[0]['message']!r}"
+
+    # Ordering is the whole point: it must come AFTER the dispatch that used to trigger the fetch.
+    order = [f'{e["event_type"]}:{e["stage"]}' for e in c.events]
+    assert order.index("decision:save") > order.index("stage:save")

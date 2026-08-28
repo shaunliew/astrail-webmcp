@@ -178,3 +178,58 @@ describe('the progress genbar under concurrent stages', () => {
     expect(fill()).toBe('100%')
   })
 })
+
+describe('landing pins during the generation', () => {
+  /* The scene fetched places on the first places-bearing stage and latched the ref BEFORE the
+     fetch resolved. `dedup` is emitted at runner.py:332 but persist_itinerary does not run until
+     :391 - even `stage:save` (:386) precedes it - so that first read found zero rows and the
+     latch permanently suppressed every retry. Pins have never landed progressively.
+     The honest trigger is the post-persistence `decision` on `save`. */
+  beforeEach(() => {
+    vi.clearAllMocks()
+    markerElements.length = 0
+    process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN = 'pk.test'
+  })
+  afterEach(() => { delete process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN })
+
+  const SAVED: StreamEvent = { type: 'decision', stage: 'save', msg: 'Saved 8 stops to your map' }
+  const DEDUP: StreamEvent = { type: 'stage', stage: 'dedup', msg: 'deduping' }
+
+  it('does not give up when the first read is too early', async () => {
+    getTrip.mockResolvedValueOnce({ ...TOKYO_TRIP, places: [] })   // dedup: nothing saved yet
+    getTrip.mockResolvedValue(TOKYO_TRIP)                          // after persistence
+    const { rerender } = renderScene([DEDUP])
+    await flush()
+    fireLoad()
+    await flush()
+    expect(getTrip).toHaveBeenCalledTimes(1)
+    expect(markerElements).toHaveLength(0)
+
+    rerender(
+      <MapProvider>
+        <GenerationScene tripId="trip_tokyo_demo" events={[DEDUP, SAVED]} />
+      </MapProvider>,
+    )
+    await flush()
+    expect(markerElements).toHaveLength(TOKYO_TRIP.places.length)
+  })
+
+  it('lands pins once and does not re-land them on later events', async () => {
+    getTrip.mockResolvedValue(TOKYO_TRIP)
+    const { rerender } = renderScene([SAVED])
+    await flush()
+    fireLoad()
+    await flush()
+    expect(markerElements).toHaveLength(TOKYO_TRIP.places.length)
+
+    rerender(
+      <MapProvider>
+        <GenerationScene tripId="trip_tokyo_demo" events={[
+          SAVED, { type: 'stage', stage: 'hotels', msg: 'Looking for somewhere to stay' },
+        ]} />
+      </MapProvider>,
+    )
+    await flush()
+    expect(markerElements).toHaveLength(TOKYO_TRIP.places.length)
+  })
+})

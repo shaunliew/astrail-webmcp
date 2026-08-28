@@ -51,6 +51,52 @@ dispatch would cost more than it saves — a one-line copy fix, a comment, a doc
 
 The line: **if it needs a test, it needs the implementer.**
 
+## Fact-check against the source, not against memory
+
+Two live doc channels. Use them before asserting anything about either platform — both have moved
+under us already this sprint.
+
+**WebMCP / ChatGPT site tools** — `mcp__openaiDeveloperDocs__*`. Prefer `fetch_openai_doc` on
+`https://learn.chatgpt.com/docs/webmcp` over `search_openai_docs`, which returns tens of KB of
+unrelated changelog. That page is the authority on what the built-in browser actually supports, and
+it has already corrected us: tools in iframes are **not** discovered, the declarative HTML-attribute
+API is **not** supported, only GPT-5.6 Sol/Terra (Luna has WebMCP disabled), nothing in Enterprise
+or Edu workspaces, and OpenAI treats a site's own tool definitions and results as **untrusted
+content** with a safety review before every invocation.
+
+It also names our use case as the canonical example: *"A travel planner that lets the agent compare
+options and update an itinerary while you inspect the map."*
+
+**Mapbox** — no MCP server is mounted in this session. The `mapbox-*` entries are **skills**, not
+servers, so a claim about Mapbox behaviour must come from a skill, the repo, or a live probe. Do not
+invent an MCP call that does not exist.
+
+**The W3C spec** (`https://webmachinelearning.github.io/webmcp/`) is the authority on annotations —
+the ChatGPT page shows `readOnlyHint` in an example but does not enumerate the set. Attribute the
+claim to whichever source you actually read.
+
+## Recovering when something fails
+
+The overnight rule is **stop on a gate failure**, and that stands: a failing gate means an assumption
+was wrong, and fixing forward on a wrong assumption compounds it. But distinguish the two cases,
+because treating everything as fatal wastes a night as surely as ignoring it.
+
+**Recoverable — fix and continue, no human needed:**
+- a test the implementer wrote is wrong (its harness, not the behaviour) — verify against the code,
+  correct the test, say so in the RUNLOG
+- a shell or tooling slip: a bad heredoc, a stale path, a wrong flag
+- a review finding — that is the loop working; dispatch it back to the implementer
+- a task touching a file another task owns — re-scope the allowlist and re-dispatch
+
+**Stop and write it down — a human decides:**
+- a gate that fails for a reason the plan did not anticipate
+- two reviews disagreeing on whether something is a defect
+- anything needing a push, a deploy, a migration, real credit, or an approval dialog
+- a fix that would make an existing test fail, where you cannot prove the test was wrong
+
+**Always leave the tree clean or stashed.** A morning that starts with a half-edited file is worse
+than one that starts with an honest "stopped here, and why".
+
 ## Running items in parallel
 
 Two implementers at once is worth real wall-clock, and the gate is **file overlap, not tooling**.

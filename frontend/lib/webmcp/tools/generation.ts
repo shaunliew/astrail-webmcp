@@ -24,12 +24,66 @@ export type GenerationDeps = {
    * credit. An agent must never be able to do that on its own initiative.
    */
   confirm: (summary: string) => Promise<boolean>
+  /**
+   * Reads the saved-reel library so the approval card can say how much of this plan Astrail has
+   * already done. Only the two fields it needs — a wider type would invite the card to start
+   * echoing reel internals at a moment the user is being asked to trust it.
+   *
+   * Optional, and a failure is SILENT by design: an unreadable library must produce no line at
+   * all, never "none of these have been read". That sentence from a failed read overstates the
+   * cost of approving, which is the one direction this card must never be wrong in.
+   */
+  readLibrary?: () => Promise<{ url: string; hasCurrentCache: boolean }[]>
 }
 
 const MAX_REELS = 5
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
 /** Long enough to be useful, short enough that a prompt-injected caption cannot hide in it. */
 const MAX_PREFERENCES = 280
+
+/**
+ * How many of these reels Astrail has already read, or `null` when we could not find out.
+ *
+ * `null` and `0` are deliberately different values and must stay that way: 0 is a fact about the
+ * library, null is the absence of one. Collapsing them would put "none of these have been read"
+ * on the card whenever the read failed — a claim that costs the user more than the truth.
+ */
+async function countAlreadyRead(
+  read: GenerationDeps['readLibrary'], urls: string[],
+): Promise<number | null> {
+  if (!read) return null
+  try {
+    const library = await read()
+    // `urls` are already normalized by the caller and the library stores normalized_url, so this
+    // compares like with like — an agent's share link with a query string still matches.
+    const cached = new Set(library.filter((r) => r.hasCurrentCache).map((r) => r.url))
+    return urls.filter((u) => cached.has(u)).length
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Says what reuse means in the user's terms — reels read, not cache hits.
+ *
+ * Deliberately claims no time saved. Reuse skips scrape and extract, but enrichment, narration
+ * and routing still run, and nobody has measured the difference. A number invented here would be
+ * on screen at the exact moment the user is deciding whether to trust the thing.
+ */
+function describeReuse(alreadyRead: number, total: number): string {
+  if (alreadyRead === 0) {
+    return total === 1
+      ? 'Astrail has not read this reel yet.'
+      : `None of these ${total} reels have been read yet.`
+  }
+  if (alreadyRead === total) {
+    return total === 1
+      ? 'Astrail has already read this reel and will reuse that work.'
+      : `All ${total} reels have already been read \u2014 Astrail will reuse that work.`
+  }
+  const verb = alreadyRead === 1 ? 'has' : 'have'
+  return `${alreadyRead} of ${total} reels ${verb} already been read; the rest will be read now.`
+}
 
 export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
   return {
@@ -64,6 +118,11 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
 
       const preferences = typeof args.preferences === 'string' ? args.preferences.slice(0, MAX_PREFERENCES) : null
 
+      // What approving actually involves, worked out before the card is shown. Awaited rather
+      // than filled in afterwards: a card that appears saying one thing and then revises itself
+      // is worse than one that appears a beat later saying the right thing once.
+      const alreadyRead = await countAlreadyRead(deps.readLibrary, urls)
+
       // The summary is shown to the user VERBATIM before anything is spent. Reel captions are
       // untrusted, so a prompt-injected preference cannot silently steer a run they never read.
       const summary = [
@@ -71,6 +130,7 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
         `Dates: ${start} to ${end}`,
         args.destination_hint ? `Destination: ${args.destination_hint}` : null,
         preferences ? `Preferences: "${preferences}"` : null,
+        alreadyRead === null ? null : describeReuse(alreadyRead, urls.length),
         'This uses your trip allowance.',
       ].filter(Boolean).join('\n')
 

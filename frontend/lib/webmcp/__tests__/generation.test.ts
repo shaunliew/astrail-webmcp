@@ -264,3 +264,94 @@ describe('plan_trip_from_reels', () => {
     expect(d.openStream).toHaveBeenCalledWith('trip-123')
   })
 })
+
+describe('plan_trip_from_reels — what the approval card says about cost', () => {
+  const url = (code: string) => `https://www.instagram.com/reel/${code}/`
+  /** A library reader returning entries in the shape list_saved_reels already produces. */
+  const lib = (entries: { url: string; hasCurrentCache: boolean }[]) =>
+    vi.fn().mockResolvedValue(
+      entries.map((e) => ({ ...e, caption: null, status: 'organized', places: [] })),
+    )
+
+  const deps = (over = {}) => ({
+    store: createGenerationStore(),
+    create: vi.fn().mockResolvedValue('trip-123'),
+    openStream: vi.fn(),
+    confirm: vi.fn().mockResolvedValue(true),
+    ...over,
+  })
+
+  const run = (d: ReturnType<typeof deps>, urls: string[]) =>
+    planTripFromReelsTool(d).execute({
+      reel_urls: urls, start_date: '2026-03-03', end_date: '2026-03-07',
+    })
+
+  it('says how many of the reels Astrail has already read', async () => {
+    const d = deps({ readLibrary: lib([
+      { url: url('AAA'), hasCurrentCache: true },
+      { url: url('BBB'), hasCurrentCache: true },
+      { url: url('CCC'), hasCurrentCache: false },
+    ]) })
+    await run(d, [url('AAA'), url('BBB'), url('CCC')])
+    expect(d.confirm.mock.calls[0][0]).toContain('2 of 3')
+  })
+
+  it('says so plainly when every reel is already read', async () => {
+    const d = deps({ readLibrary: lib([
+      { url: url('AAA'), hasCurrentCache: true },
+      { url: url('BBB'), hasCurrentCache: true },
+    ]) })
+    await run(d, [url('AAA'), url('BBB')])
+    const card = d.confirm.mock.calls[0][0]
+    expect(card).toMatch(/all 2 .*already been read/i)
+  })
+
+  it('says none are read when the library has none of them', async () => {
+    const d = deps({ readLibrary: lib([{ url: url('ZZZ'), hasCurrentCache: true }]) })
+    await run(d, [url('AAA'), url('BBB')])
+    expect(d.confirm.mock.calls[0][0]).toMatch(/none of these 2/i)
+  })
+
+  it('matches on the normalized URL, not the string the agent happened to send', async () => {
+    // The library stores normalized_url; an agent may pass a share link with a query string.
+    // Two reels deliberately: this is about URL matching, not about how the card words "1".
+    const d = deps({ readLibrary: lib([
+      { url: url('AAA'), hasCurrentCache: true },
+      { url: url('BBB'), hasCurrentCache: true },
+    ]) })
+    await run(d, ['https://instagram.com/reel/AAA/?igshid=xyz', 'instagram.com/reel/BBB'])
+    expect(d.confirm.mock.calls[0][0]).toMatch(/all 2 .*already been read/i)
+  })
+
+  it('words a single reel as a sentence, not as "All 1 reel"', async () => {
+    const d = deps({ readLibrary: lib([{ url: url('AAA'), hasCurrentCache: true }]) })
+    await run(d, [url('AAA')])
+    const card = d.confirm.mock.calls[0][0]
+    expect(card).toMatch(/already read this reel/i)
+    expect(card).not.toMatch(/all 1/i)
+  })
+
+  it('says NOTHING about cost when the library cannot be read', async () => {
+    // A confident "none are read" from a failed read would tell the user this costs more than it
+    // does. Omitting the line is the only honest option — the same rule list_saved_reels follows.
+    const d = deps({ readLibrary: vi.fn().mockRejectedValue(new Error('offline')) })
+    await run(d, [url('AAA'), url('BBB')])
+    const card = d.confirm.mock.calls[0][0]
+    expect(card).not.toMatch(/already read|none of these/i)
+    expect(d.create).toHaveBeenCalled()   // and it must not block the run
+  })
+
+  it('says nothing about cost when no library reader is wired at all', async () => {
+    const d = deps()
+    await run(d, [url('AAA')])
+    expect(d.confirm.mock.calls[0][0]).not.toMatch(/already read|none of these/i)
+  })
+
+  it('still shows the dates and the allowance warning alongside the cost line', async () => {
+    const d = deps({ readLibrary: lib([{ url: url('AAA'), hasCurrentCache: true }]) })
+    await run(d, [url('AAA')])
+    const card = d.confirm.mock.calls[0][0]
+    expect(card).toContain('2026-03-03')
+    expect(card).toContain('allowance')
+  })
+})

@@ -159,6 +159,19 @@ export default function GlobalTools() {
     return res
   }, [refreshReels, refreshSavedReels, adoptOrganizeJob])
 
+  // Declared above `generation` because the approval card reads it too: plan_trip_from_reels
+  // reports how many of the chosen reels are already read before the user approves the spend.
+  const loadSavedReels = useCallback(async () => {
+    const cards = await listSavedReelCards()
+    return cards.map((c) => ({
+      url: c.normalized_url,
+      caption: c.caption,
+      status: c.analysis_status,
+      hasCurrentCache: c.has_current_cache,
+      places: c.places.map((p) => ({ name: p.name, country: p.country_name })),
+    }))
+  }, [])
+
   const generation = useMemo(
     () => ({
       store: storeRef.current,
@@ -178,8 +191,9 @@ export default function GlobalTools() {
         })()
       },
       confirm: requestConfirm,
+      readLibrary: loadSavedReels,
     }),
-    [requestConfirm],
+    [requestConfirm, loadSavedReels],
   )
 
   const edit = useMemo(
@@ -207,16 +221,6 @@ export default function GlobalTools() {
     }),
     [requestConfirm],
   )
-
-  const loadSavedReels = useCallback(async () => {
-    const cards = await listSavedReelCards()
-    return cards.map((c) => ({
-      url: c.normalized_url,
-      caption: c.caption,
-      status: c.analysis_status,
-      places: c.places.map((p) => ({ name: p.name, country: p.country_name })),
-    }))
-  }, [])
 
   const specs = globalTools({ readAppState, trips: tripReader, saveReel, analyzeReels, loadSavedReels, generation, edit })
 

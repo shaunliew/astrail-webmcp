@@ -84,8 +84,10 @@ describe('save_reels', () => {
 
 import { listSavedReelsTool, type SavedReelSummary } from '../tools/reels'
 
-const reel = (url: string, places: [string, string][], caption: string | null = null): SavedReelSummary => ({
-  url, caption, status: 'analyzed',
+const reel = (
+  url: string, places: [string, string][], caption: string | null = null, hasCurrentCache = false,
+): SavedReelSummary => ({
+  url, caption, status: 'analyzed', hasCurrentCache,
   places: places.map(([name, country]) => ({ name, country })),
 })
 
@@ -252,5 +254,38 @@ describe('save_reels: re-pasting a reel already in the library', () => {
     const save = vi.fn().mockResolvedValue({ id: 'sr_1', analysis_status: 'not_analyzed' })
     const out = String(await saveReelsTool({ save, analyze: vi.fn() }).execute({ urls: [URL] }))
     expect(out).not.toContain('already in your library')
+  })
+})
+
+describe('list_saved_reels — which reels are already read', () => {
+  /* `has_current_cache` is the app's own signal that a reel's extraction matches the extractor
+     version the pipeline will ask for. Surfacing it lets the agent tell the user what a plan will
+     actually involve BEFORE they approve it. */
+  const ca = 'https://www.instagram.com/reel/Ca/'
+  const cb = 'https://www.instagram.com/reel/Cb/'
+
+  it('marks the reels Astrail has already read', async () => {
+    const out = String(await listTool([
+      reel(ca, [['Senso-ji', 'Japan']], null, true),
+      reel(cb, [['Shibuya', 'Japan']], null, false),
+    ]).execute({}))
+    const lineA = out.split('\n').find((l) => l.includes('/Ca/')) ?? ''
+    const lineB = out.split('\n').find((l) => l.includes('/Cb/')) ?? ''
+    expect(lineA).toMatch(/already read/i)
+    expect(lineB).not.toMatch(/already read/i)
+  })
+
+  it('counts them in the header so the agent can answer "what will this cost"', async () => {
+    const out = String(await listTool([
+      reel(ca, [['Senso-ji', 'Japan']], null, true),
+      reel(cb, [['Shibuya', 'Japan']], null, true),
+    ]).execute({}))
+    expect(out.split('\n')[0]).toMatch(/2 already read/i)
+  })
+
+  it('omits the header count entirely when none are read', async () => {
+    // "0 already read" is noise on every line of a fresh library.
+    const out = String(await listTool([reel(ca, [['Senso-ji', 'Japan']])]).execute({}))
+    expect(out.split('\n')[0]).not.toMatch(/already read/i)
   })
 })

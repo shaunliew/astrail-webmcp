@@ -531,3 +531,35 @@ frontend  npx vitest run            997 passed (105 files)
 
 **Still unverified, and it is the point of all this:** `plan_trip_from_reels` has never been run
 through WebMCP in ChatGPT's browser. Tests are not evidence the handoff works on the judged surface.
+
+### Item 1, review rounds 2 and 3
+
+Round 2 (Codex, on the implementation) returned three HIGH and one MEDIUM. `astrail-developer`
+closed them; I verified independently — typecheck clean, 1012 passing, exactly the six allowed
+files touched. It also corrected my brief: the baseline was 999, not the 997 I gave it, because I
+had added two tests after that measurement. And it refused to fake two fixes that needed a
+watchdog I had ruled out, saying so instead of writing tests that pretend coverage.
+
+Round 3 (Codex, on the fixes) found the highest-risk defect is still open, and it is a design
+error of mine rather than an implementation slip:
+
+> "canStart() only reads the lock; it does not reserve it. GlobalTools checks at :185, then awaits
+> the token and backend POST before start() at :196. The manual path has the same gap. Two callers
+> can both pass the check and create two paid backend jobs. The second start() then returns false,
+> but both callers ignore that result."
+
+Check-then-act is not a lock. The API needed `reserve()` → `begin()` / `release()`, so the lock is
+taken **before** the POST and handed back if it fails. Two rounds of review passed over this
+because both reviewed the code as written rather than the shape of the API.
+
+Also open from round 3: a stale API from an unmounted provider still reports it can start;
+unreadable result JSON is still treated as success (`{"error":null}` too — truthiness rather than
+presence, and the round-2 test *codified* that); agent-started failure has no UX from inbox, trays
+or organizing; and a token timeout is genuinely required because `readToken()` runs **after** the
+backend job exists. Dead code list attached.
+
+Round 3 also checked the previous report's "all red-first except two guards" claim and found only
+one green against baseline. Verifying that claim by reverting and running — rather than asserting
+it — is now part of the implementer brief.
+
+Dispatched as one task. **Item 1 is not complete and must not be called complete.**

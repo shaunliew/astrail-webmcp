@@ -25,7 +25,7 @@ single sentence the whole submission rests on — *the agent moves the map the h
 | # | Item | Impact | Cost | Status |
 |---|---|---|---|---|
 | 1 | Connect agent generation to the page | Very high — Leverage, Execution, Creativity | 1–2 d | ☐ not started |
-| 2 | Invited empty state + one-click seeded demo trip | High — Execution, Impact | ~1 d | ☐ not started |
+| 2 | Invited empty state + one-click seeded demo trip | High — Execution, Impact | ~1 d | ☐ not started — **confirmed live, see below** |
 | 3 | Persistent receipts + undo (replace the 8s fade) | High — Execution | ~1 d | ☐ not started |
 | 4 | Tool-contract gaps + truthful SUBMISSION.md | Med-high Leverage, protects every score | <1 d | ☐ not started |
 | 5 | `get_trip_notes` / `resolve_trip_note` (JSONB) | Highest Leverage + Creativity | ~1 d | ☐ stretch — only if the days hold |
@@ -83,8 +83,26 @@ artifact the human sees, that the agent mutates in place. Its literal on-screen 
 *"Your edits are protected. Your agent can't overwrite them."* — plus a **pre-seeded, partially
 planned demo trip** so a first-time visitor has something to collaborate on.
 
-**Done when:** an empty `/app` leads with the invitation and a runnable prompt, and one click opens
-a seeded trip with real evidence quotes and pins — no Instagram URL required, no generation spent.
+**Confirmed on the judged surface, 2026-08-29 ~00:00 GMT+8.** Shaun ran it in ChatGPT desktop's
+built-in browser against an empty library. Asked *"What can I do here?"*, the agent called
+`get_app_state` and replied:
+
+> "Right now you have no saved Reels or trips, so **start by pasting up to five Instagram
+> Reel/post links**. […] You can also use Trails to revisit trips, New trail to start over, and
+> Settings for your account."
+
+**The agent sent the user to the form.** Then `list_saved_reels` answered *"No saved reels yet. Use
+save_reels with Instagram Reel links to add some."* — an instruction the user cannot follow without
+leaving to find Instagram URLs, which the agent cannot do for them.
+
+That is item 2 stated by the product itself, in the agent's own words, on the surface judges use.
+The empty state has **no path forward that does not route through the manual UI**, and
+`get_app_state` currently narrates the app's navigation chrome (Trails, New trail, Settings) rather
+than what the pair can do together.
+
+**Done when:** an empty `/app` leads with the invitation and a runnable prompt, one click opens a
+seeded trip with real evidence quotes and pins — no Instagram URL required, no generation spent —
+and `get_app_state` offers a next action the agent can *take*, not a button to go press.
 
 ## 3. Persistent receipts + undo
 
@@ -175,6 +193,23 @@ document", and it is the most collaborative pattern published in this field.
   judge's actual surface and reads as not trusting WebMCP. **Every OpenAI reference app avoids it.**
 - An autonomy dial or graduated permissions — one confirm gate on the one costly action covers it.
 - Multi-agent role cards, budget meters, CRDT multiplayer. Out of scale for ≤5 reels and ≤8 places.
+
+## The tool surface — VERIFIED on the judged surface (2026-08-29)
+
+The longest-open 🔴 is closed. In ChatGPT desktop's built-in browser, signed in, on `/app`:
+
+- the **address-bar arrow appears**
+- **"Available site tools" lists every tool** with its full description and `readOnlyHint` /
+  `untrustedContentHint` annotations
+- the on-page **WebMCP chip renders**
+- read-only tools **execute and return** — `get_app_state` and `list_saved_reels` both answered
+
+The descriptions read as prose written for a person, not as developer identifiers — which matters,
+because a judge opens that list before touching the page.
+
+**Correction: the count is 13 on `/app` and 16 on a trip page**, not the 10/13 recorded in
+`T4-QUEUE.md:66`. The five edit tools were moved to global registration, so `globalTools` returns
+13 and `tripTools` adds 3. Fix the doc before quoting a number at a judge.
 
 ## Also open, from earlier
 

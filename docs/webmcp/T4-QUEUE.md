@@ -63,7 +63,10 @@ Worked at the evening review; the big passes wait for the weekend.
 
 ## After the completion pass — 13 tools
 
-- 🔴 **Chip should read 10 tools on `/app`, 13 on a trip page.** Verified in headless Chromium with
+- 🟢 ~~**Chip should read 10 tools on `/app`, 13 on a trip page.**~~ **PASSED 2026-08-29 in ChatGPT
+      desktop's built-in browser** — arrow, tool list with annotations, chip, and read tools all
+      execute. ⚠ The numbers here were stale: it is **13 on `/app` and 16 on a trip page** (the five
+      edit tools were moved to global registration). Verified in headless Chromium with
       a shim; not yet in ChatGPT's own browser.
 - 🔴 **Try, from `/app` without opening a trip:** *"What's on day 2 of one of my Kyoto trips?"*
       Then the same question **while on a trip page** — it should use that trip, not ask which.

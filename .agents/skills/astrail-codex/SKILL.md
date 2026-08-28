@@ -93,6 +93,20 @@ herdr pane split --pane <busy-pane> --direction down --cwd "$PWD" --no-focus
 herdr agent start checker --kind codex --pane <new-pane-id>
 ```
 
+### How many panes is actually right
+
+**Two Codex panes. A third only for a genuinely independent third job.** The limit is not the tool,
+it is legible screen: a 183-column tab gives ~91 columns per side, and each `down` split halves the
+rows. Two panes are 91x25 each — fine for reading a review. A fourth would be 91x12, where a
+finding scrolls past before you can read it, and an unread review is worse than none.
+
+**More Claude does NOT mean more panes.** Use Task subagents instead — they are unbounded, cost no
+screen, and take a per-dispatch `model` (opus for a hard adversarial pass, sonnet for mechanical
+work) which a pane cannot express. A CLI agent hosted in a pane is a different surface with
+different mechanics: you read the pane, there is no `SendMessage` handoff, and it competes for
+space with the reviews you actually need to read. Panes are for the *other vendor*; subagents are
+for more of your own.
+
 Split **down** off an existing column rather than right again — two right-splits leave ~45 columns
 each, which is unusable for reading a review.
 

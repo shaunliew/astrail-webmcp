@@ -1,0 +1,98 @@
+---
+name: astrail-build-loop
+description: The mandatory loop for building anything in Astrail — plan with a subagent, review the plan with Codex through Herdr, implement with the astrail-developer subagent, review with astrail-reviewer AND Codex, verify. Use for every feature, fix, and refactor. Claude does not implement directly; if you are about to write production code yourself, you have already left the loop.
+---
+
+# The build loop — every stage has an owner, and it is not you
+
+> **Why this exists.** On 2026-08-28 the loop was documented in `.claude/docs/BUILD-LOOP.md`, in
+> `astrail-plan-and-review`, and in the CLAUDE.md routing table — and the orchestrator still
+> planned, implemented and reviewed a whole feature itself. Three separate documents did not stop
+> it, because each stage individually felt faster to just do. This skill exists to remove the
+> per-stage judgement call. **If you are typing production code into an Edit or a heredoc, stop.**
+
+## The five stages and their owners
+
+| Stage | Owner | Never |
+|---|---|---|
+| 1 · Research an unfamiliar API, algorithm or seam | `astrail-researcher` subagent | guessing from memory |
+| 2 · Write the plan | `astrail-plan-and-review` skill, or a Plan subagent | planning inline while editing |
+| 3 · **Review the plan** | **Codex via `astrail-codex`** (Herdr pane) | building on an unreviewed plan |
+| 4 · **Implement, task by task** | **`astrail-developer` subagent** | **Claude writing the code** |
+| 5 · Review the diff | `astrail-reviewer` subagent **AND** Codex via `astrail-codex` | one of the two |
+
+Stages 3 and 5 both go through Herdr. Stage 4 is the one that keeps getting skipped.
+
+## Stage 4 — dispatching the implementer
+
+One task per dispatch. The task must be small enough to state its acceptance in a sentence.
+
+```
+Agent(subagent_type: "astrail-developer", prompt: …)
+```
+
+The prompt carries, every time:
+
+- **The plan file path** and which numbered task this is.
+- **The exact files** it may touch. Anything outside is a stop, not a judgement call.
+- **The acceptance test** — the command, and what its output must say.
+- **The invariant it must not break**, named. Not "be careful".
+- **TDD**: the failing test first, then the code. A test written after the code that passes on the
+  first run has proved nothing.
+
+Then verify its work yourself before dispatching the next task: run the suite, read the diff. A
+subagent reporting success is a claim, not evidence.
+
+## What Claude does in this loop
+
+Orchestrate, verify, and decide. Concretely: write the plan file, dispatch, read the diffs, run the
+suites, hold the RUNLOG, judge the findings, and decide what to cut. Also the small things a
+dispatch would cost more than it saves — a one-line copy fix, a comment, a doc.
+
+The line: **if it needs a test, it needs the implementer.**
+
+## The findings loop
+
+A review returns findings. Do NOT fix them yourself for the same reason you did not write the code.
+Group them into tasks and dispatch each to `astrail-developer` with the finding quoted verbatim,
+including the reviewer's file:line and its failure scenario. Then re-review.
+
+Two rounds minimum on anything non-trivial. This branch has a documented history of a fix being
+worse than the finding it closed — round 2 exists to catch that, and it has, repeatedly.
+
+## The one question that keeps exposing hollow work
+
+Ask it of every review, every time:
+
+> **Are the new tests load-bearing, or would they pass against the old code?**
+
+It has caught: tests asserting a DB shape that does not exist; green tests written by the same
+author in the same hour that constrained nothing; a fault-injection test whose injected fault never
+reached the handler it claimed to exercise.
+
+## Overnight rules
+
+`implement → verify → append to docs/webmcp/RUNLOG.md → commit locally → next task`.
+
+**On any gate failure: STOP.** Write the failure and its output to the RUNLOG, leave the tree clean,
+and do not attempt the next task. Never fix forward unattended — a failing gate means an assumption
+was wrong, and that needs a human.
+
+Never unattended, no exceptions: `git push` to a shared branch · `git merge` · `gh pr merge` ·
+`supabase db push` · any deploy or production config change · any real generation run (it spends
+Apify and OpenAI credit) · answering an agent's approval dialog.
+
+Also: stop the local backend before leaving it overnight. `_reap_loop` runs every 120s against the
+shared Supabase and is not flag-gated, so an idle local backend can adopt and re-execute someone
+else's stuck job and spend real credit while nobody is watching.
+
+## Red flags — you have left the loop
+
+| Thought | Reality |
+|---|---|
+| "This is a two-line change, I'll just do it" | Two lines that need a test need the implementer |
+| "Dispatching costs more than doing it" | That is the exact reasoning that skipped the loop three times |
+| "I already know what the plan is" | Then writing it down costs nothing and Codex can attack it |
+| "The tests pass, it's fine" | Tests you wrote after the code prove the code does what you wrote |
+| "I'll review it myself, I wrote it" | You reviewed it while writing it. That is not a review |
+| "Codex already reviewed the plan" | The plan is not the diff. Stage 5 is separate |

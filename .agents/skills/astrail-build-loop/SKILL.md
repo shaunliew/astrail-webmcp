@@ -140,6 +140,19 @@ that setting still exists before promising a parallel run.
 Nearly every item in `docs/webmcp/AGENT-FIRST.md` lands there, so in practice the headline items are
 sequential and the parallel budget goes to the disjoint edges — a new route, a tool contract, a doc.
 
+**A shared tree makes every test count a lie.** Two implementers in one tree means the suite total
+includes both their work, so neither can measure its own. This happened twice in one night — briefs
+said 997 and 1047, the real baselines were 999 and 1062, and each implementer caught it and told me.
+Consequences to hold:
+
+- **Never quote a whole-tree number as one task's result.** Ask for the focused suites the task
+  actually touched, and treat the total as a smoke test.
+- **Give the baseline as "whatever the tree reports when you start"**, not a number from your own
+  earlier run — yours is already stale.
+- An implementer that corrects your baseline is doing its job. Take the correction.
+- **This is the real argument for a worktree**, more than merge conflicts: an isolated tree is the
+  only place a task can measure itself honestly.
+
 **Merging back:** rebase the worktree branch on `feat/webmcp` and run the FULL suite in the main
 tree before removing it. A worktree that passed in isolation has proved nothing about the merge.
 `git worktree remove` when done — a stale worktree holding a branch reference is a confusing thing

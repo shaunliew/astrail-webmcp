@@ -73,10 +73,11 @@ yt-dlp/ffmpeg/Whisper.
 | Task | Use | Ignore |
 |---|---|---|
 | Web browsing | gstack `/browse` | `mcp__claude-in-chrome__*` directly |
-| Dispatch Codex **yourself** / any long delegated task, **when `HERDR_ENV=1`** | `herdr` skill + `.claude/docs/HERDR.md` (named pane, `agent prompt --wait`, `agent read`) | bare `codex exec`, `ps`-grepping for zombies |
-| Run a gstack skill that spawns its own Codex (`/review`, `/autoplan`, every `/plan-*-review`) | the skill as-is, then read its `CODEX_MODE:` line | wrapping it in a Herdr pane, or adding your own pass when it printed `ready` — both double-spawn |
+| **ANY Codex work** — code review, plan review, product critique, second opinion, investigation | `astrail-codex` (Herdr pane, always) | bare `codex exec`, gstack `/review`, `ps`-grepping for zombies |
+| Any other long delegated task the user should watch, **when `HERDR_ENV=1`** | `herdr` skill + `.claude/docs/HERDR.md` (named pane, `agent prompt --wait`, `agent read`) | running it where the user cannot see it |
+| A gstack skill that spawns its own Codex (`/review`, `/autoplan`, every `/plan-*-review`) | **not used here for Codex** — `astrail-codex` owns that. Invoking one anyway spawns Codex outside Herdr, which is the thing this row exists to stop | wrapping such a skill in a Herdr pane — it double-spawns |
 | After a meaningful commit | `shiplog` | — |
-| Plan an issue / review a plan or diff | `astrail-plan-and-review` (wraps gstack `/plan-eng-review`, `/review`, `/qa`, `/autoplan`) | duplicate review skills |
+| Plan an issue / review a plan or diff | `astrail-plan-and-review` (its cross-vendor pass goes through `astrail-codex`, not gstack `/review`) | duplicate review skills |
 | Release / deploy / migrate prod / flip a flag / hand a blocker across the owner line | `astrail-release` (golden order, pre-flight gate, flag choreography, rollback, handoff docs) | gstack `/ship`, `/land-and-deploy`, ad-hoc deploy steps |
 | What to work on next / status / board ordering | `astrail-task-tracking` (GitHub Project #1 = single source of truth) | `gh issue list`, memory, stale issue #s |
 | Capture a product/feature idea as inspiration | `astrail-task-tracking` (EMDEE first; Project only after explicit promotion) | speculative Project cards, raw ideas in PRD/decision logs |

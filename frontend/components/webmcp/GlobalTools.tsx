@@ -12,6 +12,7 @@ import { globalTools } from '@/lib/webmcp/tools'
 import type { AppStateSnapshot } from '@/lib/webmcp/tools/app-state'
 import { RegisterTools } from './RegisterTools'
 import { useWebMcpRegistry } from './WebMcpRegistry'
+import { useGeneration } from '@/components/generation/GenerationProvider'
 
 /**
  * The always-on tools, wired to real data.
@@ -37,9 +38,10 @@ function labelFor(pathname: string): string {
 export default function GlobalTools() {
   const pathname = usePathname() ?? '/app'
   const { requestConfirm, openTrip, refreshOpenTrip, refreshSavedReels, adoptOrganizeJob } = useWebMcpRegistry()
-  // One store for the session. It must outlive any single tool call — the stream runs for
-  // 60-180s while `plan_trip_from_reels` returns in about a second.
-  const storeRef = useRef(createGenerationStore())
+  // The run belongs to the shell, not to this component. It must outlive any single tool call
+  // (the stream runs 60-180s while `plan_trip_from_reels` returns in about a second) AND outlive
+  // whichever page happens to be mounted, so the page can render the same run the agent narrates.
+  const shell = useGeneration()
   // `null` = not loaded (or failed). Never collapse that to an empty array: an empty array
   // renders as a confident "you have none", which is a different claim entirely.
   const [trips, setTrips] = useState<Trip[] | null>(null)
@@ -174,26 +176,29 @@ export default function GlobalTools() {
 
   const generation = useMemo(
     () => ({
-      store: storeRef.current,
+      store: shell.store,
       create: async (req: Parameters<typeof generateTrip>[0]) => {
+        // Checked BEFORE the backend call, and synchronously: a second generation spends real
+        // Apify and OpenAI credit, does not stop the first, and `get_trip_progress` cannot even
+        // recover the abandoned one. The tool description says "never call this twice"; this is
+        // what actually enforces it.
+        if (!shell.canStart()) {
+          throw new Error('A trip is already being built. Wait for it to finish, then try again.')
+        }
         const token = await getAccessToken()
         const res = await generateTrip(req, token)
         return res.trip_id
       },
       openStream: (tripId: string) => {
-        // Fire-and-forget by design: the stream must survive the tool call returning, and the
-        // job is durable server-side, so a dropped stream never loses the trip.
-        void (async () => {
-          const token = await getAccessToken()
-          storeRef.current.start(tripId, (onEvent, onFail) =>
-            streamGeneration(tripId, token, onEvent, undefined, onFail),
-          )
-        })()
+        // Hands the run to the shell, which opens the one stream, keeps the event history the
+        // wait screen renders from, and navigates when it finishes. Returns immediately — the
+        // tool must resolve in about a second and must never await the stream.
+        shell.start(tripId)
       },
       confirm: requestConfirm,
       readLibrary: loadSavedReels,
     }),
-    [requestConfirm, loadSavedReels],
+    [requestConfirm, loadSavedReels, shell],
   )
 
   const edit = useMemo(

@@ -496,3 +496,38 @@ frontend  npx tsc --noEmit          exit 0
 frontend  npx vitest run            985 passed
 backend   uv run pytest -q          1965 passed, 13 skipped
 ```
+
+### Tasks 2-5 — the generation controller
+
+`GenerationProvider` now lives in `app/app/layout.tsx`, inside `MapProvider` and above
+`GlobalTools`, and owns the parts of a generation that must outlive a page: the single
+EventSource, the full `StreamEvent[]` history the wait screen renders from, the active-run lock,
+the dawn relight and the terminal navigation. It deliberately does **not** own the reels workflow
+— phase, trays, selection and inbox stay in `SavedReelsFlow`, which subscribes.
+
+Codex rejected the first design (a fourth ref slot, page owns the stream) and the rewrite follows
+its model. What that bought, concretely:
+
+- `plan_trip_from_reels` now renders `GenerationScene`, lands pins, relights at dawn and opens the
+  finished trip — the thing the whole submission claims and could not previously demonstrate.
+- One shared lock across both entry points. A manual click and an agent approval could each create
+  a real backend run; neither stopped the other, and `get_trip_progress` cannot recover an
+  abandoned one. `canStart()` is checked synchronously **before** the backend call.
+- A terminal result carrying `{error: …}` is now a failure. `runner.py:154` → `streaming.py:53`
+  can emit one with no preceding `error` event, and every result was being read as success.
+- Reconnect drops the history, because the backend replays every event on `onopen`.
+- A token failure ends the run as `unknown` instead of leaving it "generating" for ever.
+- Run-ID guards: a stale run cannot cancel a newer stream or navigate to a finished trip.
+
+`SavedReelsFlow` lost its own `streamGeneration` call, its `events`/`tripId` state and its
+unmount cancel. Its two generation tests now render the real composition — `MapProvider` >
+`GenerationProvider` > `SavedReelsFlow` — with **every assertion kept**, so the dawn relight and
+the entitlement refetch are still proven, through the new owner.
+
+```
+frontend  npx tsc --noEmit          exit 0
+frontend  npx vitest run            997 passed (105 files)
+```
+
+**Still unverified, and it is the point of all this:** `plan_trip_from_reels` has never been run
+through WebMCP in ChatGPT's browser. Tests are not evidence the handoff works on the judged surface.

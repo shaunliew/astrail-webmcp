@@ -14,6 +14,7 @@ import { classifyGenerateError, useEntitlement } from '@/lib/entitlement'
 import TrialExhaustedCard from '@/components/entitlement/TrialExhaustedCard'
 import { useSharedMap } from '@/components/map/MapProvider'
 import { useOptionalWebMcpRegistry } from '@/components/webmcp/WebMcpRegistry'
+import { useOptionalGeneration } from '@/components/generation/GenerationProvider'
 import { relightDurationMs } from '@/components/map/relight'
 import GenerationScene from '@/components/create/GenerationScene'
 import TraysScreen from './TraysScreen'
@@ -53,6 +54,9 @@ const MAX_ADOPTED_JOBS = 8
 export default function SavedReelsFlow() {
   const router = useRouter()
   const { setLightPreset } = useSharedMap()
+  // Optional so this component still renders in tests and any shell without the provider.
+  const shell = useOptionalGeneration()
+  const shellRun = shell?.run
   const [phase, setPhase] = useState<Phase>('inbox')
   const [cards, setCards] = useState<SavedReelCard[]>([])
   const [jobId, setJobId] = useState<string | null>(null)
@@ -62,13 +66,13 @@ export default function SavedReelsFlow() {
   const [trays, setTrays] = useState<CountryTray[]>([])
   const [selectedPlaceIds, setSelectedPlaceIds] = useState<string[]>([])
   const [brief, setBrief] = useState<BriefInput>(EMPTY_BRIEF)
-  const [events, setEvents] = useState<StreamEvent[]>([])
-  const [tripId, setTripId] = useState<string | null>(null)
   const [generateError, setGenerateError] = useState<string | null>(null)
   // Entitlement gate: the same hook + classifier as CreateTripFlow (single source, no logic
   // duplication). `caughtTrialExhausted` is the post-hoc 403 belt to the pre-emptive read.
   const ent = useEntitlement()
   const [caughtTrialExhausted, setCaughtTrialExhausted] = useState(false)
+  const entRef = useRef(ent)
+  entRef.current = ent
   const gated = ent.isTrialExhausted || caughtTrialExhausted
   // The saved-reel fetch state, forwarded to TraysScreen/TrayDetail so a tray with members
   // never reads as "0 reels" / "No reels yet" while the cards are still loading or failed (M3).
@@ -77,7 +81,6 @@ export default function SavedReelsFlow() {
   const submittedReelIdsRef = useRef<string[]>([])
   const organizeCursorRef = useRef<string | null>(null)
   const organizeHandleRef = useRef<{ cancel: () => void } | null>(null)
-  const generationHandleRef = useRef<{ cancel: () => void } | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
@@ -91,7 +94,6 @@ export default function SavedReelsFlow() {
 
   useEffect(() => () => {
     organizeHandleRef.current?.cancel()
-    generationHandleRef.current?.cancel()
     if (pollRef.current) clearInterval(pollRef.current)
   }, [])
 
@@ -336,38 +338,32 @@ export default function SavedReelsFlow() {
   )
   const briefItems = useMemo<DraftInspirationItem[]>(() => selectedPlaces.map(toReelBriefItem), [selectedPlaces])
 
+  // A terminal run refunds a failed generation in the same transaction that emitted the result,
+  // so the entitlement gate must be re-read or it stays a generation behind. It used to happen
+  // inline in the stream handler; the stream now belongs to the shell.
+  const status = shellRun?.status
+  useEffect(() => {
+    if (status === 'complete' || status === 'failed') void entRef.current.refetch()
+  }, [status])
+
   async function handleGenerate() {
+    // The lock is shared with the agent's `plan_trip_from_reels`. Without it a click and an
+    // approval land two real backend runs, each spending Apify and OpenAI credit, and neither
+    // stops the other. Hiding the button on the next render is not a concurrency guard.
+    if (shell && !shell.canStart()) {
+      setGenerateError('A trip is already being built. Wait for it to finish, then try again.')
+      return
+    }
     setPhase('generating')
-    setEvents([])
     setGenerateError(null)
     try {
       const token = await getAccessToken()
       const request = toGenerateRequest(briefItems, brief)
       const response = await generateTrip({ ...request, reel_urls: [], requested_places: [], place_ids: selectedPlaceIds }, token)
       if (!activeRef.current) return
-      setTripId(response.trip_id)
-      generationHandleRef.current = streamGeneration(
-        response.trip_id,
-        token,
-        (event) => {
-          if (!activeRef.current) return
-          setEvents((current) => [...current, event])
-          if (event.type === 'result') {
-            // Terminal (success OR failure): refetch the entitlement so a failed run's refund
-            // (committed in the same transaction as this terminal result) keeps the gate consistent
-            // with server truth. Defense-in-depth — like CreateTripFlow this handler navigates to the
-            // trip view immediately below, so the refreshed gate matters only if the flow ever retries
-            // inline. See CreateTripFlow — same wiring, same reasoning.
-            void ent.refetch()
-            // The signature moment — see CreateTripFlow: same live shell map, same beat.
-            setLightPreset('dawn', relightDurationMs())
-            generationHandleRef.current?.cancel()
-            router.push(`/app/trip/${tripIdFromResult(event.content, response.trip_id)}`)
-          }
-        },
-        () => { if (activeRef.current) setEvents([]) },
-        () => { if (activeRef.current) router.push(`/app/trip/${response.trip_id}`) },
-      )
+      // The shell owns the stream, the event history, the dawn relight and the navigation — so a
+      // run survives this page unmounting, and so the agent's run and this one are the same run.
+      shell?.start(response.trip_id)
     } catch (err) {
       if (activeRef.current) {
         setPhase('brief')
@@ -409,7 +405,11 @@ export default function SavedReelsFlow() {
 
   if (phase === 'organizing') return <OrganizeGlobe message={organizeMessage} />
   if (phase === 'trays') return <CountryTrays trays={trays} selectedPlaceIds={selectedPlaceIds} maxSelected={MAX_PLACES} onToggle={(id) => setSelectedPlaceIds((current) => current.includes(id) ? current.filter((value) => value !== id) : current.length < MAX_PLACES ? [...current, id] : current)} onPlan={() => setPhase('brief')} onBack={() => setPhase('inbox')} />
-  if (phase === 'generating') return <GenerationScene tripId={tripId} events={events} />
+  // `phase` is this page's own workflow; `shell.run` is the trip being built, whoever started it.
+  // Either one showing means the wait screen owns the viewport.
+  if (phase === 'generating' || shellRun?.status === 'generating') {
+    return <GenerationScene tripId={shellRun?.tripId ?? null} events={shellRun?.events ?? []} />
+  }
   if (phase === 'brief') return (
     <PlanSheet
       places={selectedPlaces}

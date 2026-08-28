@@ -60,6 +60,12 @@ export function useSharedMap(): SharedMapContextValue {
   return ctx
 }
 
+/** Null outside the provider, for a consumer whose map work is a bonus rather than its job —
+ *  the generation controller relights the globe at dawn, but must still own the run without one. */
+export function useOptionalSharedMap(): SharedMapContextValue | null {
+  return useContext(SharedMapContext)
+}
+
 // interactive:false is a constructor-only option, and this instance outlives both
 // phases — so the map is always built inert and gestures are toggled per consumer.
 function applyInteractive(map: mapboxgl.Map, on: boolean) {

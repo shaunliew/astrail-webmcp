@@ -73,6 +73,7 @@ vi.mock('mapbox-gl/dist/mapbox-gl.css', () => ({}))
 
 import SavedReelsFlow, { toReelBriefItem } from '@/components/reels/SavedReelsFlow'
 import MapProvider from '@/components/map/MapProvider'
+import GenerationProvider from '@/components/generation/GenerationProvider'
 import { ApiError } from '@/lib/trip/api'
 import type { SavedReelCard, SavedReelPlaceProof } from '@/lib/reels/backend-types'
 
@@ -141,7 +142,7 @@ function planTrip() {
 }
 
 async function startSelectedOrganize() {
-  const rendered = render(<MapProvider><SavedReelsFlow /></MapProvider>)
+  const rendered = render(<MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>)
   await loadedInbox()
   planTrip()
   await screen.findByTestId('organize-globe')
@@ -188,7 +189,7 @@ describe('SavedReelsFlow', () => {
   // Reach the PlanSheet (brief phase) via create-trail with one grounded place selected.
   async function reachBrief() {
     listSavedReelCards.mockResolvedValue([cardWithPlaces('r1', 'One-place reel', [placeProof({ place_id: 'p1', name: 'Place 1' })])])
-    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    render(<MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>)
     await screen.findByText('One-place reel')
     createTrail()
     await screen.findByRole('heading', { name: 'Japan' })
@@ -209,12 +210,12 @@ describe('SavedReelsFlow', () => {
   })
 
   it('loads saved Reels into the inbox', async () => {
-    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    render(<MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>)
     expect(await screen.findByText('Tokyo Tower at sunset')).toBeInTheDocument()
   })
 
   it('organizes selected Reels, shows the replacing globe status, and opens country trays', async () => {
-    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    render(<MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>)
     await loadedInbox()
     planTrip()
     listSavedReelCards.mockResolvedValueOnce(organizedCards)
@@ -232,7 +233,7 @@ describe('SavedReelsFlow', () => {
   })
 
   it('shows grounded places only from the Reels submitted in the current organize action', async () => {
-    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    render(<MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>)
     await loadedInbox()
     planTrip()
     listSavedReelCards.mockResolvedValueOnce(mixedOrganizedCards)
@@ -249,7 +250,7 @@ describe('SavedReelsFlow', () => {
   })
 
   it('passes selected place_ids through the brief into the existing generation stream', async () => {
-    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    render(<MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>)
     await loadedInbox()
     planTrip()
     listSavedReelCards.mockResolvedValueOnce(organizedCards)
@@ -278,7 +279,7 @@ describe('SavedReelsFlow', () => {
   it('relights the map to dawn when its generation stream completes', async () => {
     process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN = 'pk.test'
     try {
-      render(<MapProvider><SavedReelsFlow /></MapProvider>)
+      render(<MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>)
       await loadedInbox()
       planTrip()
       listSavedReelCards.mockResolvedValueOnce(organizedCards)
@@ -315,7 +316,7 @@ describe('SavedReelsFlow', () => {
       items: [{ saved_reel_id: 'saved-1', status: 'failed', place_count: 0, error_message: 'provider unavailable' }],
     })
 
-    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    render(<MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>)
     await loadedInbox()
     planTrip()
     await screen.findByTestId('organize-globe')
@@ -336,7 +337,7 @@ describe('SavedReelsFlow', () => {
       items: [{ saved_reel_id: 'saved-1', status: 'location_not_found', place_count: 0, error_message: null }],
     })
 
-    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    render(<MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>)
     await loadedInbox()
     planTrip()
     await screen.findByTestId('organize-globe')
@@ -480,7 +481,7 @@ describe('SavedReelsFlow', () => {
   it('does not update or stream after unmount during the inbox load', async () => {
     let resolveCards!: (value: SavedReelCard[]) => void
     listSavedReelCards.mockReturnValueOnce(new Promise((resolve) => { resolveCards = resolve }))
-    const { unmount } = render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    const { unmount } = render(<MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>)
     unmount()
     resolveCards(cards)
     await Promise.resolve(); await Promise.resolve()
@@ -493,7 +494,7 @@ describe('SavedReelsFlow', () => {
   it('blocks create-trail for a tray with no grounded places (master B3 step-4 handler guard)', async () => {
     // Reels present, but none organized → the handler must NOT change phase and never generate.
     listSavedReelCards.mockResolvedValue([cardWithPlaces('r1', 'Ungrounded reel', [])])
-    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    render(<MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>)
     await screen.findByText('Ungrounded reel')
 
     createTrail()
@@ -512,7 +513,7 @@ describe('SavedReelsFlow', () => {
       cardWithPlaces('r1', 'Reel A', [jp]),
       cardWithPlaces('r2', 'Reel B', [jp, us]),
     ])
-    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    render(<MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>)
     await screen.findByText('Reel A')
 
     createTrail()
@@ -526,7 +527,7 @@ describe('SavedReelsFlow', () => {
   it('generates with exactly the 5 selected place_ids and empty reel_urls + requested_places', async () => {
     const places = Array.from({ length: 5 }, (_, i) => placeProof({ place_id: `p${i + 1}`, name: `Place ${i + 1}` }))
     listSavedReelCards.mockResolvedValue([cardWithPlaces('r1', 'Five-place reel', places)])
-    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    render(<MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>)
     await screen.findByText('Five-place reel')
 
     createTrail()
@@ -547,7 +548,7 @@ describe('SavedReelsFlow', () => {
   it('caps selection at 5: the 6th checkbox is disabled and generate never gets >5 place_ids', async () => {
     const places = Array.from({ length: 6 }, (_, i) => placeProof({ place_id: `p${i + 1}`, name: `Place ${i + 1}` }))
     listSavedReelCards.mockResolvedValue([cardWithPlaces('r1', 'Six-place reel', places)])
-    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    render(<MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>)
     await screen.findByText('Six-place reel')
 
     createTrail()
@@ -570,7 +571,7 @@ describe('SavedReelsFlow', () => {
   })
 
   it('returns to the inbox grid when CountryTrays Back is clicked', async () => {
-    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    render(<MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>)
     await loadedInbox()
     planTrip()
     listSavedReelCards.mockResolvedValueOnce(organizedCards)
@@ -590,7 +591,7 @@ describe('SavedReelsFlow', () => {
   it('opens the create-trail picker with zero preselection even after a prior selection (no-auto-submit, M4)', async () => {
     const places = [placeProof({ place_id: 'p1', name: 'Place 1' }), placeProof({ place_id: 'p2', name: 'Place 2' })]
     listSavedReelCards.mockResolvedValue([cardWithPlaces('r1', 'Two-place reel', places)])
-    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    render(<MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>)
     await screen.findByText('Two-place reel')
 
     // First entry: select both places.
@@ -614,7 +615,7 @@ describe('SavedReelsFlow', () => {
     listSavedReelCards.mockResolvedValue([cardWithPlaces('r1', 'One-place reel', places)])
     generateTrip.mockRejectedValueOnce(new Error('generation service down'))
 
-    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    render(<MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>)
     await screen.findByText('One-place reel')
 
     // Attempt 1: create-trail → pick → Plan → brief → Generate FAILS → the error surfaces on the brief.
@@ -643,7 +644,7 @@ describe('SavedReelsFlow', () => {
     listSavedReelCards.mockResolvedValue([cardWithPlaces('r1', 'One-place reel', places)])
     generateTrip.mockRejectedValueOnce(new Error('generation service down'))
 
-    render(<MapProvider><SavedReelsFlow /></MapProvider>)
+    render(<MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>)
     await screen.findByText('One-place reel')
 
     // Fail a create-trail generate → the error surfaces on the brief.
@@ -729,7 +730,7 @@ describe('an agent-started extraction shows progress without a reload', () => {
   function renderInRegistry() {
     return render(
       <WebMcpRegistryProvider>
-        <MapProvider><SavedReelsFlow /></MapProvider>
+        <MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>
       </WebMcpRegistryProvider>,
     )
   }
@@ -754,7 +755,7 @@ describe('an agent-started extraction shows progress without a reload', () => {
     }
     render(
       <WebMcpRegistryProvider>
-        <MapProvider><SavedReelsFlow /></MapProvider>
+        <MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>
         <Capture />
       </WebMcpRegistryProvider>,
     )
@@ -792,7 +793,7 @@ describe('an agent-started extraction shows progress without a reload', () => {
     getOrganizeStatus.mockResolvedValue(twoItems('processing', 'queued', 'processing'))
     render(
       <WebMcpRegistryProvider>
-        <MapProvider><SavedReelsFlow /></MapProvider>
+        <MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>
         <Capture />
       </WebMcpRegistryProvider>,
     )
@@ -827,7 +828,7 @@ describe('an agent-started extraction shows progress without a reload', () => {
     }
     render(
       <WebMcpRegistryProvider>
-        <MapProvider><SavedReelsFlow /></MapProvider>
+        <MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>
         <Capture />
       </WebMcpRegistryProvider>,
     )
@@ -856,7 +857,7 @@ describe('an agent-started extraction shows progress without a reload', () => {
     }
     render(
       <WebMcpRegistryProvider>
-        <MapProvider><SavedReelsFlow /></MapProvider>
+        <MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>
         <Capture />
       </WebMcpRegistryProvider>,
     )
@@ -891,7 +892,7 @@ describe('an agent-started extraction shows progress without a reload', () => {
     })
     render(
       <WebMcpRegistryProvider>
-        <MapProvider><SavedReelsFlow /></MapProvider>
+        <MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>
         <Capture />
       </WebMcpRegistryProvider>,
     )
@@ -924,7 +925,7 @@ describe('an agent-started extraction shows progress without a reload', () => {
     getOrganizeStatus.mockResolvedValue(job('processing', 'organized'))
     render(
       <WebMcpRegistryProvider>
-        <MapProvider><SavedReelsFlow /></MapProvider>
+        <MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>
         <Capture />
       </WebMcpRegistryProvider>,
     )
@@ -949,7 +950,7 @@ describe('an agent-started extraction shows progress without a reload', () => {
     }
     render(
       <WebMcpRegistryProvider>
-        <MapProvider><SavedReelsFlow /></MapProvider>
+        <MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>
         <Capture />
       </WebMcpRegistryProvider>,
     )

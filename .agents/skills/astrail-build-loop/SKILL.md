@@ -75,6 +75,20 @@ invent an MCP call that does not exist.
 the ChatGPT page shows `readOnlyHint` in an example but does not enumerate the set. Attribute the
 claim to whichever source you actually read.
 
+## `/qa` is waived for the WebMCP sprint (until 2026-09-03)
+
+Live browser verification is off for this sprint by the owner's decision. Two consequences to hold
+in mind rather than forget:
+
+- **jsdom has no layout engine.** No z-index, no stacking contexts, no paint. A passing test proves
+  an element is in the DOM, never that a human can see it. When a change is visual — a toast, an
+  overlay, a z-index, anything that could be covered — say "the test asserts it renders" and not
+  "verified", because the second is not true.
+- A subagent that flags "this needs a human eye" is **right**, and the flag belongs in the RUNLOG
+  even though nobody will act on it this sprint. It is the list of what was never actually seen.
+
+After the deadline, restore it: `/qa` for flow changes is part of the standard loop.
+
 ## Recovering when something fails
 
 The overnight rule is **stop on a gate failure**, and that stands: a failing gate means an assumption

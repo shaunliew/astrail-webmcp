@@ -53,6 +53,7 @@ single sentence the whole submission rests on — *the agent moves the map the h
 | 4 | Tool-contract gaps + truthful SUBMISSION.md | Med-high Leverage, protects every score | <1 d | ☐ not started |
 | 2b | **Agent-first layout for `/app`** — the visual redesign | High — Execution, Creativity | ~1 d | ☐ researching |
 | 2c | **Edits leave the trip's prose stale** — the agent is never told to replan | High — Execution, and it is a live bug | ~2 h | ☐ dispatched |
+| 2d | **Pre-gate the agent path** — an exhausted account approves, then gets a silent 403 | High — a judge-facing failure | ~1 h | ☐ queued (needs GlobalTools.tsx, currently owned) |
 | 5 | `get_trip_notes` / `resolve_trip_note` (JSONB) | Highest Leverage + Creativity | ~1 d | ☐ stretch — only if the days hold |
 
 ---
@@ -184,6 +185,45 @@ structured field far more reliably than the same instruction in prose. Do that, 
 Why this matters more than its size: in the product shape above, an edit *is* the human's whole
 interaction. If the trip silently disagrees with itself afterwards, the collaboration is not
 trustworthy, and a judge trying "add Osaka Castle" will see it immediately.
+
+## 2d. The agent path is not entitlement-gated
+
+`GlobalTools` registers `plan_trip_from_reels` unconditionally — it has no entitlement dependency,
+unlike the manual flow which pre-renders `TrialExhaustedCard`. So on an exhausted account the judge
+sees the approval card, **approves the spend**, and only then does the backend 403. The trial card
+never renders; the tool returns `isError` and the activity rail marks it failed.
+
+Approve-then-rejected is the worst failure available to us, because the user consented first and got
+nothing back that explains why. Gate it before the approval card, and say which limit was hit.
+
+## Judge access — decided 2026-08-29
+
+- **Credentials, not Google OAuth.** Google returns `403 disallowed_useragent` for anything it
+  classifies as an embedded user-agent, and nobody has documented how it classifies ChatGPT's
+  built-in browser. Devpost has a dedicated credentials field; password sign-in already ships.
+- **Several accounts, one per judge.** Quota is per account and the active-run lock is per browser
+  session, so separate judges never contend for either.
+- **Every account must be `plan='beta'`.** `TRIAL_LIFETIME_LIMIT = 1` means a `trial` account gets
+  **one generation ever**, not one per day. This is the setting that silently kills a judge.
+- **`DAILY_TRIP_QUOTA` is an env var, not per-user** (`backend/rate_limit.py:38`), read at call time
+  and passed to the entitlement RPC. Raising it is a change to the hackathon Render service's env —
+  which is exactly why the hackathon runs its own service: production keeps its own value.
+- OpenAI credit is not a constraint (Shaun has plenty). Apify still is, but the 37 cached reels
+  sidestep it — a generation from an already-read reel costs no Apify call and no analysis quota.
+
+## `/qa` is waived for this sprint — deliberately, and here is the cost
+
+Shaun's call, 2026-08-29. Recording what it buys and what it risks rather than just dropping it.
+
+vitest runs on **jsdom, which has no layout engine** — no z-index, no stacking contexts, no paint.
+So a test can prove an element is in the DOM and cannot prove a human can see it. That is not
+hypothetical here: the implementer's first failure notice was a normal-flow `<p>` rendered before
+`CountryTrays`, which is `fixed inset-0 z-50`. The test found it; a real user would have seen the
+overlay. It is now a `z-[60]` toast, **and no automated check in this repo can confirm that.**
+
+Waiving `/qa` means shipping visual-layer changes on inspection alone. Acceptable for a 4-day
+hackathon where the judged surface is the tool list and the map — but any finding of the form "the
+test says it renders" now carries an asterisk, and should be written as such rather than as proof.
 
 ## 3. Persistent receipts + undo
 

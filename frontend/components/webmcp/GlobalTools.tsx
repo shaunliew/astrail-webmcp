@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePathname } from 'next/navigation'
-import type { Trip, TripBundle } from '@/lib/trip/backend-types'
+import type { Trip, TripBundle, TripStatus } from '@/lib/trip/backend-types'
 import { getTrip, listTrips } from '@/lib/trip/supabase-api'
 import { addTripPlace, deleteTripPlace, editTripDates, editTripPlace, generateTrip, replanTrip } from '@/lib/trip/api'
 import { captureSavedReel, listSavedReelCards, startOrganize } from '@/lib/reels/api'
@@ -138,10 +138,49 @@ function useHasSession(pathname: string): boolean | null {
  * front turns a confusing failure into a known one.
  */
 const SIGNED_IN_SAMPLE_LABEL =
-  'the public sample trail — an example trip, not one of yours. Your own Reels and trips are untouched and every tool still works on them; this one cannot be edited, because nobody owns it.'
+  'the public sample trail — an example trip, not one of yours. Your own Reels and trips are untouched and every tool still works on them.'
+
+/* The consequence, kept OUT of the label. `blocked` is documented as "anything that would make an
+   obvious next step fail, so the agent doesn't try it", which is this sentence exactly — and
+   keeping `where` about identity and `blocked` about consequences is what stops the two drifting
+   into each other now that the trip label below carries status. Worth saying at all because the
+   refusal reads as a malfunction otherwise: the edit tools answer "Which trip?" about a trip
+   plainly on screen. */
+const SAMPLE_NOT_EDITABLE =
+  'editing this trip will be refused — it is an example that nobody owns, so there is nothing to change'
+
+const TRIP_PATH_PREFIX = '/app/trip/'
+
+/**
+ * What the trip route is actually showing, per status.
+ *
+ * One label for all six was wrong in two directions. That route renders whatever the id resolves
+ * to — the page applies no status filter — so "a trip you have already planned" is premature on a
+ * `generating` trip and false on a `failed` one. It also had teeth: the label invited the agent to
+ * offer an edit, and `_require_trip_editable_state` (backend/main.py:587) admits only `complete`
+ * and `saved_with_gaps`, so the agent walked into a refusal the label talked it into.
+ *
+ * `complete` keeps the exact original wording, so the common case reads as it always did.
+ */
+const TRIP_STATUS_LABEL: Record<TripStatus, string> = {
+  draft: 'one of your trips, still a draft — nothing has been planned for it yet',
+  generating: 'one of your trips, still being built right now',
+  places_ready: 'one of your trips, still being built — its places are in, the rest is not',
+  complete: 'a trip you have already planned',
+  saved_with_gaps: 'a trip you have already planned, saved with some parts missing',
+  failed: 'one of your trips whose planning failed',
+}
+
+/** The status could not be established. Say the one thing true of all six rather than guess. */
+const TRIP_LABEL_UNKNOWN_STATUS = 'one of your trips'
+
+/** Mirrors `_require_trip_editable_state` (backend/main.py:587). Anything else is refused there. */
+const EDITABLE_TRIP_STATUS = new Set<TripStatus>(['complete', 'saved_with_gaps'])
+
+const TRIP_NOT_EDITABLE =
+  'editing this trip will be refused — only a finished trip can be edited, and this one is not'
 
 const ROUTE_LABEL: [RegExp, string][] = [
-  [/^\/app\/trip\//, 'a trip you have already planned'],
   [/^\/app\/trips/, 'your saved trips'],
   [/^\/app\/settings/, 'settings'],
   [/^\/app\/onboarding/, 'onboarding'],
@@ -150,13 +189,16 @@ const ROUTE_LABEL: [RegExp, string][] = [
   [/^\/app\/?$/, 'Saved Reels — plan a trip here, or save Reels to plan from later'],
 ]
 
-function labelFor(pathname: string): string {
+function labelFor(pathname: string, tripStatus: TripStatus | null): string {
   /* Ahead of the table, and by EXACT match against the same constant the registration gate and
      the middleware allowlist use. Not a sixth regex row: a row would have to sit above the
      `/^\/app\/trip\//` rule to win, so reordering the table would silently restore the false
      label — and a prefix match would hand "not one of yours" to a real trip the user does own,
      the same mistake middleware:39 calls out about the route itself. */
   if (pathname === SAMPLE_TRIP_PATH) return SIGNED_IN_SAMPLE_LABEL
+  if (pathname.startsWith(TRIP_PATH_PREFIX)) {
+    return tripStatus === null ? TRIP_LABEL_UNKNOWN_STATUS : TRIP_STATUS_LABEL[tripStatus]
+  }
   return ROUTE_LABEL.find(([re]) => re.test(pathname))?.[1] ?? 'Astrail'
 }
 
@@ -224,6 +266,23 @@ export default function GlobalTools() {
       }
     }
 
+    /* The status of the trip on screen, or `null` when we cannot establish it.
+       Two sources, both already in hand — no network read and no new dependency. The open bundle
+       FIRST because it is live: TripTools republishes it as the trip changes, so a run that
+       finishes while the user watches is reflected. The listTrips rows SECOND because that bundle
+       is null for the first moments of a trip page, which is exactly when `get_app_state` gets
+       called. Both are keyed on the id in the PATH, so a bundle left over from the trip the user
+       was looking at a moment ago cannot be reported as this one's — the same silent-wrong answer
+       `get_trip_progress` guards against when it checks which run it is being asked about. */
+    const tripId = path.startsWith(TRIP_PATH_PREFIX) ? path.slice(TRIP_PATH_PREFIX.length).toLowerCase() : null
+    const openBundle = openTrip.current as TripBundle | null
+    const tripStatus: TripStatus | null =
+      tripId === null
+        ? null
+        : openBundle?.trip.id.toLowerCase() === tripId
+          ? openBundle.trip.status
+          : all?.find((t) => t.id.toLowerCase() === tripId)?.status ?? null
+
     const complete =
       all === null ? null : all.filter((t) => t.status === 'complete' || t.status === 'saved_with_gaps').length
 
@@ -243,8 +302,13 @@ export default function GlobalTools() {
     // class of defect as the blocker below. This names the ACTION and what it is for, which is
     // true whether the user has nothing saved or fifty.
     nextSteps.push({ label: 'save Instagram Reels to plan from later', tool: 'save_reels' })
-    if (!path.startsWith('/app/trip/')) {
+    if (!path.startsWith(TRIP_PATH_PREFIX)) {
       nextSteps.push({ label: 'see what is on the map for a trip', tool: 'get_itinerary', needs: 'a trip open' })
+    }
+    /* The point of knowing the status rather than merely not lying about it: a trip that is still
+       being built has an obvious next move, and it is the tool written for exactly that wait. */
+    if (tripStatus === 'generating' || tripStatus === 'places_ready') {
+      nextSteps.push({ label: 'follow the trip that is still being built', tool: 'get_trip_progress' })
     }
 
     // Only claim something is blocked when we actually KNOW it is. An unknown count blocks
@@ -254,10 +318,15 @@ export default function GlobalTools() {
     // so the empty case belongs in the counts above ("0 saved reels"), not here. Anything added
     // to this list must be a step that would genuinely FAIL if the agent tried it.
     const blocked: string[] = []
+    /* Only ever from something we KNOW. An unknown status blocks nothing — claiming a trip is
+       uneditable when we simply could not read it would refuse an edit the backend would allow,
+       which is the same failure as the false counts above, one field along. */
+    if (path === SAMPLE_TRIP_PATH) blocked.push(SAMPLE_NOT_EDITABLE)
+    else if (tripStatus !== null && !EDITABLE_TRIP_STATUS.has(tripStatus)) blocked.push(TRIP_NOT_EDITABLE)
 
     return {
       account: 'signed_in',
-      where: labelFor(path),
+      where: labelFor(path, tripStatus),
       savedReels: savedReels?.count ?? null,
       verifiedPlaces: savedReels?.places ?? null,
       trips: all === null || complete === null
@@ -266,7 +335,7 @@ export default function GlobalTools() {
       nextSteps,
       blocked,
     }
-  }, [])
+  }, [openTrip])
 
   const tripReader = useMemo(
     () => ({

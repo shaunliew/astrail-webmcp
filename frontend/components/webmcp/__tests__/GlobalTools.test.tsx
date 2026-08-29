@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { useEffect } from 'react'
 import { act, render, waitFor } from '@testing-library/react'
-import type { Trip } from '@/lib/trip/backend-types'
+import type { Trip, TripBundle } from '@/lib/trip/backend-types'
+import { TOKYO_TRIP } from '@/lib/trip/fixtures'
 import type { Entitlement } from '@/lib/entitlement'
 import type { ToolSpec } from '@/lib/webmcp/types'
 
@@ -582,13 +583,14 @@ describe('get_app_state, answering a visitor with no account', () => {
     expect(out).not.toContain('not one of yours')
   })
 
-  it('answers a signed-in user exactly as it did before', async () => {
-    // The third state must cost the other two nothing, on the same route.
+  it('answers a signed-in user with their real counts and steps', async () => {
+    /* The third state must cost the other two nothing. `blocked` is deliberately NOT "nothing"
+       here any more — this page carries a real one, that its trip cannot be edited — so this
+       asserts the account-scoped half is intact rather than that the whole string is unchanged. */
     const out = await appStateOn(SAMPLE_PATH, 'yes')
     expect(out).toContain('0 saved reels')
     expect(out).toContain('plan_trip_from_reels')
     expect(out).not.toMatch(/Account: +none/)
-    expect(out).toMatch(/^Blocked: {4}nothing$/m)
   })
 })
 
@@ -619,25 +621,158 @@ describe('the demo page tells a signed-in visitor what it actually is', () => {
     expect(out).toContain('Your own Reels and trips are untouched')
   })
 
-  it('warns that this one trip cannot be edited, before the agent finds out by trying', async () => {
+  it('warns in BLOCKED that this trip cannot be edited, before the agent finds out by trying', async () => {
     /* The five edit tools refuse the fixture at the reader, which is correct, but the refusal
        reads as a malfunction to an agent looking straight at the trip: "Which trip?" about a trip
-       plainly on screen. Saying so up front turns a confusing failure into a known constraint. */
+       plainly on screen. `blocked` is documented as "anything that would make an obvious next step
+       fail, so the agent doesn't try it" — this sentence exactly. Keeping it out of `where` keeps
+       that field about identity and this one about consequences, which is what stops the two
+       drifting into each other now that the trip label carries status. */
     const out = await appStateOn(SAMPLE_PATH, 'yes')
-    expect(out).toMatch(/cannot be edited/)
+    expect(out).toMatch(/^Blocked: {4}.*editing this trip will be refused/m)
+    expect(out).not.toMatch(/You are on:.*cannot be edited/)
   })
 
   it('leaves a real trip page saying exactly what it said before', async () => {
-    // Scoped to the fixture. A trip the user genuinely owns keeps its label.
-    const out = await appStateOn('/app/trip/8f2c1a9e-0000-4000-8000-000000000000', 'yes')
+    // Scoped to the fixture. A finished trip the user genuinely owns keeps its original label.
+    const out = await tripPageState([tripRow('complete')])
     expect(out).toContain('You are on: a trip you have already planned')
+    expect(out).not.toContain('the public sample trail')
   })
 
   it('matches the sample trail exactly, never as a prefix', async () => {
     /* The same rule middleware:39 applies to the route itself, for the same reason: a prefix
-       match would hand the "not one of yours" label to a real trip the user does own. */
-    const out = await appStateOn('/app/trip/demo-2', 'yes')
+       match would hand the "not one of yours" label to a real trip the user does own. Loaded with
+       a real row, so a leak shows up as the sample label REPLACING a correct one. */
+    const out = await tripPageState([tripRow('complete', 'demo-2')], '/app/trip/demo-2')
     expect(out).toContain('You are on: a trip you have already planned')
     expect(out).not.toContain('not one of yours')
+    expect(out).not.toContain('the public sample trail')
+  })
+})
+
+/**
+ * The trip route, told apart by STATUS.
+ *
+ * `/^\/app\/trip\//` said "a trip you have already planned" for every trip, and that route
+ * renders all six statuses — the page just fetches whatever the id resolves to. On a `generating`
+ * trip the claim is premature; on a `failed` one it is simply false. It also has teeth: the label
+ * invites the agent to offer an edit, and `_require_trip_editable_state` (backend/main.py:587)
+ * admits only `complete` and `saved_with_gaps`, so the agent walks into a refusal the label talked
+ * it into.
+ *
+ * The status is read from what the page already has — the open bundle first because it is live,
+ * the listTrips rows second because the bundle is null for the first moments of a trip page, which
+ * is exactly when `get_app_state` is called. Neither knowing is an answer, not a licence to guess.
+ */
+const TRIP_ID = '8f2c1a9e-0000-4000-8000-000000000001'
+const OTHER_ID = '8f2c1a9e-0000-4000-8000-000000000002'
+const TRIP_PATH = `/app/trip/${TRIP_ID}`
+
+const tripRow = (status: Trip['status'], id = TRIP_ID): Trip =>
+  ({ ...TOKYO_TRIP.trip, id, status })
+
+/** Publishes an open bundle the way TripTools does, so the live source can be exercised. */
+function PublishOpenTrip({ bundle }: { bundle: TripBundle }) {
+  const { openTrip } = useWebMcpRegistry()
+  openTrip.current = bundle
+  return null
+}
+
+const bundleFor = (id: string, status: Trip['status']): TripBundle =>
+  ({ ...TOKYO_TRIP, trip: { ...TOKYO_TRIP.trip, id, status } })
+
+/** Mounts on a real trip page with those rows loaded, and returns what get_app_state says. */
+async function tripPageState(rows: Trip[], path = TRIP_PATH, open?: TripBundle): Promise<string> {
+  h.pathname = path
+  h.session = 'yes'
+  h.listTrips.mockResolvedValue(rows)
+  h.listSavedReelCards.mockResolvedValue([])
+  render(
+    <WebMcpRegistryProvider>
+      <GlobalTools />
+      {open && <PublishOpenTrip bundle={open} />}
+    </WebMcpRegistryProvider>,
+  )
+  let out = ''
+  await waitFor(async () => {
+    const spec = h.specs.find((s) => s.name === 'get_app_state')
+    expect(spec).toBeTruthy()
+    out = String(await spec!.execute({}))
+    expect(out).not.toContain('could not be loaded')
+  })
+  return out
+}
+
+describe('the trip route describes the trip it is actually showing', () => {
+  it('does not call a trip that is still building one you have already planned', async () => {
+    const out = await tripPageState([tripRow('generating')])
+    expect(out).not.toContain('a trip you have already planned')
+    expect(out).toMatch(/You are on:.*still being built/)
+  })
+
+  it('points the agent at the tool built for that wait', async () => {
+    // The whole reason status-aware beats a flat "one of your trips": it can route.
+    const out = await tripPageState([tripRow('generating')])
+    expect(out).toContain('→ get_trip_progress')
+  })
+
+  it('says an unfinished trip cannot be edited, rather than letting the backend say it', async () => {
+    // backend/main.py:587 admits complete and saved_with_gaps only.
+    const out = await tripPageState([tripRow('generating')])
+    expect(out).toMatch(/^Blocked: {4}.*editing this trip will be refused/m)
+  })
+
+  it('says outright that a failed trip failed', async () => {
+    const out = await tripPageState([tripRow('failed')])
+    expect(out).not.toContain('a trip you have already planned')
+    expect(out).toMatch(/You are on:.*failed/)
+    // Not building, so nothing to follow — the progress tool would answer about nothing.
+    expect(out).not.toContain('→ get_trip_progress')
+  })
+
+  it('leaves a finished trip saying exactly what it always said', async () => {
+    const out = await tripPageState([tripRow('complete')])
+    expect(out).toContain('You are on: a trip you have already planned')
+    expect(out).toMatch(/^Blocked: {4}nothing$/m)
+  })
+
+  it('treats a trip saved with gaps as editable, because the backend does', async () => {
+    const out = await tripPageState([tripRow('saved_with_gaps')])
+    expect(out).toMatch(/^Blocked: {4}nothing$/m)
+  })
+
+  it('prefers the open bundle, because it is live where the loaded rows are a snapshot', async () => {
+    /* listTrips is read once per navigation; TripTools republishes the bundle as the trip changes.
+       A run that finishes while the user watches must be reported as finished, not as the
+       "generating" the list still remembers. */
+    const out = await tripPageState(
+      [tripRow('generating')], TRIP_PATH, bundleFor(TRIP_ID, 'complete'),
+    )
+    expect(out).toContain('You are on: a trip you have already planned')
+    expect(out).toMatch(/^Blocked: {4}nothing$/m)
+  })
+
+  it('ignores a bundle left over from the trip the user was looking at a moment ago', async () => {
+    /* The silent-wrong answer: TripTools publishes to one shared ref, so during a navigation
+       between two trips the bundle can briefly belong to the previous one. Reporting its status
+       as this trip's is the same class of defect get_trip_progress guards against when it checks
+       which run it is being asked about. Both sources are keyed on the id in the PATH. */
+    const out = await tripPageState(
+      [tripRow('generating')], TRIP_PATH, bundleFor(OTHER_ID, 'complete'),
+    )
+    expect(out).toMatch(/You are on:.*still being built/)
+    expect(out).not.toContain('a trip you have already planned')
+  })
+
+  it('falls back to the one thing true of all six when the status is unknown', async () => {
+    /* An honest flat label beats a status-aware one built on a guess. Nothing here knows this
+       trip: it is not among the loaded rows and no bundle has been published. */
+    const out = await tripPageState([tripRow('complete', OTHER_ID)])
+    expect(out).toContain('You are on: one of your trips')
+    expect(out).not.toContain('already planned')
+    expect(out).not.toContain('still being built')
+    // We do not know it is uneditable either, so we must not claim it is.
+    expect(out).toMatch(/^Blocked: {4}nothing$/m)
   })
 })

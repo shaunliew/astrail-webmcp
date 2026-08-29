@@ -106,11 +106,27 @@ Then:
    - *"What can I do here?"* → `get_app_state`
    - *"Plan me 3 days in Osaka, 14-16 March, from these reels: …"* with any 1-5 public Instagram
      Reel links. They do **not** need to be saved first. Approve the card that appears on the page.
-   - *"Why is stop 4 on this trip?"* → the verbatim caption quote and its source Reel
+   - *"Why is stop 1 on this trip?"* → the verbatim caption quote and the Reel it came from.
+     Ask about any pin you can see; pin numbers are whatever the trip produced. A stop Astrail
+     suggested rather than took from a Reel answers with its reasoning and a research link
+     instead, and says so — that is the tool being honest, not failing.
    - *"Show me day 2 in 3D"* and *"move stop 7 to day 3"* → the map changes in front of you
 
 The five edit tools require `WEBMCP_EDITS_ENABLED=true` on the deployment; they return 404 when it
 is unset.
+
+### Nothing to sign in to, nothing spent: `/app/trip/demo`
+
+`/app/trip/demo` is a finished Tokyo trail rendered from a fixture. It is the one route that opens
+with **no account** — allowlisted by exact match in `frontend/middleware.ts:39`, verified against a
+production build with zero cookies — so a judge can see the map, the pins and the evidence without a
+credential, and without spending a generation.
+
+Five tools answer there: `get_itinerary`, `get_place_evidence`, `show_on_map`, `set_map_mode` and
+`get_map_view`. The edit tools deliberately **cannot** see this trip — it has no database row, and a
+reader that could return it to a write tool would be a way to pretend an edit had happened. Ask
+*"why is stop 1 here?"* and you get a verbatim caption quote and a real Instagram Reel, both checked
+against the captured scrape in `backend/evals/fixtures/japan_demo_reels.json` by a test.
 
 ## Submission documentation
 

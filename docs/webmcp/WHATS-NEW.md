@@ -42,7 +42,7 @@ All of `frontend/lib/webmcp/` is new. Tools are registered through `document.mod
 | `replan_trip` | Global | Re-routes and re-narrates so the prose matches the stops after edits. |
 | `show_on_map` | Trip page | Flies the live map to a trip, day, stop or hotel hub. |
 | `set_map_mode` | Trip page | Switches between the route view and the hotel hub view. |
-| `get_map_view` | Trip page | Reads the current camera and selection — the answer to "this one", "here". |
+| `get_map_view` | Trip page | Reads the current camera and which stops are in frame. It states plainly that it cannot see the user's selection — the page does not expose it — rather than guessing at "this one". |
 
 Supporting modules, all new:
 
@@ -117,6 +117,17 @@ Representative deliveries, in order:
 | `830941b` | Web-searched opening hours, evidence-gated |
 | `e8849ef` | Agent-started extraction shown live, derived not persisted |
 | `d14552d` | Six defects a cross-model review found in that same batch |
+| `aaaea61` | The wait screen went quiet for 140 of its 147 seconds |
+| `a1036fc` | Say what a plan will cost before the user approves it |
+| `060d17d` | Pins had never landed during a generation — dedup fires 59 lines before persistence |
+| `290c265` | The agent's trip takes over the screen |
+| `78dee85` | The pre-POST race closed after four cross-model rounds |
+| `7a4202b` | A successful route could still report failure |
+| `f9882da` | An empty account leads with the agent, not a paste box |
+| `d2f638c` | Starter-prompt dates come from the clock, in UTC — they were 77 days out and forecast-less |
+| `27dc7b2` | The map tools promised four things the map never does |
+| `656fc7b` | A sample trail a judge can open with no account and nothing spent |
+| `d7b3514` | That sample trail actually reachable signed-out, exact-match only |
 
 ## Honest limits
 

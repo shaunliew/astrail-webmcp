@@ -38,10 +38,11 @@ The usual fix is better affordances. WebMCP allows a different one: stop making 
 button. `get_app_state` reports where they are, what they have, and what is available next, so an
 agent can answer "what can I do here?" and then do it.
 
-**Being honest about how far that has got.** The tools work — verified on the judged surface, in
-ChatGPT desktop's built-in browser. The *screen* has not caught up: `/app` still leads with a
-paste-a-URL form, so when asked "what can I do here?" the agent currently answers "start by pasting
-Instagram links." That is tracked as open work in `docs/webmcp/AGENT-FIRST.md`, not claimed as done.
+**Being honest about how far that has got.** Tool registration, the address-bar list and the read
+tools are verified on the judged surface, in ChatGPT desktop's built-in browser. A full generation
+has *not* been run there — it is implemented, unit-tested and exercised against the real backend,
+and that is the honest state. The screen has caught up since: an empty `/app` now leads with the
+agent and a one-click starter prompt rather than a paste-a-URL form.
 What genuinely works today is everything downstream of a trip existing.
 
 ## 3. What can people and agents do together that was difficult or impossible before?
@@ -58,8 +59,10 @@ mutation resolves only once the UI reflects it — when the agent says "done, it
 has already flown there.
 
 **Ask why a place is on your trip, and get the receipt.** `get_place_evidence` returns the
-*verbatim* caption quote from the Instagram Reel the place came from, the source Reel URL, and a
-confidence. Every stop carries provenance the traveller can check: `From reel` / `You asked` /
+*verbatim* caption quote from the Instagram Reel the place came from, that Reel's URL on its own
+labelled line, and a confidence. Where Astrail suggested a stop rather than lifting it from a Reel,
+it says so and returns its reasoning plus a research link — it does not dress a suggestion up as
+evidence. Every stop carries provenance the traveller can check: `From reel` / `You asked` /
 `Astrail pick`. This is what separates it from generic "AI trip planning" — nothing on the map is
 there because a model felt like it.
 
@@ -109,7 +112,7 @@ description and parameter limits, structural schema validity, required annotatio
 scopes, and the serialized envelope budget against a real fixture — because a silently rejected
 registration is an *absent tool*, and a judge would find it before we did. The synthetic 40-stop
 budget cases live beside it in `fit.test.ts` and `format.test.ts` rather than inside the gate. The
-suite is **1073 tests**.
+suite is **1181 tests**.
 
 ## What a judge can do, and what state each path is in
 
@@ -138,7 +141,8 @@ limitation we name.
 | ⚙ | `plan_trip_from_reels` end to end, and the page takeover it drives | **Implemented and unit-tested; one live run outstanding** |
 | ⚙ | `replan_trip`, `set_trip_dates` | Implemented and unit-tested; not live-run |
 | ⚠ | The five edit tools | Require `WEBMCP_EDITS_ENABLED=true` on the deployment |
-| ⚙ | The signed-in landing screen | Still visually leads with manual Reel capture. The agent path accepts raw links, starts the same generation, takes over the wait screen and opens the finished map |
+| ✅ | The signed-in landing screen | An empty account now leads with the agent and a starter prompt; the paste box is the fallback, not the front door |
+| ✅ | `/app/trip/demo` | A fixture-backed sample trail, reachable with **no account** — five tools answer there, and the edit tools deliberately cannot see it |
 
 ## Where this sits against WebMCP's own example
 

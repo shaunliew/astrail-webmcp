@@ -36,9 +36,11 @@ const SAMPLE_TRIP_PATH = '/app/trip/demo'
  * `/app/trip/demo` is the one /app route a visitor with no account can open — middleware
  * allowlists it by exact match, and redirects every other /app path to /sign-in. Everything else
  * registered here needs a JWT: `list_trips` and `list_saved_reels` read RLS-guarded rows, and
- * `save_reels`, `plan_trip_from_reels` and all five edit tools call `getAccessToken()`. Two more
- * do not throw but are no better — `get_app_state` and `get_trip_progress` both answer by naming
- * those same tools as the next step, which is the same defect one turn later.
+ * `save_reels`, `plan_trip_from_reels` and all five edit tools call `getAccessToken()`.
+ * `get_trip_progress` does not throw but is no better: with no run in this browser it answers by
+ * pointing at `plan_trip_from_reels`, which is the same defect one turn later. `get_app_state` was
+ * withheld for that reason too until it gained a signed-out variant that recommends only what is
+ * actually offered here — it is now the one tool a lost visitor reaches for first.
  *
  * A NAMED set, so a tool added later is withheld here by default until someone shows it answers
  * without a session — the same direction as the `readOnlyHint` keying below, where an unmatched
@@ -46,14 +48,14 @@ const SAMPLE_TRIP_PATH = '/app/trip/demo'
  *
  * The three map tools are absent from this list because they are not registered here: TripTools
  * mounts `show_on_map` / `set_map_mode` / `get_map_view` from the trip page, and they are pure
- * in-page state, so they already work signed-out. Five tools answer on that page; five is what it
- * offers.
+ * in-page state, so they already work signed-out. Six tools answer on that page and six is what it
+ * offers — the three above, plus the three registered here.
  */
 const PUBLIC_SAMPLE_STEPS: { label: string; tool: string }[] = [
   { label: 'read the whole trail, day by day', tool: 'get_itinerary' },
   { label: 'ask why a stop is on it — the verbatim caption quote and the Reel it came from', tool: 'get_place_evidence' },
   { label: 'fly the 3D map to a day, or to a single stop', tool: 'show_on_map' },
-  { label: 'switch the map between the day route and the whole-trip view', tool: 'set_map_mode' },
+  { label: 'switch the map between the day route and the hotel hub view', tool: 'set_map_mode' },
   { label: 'read where the map is pointed right now', tool: 'get_map_view' },
 ]
 
@@ -558,7 +560,7 @@ export default function GlobalTools() {
      sample trail holds a JWT, and all thirteen work for them there.
 
      Unknown fails SMALL (`!== true`, not `=== false`), so the list only ever GROWS: a signed-in
-     visitor to this route sees two, then thirteen. The other direction would show a judge sixteen
+     visitor to this route sees three, then thirteen. The other direction would show a judge sixteen
      tools and then take eleven away, advertising failures during exactly the window a freshly
      loaded agent reads the list. An under-advertised tool costs a question; an over-advertised one
      costs a failed call the agent was invited to make. */

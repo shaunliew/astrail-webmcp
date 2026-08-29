@@ -47,13 +47,13 @@ single sentence the whole submission rests on — *the agent moves the map the h
 
 | # | Item | Impact | Cost | Status |
 |---|---|---|---|---|
-| 1 | Connect agent generation to the page | Very high — Leverage, Execution, Creativity | 1–2 d | ☐ not started |
-| 2 | Invited empty state + one-click seeded demo trip | High — Execution, Impact | ~1 d | ☐ not started — **confirmed live, see below** |
-| 3 | Persistent receipts + undo (replace the 8s fade) | High — Execution | ~1 d | ☐ not started |
-| 4 | Tool-contract gaps + truthful SUBMISSION.md | Med-high Leverage, protects every score | <1 d | ☐ not started |
-| 2b | **Agent-first layout for `/app`** — the visual redesign | High — Execution, Creativity | ~1 d | ☐ researching |
-| 2c | **Edits leave the trip's prose stale** — the agent is never told to replan | High — Execution, and it is a live bug | ~2 h | ☐ dispatched |
-| 2d | **Pre-gate the agent path** — an exhausted account approves, then gets a silent 403 | High — a judge-facing failure | ~1 h | ☐ queued (needs GlobalTools.tsx, currently owned) |
+| 1 | Connect agent generation to the page | Very high — Leverage, Execution, Creativity | 1–2 d | ✅ **done** — `78dee85`, 4 Codex rounds |
+| 2 | Invited empty state + one-click seeded demo trip | High — Execution, Impact | ~1 d | ◐ **half** — empty state shipped `f9882da`; the seeded `/app/trip/demo` is NOT built |
+| 3 | Persistent receipts + undo (replace the 8s fade) | High — Execution | ~1 d | ☐ **not started** |
+| 4 | Tool-contract gaps + truthful SUBMISSION.md | Med-high Leverage, protects every score | <1 d | ◐ **half** — SUBMISSION + README rewritten, `add_place` schema fixed, caption-leak gate built. `get_map_view` overclaim and `get_app_state` workflow-state still open |
+| 2b | **Agent-first layout for `/app`** — the visual redesign | High — Execution, Creativity | ~1 d | ☐ **NOT BUILT** — researched and scoped only. The map window, agent band and paper-variant chrome are all outstanding |
+| 2c | **Edits leave the trip's prose stale** — the agent is never told to replan | High — Execution, and it is a live bug | ~2 h | ✅ **done** — `78dee85` |
+| 2d | **Pre-gate the agent path** — an exhausted account approves, then gets a silent 403 | High — a judge-facing failure | ~1 h | ✅ **done** — `78dee85` |
 | 5 | `get_trip_notes` / `resolve_trip_note` (JSONB) | Highest Leverage + Creativity | ~1 d | ☐ stretch — only if the days hold |
 
 ---

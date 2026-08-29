@@ -30,7 +30,7 @@ describe('move_place', () => {
     const d = deps()
     const out = String(await movePlaceTool(d).execute({ place: '1', to_day: 3 }))
     expect(d.move).toHaveBeenCalledWith(TOKYO_TRIP.trip.id, expect.any(String), { day_number: 3 })
-    expect(out).toContain('Senso-ji Temple')
+    expect(out).toContain('Akasaka Station')
     expect(out).toContain('day 3')
     expect(out).toContain('It was on day 1') // reversibility without a UI: the agent can undo
   })
@@ -70,7 +70,7 @@ describe('move_place', () => {
 
   it('passes an ambiguous place straight through rather than guessing', async () => {
     const d = deps()
-    const out = String(await movePlaceTool(d).execute({ place: 'Shibuya', to_day: 2 }))
+    const out = String(await movePlaceTool(d).execute({ place: 'Tokyo', to_day: 2 }))
     expect(out).toContain('ambiguous')
     expect(d.move).not.toHaveBeenCalled()
   })
@@ -376,10 +376,10 @@ describe('move_place records an origin, it does not promise an undo', () => {
   it('says a missing origin position was not recorded, rather than implying it can be restored', async () => {
     const unordered = {
       ...TOKYO_TRIP,
-      places: TOKYO_TRIP.places.map((p) => (p.id === 'tp_senso' ? { ...p, sort_order: null } : p)),
+      places: TOKYO_TRIP.places.map((p) => (p.id === 'tp_akasaka' ? { ...p, sort_order: null } : p)),
     }
     const d = deps({ trips: { ...reader, current: () => unordered } })
-    const out = envelope(await movePlaceTool(d).execute({ place: 'Senso-ji Temple', to_day: 3 }))
+    const out = envelope(await movePlaceTool(d).execute({ place: 'Akasaka Station', to_day: 3 }))
     expect(out.result).toContain('day 1')
     expect(out.result).not.toMatch(/(move|put) it back/i)
     expect(out.result).toMatch(/not recorded/i)

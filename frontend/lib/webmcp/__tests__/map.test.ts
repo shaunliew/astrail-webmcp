@@ -47,7 +47,7 @@ describe('show_on_map', () => {
   it('names the stops it just put on screen, so the agent can talk about them', () => {
     const out = String(showOnMapTool(deps()).execute({ target: 'day', day: 2 }))
     expect(out).toContain('Showing day 2')
-    expect(out).toContain('Shibuya Sky')
+    expect(out).toContain('SANDO LAB TOKYO')
   })
 
   it('flies to a stop by pin number and selects it', () => {
@@ -55,7 +55,7 @@ describe('show_on_map', () => {
     const out = String(showOnMapTool(d).execute({ target: 'place', place: '1' }))
     expect(d.selectPlace).toHaveBeenCalled()
     expect(d.showDay).toHaveBeenCalledWith(1)
-    expect(out).toContain('Senso-ji Temple')
+    expect(out).toContain('Akasaka Station')
   })
 
   it('refuses a day the trip does not have, with the real range', () => {
@@ -87,7 +87,7 @@ describe('show_on_map', () => {
 
   it('passes an ambiguous place through instead of flying somewhere wrong', () => {
     const d = deps()
-    const out = String(showOnMapTool(d).execute({ target: 'place', place: 'Shibuya' }))
+    const out = String(showOnMapTool(d).execute({ target: 'place', place: 'Tokyo' }))
     expect(d.selectPlace).not.toHaveBeenCalled()
     expect(out).toContain('ambiguous')
   })
@@ -171,14 +171,14 @@ describe('map tools: claims the page actually keeps', () => {
     // placesForDay does NOT filter coordinates, so the old string counted a stop that has no pin.
     const bundle = withoutCoords(TOKYO_TRIP, 'tp_ichiran')
     const out = String(showOnMapTool(deps({ bundle: () => bundle })).execute({ target: 'day', day: 2 }))
-    expect(out).toContain('1 stop on the map: Shibuya Sky')
+    expect(out).toContain('1 stop on the map: SANDO LAB TOKYO')
     expect(out).toMatch(/no location/i)
     expect(out).toContain('Ichiran Shibuya')
   })
 
   it('admits when a day had nothing to frame and the camera fell back to the whole trip', () => {
     // TripMap's [activeDayNumber] effect: frame(pts.length ? pts : <all trip points>).
-    const bundle = withoutCoords(withoutCoords(TOKYO_TRIP, 'tp_shibuya'), 'tp_ichiran')
+    const bundle = withoutCoords(withoutCoords(TOKYO_TRIP, 'tp_sandolab'), 'tp_ichiran')
     const out = String(showOnMapTool(deps({ bundle: () => bundle })).execute({ target: 'day', day: 2 }))
     expect(out).toMatch(/whole trip/i)
     expect(out).toMatch(/no location/i)

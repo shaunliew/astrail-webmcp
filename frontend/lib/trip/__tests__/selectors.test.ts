@@ -55,9 +55,9 @@ describe('trip selectors', () => {
   it('orderedTripPlaces threads every dayed stop across all days by (day, sort_order)', () => {
     const stops = orderedTripPlaces(TOKYO_TRIP)
     expect(stops.map((tp) => tp.place.name)).toEqual([
-      'Senso-ji Temple', 'teamLab Planets', // Day 1
-      'Shibuya Sky', 'Ichiran Shibuya',     // Day 2
-      'Tokyo Disneyland',                    // Day 3
+      'Akasaka Station', 'Harry Potter Cafe',  // Day 1
+      'SANDO LAB TOKYO', 'Ichiran Shibuya',    // Day 2
+      'Tokyo Disneyland',                      // Day 3
     ])
     // the undayed base hotel is not a stop on the journey line
     expect(stops.some((tp) => tp.day_number === null)).toBe(false)
@@ -262,7 +262,7 @@ describe('hotel-hub selectors', () => {
     expect(fc.type).toBe('FeatureCollection')
     // The five dayed, real-coord places in journey order; the UNDAYED base-hotel place is excluded.
     const destIds = fc.features.map((f) => f.properties?.place_id)
-    expect(destIds).toEqual(['pl_senso', 'pl_teamlab', 'pl_shibuya', 'pl_ichiran', 'pl_disney'])
+    expect(destIds).toEqual(['pl_akasaka', 'pl_hpcafe', 'pl_sandolab', 'pl_ichiran', 'pl_disney'])
     for (const f of fc.features) {
       expect(f.geometry.type).toBe('LineString')
       expect(f.geometry.coordinates).toHaveLength(2)                 // straight, 2-point
@@ -270,11 +270,11 @@ describe('hotel-hub selectors', () => {
     }
     // Endpoints match the destination place coords, in order.
     expect(fc.features.map((f) => f.geometry.coordinates[1])).toEqual([
-      [139.7967, 35.7148], [139.7906, 35.6497], [139.7016, 35.6580],
+      [139.7365333, 35.6723639], [139.7363882, 35.6730773], [139.7717192, 35.7007615],
       [139.7002, 35.6606], [139.8804, 35.6329],
     ])
     // Every fixture duration is present → every spoke is labeled.
-    expect(fc.features.map((f) => f.properties?.duration_s)).toEqual([4500, 6000, 2700, 2700, 11000])
+    expect(fc.features.map((f) => f.properties?.duration_s)).toEqual([1500, 1500, 2400, 1500, 11000])
   })
 
   it('hubSpokeFeatures excludes a base-hotel place (place_type "hotel") even when it is dayed', () => {

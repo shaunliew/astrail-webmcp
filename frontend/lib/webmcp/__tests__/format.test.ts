@@ -50,15 +50,15 @@ describe('formatItinerary', () => {
   it('renders days and pin-numbered stops with their provenance', () => {
     const out = formatItinerary(TOKYO_TRIP)
     expect(out).toContain('D1')
-    expect(out).toContain('Senso-ji Temple')
-    expect(out).toMatch(/ 1 Senso-ji Temple · (reel|you|astrail)/)
+    expect(out).toContain('Akasaka Station')
+    expect(out).toMatch(/ 1 Akasaka Station · (reel|you|astrail)/)
   })
 
   it('scopes to a single day when asked', () => {
     const out = formatItinerary(TOKYO_TRIP, 2)
     expect(out).toContain('D2')
     expect(out).not.toContain('D1 ')
-    expect(out).toContain('Shibuya Sky')
+    expect(out).toContain('SANDO LAB TOKYO')
   })
 
   it('reports a missing day with the valid range instead of returning nothing', () => {

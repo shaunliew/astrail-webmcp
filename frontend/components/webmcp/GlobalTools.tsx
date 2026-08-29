@@ -14,6 +14,7 @@ import type { TripAllowance } from '@/lib/webmcp/tools/generation'
 import { RegisterTools } from './RegisterTools'
 import { useWebMcpRegistry } from './WebMcpRegistry'
 import { useGeneration, type RunReservation } from '@/components/generation/GenerationProvider'
+import { TOKYO_TRIP as SAMPLE_TRIP } from '@/lib/trip/fixtures'
 
 /**
  * The always-on tools, wired to real data.
@@ -23,6 +24,11 @@ import { useGeneration, type RunReservation } from '@/components/generation/Gene
  * registration would still be first-render data days later. Reading through a ref at call time
  * is what keeps `get_app_state` honest.
  */
+
+/* The read-only sample trail. Imported statically, not lazily: `TripReader.current` is
+   synchronous by contract (it is the zero-network path), so an awaited import would answer
+   "Which trip?" for the first call on the page — the exact defect this fixes. */
+const SAMPLE_TRIP_PATH = '/app/trip/demo'
 
 const ROUTE_LABEL: [RegExp, string][] = [
   [/^\/app\/trip\//, 'a trip you have already planned'],
@@ -138,6 +144,31 @@ export default function GlobalTools() {
       load: (tripId: string) => getTrip(tripId),
     }),
     [],
+  )
+
+  /**
+   * The same reader, plus the sample trail — for READS only.
+   *
+   * `/app/trip/demo` renders a fixture with no database row behind it, so TripTools withholds it
+   * from `registry.openTrip` (see the note there). That ref is `resolveBundle`'s default target,
+   * and all five edit tools resolve through it, so withholding disarmed the writes — correctly —
+   * and took `get_itinerary` and `get_place_evidence` with it. Three of the five tools a trip page
+   * offers answered on the flagship demo; the other two said "Which trip?" while the trip was on
+   * screen in front of the judge.
+   *
+   * A SECOND READER rather than a registration flag, deliberately. `enabled` is evaluated at
+   * render and applied in an effect, so a route change opens a window where the flag and the
+   * route disagree; a reader that cannot return the sample cannot be caught out by timing. The
+   * fallback is scoped to the route showing it — anywhere else, the sample is not "the open
+   * trip" and answering with it would be a trip the user does not own.
+   */
+  const sampleReader = useMemo(
+    () => ({
+      ...tripReader,
+      current: () =>
+        tripReader.current() ?? (pathRef.current === SAMPLE_TRIP_PATH ? SAMPLE_TRIP : null),
+    }),
+    [tripReader],
   )
 
   const refreshReels = useCallback(async () => {
@@ -291,7 +322,20 @@ export default function GlobalTools() {
     [requestConfirm],
   )
 
-  const specs = globalTools({ readAppState, trips: tripReader, saveReel, analyzeReels, loadSavedReels, generation, edit })
+  /* Built twice from one context, so the two readers cannot drift apart: everything is assembled
+     against the write-safe reader, then the READ-ONLY tools are swapped for the copies that can
+     see the sample. Keyed on `readOnlyHint`, not on a list of names — a write tool added later is
+     sample-blind by default, and an unmatched name degrades to the strict spec rather than the
+     permissive one. `save_reels` and `plan_trip_from_reels` are writes that never touch `trips`,
+     so the strict reader costs them nothing. */
+  const deps = { readAppState, saveReel, analyzeReels, loadSavedReels, generation, edit }
+  const sampleAware = new Map(
+    globalTools({ ...deps, trips: sampleReader })
+      .filter((s) => s.annotations?.readOnlyHint === true)
+      .map((s) => [s.name, s]),
+  )
+  const specs = globalTools({ ...deps, trips: tripReader })
+    .map((s) => sampleAware.get(s.name) ?? s)
 
   return <RegisterTools specs={specs} />
 }

@@ -12,7 +12,7 @@ describe('buildPopupModel', () => {
     const m = buildPopupModel(TOKYO_TRIP, first)
     expect(m.eyebrow).toContain('Stop 1')
     expect(m.eyebrow).toContain('Day 1')
-    expect(m.title).toBe('Senso-ji Temple')
+    expect(m.title).toBe('Akasaka Station')
   })
 
   it('strips caption emoji from the name', () => {
@@ -241,7 +241,7 @@ describe('buildPopupModel', () => {
   })
 
   it('reports confidence as a whole percent', () => {
-    expect(buildPopupModel(TOKYO_TRIP, first).confidence).toBe(94)
+    expect(buildPopupModel(TOKYO_TRIP, first).confidence).toBe(65)
   })
 
   it('says so plainly when there is no quote, rather than showing an empty card', () => {
@@ -273,7 +273,7 @@ describe('buildPopupModel', () => {
   })
 
   it('still shows confidence for a Reel-derived stop', () => {
-    expect(buildPopupModel(TOKYO_TRIP, first).confidence).toBe(94)
+    expect(buildPopupModel(TOKYO_TRIP, first).confidence).toBe(65)
   })
 
   it('invents no opening hours, price or rating', () => {

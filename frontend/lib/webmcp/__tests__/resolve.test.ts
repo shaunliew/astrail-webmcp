@@ -11,7 +11,7 @@ const ok = (r: ReturnType<typeof resolvePlaceRef>) => {
 describe('resolvePlaceRef — pin numbers', () => {
   it('resolves the pin number the user can see on the map', () => {
     const r = ok(resolvePlaceRef(TOKYO_TRIP, '1'))
-    expect(r.tripPlace.place.name).toBe('Senso-ji Temple')
+    expect(r.tripPlace.place.name).toBe('Akasaka Station')
     expect(r.pin).toBe(1)
   })
 
@@ -31,14 +31,14 @@ describe('resolvePlaceRef — pin numbers', () => {
 
 describe('resolvePlaceRef — names', () => {
   it('matches an exact name', () => {
-    expect(ok(resolvePlaceRef(TOKYO_TRIP, 'Shibuya Sky')).pin).toBe(3)
+    expect(ok(resolvePlaceRef(TOKYO_TRIP, 'SANDO LAB TOKYO')).pin).toBe(3)
   })
 
   it('ignores case, punctuation and accents', () => {
     // Reel captions are inconsistent about all three; the agent will echo whatever it read.
-    expect(ok(resolvePlaceRef(TOKYO_TRIP, 'senso ji temple')).pin).toBe(1)
-    expect(ok(resolvePlaceRef(TOKYO_TRIP, 'SENSO-JI TEMPLE')).pin).toBe(1)
-    expect(ok(resolvePlaceRef(TOKYO_TRIP, '  teamlab planets  ')).pin).toBe(2)
+    expect(ok(resolvePlaceRef(TOKYO_TRIP, 'akasaka station')).pin).toBe(1)
+    expect(ok(resolvePlaceRef(TOKYO_TRIP, 'AKASAKA STATION')).pin).toBe(1)
+    expect(ok(resolvePlaceRef(TOKYO_TRIP, '  harry potter cafe  ')).pin).toBe(2)
   })
 
   it('matches an unambiguous substring', () => {
@@ -46,14 +46,14 @@ describe('resolvePlaceRef — names', () => {
   })
 
   it('returns candidates instead of guessing when a substring is ambiguous', () => {
-    // "Shibuya" hits both Shibuya Sky and Ichiran Shibuya. Picking one silently edits the
+    // "Tokyo" hits both SANDO LAB TOKYO and Tokyo Disneyland. Picking one silently edits the
     // wrong stop — the single worst failure this resolver can have.
-    const r = resolvePlaceRef(TOKYO_TRIP, 'Shibuya')
+    const r = resolvePlaceRef(TOKYO_TRIP, 'Tokyo')
     expect(r.ok).toBe(false)
     if (!r.ok) {
       expect(r.message).toContain('ambiguous')
-      expect(r.message).toContain('Shibuya Sky')
-      expect(r.message).toContain('Ichiran Shibuya')
+      expect(r.message).toContain('SANDO LAB TOKYO')
+      expect(r.message).toContain('Tokyo Disneyland')
       expect(r.message).toContain('pin number')
     }
   })
@@ -61,8 +61,9 @@ describe('resolvePlaceRef — names', () => {
   it('prefers an exact name over a longer substring match', () => {
     // Guards the match ORDER: exact must win, or a place whose name is contained in another
     // becomes unreachable by its own name.
-    const r = ok(resolvePlaceRef(TOKYO_TRIP, 'Shibuya Sky'))
-    expect(r.tripPlace.place.name).toBe('Shibuya Sky')
+    // "Tokyo" alone is ambiguous (above), so the exact pass has to win outright here.
+    const r = ok(resolvePlaceRef(TOKYO_TRIP, 'Tokyo Disneyland'))
+    expect(r.tripPlace.place.name).toBe('Tokyo Disneyland')
   })
 
   it('tells the agent how to recover when nothing matches', () => {

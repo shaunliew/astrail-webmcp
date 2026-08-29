@@ -75,6 +75,9 @@ vi.mock('../RegisterTools', () => ({
   },
 }))
 
+// The mocked edit endpoints, so a refusal can be proved by the call that never happened.
+const { deleteTripPlace, editTripPlace } = await import('@/lib/trip/api')
+
 const { WebMcpRegistryProvider, useWebMcpRegistry } = await import('../WebMcpRegistry')
 const { default: GlobalTools } = await import('../GlobalTools')
 
@@ -262,5 +265,87 @@ describe('plan_trip_from_reels, gated on the account the browser can actually re
     const run = spec.execute(PLAN_ARGS)
     await waitFor(() => { expect(cardsShown).toHaveLength(1) })
     expect(String(await run)).toMatch(/declined/i)
+  })
+})
+
+/**
+ * The sample trail, `/app/trip/demo` — read tools see it, write tools never do.
+ *
+ * `TripTools` deliberately withholds a read-only bundle from `registry.openTrip`, because
+ * `resolveBundle` reads that ref whenever no trip_id is passed and all five edit tools resolve
+ * their target through it: publishing a fixture there would point `move_place` and friends at
+ * `trip_tokyo_demo`, which is not a row, and four of them raise an approval card BEFORE the write
+ * fails — asking the user to authorise a change that cannot happen. The cost was that
+ * `get_itinerary` and `get_place_evidence` share that one seam, so only three of the five tools a
+ * trip page offers actually answered on the flagship demo.
+ *
+ * The fix is here rather than in TripTools because this is where the two halves are built: the
+ * read tools get a reader that falls back to the sample ON THAT ROUTE, the write tools keep the
+ * reader that only ever sees a real open trip. The refusal therefore happens at the SEAM, not at
+ * a registration flag — nothing about it depends on when an effect ran.
+ */
+const SAMPLE_PATH = '/app/trip/demo'
+
+/** Mounts the shell on a route and hands back one tool, ready to call. */
+async function toolOn(path: string, name: string): Promise<ToolSpec> {
+  h.pathname = path
+  h.listTrips.mockResolvedValue([])
+  h.listSavedReelCards.mockResolvedValue([])
+  render(
+    <WebMcpRegistryProvider>
+      <GlobalTools />
+      <AutoDecline />
+    </WebMcpRegistryProvider>,
+  )
+  let spec: ToolSpec | undefined
+  await waitFor(() => {
+    spec = h.specs.find((s) => s.name === name)
+    expect(spec, `${name} was never built`).toBeTruthy()
+  })
+  return spec!
+}
+
+describe('the sample trail is readable without a sign-in', () => {
+  it('answers get_itinerary from the sample instead of asking which trip', async () => {
+    const out = String(await (await toolOn(SAMPLE_PATH, 'get_itinerary')).execute({}))
+    expect(out).not.toContain('Which trip?')
+    expect(out).toContain('Akasaka Station')
+  })
+
+  it('hands get_place_evidence the real source Reel for a stop on it', async () => {
+    // The whole point of the page. A judge asking "why is stop 1 here?" gets the caption and a
+    // Reel they can open, with no account and nothing spent.
+    const out = String(await (await toolOn(SAMPLE_PATH, 'get_place_evidence')).execute({ place: '1' }))
+    expect(out).toMatch(/reel: https:\/\/www\.instagram\.com\/reel\//)
+  })
+
+  it('does not leak the sample onto any other route', async () => {
+    // The sample belongs to the page showing it. Answering "what's on day 2" with someone
+    // else's demo trip, on a route displaying the user's own trips, is a worse bug than silence.
+    const out = String(await (await toolOn('/app/trips', 'get_itinerary')).execute({}))
+    expect(out).toContain('Which trip?')
+  })
+})
+
+describe('the sample trail is NOT writable', () => {
+  it('refuses an edit against it without ever raising an approval card', async () => {
+    // `trip_tokyo_demo` has no row. move_place applies without a card, but add/remove/dates/
+    // replan ask first — so a write tool that could see the sample would take consent for a
+    // change the backend cannot make.
+    const out = String(await (await toolOn(SAMPLE_PATH, 'move_place')).execute({ place: '1', to_day: 3 }))
+    expect(out).toBe('Which trip? Call list_trips and pass its trip_id.')
+    expect(cardsShown).toHaveLength(0)
+    expect(editTripPlace).not.toHaveBeenCalled()
+  })
+
+  it('refuses even when the agent names the sample trip outright', async () => {
+    // Withholding it from the default target is not enough: `get_itinerary` prints no trip id,
+    // but an agent that has seen one will pass it back.
+    const out = String(
+      await (await toolOn(SAMPLE_PATH, 'remove_place')).execute({ place: '1', trip_id: 'trip_tokyo_demo' }),
+    )
+    expect(out).toContain('No trip with id')
+    expect(cardsShown).toHaveLength(0)
+    expect(deleteTripPlace).not.toHaveBeenCalled()
   })
 })

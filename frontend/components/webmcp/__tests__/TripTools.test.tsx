@@ -105,7 +105,7 @@ describe('TripTools', () => {
     const result = await tool('show_on_map').execute({ target: 'day', day: 2 })
     expect(actions.showDay).toHaveBeenCalledWith(2)
     expect(actions.openPanel).toHaveBeenCalled()
-    expect(String(result)).toContain('Shibuya Sky')
+    expect(String(result)).toContain('SANDO LAB TOKYO')
   })
 
   it('switches the map layer on a seeded bundle', async () => {
@@ -153,6 +153,6 @@ describe('TripTools', () => {
 
     const move = vi.fn(async () => ({}))
     await movePlaceAgainstOpenTrip({ move }).execute({ place: '1', to_day: 2 })
-    expect(move).toHaveBeenCalledWith(TOKYO_TRIP.trip.id, 'tp_senso', { day_number: 2 })
+    expect(move).toHaveBeenCalledWith(TOKYO_TRIP.trip.id, 'tp_akasaka', { day_number: 2 })
   })
 })

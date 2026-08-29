@@ -157,7 +157,7 @@ describe('TripMap', () => {
     await flush()
     fireLoad()
     await flush()
-    const marker = markerElements.find((e) => e.getAttribute('aria-label') === 'Senso-ji Temple')!
+    const marker = markerElements.find((e) => e.getAttribute('aria-label') === 'Akasaka Station')!
     const n = marker.querySelector('.constellation-pin__drop-number')?.textContent
       ?? marker.querySelector('.constellation-pin__badge')?.textContent
     expect(n).toBe('1')
@@ -198,7 +198,7 @@ describe('TripMap', () => {
     fireLoad()
     await flush()
 
-    const marker = markerElements.find((e) => e.getAttribute('aria-label') === 'Senso-ji Temple')!
+    const marker = markerElements.find((e) => e.getAttribute('aria-label') === 'Akasaka Station')!
     expect(marker.querySelector('image')).toBeNull()
     expect(marker.querySelector('.constellation-pin__placeholder')).not.toBeNull()
     // And nothing anywhere on the map smuggled the string through.
@@ -223,7 +223,7 @@ describe('TripMap', () => {
     mapInstance.flyTo.mockClear()
     view.rerender(
       <MapProvider>
-        <TripMap bundle={TOKYO_TRIP} activeDayNumber={1} selectedPlaceId="pl_senso" onSelectPlace={() => {}} />
+        <TripMap bundle={TOKYO_TRIP} activeDayNumber={1} selectedPlaceId="pl_akasaka" onSelectPlace={() => {}} />
       </MapProvider>,
     )
     await flush()
@@ -498,11 +498,11 @@ describe('TripMap', () => {
     // trailing slice silently starts grabbing restaurants instead.
     const markers = markerElements.filter((el) => el.classList.contains('constellation-pin'))
     const byLabel = (name: string) => markers.find((el) => el.getAttribute('aria-label') === name)!
-    expect(byLabel('Senso-ji Temple')).toHaveClass('constellation-pin', 'constellation-pin--reel_extracted')
-    expect(byLabel('Senso-ji Temple')).toHaveTextContent('1')
+    expect(byLabel('Akasaka Station')).toHaveClass('constellation-pin', 'constellation-pin--reel_extracted')
+    expect(byLabel('Akasaka Station')).toHaveTextContent('1')
     // a later-day stop is no longer dimmed — it carries its global number and stays lit
-    expect(byLabel('Shibuya Sky')).not.toHaveClass('constellation-pin--receding')
-    expect(byLabel('Shibuya Sky')).toHaveTextContent('3')
+    expect(byLabel('SANDO LAB TOKYO')).not.toHaveClass('constellation-pin--receding')
+    expect(byLabel('SANDO LAB TOKYO')).toHaveTextContent('3')
     expect(byLabel('Tokyo Disneyland')).toHaveTextContent('5')
     // the undayed base hotel is not a stop on the trail — it recedes, unnumbered
     expect(byLabel('Shinjuku Granbell Hotel')).toHaveClass('constellation-pin--receding')
@@ -515,7 +515,7 @@ describe('TripMap', () => {
     await flush()
 
     const marker = markerElements.find(
-      (element) => element.getAttribute('aria-label') === 'Senso-ji Temple',
+      (element) => element.getAttribute('aria-label') === 'Akasaka Station',
     )!
     const chip = marker.querySelector<HTMLElement>('.constellation-pin__label')!
     // The stop number must survive whatever the pin looks like: the WebMCP tools address stops
@@ -525,7 +525,7 @@ describe('TripMap', () => {
       marker.querySelector('.constellation-pin__drop-number')?.textContent
       ?? marker.querySelector('.constellation-pin__badge')?.textContent
     expect(shownNumber).toBe('1')
-    expect(chip).toHaveTextContent('Senso-ji Temple')
+    expect(chip).toHaveTextContent('Akasaka Station')
     expect(chip).toHaveClass('constellation-pin__label--visible')
 
     mapInstance.getZoom.mockReturnValue(8)
@@ -554,7 +554,11 @@ describe('TripMap', () => {
   it('opens evidence in a text-only popup when a marker is clicked', async () => {
     const bundle = structuredClone(TOKYO_TRIP)
     bundle.places[0].evidence_json.quote = '<img src=x onerror="alert(1)"> Visit before sunset.'
-    bundle.places[0].evidence_json.source_url = 'https://www.instagram.com/reel/safe-source/'
+    // Attribution now comes from `source_reel_url` (the field backend-types reserves for the
+    // Reel), so the override moves with it. A code the trip's inspiration does not carry also
+    // keeps the pin's thumbnail out of the way, leaving the quote as the only markup risk here.
+    bundle.places[0].evidence_json.source_reel_url = 'https://www.instagram.com/reel/safe-source/'
+    bundle.places[0].evidence_json.source_url = null
     const onSelectPlace = vi.fn()
 
     renderMap({ bundle, onSelectPlace })
@@ -562,7 +566,7 @@ describe('TripMap', () => {
     fireLoad()
 
     const marker = markerElements.find(
-      (element) => element.getAttribute('aria-label') === 'Senso-ji Temple',
+      (element) => element.getAttribute('aria-label') === 'Akasaka Station',
     )!
     act(() => { marker.click() })
 
@@ -582,13 +586,15 @@ describe('TripMap', () => {
 
   it('does not make an attacker-controlled non-http source URL clickable', async () => {
     const bundle = structuredClone(TOKYO_TRIP)
+    // BOTH source fields: either one reaching an href unchecked is the same hole.
     bundle.places[0].evidence_json.source_url = 'javascript:alert(document.cookie)'
+    bundle.places[0].evidence_json.source_reel_url = 'javascript:alert(document.cookie)'
 
     renderMap({ bundle })
     await flush()
     fireLoad()
     const marker = markerElements.find(
-      (element) => element.getAttribute('aria-label') === 'Senso-ji Temple',
+      (element) => element.getAttribute('aria-label') === 'Akasaka Station',
     )!
     act(() => { marker.click() })
 

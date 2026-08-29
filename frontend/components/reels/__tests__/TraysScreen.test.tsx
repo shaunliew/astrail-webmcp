@@ -19,7 +19,7 @@ vi.mock('@/lib/reels/collections', () => ({ listCollections, getMembershipsByCol
 // no-op it so the fan cannot flake in jsdom during this integration test.
 vi.mock('gsap', () => ({ default: { to: vi.fn(), set: vi.fn(), killTweensOf: vi.fn() } }))
 
-import TraysScreen from '@/components/reels/TraysScreen'
+import TraysScreen, { starterTripDates } from '@/components/reels/TraysScreen'
 import { WebMcpRegistryProvider, useWebMcpRegistry } from '@/components/webmcp/WebMcpRegistry'
 import type { ReelCollection, SavedReelCard, SavedReelPlaceProof } from '@/lib/reels/backend-types'
 
@@ -59,12 +59,19 @@ const countBadge = (label: string) =>
 /* ── Agent-first empty state ───────────────────────────────────────────────────────────────
    Hardcoded here rather than imported from the component, so these are a SPEC and not a
    tautology: the prompt has to stay runnable as written, and `plan_trip_from_reels` will
-   refuse it without 1-5 reel URLs AND both dates as YYYY-MM-DD. */
+   refuse it without 1-5 reel URLs AND both dates as YYYY-MM-DD. The dates are read off the
+   clock now, so every test that reads the prompt pins the clock to PINNED_NOW and spells out
+   the pair it must produce — determinism comes from pinning the clock, not from freezing the
+   value in the product. */
+const PINNED_NOW = new Date('2026-08-29T00:00:00Z')
+const PINNED_START = '2026-09-08' // PINNED_NOW + a ten-day lead
+const PINNED_END = '2026-09-13' // + a five-night stay
+
 const STARTER_PROMPT = `Plan me a Tokyo trip from these Instagram Reels:
 https://www.instagram.com/reel/DYGH3jFBZHz/
 https://www.instagram.com/reel/DYM_I5IvLSv/
 https://www.instagram.com/reel/DXwcVVliX3B/
-Start date 2026-11-14, end date 2026-11-19. Mid-range budget, walkable days.`
+Start date ${PINNED_START}, end date ${PINNED_END}. Mid-range budget, walkable days.`
 
 const INVITATION_HEADING = 'No Reels of your own? Start here.'
 const CAPTURE_SUMMARY = 'Prefer to paste Reel links here?'
@@ -618,6 +625,75 @@ describe('TraysScreen', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Tokyo winter' })).not.toBeInTheDocument())
   })
 
+  /* The starter prompt's dates come off the clock instead of being frozen in the source. A
+     frozen pair rots two ways: a judge reading it months on sees a trip suspiciously far out,
+     and a judge reading it a year on sees one in the PAST, which `plan_trip_from_reels` will
+     happily accept and plan. It also has to land inside the forecast window — a real run on
+     2026-08-28 for dates 14 days out already came back "No forecast available this far ahead". */
+  describe('starterTripDates', () => {
+    /** Runs `fn` under a fixed zone, so "is this built in UTC?" is an answerable question. */
+    function withTz<T>(tz: string, fn: () => T): T {
+      const previous = process.env.TZ
+      process.env.TZ = tz
+      try {
+        return fn()
+      } finally {
+        if (previous === undefined) Reflect.deleteProperty(process.env, 'TZ')
+        else process.env.TZ = previous
+      }
+    }
+
+    it('lands the trip ten days out and runs it for five nights', () => {
+      expect(starterTripDates(PINNED_NOW)).toEqual({ start: PINNED_START, end: PINNED_END })
+    })
+
+    it('reads the calendar day in UTC, not local time, a minute before local midnight in GMT+8', () => {
+      // The trap this guards: taking LOCAL date parts and serialising them back through
+      // toISOString(). In Asia/Kuala_Lumpur — Zhi Hao's zone, and most of our judges' — this
+      // instant is 23:59 on the 29th locally; a locally-built midnight serialises to the
+      // PREVIOUS UTC day, quietly shipping a nine-day lead and a prompt that disagrees with
+      // the same page loaded an hour later.
+      expect(withTz('Asia/Kuala_Lumpur', () => starterTripDates(new Date('2026-08-29T15:59:00Z')))).toEqual({
+        start: '2026-09-08',
+        end: '2026-09-13',
+      })
+    })
+
+    it('reads the calendar day in UTC, not local time, just after UTC midnight west of Greenwich', () => {
+      // Same trap from the other side: in America/New_York this instant is still 31 August
+      // locally, so anything anchored on local parts lands the trip a day early.
+      expect(withTz('America/New_York', () => starterTripDates(new Date('2026-09-01T00:30:00Z')))).toEqual({
+        start: '2026-09-11',
+        end: '2026-09-16',
+      })
+    })
+
+    it('crosses a month end and a year end without drifting', () => {
+      expect(starterTripDates(new Date('2026-12-27T00:00:00Z'))).toEqual({
+        start: '2027-01-06',
+        end: '2027-01-11',
+      })
+    })
+
+    it('emits the well-formed, forward-ordered pair plan_trip_from_reels demands, at every clock', () => {
+      // A malformed or reversed pair is a rejected tool call, not a cosmetic slip — so walk a
+      // year of clocks rather than trusting one sample. Run it in a zone WITH daylight saving:
+      // day arithmetic done with local setDate() loses or gains an hour across a transition,
+      // which is exactly how a "10 days out" window silently becomes nine.
+      withTz('America/New_York', () => {
+        const isoDay = /^\d{4}-\d{2}-\d{2}$/
+        for (let offset = 0; offset < 400; offset += 1) {
+          const now = new Date(Date.UTC(2026, 0, 1) + offset * 86_400_000)
+          const { start, end } = starterTripDates(now)
+          expect(start).toMatch(isoDay)
+          expect(end).toMatch(isoDay)
+          expect(end > start).toBe(true)
+          expect((Date.parse(start) - now.getTime()) / 86_400_000).toBe(10)
+        }
+      })
+    })
+  })
+
   /* An empty /app was a paste-a-URL form and nothing else — a dead end for anyone who arrives
      without Instagram links in hand. Verified live in ChatGPT's browser on an empty account:
      asked "what can I do here?", the agent answered "start by pasting up to five Reel links",
@@ -626,7 +702,14 @@ describe('TraysScreen', () => {
   describe('agent-first empty state', () => {
     const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
 
+    beforeEach(() => {
+      // Only Date is faked: setTimeout stays real so waitFor/findBy still resolve normally.
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(PINNED_NOW)
+    })
+
     afterEach(() => {
+      vi.useRealTimers()
       if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
       else Reflect.deleteProperty(navigator as object, 'clipboard')
     })
@@ -647,6 +730,24 @@ describe('TraysScreen', () => {
       // A wiped account can have zero reels AND an exhausted trip entitlement; they are
       // unrelated, so the invitation must promise nothing about what the user may spend.
       expect(screen.queryByText(/allowance|free trip|credit/i)).toBeNull()
+    })
+
+    it('prints dates read off the clock, not a pair frozen into the source', async () => {
+      renderWithAgent(
+        <TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      await screen.findByText(INVITATION_HEADING)
+      const block = screen.getByText(
+        (_content, el) => el?.tagName === 'PRE' && el.textContent?.startsWith('Plan me a Tokyo trip') === true,
+      )
+      // The clock is pinned to PINNED_NOW for this describe, so the rendered dates must follow it.
+      expect(block.textContent).toContain(`Start date ${PINNED_START}, end date ${PINNED_END}.`)
+      // The pair the screen shipped with: near enough at the time, 77 days out by the day this
+      // was found, and past by next year. Nothing may print a date the clock did not produce.
+      expect(block.textContent).not.toContain('2026-11-14')
+      expect(block.textContent).not.toContain('2026-11-19')
     })
 
     it('demotes the capture form into a closed details instead of deleting it', async () => {

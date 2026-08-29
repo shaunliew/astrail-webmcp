@@ -32,8 +32,14 @@ Taking layout's side is not a judgement call: in two hunks `feat/webmcp`'s side 
 the other two layout's text contains yours and extends it. Order matters only because receipts is
 the smaller change; they touch disjoint files.
 
-⚠ `wt/layout` gained a commit overnight (`fbd5dc0`) after the merge was last verified, so re-run
-the check in MERGE-PLAN.md if you want the numbers to match exactly.
+Re-verified after both branches gained commits: still four hunks, and the built result is
+**113 files / 1256 tests, tsc clean, production build clean.**
+
+⚠ **The rule is position-sensitive.** An implementer added a test mid-block on `wt/layout` and git
+aligned it with `feat/webmcp`'s own new test into an add/add conflict at *six* hunks — where
+applying "take layout's side" blindly would have silently **deleted** your clock test. It was
+repositioned and both tests are confirmed present in the merged tree. **If you see six hunks
+instead of four, stop and read `MERGE-PLAN.md` before resolving.**
 
 ### 3. Deployment settings
 
@@ -59,8 +65,22 @@ Both still outstanding. The README and SUBMISSION mark them as the two known bla
 | Claim audit | Two claims a judge could disprove, one self-contradiction, one stale number — all fixed |
 | Eligibility record | Was seven deliveries behind, including the evidence fix and the whole free path |
 | `backend/.env.example` | Four undocumented flags added, two of them dangerous |
-| Video script | Written, shot by shot, with exact prompts |
+| Video script | Written, shot by shot, with exact prompts — then contract-tested, which found three of its claims false |
+| A false instruction to judges | README and SUBMISSION told judges to type *"Show me day 2 in 3D"*, which returns an error |
+| Landing-page overclaim | Two places promised approval for "anything that spends money"; `save_reels` spends and does not ask |
 | Tracking docs | Status table was reporting four shipped items as unbuilt |
+
+### The finding that would have cost the most
+
+**README:113 and SUBMISSION:139 told a judge to type *"Show me day 2 in 3D."*** `set_map_mode`'s
+enum is `route|hub` — there is no 3D mode, so that prompt returns an error. A judge following our
+own written instruction watches it fail.
+
+It could not have been fixed by adding a mode, either: the extruded-buildings layer is `minzoom:
+15` and the deepest tool-driven camera is `zoom 14`, so **no tool can reach the buildings**. Only
+the popup's street-level button can, by click. That demo beat had been in the plan since day one
+and was never tool-reachable — nobody noticed because nobody ran it. If you want buildings in the
+video, click a pin and narrate it as your move, not the agent's.
 
 ### The audit's most important finding
 

@@ -110,7 +110,10 @@ Then:
      Ask about any pin you can see; pin numbers are whatever the trip produced. A stop Astrail
      suggested rather than took from a Reel answers with its reasoning and a research link
      instead, and says so — that is the tool being honest, not failing.
-   - *"Show me day 2 in 3D"* and *"move stop 7 to day 3"* → the map changes in front of you
+   - *"Show me day 2 on the map"* and *"move stop 7 to day 3"* → the map changes in front of you.
+     `set_map_mode` switches between the **route** view and the **hotel hub** view; it has no 3D
+     mode, and no tool zooms deep enough to extrude buildings — that is the popup's street-level
+     button, driven by a click rather than by the agent.
 
 The five edit tools require `WEBMCP_EDITS_ENABLED=true` on the deployment; they return 404 when it
 is unset.

@@ -136,7 +136,7 @@ open **Available site tools** — 13 are listed on the app, 16 once a trip is op
    places are verified.
 3. *"Why is stop 4 on this trip?"* — `get_place_evidence` returns the verbatim caption quote and the
    Reel it came from.
-4. *"Show me day 2 in 3D"*, *"move stop 7 to day 3"*, *"add Osaka Castle to day 1"* — the map and the
+4. *"Show me day 2 on the map"*, *"move stop 7 to day 3"*, *"add Osaka Castle to day 1"* — the map and the
    itinerary change in front of you, and the reply names `replan_trip` when the day summaries have
    fallen behind the stops.
 

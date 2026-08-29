@@ -35,7 +35,7 @@ export const faqs = [
   {
     question: "Can it do things without asking me?",
     answer:
-      "Not the ones that matter. Anything that spends money or cannot be undone stops for approval on the page first, and the request is shown to you in full before anything is sent. Reading is free and reversible actions just happen — a confirmation on every click would make the whole thing tiresome to use.",
+      "Not the ones that matter. Planning a trip stops for approval on the page first, and so does anything that cannot be undone — the request is shown to you in full before it is sent. There is one paid action that does not ask: saving a Reel starts analysing it, which costs us a little. It is bounded by a daily limit and never re-analyses a Reel you already have, so it is closer to a reversible action than to a purchase. Reading is free and reversible actions just happen — a confirmation on every click would make the whole thing tiresome to use.",
   },
   {
     question: "What stops it inventing things?",

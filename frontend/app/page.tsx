@@ -71,7 +71,7 @@ export default function LandingPage() {
               <li className="flex gap-3">
                 <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
                 <span className="min-w-0">
-                  Anything that spends money or cannot be undone stops for approval on the page first, and the edit endpoints behind it are owner-checked, flag-gated and status-guarded.
+                  Planning a trip and anything that cannot be undone stop for approval on the page first, and the edit endpoints behind them are owner-checked, flag-gated and status-guarded. Saving a Reel is the one paid action that does not ask: it is bounded by a daily limit and never re-analyses a Reel you already have.
                 </span>
               </li>
               <li className="flex gap-3">

@@ -67,6 +67,11 @@ The agent calls `get_app_state`. Signed out, it answers with: the public sample 
 is no account so it will say nothing about your own library, the six tools that work, and that
 saving, planning and editing need an account.
 
+⚠ **The agent will read out five, not six.** Six are offered — that is what the Site tools list and
+the chip show — but `get_app_state` leaves itself off its own list of next steps, so it recommends
+the other five. Say "six tools, and it points you at five of them"; narrating a flat "six" while
+the agent enumerates five is the kind of mismatch a judge notices on screen.
+
 Say: "It reads the page's own state and tells you what's possible — including what *isn't*. It
 knows editing will fail here, so it doesn't offer it. That's the discoverability problem solved by
 removing the need to find the button."
@@ -87,7 +92,9 @@ Then, immediately, the contrast. Type exactly:
 > **And why is stop 4 there?**
 
 Stop 4 is **Ichiran Shibuya**, `suggested_by_astrail`. It answers with its reasoning and a
-`research:` link — **and says it has no Reel.**
+`research:` link, and **offers no Reel, because it has none** — no `reel:` line, no Instagram URL.
+(It does not print a sentence saying so: a suggested stop has no Reel to be missing, so none is
+owed. The "no source Reel recorded" line is for a reel-quoted stop whose URL is absent.)
 
 Say: "Every stop shows where it came from. This one is quoted from a Reel. This one Astrail
 suggested, and it says so rather than dressing a suggestion up as evidence."
@@ -98,13 +105,17 @@ the honesty is demonstrable rather than claimed.
 
 ## 1:35 — The agent moves the map you are looking at
 
-Type, in sequence:
+Type:
 
 > **Show me day 2 on the map**
-> **Now show it in 3D**
 
-`show_on_map` and `set_map_mode` drive the same setters a click uses, so the camera flies, the day
-chip goes brass, the buildings extrude.
+`show_on_map` drives the same setters a click uses, so the camera flies and the day chip goes brass.
+
+**Do not ask for 3D.** `set_map_mode` takes `route` or `hub` only — there is no 3D mode, and that
+prompt returns an error. The extruded buildings are `minzoom: 15` while the deepest tool-driven
+camera is zoom 14, so no tool can reach them; only the popup's street-level button can, by click.
+If you want the buildings on camera, click into a pin — and narrate it as the human's move, not the
+agent's.
 
 Say: "These tools run *in the page*. They hold the loaded trip and the same state setters a click
 uses — which is why the map moves while you watch, instead of an agent describing a map to you."

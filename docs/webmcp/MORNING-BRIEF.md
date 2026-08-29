@@ -1,0 +1,112 @@
+# Morning brief — 2026-08-30
+
+Written overnight. Deadline **Wed 3 Sept 13:00 PT = Thu 4 Sept 04:00 GMT+8**, so roughly four days.
+Everything below is verified against the code or explicitly marked as unverified.
+
+## Do these in order
+
+Each is something only you can do. The first is new and is an **eligibility** item, not a nicety.
+
+### 1. The LICENSE will not show, and Devpost names that badge specifically
+
+`LICENSE` is canonical unmodified MIT, so GitHub's detector will recognise it — but it exists only
+on `feat/webmcp`. **GitHub reads the license off the default branch, which is `main`, and `main`
+has no LICENSE.** Making the repo public is therefore not enough: the About badge stays empty.
+
+Two fixes, either works: put `LICENSE` on `main`, or change the repo's default branch to
+`feat/webmcp`. Verify afterwards that the badge actually renders — the rule is about what a judge
+sees on the repo page, not about the file existing.
+
+### 2. The two merges
+
+Simulated with `git merge-tree` and then **built**, so this is measured rather than predicted.
+Full detail in `docs/webmcp/MERGE-PLAN.md`.
+
+```bash
+git merge wt/receipts     # zero conflicts
+git merge wt/layout       # 4 hunks in 2 files — take wt/layout's side in ALL FOUR
+cd frontend && npx tsc --noEmit && npx vitest run
+```
+
+Taking layout's side is not a judgement call: in two hunks `feat/webmcp`'s side is *empty*, and in
+the other two layout's text contains yours and extends it. Order matters only because receipts is
+the smaller change; they touch disjoint files.
+
+⚠ `wt/layout` gained a commit overnight (`fbd5dc0`) after the merge was last verified, so re-run
+the check in MERGE-PLAN.md if you want the numbers to match exactly.
+
+### 3. Deployment settings
+
+| Setting | Why |
+|---|---|
+| `WEBMCP_EDITS_ENABLED=true` | Gates all five edit tools. **Defaults off.** Unset, a judge approves an edit and is told the trip does not exist |
+| `plan='beta'` on every judge account | `TRIAL_LIFETIME_LIMIT=1` — a trial account gets **one generation ever**, for the whole judging period |
+| `DAILY_TRIP_QUOTA` raised | Default 5/day/user, shared across judges stress-testing |
+| `RUN_DELETION_SWEEP` **unset** | Arms a sweep that permanently deletes user accounts every 120s. A second backend on the same Supabase project sweeps **real users** |
+
+All four are now documented in `backend/.env.example`, which did not mention any of them until
+last night. Note the parse asymmetry recorded there: a typo in `WEBMCP_EDITS_ENABLED` turns writes
+**on**, while `RUN_DELETION_SWEEP` arms only on the exact string `true`.
+
+### 4. Repo public, then the live URL
+
+Both still outstanding. The README and SUBMISSION mark them as the two known blanks.
+
+## What changed overnight
+
+| Area | Outcome |
+|---|---|
+| Claim audit | Two claims a judge could disprove, one self-contradiction, one stale number — all fixed |
+| Eligibility record | Was seven deliveries behind, including the evidence fix and the whole free path |
+| `backend/.env.example` | Four undocumented flags added, two of them dangerous |
+| Video script | Written, shot by shot, with exact prompts |
+| Tracking docs | Status table was reporting four shipped items as unbuilt |
+
+### The audit's most important finding
+
+Our own two documents contradicted each other. README claimed all three edit tools "have been
+exercised live through an agent against a real trip"; `T4-QUEUE.md` said `move_place` and
+`remove_place` are "unit-tested only — no live writes". A judge reading both sees us contradict
+ourselves in the paragraph where we make the most noise about being honest.
+
+Only `add_place` is corroborated — **your** Codex run that added Osaka Castle, which is what
+surfaced the stale-prose bug `replan_trip` now answers. README now says exactly that and no more.
+
+## Needs your judgment, not your keyboard
+
+- **The overlay collision.** Both merging branches add fixed overlay UI and neither knows the other
+  exists. jsdom has no layout engine, so no test can see the receipts dock landing on the
+  redesigned `/app`. An agent inspected it in a real browser overnight — read its findings and the
+  screenshots in `docs/webmcp/evidence/`. Whatever it reports, **look at `/app` yourself after
+  merging**; this is a taste call.
+- **`get_app_state` was rewritten after its logged ChatGPT verification.** SUBMISSION now says so
+  rather than claiming live-verification it no longer has. One re-run in ChatGPT's browser fixes it
+  properly.
+- **A "Coming soon" line** for the Telegram bot sits on the secondary paste form. It is honest and
+  matches the landing page, so it was left — but it is a "not finished" signal on a judged screen.
+
+## Still not done, and why
+
+- **`plan_trip_from_reels` has never been run end to end through WebMCP.** It spends real Apify and
+  OpenAI credit, so it was never right to run unattended. It is the demo video's spine, and the
+  video script deliberately routes around it by building on `/app/trip/demo` instead.
+- **The weather warning invents a reason.** `runner.py:357` catches a bare `Exception` and always
+  says "No forecast available this far ahead", so a timeout or provider 500 gets a confidently
+  wrong cause. Deliberately not fixed: the starter prompt is now 10 days out, inside Open-Meteo's
+  ~16-day horizon, so a judge will not trigger it, and editing the generation runner days before
+  submission is a poor trade.
+- **The trial-exhausted dead end.** A trial user in the agent flow cannot reach the seat request at
+  all — the button that opens that sheet is disabled with no organized places. Judges will be on
+  `beta`, so it should not bite, but it is a real product gap.
+
+## Two operational notes worth keeping
+
+**Codex panes cannot carry unattended work here.** Their sandbox asks approval for every shell
+command — including `curl` against a server it was handed, and including reading local files. I
+will not answer an agent's approval dialog on your behalf, so the pane stalls. Both cross-vendor
+passes this week ran only because I declined the dialog and ran the commands myself.
+
+**`frontend/.next` is shared mutable state.** A dev server on :3000 overwrites it with a
+*development* build, and `next start` on that throws `EvalError` and 500s every route. That
+produced a result which flatly contradicted a correct earlier verification of the middleware. Build
+in a separate directory before trusting any production check.

@@ -116,6 +116,14 @@ suite is **1181 tests**.
 
 ## What a judge can do, and what state each path is in
 
+**If you only have two minutes, start signed out.** `/app/trip/demo` is a finished Tokyo trail
+rendered from a fixture and it opens with **no account and nothing spent** — allowlisted by exact
+match in `frontend/middleware.ts:39`, verified against a production build with zero cookies. Ask
+*"why is stop 1 here?"* and you get a verbatim Instagram caption quote and the Reel it came from,
+both checked against our captured scrape by a test. The map tools drive the map while you watch.
+The edit tools deliberately cannot see this trip: it has no database row, and a reader that could
+hand it to a write tool would let the agent pretend an edit had happened.
+
 **The journey, in order.** Open the live URL in ChatGPT desktop's built-in browser on GPT-5.6 Sol or
 Terra, signed in with the supplied credentials. Click the **Site tools** arrow in the address bar and
 open **Available site tools** — 13 are listed on the app, 16 once a trip is open. Then, in chat:

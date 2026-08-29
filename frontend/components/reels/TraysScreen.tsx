@@ -43,8 +43,9 @@ const MAX_CAPTURE_LINKS = 5
    holds real captured Apify captions for, that expected_places.json resolves to real Tokyo
    coordinates, and that scripts/smoke_generate.py plans with. Nothing here is invented, so the
    prompt cannot send a judge to a dead link. The fourth reel of that set (the Doraemon
-   exhibition) is left out on purpose: its own caption dates the exhibition to 30 September 2026,
-   before any trip dates worth printing here. */
+   exhibition) is left out on purpose: its own caption closes the exhibition on 30 September
+   2026. The dates below roll with the clock, so that reel would be plannable one week and a
+   dead end the next — a place that ages out has no business in a prompt that never does. */
 const STARTER_REEL_URLS = [
   'https://www.instagram.com/reel/DYGH3jFBZHz/',
   'https://www.instagram.com/reel/DYM_I5IvLSv/',
@@ -52,31 +53,55 @@ const STARTER_REEL_URLS = [
 ] as const
 
 /* `plan_trip_from_reels` REQUIRES start_date and end_date as YYYY-MM-DD, so the prompt states
-   both literally rather than saying "in November" and hoping the agent picks. Hardcoded rather
-   than derived from the clock: a date computed at render time makes this screen's tests
-   non-deterministic, and a judge reading the prompt should see the same trip we tested. Bump
-   these when they stop being comfortably in the future. */
-const STARTER_START_DATE = '2026-11-14'
-const STARTER_END_DATE = '2026-11-19'
+   both literally rather than saying "next month" and hoping the agent picks. Ten days out is the
+   only window that serves both readers of this prompt. NEAR enough that the forecast stage still
+   has the days: a real run on 2026-08-28 for dates 14 days out came back
+   "warning/weather: No forecast available this far ahead", so at the 77 days the old hardcoded
+   pair had drifted to, the seeded demo trip — the one a judge is most likely to run — arrived
+   with no weather on any day, visibly thinner than the product can do. FAR enough to read as a
+   trip somebody would genuinely be planning rather than leaving for tomorrow. Five nights is the
+   length we tested. Derived from the clock, never frozen: a frozen pair reads as stale within
+   weeks and, read a year on, plans a trip into a date that has already gone. */
+const STARTER_LEAD_DAYS = 10
+const STARTER_TRIP_NIGHTS = 5
+const MS_PER_DAY = 86_400_000
+
+const toIsoDay = (ms: number): string => new Date(ms).toISOString().slice(0, 10)
+
+/** The starter prompt's `YYYY-MM-DD` date pair for a given clock.
+ *
+ *  Anchored on `now`'s UTC calendar day and advanced in whole UTC days, so the printed pair is
+ *  the same everywhere and never lands off by one: reading LOCAL date parts and serialising them
+ *  back through `toISOString()` shifts the day either side of midnight — in GMT+8 a locally-built
+ *  midnight is still yesterday in UTC. Pure and exported so the window can be checked at many
+ *  clocks without rendering the screen. */
+export function starterTripDates(now: Date): { start: string; end: string } {
+  const startMs =
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()) + STARTER_LEAD_DAYS * MS_PER_DAY
+  return { start: toIsoDay(startMs), end: toIsoDay(startMs + STARTER_TRIP_NIGHTS * MS_PER_DAY) }
+}
 
 /* Runnable as written. Pasted into ChatGPT with this page open it satisfies every required
    argument of `plan_trip_from_reels` with no edits: 1-5 reel links (saving them first is
    optional — the tool takes raw pasted URLs) plus both ISO dates. */
-const STARTER_PROMPT = `Plan me a Tokyo trip from these Instagram Reels:
+function buildStarterPrompt(now: Date): string {
+  const { start, end } = starterTripDates(now)
+  return `Plan me a Tokyo trip from these Instagram Reels:
 ${STARTER_REEL_URLS.join('\n')}
-Start date ${STARTER_START_DATE}, end date ${STARTER_END_DATE}. Mid-range budget, walkable days.`
+Start date ${start}, end date ${end}. Mid-range budget, walkable days.`
+}
 
 /* The band's prompt, for an account that already HAS reels — so it names no destination and
    pastes no links: the agent reads the user's own library with `list_saved_reels` and hands
    those URLs to `plan_trip_from_reels`, which spells that recovery out in its own description
    ("Call list_saved_reels or ask the user for links"). Both ISO dates are still stated
-   literally, for the same reason STARTER_PROMPT states them: the tool refuses without them.
+   literally, for the same reason the starter prompt states them: the tool refuses without them.
 
-   Takes the pair as ARGUMENTS rather than reading the constants itself, so the demo dates keep
-   exactly one definition on this screen and this prompt cannot drift out of step with the
-   starter one — including when that definition stops being a frozen pair. It also keeps date
-   policy out of the band entirely: AgentBand is handed a finished string, so nothing about it
-   is clock-dependent and its tests need no fake timers. */
+   Takes the pair as ARGUMENTS rather than reading the dates itself, which is what let the
+   screen swap a frozen pair for `starterTripDates` without touching this function: the demo
+   window keeps exactly one definition here, so this prompt cannot drift out of step with the
+   starter one. It also keeps date policy out of the band entirely: AgentBand is handed a
+   finished string, so nothing about it is clock-dependent and its tests need no fake timers. */
 function buildAgentBandPrompt(start: string, end: string): string {
   return `Look at my saved reels in Astrail and plan me a trip from them. Start date ${start}, end date ${end}. Mid-range budget, walkable days.`
 }
@@ -279,9 +304,20 @@ export default function TraysScreen({
   const homeShapeKnown = cards.length > 0 || !loading
   const agentBand = registry?.supported === true && !confirmedEmpty && homeShapeKnown
 
+  /* Read once per mount rather than on every render, so the text the Copy button writes is
+     always byte-for-byte the text on screen — a re-render that straddled UTC midnight would
+     otherwise hand the user a prompt a day off from the one they had just read. BOTH prompts
+     come off this single reading: the band and the invitation never render together, but two
+     separate `new Date()` calls would still be two windows that can disagree. */
+  const { starterPrompt, agentBandPrompt } = useMemo(() => {
+    const now = new Date()
+    const { start, end } = starterTripDates(now)
+    return { starterPrompt: buildStarterPrompt(now), agentBandPrompt: buildAgentBandPrompt(start, end) }
+  }, [])
+
   async function copyStarterPrompt() {
     try {
-      await navigator.clipboard.writeText(STARTER_PROMPT)
+      await navigator.clipboard.writeText(starterPrompt)
       if (activeRef.current) setCopyState('copied')
     } catch {
       // Clipboard access is permission-gated and absent entirely over plain http. The prompt is
@@ -487,7 +523,7 @@ export default function TraysScreen({
       {/* Selectable text, not an input: it is the fallback when the clipboard is unavailable,
           and it must never look like one more field waiting to be filled in. */}
       <pre className="mt-3 overflow-x-auto whitespace-pre-wrap rounded-lg border border-[color:var(--line-soft)] bg-[color:var(--surface-1)] p-3 font-mono text-[12px] leading-[1.6] text-[color:var(--text)]">
-        {STARTER_PROMPT}
+        {starterPrompt}
       </pre>
       <div className="mt-3 flex flex-wrap items-center gap-3">
         <button type="button" onClick={() => void copyStarterPrompt()} className={BTN_PRIMARY}>
@@ -519,7 +555,7 @@ export default function TraysScreen({
       {agentBand ? (
         <AgentBand
           savedCount={cardsStatus === 'ready' && cards.length > 0 ? cards.length : null}
-          prompt={buildAgentBandPrompt(STARTER_START_DATE, STARTER_END_DATE)}
+          prompt={agentBandPrompt}
         />
       ) : null}
 

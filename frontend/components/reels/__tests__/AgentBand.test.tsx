@@ -9,11 +9,16 @@ import AgentBand from '@/components/reels/AgentBand'
 
    Copy is hardcoded here, not imported from the component, so these are a spec and not a
    tautology — the prompt in particular has to keep satisfying `plan_trip_from_reels`, which
-   refuses anything without both dates as YYYY-MM-DD. */
+   refuses anything without both dates as YYYY-MM-DD.
+
+   The dates in the fixture are arbitrary and this file needs no fake clock: the band is handed
+   a FINISHED string and only has to render it verbatim. TraysScreen owns the window and proves
+   it comes off the clock ('hands the band the same clock-derived dates…'); the pair below just
+   matches what that test pins, so a grep for the demo dates lands on one window, not two. */
 
 const PROMPT =
   'Look at my saved reels in Astrail and plan me a trip from them. ' +
-  'Start date 2026-11-14, end date 2026-11-19. Mid-range budget, walkable days.'
+  'Start date 2026-09-08, end date 2026-09-13. Mid-range budget, walkable days.'
 
 function stubClipboard(writeText: () => Promise<void>) {
   Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })

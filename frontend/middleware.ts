@@ -33,6 +33,14 @@ export async function middleware(request: NextRequest) {
 
   const { data: { user } } = await supabase.auth.getUser()
 
+  // Public sample trip: rendered from a fixture, so there is no DB row and no user data to leak.
+  // Allowlisted ahead of BOTH gates below — the signed-out redirect and the onboarding bounce —
+  // so it opens for a visitor with no account and for a signed-in user mid-onboarding alike.
+  // EXACT match, never a prefix: `startsWith` here would expose /app/trip/<any-uuid>.
+  if (request.nextUrl.pathname === '/app/trip/demo') {
+    return supabaseResponse
+  }
+
   if (!user && request.nextUrl.pathname.startsWith('/app')) {
     const url = request.nextUrl.clone()
     url.pathname = '/sign-in'

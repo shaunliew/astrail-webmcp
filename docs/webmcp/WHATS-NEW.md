@@ -42,7 +42,7 @@ All of `frontend/lib/webmcp/` is new. Tools are registered through `document.mod
 | `replan_trip` | Global | Re-routes and re-narrates so the prose matches the stops after edits. |
 | `show_on_map` | Trip page | Flies the live map to a trip, day, stop or hotel hub. |
 | `set_map_mode` | Trip page | Switches between the route view and the hotel hub view. |
-| `get_map_view` | Trip page | Reads the current camera and which stops are in frame. It states plainly that it cannot see the user's selection — the page does not expose it — rather than guessing at "this one". |
+| `get_map_view` | Trip page | Reads the current camera plus the trip's day and stop totals. It states plainly that it cannot see which day or stop is selected — the page does not expose it — rather than guessing at "this one". |
 
 Supporting modules, all new:
 
@@ -128,12 +128,19 @@ Representative deliveries, in order:
 | `27dc7b2` | The map tools promised four things the map never does |
 | `656fc7b` | A sample trail a judge can open with no account and nothing spent |
 | `d7b3514` | That sample trail actually reachable signed-out, exact-match only |
+| `ec06e6c` | The evidence tool cited the research page, not the Reel — and the fixture cited three Reels that do not exist |
+| `213d4e9` | `get_trip_progress` answered about whichever run the browser held, whatever trip you asked about |
+| `0ab99d7` | The signed-out sample trail advertised 16 tools; 11 of them could not work |
+| `2ff76d6` | The orientation tool restored to the free path, with an answer true for someone with no account |
+| `38d31bd` | Stop telling a signed-in judge they planned a trip nobody planned |
+| `b8f8183` | Trip labels made status-aware, so the agent stops offering edits the backend will refuse |
+| `22339cc` | A disabled edit surface no longer reads as a missing trip |
 
 ## Honest limits
 
 Stated here rather than left for a judge to find:
 
 - **Cross-tab Reel reading, if demonstrated, is ChatGPT's browser orchestration — not a WebMCP capability.** A site's tools belong to the page that registered them and do not follow the agent to another tab. `save_reels` receives an array either way.
-- **Opening hours are unavailable for most Japanese venues.** Measured, not assumed: Mapbox returns empty POI metadata for 20 of 20 restaurants near the demo trip. The enrichment returns nothing rather than inventing something.
+- **Opening hours are unavailable for most Japanese venues.** Measured, not assumed: Mapbox returns empty POI metadata for 20 of 20 restaurants near the Osaka trip we measured against. The enrichment returns nothing rather than inventing something.
 - **Hotel results are search only.** No booking, no payments, and the card says so.
 - **`replan_trip` has not been run against a live trip.** It is implemented and unit-tested; that is the honest state.

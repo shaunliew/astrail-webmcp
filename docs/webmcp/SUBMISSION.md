@@ -55,8 +55,9 @@ understood "day 2 is too packed" could only describe what the user should do.
 
 Now: `move_place`, `remove_place`, `add_place`, `set_trip_dates` and `replan_trip` change the real
 itinerary through owner-checked FastAPI endpoints, routes recompute, and the map redraws. Each
-mutation resolves only once the UI reflects it — when the agent says "done, it's on day 3", the map
-has already flown there.
+mutation resolves only once the UI reflects it — when the agent says "done, it's on day 3", the
+route has already been redrawn on screen. (The edit tools redraw; they do not move the camera. Only
+`show_on_map` flies it, and that is a separate tool on purpose.)
 
 **Ask why a place is on your trip, and get the receipt.** `get_place_evidence` returns the
 *verbatim* caption quote from the Instagram Reel the place came from, that Reel's URL on its own
@@ -92,7 +93,7 @@ an SSRF primitive by construction. No tool takes or returns an access token, and
 arbitrary-fetch, navigate, or raw-SQL tool at any price.
 
 **Spending and irreversible actions get an in-page approval card.** `plan_trip_from_reels`,
-`add_place`, `remove_place` and `replan_trip` render a card and await a click before anything is
+`add_place`, `remove_place`, `set_trip_dates` and `replan_trip` render a card and await a click before anything is
 spent or destroyed. The summary — including any free-text preferences — is rendered as **plain text,
 never innerHTML**, so a prompt-injected caption cannot dress itself up as interface chrome.
 
@@ -112,13 +113,13 @@ description and parameter limits, structural schema validity, required annotatio
 scopes, and the serialized envelope budget against a real fixture — because a silently rejected
 registration is an *absent tool*, and a judge would find it before we did. The synthetic 40-stop
 budget cases live beside it in `fit.test.ts` and `format.test.ts` rather than inside the gate. The
-suite is **1181 tests**.
+suite is **1222 tests**.
 
 ## What a judge can do, and what state each path is in
 
 **If you only have two minutes, start signed out.** `/app/trip/demo` is a finished Tokyo trail
 rendered from a fixture and it opens with **no account and nothing spent** — allowlisted by exact
-match in `frontend/middleware.ts:39`, verified against a production build with zero cookies. Ask
+match in `frontend/middleware.ts:40`, verified against a production build with zero cookies. Ask
 *"why is stop 1 here?"* and you get a verbatim Instagram caption quote and the Reel it came from,
 both checked against our captured scrape by a test. The map tools drive the map while you watch.
 The edit tools deliberately cannot see this trip: it has no database row, and a reader that could
@@ -145,7 +146,7 @@ limitation we name.
 | | Path | State |
 |---|---|---|
 | ✅ | Tool registration, the address-bar list, annotations | **Live-verified** in ChatGPT's built-in browser |
-| ✅ | `get_app_state`, `list_saved_reels` | **Live-verified** — executed and returned |
+| ◐ | `get_app_state`, `list_saved_reels` | Executed and returned in ChatGPT's built-in browser on 29 Aug — but `get_app_state` was **rewritten after** that run (signed-out variant, trip-status labels), so what was verified is not quite what ships. `list_saved_reels` is unchanged since |
 | ⚙ | `plan_trip_from_reels` end to end, and the page takeover it drives | **Implemented and unit-tested; one live run outstanding** |
 | ⚙ | `replan_trip`, `set_trip_dates` | Implemented and unit-tested; not live-run |
 | ⚠ | The five edit tools | Require `WEBMCP_EDITS_ENABLED=true` on the deployment |

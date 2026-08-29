@@ -21,7 +21,7 @@ The current code registers **16 tools**: 13 throughout the signed-in `/app` shel
 | `save_reels` | Global app | Changes Reel library | Validates and saves up to five Instagram Reel or post URLs, reporting each result. |
 | `list_saved_reels` | Global app | Reads Reel library | Groups saved Reels by verified country and exposes the places needed to plan without re-pasting links. |
 | `get_itinerary` | Global app | Reads a trip | Returns a compact day-by-day route with the same pin numbers the user sees on the map. |
-| `get_place_evidence` | Global app | Reads evidence | Returns the verbatim Reel-caption quote, source URL, and confidence for one stop. |
+| `get_place_evidence` | Global app | Reads evidence | Returns the verbatim Reel-caption quote, confidence, and up to two labelled links for one stop: `reel:` the source Instagram Reel, `research:` an independent venue page. Says so explicitly when a stop has no Reel. |
 | `plan_trip_from_reels` | Global app | Creates a trip | Shows an in-page approval card, starts the pipeline, and returns a trip ID without pretending generation is finished. |
 | `get_trip_progress` | Global app | Reads generation state | Reports the live pipeline stage and elapsed time until the agent can fetch the itinerary. |
 | `move_place` | Global app | Changes itinerary | Moves a stop to another day or position, refreshes the trip, and reports how to reverse the move. |
@@ -33,7 +33,7 @@ The current code registers **16 tools**: 13 throughout the signed-in `/app` shel
 | `set_map_mode` | Trip page | Changes visible map state | Switches the live map between day-by-day route and hotel-hub views. |
 | `get_map_view` | Trip page | Reads visible map state | Reports the current camera and trip size so the agent can ground words such as “here” or “up north.” |
 
-**What has actually been run, and what has not.** `save_reels` and the extraction it starts are verified end to end against the live backend, including the per-reel progress the page shows while it runs. The edit tools (`move_place`, `remove_place`, `add_place`) have been exercised live through an agent against a real trip. `plan_trip_from_reels` is implemented, unit-tested and **not yet run end to end** — it spends real Apify and OpenAI credit, so it is the one path still marked unproven. `replan_trip` is in the same state.
+**What has actually been run, and what has not.** `save_reels` and the extraction it starts are verified end to end against the live backend, including the per-reel progress the page shows while it runs. `add_place` has been exercised live through an agent against a real trip — that run is what surfaced the stale-prose bug `replan_trip` now answers. `move_place` and `remove_place` are **unit-tested only**; no live write has been made through either. `plan_trip_from_reels` is implemented, unit-tested and **not yet run end to end** — it spends real Apify and OpenAI credit, so it is the one path still marked unproven. `replan_trip` is in the same state.
 
 The FastAPI endpoints behind the edit tools are protected by owner, pair, trip-status, running-job and dense-ordering guards, and `WEBMCP_EDITS_ENABLED` is **off by default** — the write surface 404s entirely unless a deployment opts in.
 
@@ -45,7 +45,7 @@ The browser primitive at the center of the integration is deliberately visible i
 document.modelContext.registerTool({ name, description, inputSchema, execute })
 ```
 
-The React implementation uses our own `useRegisterTool` hook ([`frontend/lib/webmcp/use-register-tool.ts`](frontend/lib/webmcp/use-register-tool.ts)) to make that native registration follow component lifecycle. We began on Chrome's [`use-webmcp-tool`](https://www.npmjs.com/package/use-webmcp-tool) and moved off it: that hook never catches the promise `registerTool` returns, and because aborting the signal is *how* a tool unregisters, every page navigation raised an unhandled `AbortError`. It cannot be fixed from the outside — `registerTool` is a non-writable property of a native interface, and an `unhandledrejection` listener loses to handlers registered earlier during bootstrap. Owning ~130 lines of registration was the smaller cost, and it keeps zero runtime dependencies. [`frontend/lib/webmcp/`](frontend/lib/webmcp/) contains the schemas, tool factories, resolution and formatting logic. [`frontend/components/webmcp/`](frontend/components/webmcp/) wires those factories to authenticated Supabase and backend clients, registers global tools in the app shell, mounts map tools only when a real trip map exists, and shows registration status in the WebMCP chip. Tool callbacks read through refs so a long-lived registration sees the current route, trip, and map rather than first-render state.
+The React implementation uses our own `useRegisterTool` hook ([`frontend/lib/webmcp/use-register-tool.ts`](frontend/lib/webmcp/use-register-tool.ts)) to make that native registration follow component lifecycle. We began on Chrome's [`use-webmcp-tool`](https://www.npmjs.com/package/use-webmcp-tool) and moved off it: that hook never catches the promise `registerTool` returns, and because aborting the signal is *how* a tool unregisters, every page navigation raised an unhandled `AbortError`. It cannot be fixed from the outside — `registerTool` is a non-writable property of a native interface, and an `unhandledrejection` listener loses to handlers registered earlier during bootstrap. Owning ~144 lines of registration was the smaller cost, and it keeps zero runtime dependencies. [`frontend/lib/webmcp/`](frontend/lib/webmcp/) contains the schemas, tool factories, resolution and formatting logic. [`frontend/components/webmcp/`](frontend/components/webmcp/) wires those factories to authenticated Supabase and backend clients, registers global tools in the app shell, mounts map tools only when a real trip map exists, and shows registration status in the WebMCP chip. Tool callbacks read through refs so a long-lived registration sees the current route, trip, and map rather than first-render state.
 
 Every string derived from an Instagram caption is treated as untrusted content. Read tools declare `untrustedContentHint`, URL-writing tools validate Instagram origins before making a request, and destructive removal requires a visible user approval card.
 
@@ -97,8 +97,8 @@ Then:
    Enterprise or Edu workspaces.
 3. Turn on **Settings › Browser › Permissions › Enable site tools**.
 4. Sign in with the judge account. Two redirects to expect, both normal:
-   `/app` sends you to `/sign-in` while signed out (`frontend/middleware.ts:36`), and a brand-new
-   account is sent once through `/app/onboarding` before `/app` opens (`:42`). The judge account is
+   `/app` sends you to `/sign-in` while signed out (`frontend/middleware.ts:44`), and a brand-new
+   account is sent once through `/app/onboarding` before `/app` opens (`:52`). The judge account is
    pre-onboarded, so you should land on `/app` directly.
 5. Click the **Site tools** arrow in the address bar → **Available site tools**. You should see
    **13** tools, and **16** once a trip is open. The on-page **WebMCP chip** shows the same count.
@@ -118,14 +118,14 @@ is unset.
 ### Nothing to sign in to, nothing spent: `/app/trip/demo`
 
 `/app/trip/demo` is a finished Tokyo trail rendered from a fixture. It is the one route that opens
-with **no account** — allowlisted by exact match in `frontend/middleware.ts:39`, verified against a
+with **no account** — allowlisted by exact match in `frontend/middleware.ts:40`, verified against a
 production build with zero cookies — so a judge can see the map, the pins and the evidence without a
 credential, and without spending a generation.
 
 Six tools are offered there, and all six answer: `get_app_state`, `get_itinerary`,
 `get_place_evidence`, `show_on_map`, `set_map_mode` and `get_map_view`. Ask *"what can I do here?"*
-first — signed out, `get_app_state` says you are on the public sample trail, lists exactly those
-six, and states that saving Reels, planning and editing need an account rather than letting the
+first — signed out, `get_app_state` says you are on the public sample trail, recommends the other
+five (it leaves itself off its own list of next steps), and states that saving Reels, planning and editing need an account rather than letting the
 agent discover that by failing. The edit tools deliberately **cannot** see this trip — it has no database row, and a
 reader that could return it to a write tool would be a way to pretend an edit had happened. Ask
 *"why is stop 1 here?"* and you get a verbatim caption quote and a real Instagram Reel, both checked

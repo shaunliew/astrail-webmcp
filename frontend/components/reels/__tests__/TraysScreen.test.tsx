@@ -779,4 +779,134 @@ describe('TraysScreen', () => {
       expect(screen.queryByText(CAPTURE_SUMMARY)).toBeNull()
     })
   })
+
+  /* The same finding, one screen later. `/app` WITH content was a manual library with the agent
+     in a dismissible corner dock, so the loudest thing on the page was still a paste box and a
+     24px "Your inspiration starts here". Whatever the screen says loudest is what the agent says
+     back. The band takes the top; the library keeps everything it had, at row rank. */
+  describe('agent band on a home that has content', () => {
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+
+    afterEach(() => {
+      if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+      else Reflect.deleteProperty(navigator as object, 'clipboard')
+    })
+
+    const band = () => screen.getByRole('region', { name: 'Astrail agent' })
+
+    it('puts the band above the greeting and the library, counted against the library', async () => {
+      renderWithAgent(
+        <TraysScreen
+          cards={[card({ id: 'r1' }), card({ id: 'r2' })]}
+          onCapture={noop} onOrganize={noop} onCreateTrail={noop}
+        />,
+        { supported: true },
+      )
+
+      const library = await screen.findByRole('button', { name: /your inspiration starts here/i })
+      const greeting = screen.getByText(/welcome back/i)
+
+      expect(
+        screen.getByText(
+          'With this page open, ChatGPT can read your 2 saved reels, save new links, and plan a trip from them — you approve every step here.',
+        ),
+      ).toBeInTheDocument()
+
+      // First thing read, not merely present: the agent reads the page top-down.
+      expect(band().compareDocumentPosition(greeting) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(band().compareDocumentPosition(library) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    })
+
+    it('does not claim a count the parent has not finished reading', async () => {
+      // cards=[] with an in-flight saved-reel fetch is indistinguishable from an empty library
+      // by length alone, so the band must not print a number it cannot stand behind.
+      listCollections.mockResolvedValue([collection({ id: 'c1', name: 'Tokyo winter' })])
+
+      renderWithAgent(
+        <TraysScreen cards={[]} cardsStatus="loading" onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      await screen.findByRole('button', { name: 'Tokyo winter' })
+      expect(
+        screen.getByText(
+          'With this page open, ChatGPT can read your saved reels, save new links, and plan a trip from them — you approve every step here.',
+        ),
+      ).toBeInTheDocument()
+    })
+
+    it('does not flash the band on an empty account while the trays read is still open', async () => {
+      /* Regression. Painted on "supported and not the empty-state invitation", the band appears
+         on the FIRST frame of an empty account — `loading` is still true there, so
+         `confirmedEmpty` is not true YET — and the invitation then replaces it. Besides the
+         flicker in the one position that must not move, the button is detached for that window:
+         a click in it is silently swallowed, which is exactly how the copy-prompt tests failed. */
+      listCollections.mockReturnValue(new Promise(() => {})) // never settles: hold the first frame
+
+      renderWithAgent(
+        <TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      expect(screen.queryByRole('region', { name: 'Astrail agent' })).toBeNull()
+      expect(screen.queryByRole('button', { name: /copy prompt/i })).toBeNull()
+    })
+
+    it('paints the band immediately when reels are already in hand, without waiting on trays', () => {
+      // The wait above is only owed by an account that LOOKS empty. Reels in hand already say
+      // this is a home with content, so the top of the page must not sit blank behind a fetch.
+      listCollections.mockReturnValue(new Promise(() => {}))
+
+      renderWithAgent(
+        <TraysScreen cards={[card({ id: 'r1' })]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      expect(screen.getByRole('region', { name: 'Astrail agent' })).toBeInTheDocument()
+    })
+
+    it('shows no agent copy in a browser with no agent, and leaves the library route intact', async () => {
+      renderWithAgent(
+        <TraysScreen cards={[card({ id: 'r1' })]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: false },
+      )
+
+      expect(await screen.findByRole('button', { name: /your inspiration starts here/i })).toBeInTheDocument()
+      expect(screen.queryByRole('region', { name: 'Astrail agent' })).toBeNull()
+      expect(screen.queryByText(/chatgpt/i)).toBeNull()
+      expect(screen.getByLabelText(/paste a reel or post link/i)).toBeVisible()
+    })
+
+    it('never stacks the band on top of the empty-account invitation', async () => {
+      // Two agent blocks with two "Copy prompt" buttons and two different prompts is worse than
+      // either alone; the invitation already owns the empty case.
+      renderWithAgent(
+        <TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      expect(await screen.findByText(INVITATION_HEADING)).toBeInTheDocument()
+      expect(screen.queryByRole('region', { name: 'Astrail agent' })).toBeNull()
+      expect(screen.getAllByRole('button', { name: /copy prompt/i })).toHaveLength(1)
+    })
+
+    it('demotes the library from a hero banner to a row header above the trays', async () => {
+      // jsdom has no layout, so rank is asserted through the type tokens: the library entry has
+      // to read at the SAME rank as the section header under it, not a size above it, and it
+      // must no longer carry the brass hero box that made it the loudest block on the page.
+      renderWithAgent(
+        <TraysScreen cards={[card({ id: 'r1' })]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      const library = await screen.findByRole('button', { name: /your inspiration starts here/i })
+      const title = within(library).getByText('Your inspiration starts here')
+
+      expect(title.className).toContain('text-[18px]')
+      expect(screen.getByRole('heading', { name: 'Your trays' }).className).toContain('text-[18px]')
+      expect(library.className).not.toContain('brass-wash')
+      // …and the band that replaced it is a band, not a new hero in the same spot.
+      expect(band().className).not.toContain('brass-wash')
+    })
+  })
 })

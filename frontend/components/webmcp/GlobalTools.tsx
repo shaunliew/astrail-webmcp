@@ -30,6 +30,53 @@ import { TOKYO_TRIP as SAMPLE_TRIP } from '@/lib/trip/fixtures'
    "Which trip?" for the first call on the page — the exact defect this fixes. */
 const SAMPLE_TRIP_PATH = '/app/trip/demo'
 
+/**
+ * The tools that answer on the public sample trail with no session behind them.
+ *
+ * `/app/trip/demo` is the one /app route a visitor with no account can open — middleware
+ * allowlists it by exact match, and redirects every other /app path to /sign-in. Everything else
+ * registered here needs a JWT: `list_trips` and `list_saved_reels` read RLS-guarded rows, and
+ * `save_reels`, `plan_trip_from_reels` and all five edit tools call `getAccessToken()`. Two more
+ * do not throw but are no better — `get_app_state` and `get_trip_progress` both answer by naming
+ * those same tools as the next step, which is the same defect one turn later.
+ *
+ * A NAMED set, so a tool added later is withheld here by default until someone shows it answers
+ * without a session — the same direction as the `readOnlyHint` keying below, where an unmatched
+ * name degrades to the stricter behaviour rather than the permissive one.
+ *
+ * The three map tools are absent from this list because they are not registered here: TripTools
+ * mounts `show_on_map` / `set_map_mode` / `get_map_view` from the trip page, and they are pure
+ * in-page state, so they already work signed-out. Five tools answer on that page; five is what it
+ * offers.
+ */
+const PUBLIC_SAMPLE_TOOLS = new Set(['get_itinerary', 'get_place_evidence'])
+
+/**
+ * Whether this browser holds a session, asked through the SAME function the withheld tools call.
+ *
+ * Not `useUser()`: that answers a different question ("is there a user row"), over the network,
+ * and a gate that asks a different question than the tools do is a gate that drifts away from
+ * them. Not a hand-derived Supabase storage key either, for the same reason. `getAccessToken()`
+ * throwing is precisely the condition under which `save_reels`, `plan_trip_from_reels` and the
+ * five edit tools throw, so one rule covers the gate and the tools together.
+ *
+ * `null` means UNKNOWN and is never collapsed into `false` — the caller treats the two
+ * differently on purpose. Re-read on navigation, and deliberately never reset to `null` while
+ * re-reading: a visitor who signs in from the sample trail and comes back to it must not still be
+ * looking at the signed-out list, and a route change must not make the list shrink and grow again.
+ */
+function useHasSession(pathname: string): boolean | null {
+  const [hasSession, setHasSession] = useState<boolean | null>(null)
+  useEffect(() => {
+    let live = true
+    getAccessToken()
+      .then(() => { if (live) setHasSession(true) })
+      .catch(() => { if (live) setHasSession(false) })
+    return () => { live = false }
+  }, [pathname])
+  return hasSession
+}
+
 const ROUTE_LABEL: [RegExp, string][] = [
   [/^\/app\/trip\//, 'a trip you have already planned'],
   [/^\/app\/trips/, 'your saved trips'],
@@ -46,6 +93,7 @@ function labelFor(pathname: string): string {
 
 export default function GlobalTools() {
   const pathname = usePathname() ?? '/app'
+  const hasSession = useHasSession(pathname)
   const { requestConfirm, openTrip, refreshOpenTrip, refreshSavedReels, adoptOrganizeJob } = useWebMcpRegistry()
   // The run belongs to the shell, not to this component. It must outlive any single tool call
   // (the stream runs 60-180s while `plan_trip_from_reels` returns in about a second) AND outlive
@@ -337,5 +385,27 @@ export default function GlobalTools() {
   const specs = globalTools({ ...deps, trips: tripReader })
     .map((s) => sampleAware.get(s.name) ?? s)
 
-  return <RegisterTools specs={specs} />
+  /* PRESENCE, gated on route AND session — never on content.
+     The readers above decide what a tool may ANSWER, at call time, and nothing here touches them:
+     the write tools still resolve through `tripReader`, which cannot return the sample at all,
+     whatever this gate does and whenever its effect ran. This only decides what is OFFERED.
+
+     ROUTE first, because it is the only half known synchronously — `usePathname()` is right on the
+     first render, the session read is not. The sample trail is the only /app route reachable
+     without an account, so it is the only place an honest list differs from the full one; gating
+     everywhere else would churn every signed-in user's list on every page load to cover a state
+     middleware makes unreachable.
+
+     SESSION second, because it is the truthful reason: a signed-in user who wanders onto the
+     sample trail holds a JWT, and all thirteen work for them there.
+
+     Unknown fails SMALL (`!== true`, not `=== false`), so the list only ever GROWS: a signed-in
+     visitor to this route sees two, then thirteen. The other direction would show a judge sixteen
+     tools and then take eleven away, advertising failures during exactly the window a freshly
+     loaded agent reads the list. An under-advertised tool costs a question; an over-advertised one
+     costs a failed call the agent was invited to make. */
+  const publicSample = pathname === SAMPLE_TRIP_PATH && hasSession !== true
+  const offered = publicSample ? specs.filter((s) => PUBLIC_SAMPLE_TOOLS.has(s.name)) : specs
+
+  return <RegisterTools specs={offered} />
 }

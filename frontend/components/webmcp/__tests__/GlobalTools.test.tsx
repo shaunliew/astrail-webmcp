@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { useEffect } from 'react'
-import { render, waitFor } from '@testing-library/react'
+import { act, render, waitFor } from '@testing-library/react'
 import type { Trip } from '@/lib/trip/backend-types'
 import type { Entitlement } from '@/lib/entitlement'
 import type { ToolSpec } from '@/lib/webmcp/types'
@@ -23,6 +23,8 @@ import type { ToolSpec } from '@/lib/webmcp/types'
 const h = vi.hoisted(() => ({
   pathname: '/app',
   specs: [] as ToolSpec[],
+  /** 'pending' models the real gap between mount and the session read landing. */
+  session: 'yes' as 'yes' | 'no' | 'pending',
   listTrips: vi.fn<() => Promise<Trip[]>>(),
   listSavedReelCards: vi.fn<() => Promise<{ places: { name: string }[] }[]>>(),
   readEntitlement: vi.fn<() => Promise<Entitlement>>(),
@@ -41,7 +43,15 @@ vi.mock('@/lib/reels/api', () => ({
   startOrganize: vi.fn(),
 }))
 
-vi.mock('@/lib/supabase/session', () => ({ getAccessToken: async () => 'test-token' }))
+/* Controllable, because the tool LIST now depends on it. `getAccessToken` is the same call every
+   withheld tool makes, so a test that lies here would be testing a gate the tools do not share. */
+vi.mock('@/lib/supabase/session', () => ({
+  getAccessToken: () => {
+    if (h.session === 'no') return Promise.reject(new Error('Not signed in'))
+    if (h.session === 'pending') return new Promise<string>(() => {})
+    return Promise.resolve('test-token')
+  },
+}))
 
 // Spread the real module rather than replacing it: `ApiError` is a CLASS that
 // lib/webmcp/tools/generation.ts branches on with `instanceof`, so a stubbed one would make
@@ -103,6 +113,7 @@ async function appState(opts: {
 
 beforeEach(() => {
   h.specs = []
+  h.session = 'yes'
   h.listTrips.mockReset()
   h.listSavedReelCards.mockReset()
   h.readEntitlement.mockReset()
@@ -286,7 +297,9 @@ describe('plan_trip_from_reels, gated on the account the browser can actually re
  */
 const SAMPLE_PATH = '/app/trip/demo'
 
-/** Mounts the shell on a route and hands back one tool, ready to call. */
+/** Mounts the shell on a route and hands back one tool, ready to call. Signed IN, per the
+ *  beforeEach default — which is the configuration where the write tools are offered on this
+ *  route at all, and therefore the one where the reader's refusal has to hold. */
 async function toolOn(path: string, name: string): Promise<ToolSpec> {
   h.pathname = path
   h.listTrips.mockResolvedValue([])
@@ -347,5 +360,157 @@ describe('the sample trail is NOT writable', () => {
     expect(out).toContain('No trip with id')
     expect(cardsShown).toHaveLength(0)
     expect(deleteTripPlace).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * What the ONE page a judge can open without an account advertises.
+ *
+ * `/app/trip/demo` is allowlisted for signed-out visitors by exact match in middleware, and
+ * GlobalTools registers from the /app layout with no session gate of any kind — so the address-bar
+ * list offered sixteen tools of which five answered. Eleven of the other thirteen need a JWT
+ * (`list_trips` and `list_saved_reels` read RLS-guarded rows; `save_reels`, `plan_trip_from_reels`
+ * and the five edit tools call `getAccessToken`), and the last two, `get_app_state` and
+ * `get_trip_progress`, do not throw but answer by naming those same tools as the next step — the
+ * same defect one turn later. The agent was being invited to fail in front of a judge.
+ *
+ * These assertions read the NAMES handed to RegisterTools, because that array is what reaches
+ * `document.modelContext` and is therefore what the browser lists.
+ */
+
+/** Registered here AND answering on the sample trail with no session. */
+const PUBLIC_ANSWERS = ['get_itinerary', 'get_place_evidence']
+
+/** Registered here and failing, or pointing at something that fails, with no session. */
+const NEEDS_A_SESSION = [
+  'get_app_state', 'list_trips', 'list_saved_reels', 'save_reels', 'plan_trip_from_reels',
+  'get_trip_progress', 'add_place', 'move_place', 'remove_place', 'replan_trip', 'set_trip_dates',
+]
+
+/* A FRESH element every time, never a shared constant. React bails out of reconciliation when
+   an element is referentially identical to the previous one, so a `rerender(SHELL)` with a hoisted
+   element is a no-op — the navigation tests below silently tested nothing. */
+const shell = () => (
+  <WebMcpRegistryProvider>
+    <GlobalTools />
+  </WebMcpRegistryProvider>
+)
+
+/** Lets the mount-time session read land. */
+const settle = () => act(async () => {})
+
+/** Mounts the shell on a route and hands back what the browser is being offered, live. */
+function shellOn(path: string, opts: { session?: 'yes' | 'no' | 'pending' } = {}) {
+  h.pathname = path
+  h.session = opts.session ?? 'yes'
+  // What a signed-out visitor actually gets from both of these. The gate does not read them — it
+  // reads the session — but feeding them success would be describing a page that does not exist.
+  if (h.session === 'yes') {
+    h.listTrips.mockResolvedValue([])
+    h.listSavedReelCards.mockResolvedValue([])
+  } else {
+    h.listTrips.mockRejectedValue(new Error('Not signed in'))
+    h.listSavedReelCards.mockRejectedValue(new Error('Not signed in'))
+  }
+  const view = render(shell())
+  return {
+    offered: () => h.specs.map((s) => s.name).sort(),
+    goTo: async (next: string) => {
+      h.pathname = next
+      await act(async () => { view.rerender(shell()) })
+    },
+  }
+}
+
+describe('the public sample trail advertises only what answers there', () => {
+  it('offers exactly the two global tools that work with no session', async () => {
+    const shell = shellOn(SAMPLE_PATH, { session: 'no' })
+    await settle()
+    expect(shell.offered()).toEqual([...PUBLIC_ANSWERS].sort())
+  })
+
+  it('advertises none of the eleven that need a session', async () => {
+    const shell = shellOn(SAMPLE_PATH, { session: 'no' })
+    await settle()
+    for (const name of NEEDS_A_SESSION) expect(shell.offered()).not.toContain(name)
+  })
+
+  it('answers get_itinerary from the sample with no session at all', async () => {
+    // Registered AND answering, without a credential — the whole claim this page makes.
+    const shell = shellOn(SAMPLE_PATH, { session: 'no' })
+    await settle()
+    const spec = h.specs.find((s) => s.name === 'get_itinerary')
+    expect(spec, 'get_itinerary was withheld from the page whose point it is').toBeTruthy()
+    expect(String(await spec!.execute({}))).toContain('Akasaka Station')
+  })
+
+  it('fails toward the small list while the session read is still in flight', async () => {
+    /* The direction matters more than the window. Failing the other way would show a judge
+       sixteen tools and then take eleven away — advertising failures during exactly the window a
+       freshly loaded agent reads the list. This way the list only ever grows. */
+    const shell = shellOn(SAMPLE_PATH, { session: 'pending' })
+    await settle()
+    expect(shell.offered()).toEqual([...PUBLIC_ANSWERS].sort())
+  })
+
+  it('grows to the full set for a signed-in user who opens the sample trail', async () => {
+    // Session is the truthful signal: a JWT makes all thirteen work here, demo route or not.
+    const shell = shellOn(SAMPLE_PATH, { session: 'yes' })
+    await waitFor(() => { expect(shell.offered()).toHaveLength(13) })
+    expect(shell.offered()).toEqual([...PUBLIC_ANSWERS, ...NEEDS_A_SESSION].sort())
+  })
+
+  it('leaves every other route alone, session or not', async () => {
+    /* Deliberately route-scoped rather than a bare session check. Middleware redirects a
+       signed-out visitor off every /app path but this one, so a global gate would buy nothing
+       here and cost every signed-in user a churned tool list on every page load. */
+    const shell = shellOn('/app', { session: 'no' })
+    await settle()
+    expect(shell.offered()).toHaveLength(13)
+  })
+})
+
+describe('navigating does not leave a stale list', () => {
+  it('re-reads the session on the way back, so signing in is not undone by returning', async () => {
+    /* The judge signs in from the sample trail and comes back to it. A session read taken once at
+       mount would still say "signed out" and hand them the two-tool list on a page where all
+       thirteen now work. */
+    const shell = shellOn(SAMPLE_PATH, { session: 'no' })
+    await settle()
+    expect(shell.offered()).toHaveLength(2)
+
+    h.session = 'yes'
+    await shell.goTo('/app')
+    await waitFor(() => { expect(shell.offered()).toHaveLength(13) })
+    await shell.goTo(SAMPLE_PATH)
+    await waitFor(() => { expect(shell.offered()).toHaveLength(13) })
+  })
+
+  it('offers the same names on the sample trail before and after a round trip', async () => {
+    /* Names and schemas are observed by the browser and must not churn across a client-side
+       navigation. Leaving and returning has to land on the same list, not a permutation of it. */
+    const shell = shellOn(SAMPLE_PATH, { session: 'no' })
+    await settle()
+    const first = shell.offered()
+    await shell.goTo('/app')
+    await settle()
+    expect(shell.offered()).toHaveLength(13)
+    await shell.goTo(SAMPLE_PATH)
+    await settle()
+    expect(shell.offered()).toEqual(first)
+  })
+})
+
+describe('the sample trail is not writable, at either layer', () => {
+  it('does not even advertise a write tool to a signed-out visitor', async () => {
+    /* A SECOND, independent layer. The two tests above prove the READER refuses the fixture even
+       when the tool is registered, which is the guarantee and does not depend on this; this adds
+       that a visitor with no session is never offered the tool to try. Delete either half and the
+       other still holds. */
+    const shell = shellOn(SAMPLE_PATH, { session: 'no' })
+    await settle()
+    for (const w of ['move_place', 'remove_place', 'add_place', 'set_trip_dates', 'replan_trip']) {
+      expect(shell.offered()).not.toContain(w)
+    }
   })
 })

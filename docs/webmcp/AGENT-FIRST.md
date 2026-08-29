@@ -48,13 +48,21 @@ single sentence the whole submission rests on — *the agent moves the map the h
 | # | Item | Impact | Cost | Status |
 |---|---|---|---|---|
 | 1 | Connect agent generation to the page | Very high — Leverage, Execution, Creativity | 1–2 d | ✅ **done** — `78dee85`, 4 Codex rounds |
-| 2 | Invited empty state + one-click seeded demo trip | High — Execution, Impact | ~1 d | ◐ **half** — empty state shipped `f9882da`; the seeded `/app/trip/demo` is NOT built |
-| 3 | Persistent receipts + undo (replace the 8s fade) | High — Execution | ~1 d | ☐ **not started** |
-| 4 | Tool-contract gaps + truthful SUBMISSION.md | Med-high Leverage, protects every score | <1 d | ◐ **half** — SUBMISSION + README rewritten, `add_place` schema fixed, caption-leak gate built. `get_map_view` overclaim and `get_app_state` workflow-state still open |
-| 2b | **Agent-first layout for `/app`** — the visual redesign | High — Execution, Creativity | ~1 d | ☐ **NOT BUILT** — researched and scoped only. The map window, agent band and paper-variant chrome are all outstanding |
+| 2 | Invited empty state + one-click seeded demo trip | High — Execution, Impact | ~1 d | ✅ **done** — empty state `f9882da`, sample trail `656fc7b`, reachable signed-out `d7b3514`, fixture re-sourced to real Reels `ec06e6c` |
+| 3 | Persistent receipts + undo (replace the 8s fade) | High — Execution | ~1 d | ✅ **built on `wt/receipts`** (`1eb444e`) — **awaiting the owner's merge**, verified conflict-free |
+| 4 | Tool-contract gaps + truthful SUBMISSION.md | Med-high Leverage, protects every score | <1 d | ✅ **done** — `get_map_view` overclaim `27dc7b2`, `get_app_state` rebuilt `2ff76d6`, the evidence-field bug `ec06e6c`, doc claims `4ab1722` + `1388445` |
+| 2b | **Agent-first layout for `/app`** — the visual redesign | High — Execution, Creativity | ~1 d | ✅ **built on `wt/layout`** (`083eaeb`, dates `d9df9d9`) — **awaiting the owner's merge**, 4 hunks, all resolving toward layout |
 | 2c | **Edits leave the trip's prose stale** — the agent is never told to replan | High — Execution, and it is a live bug | ~2 h | ✅ **done** — `78dee85` |
 | 2d | **Pre-gate the agent path** — an exhausted account approves, then gets a silent 403 | High — a judge-facing failure | ~1 h | ✅ **done** — `78dee85` |
-| 5 | `get_trip_notes` / `resolve_trip_note` (JSONB) | Highest Leverage + Creativity | ~1 d | ☐ stretch — only if the days hold |
+| 5 | `get_trip_notes` / `resolve_trip_note` (JSONB) | Highest Leverage + Creativity | ~1 d | ☐ **not started** — stretch, and now correctly out of scope |
+
+**Every item except the stretch is built.** Two of them live on branches the owner has to merge;
+`docs/webmcp/MERGE-PLAN.md` records the simulated result and the resolved build (112 files / 1242
+tests, tsc clean, production build clean).
+
+**This table was wrong for a day.** It listed 2, 2b, 3 and 4 as unbuilt long after they shipped,
+which is worse than having no table: anyone reading it would have rebuilt finished work. Fixed
+2026-08-30.
 
 ---
 
@@ -340,5 +348,9 @@ because a judge opens that list before touching the page.
   `GenerationScene.tsx`, not fixed. It is the furthest stage *started*, never percent-complete.
 - `WEBMCP_EDITS_ENABLED` defaults **off** in production. It gates five edit tools and spans both
   owner surfaces: backend goes first and is verified live before the UI is exposed.
-- The weather warning says *"No forecast available this far ahead"* when the log shows an
-  `HTTPStatusError`. The copy invents a specific, wrong reason.
+- The weather warning says *"No forecast available this far ahead"* for **any** exception, not
+  just the horizon one — `runner.py:357` catches bare `Exception` and emits that one message, so a
+  timeout, a provider 500 or a DNS failure all get a confidently wrong reason. Verified 2026-08-30
+  and deliberately NOT fixed before submission: the starter prompt is now 10 days out, inside
+  Open-Meteo's ~16-day horizon, so a judge will not see it, and churning the generation runner the
+  night before a deadline costs more than it buys. Fix it after.

@@ -626,3 +626,74 @@ the loop working, and it is worth more than the fixes.
 Codex's third sub-point, deliberately not taken because it was outside the task's scope: the warning
 write and the routed-decision write still share one `try`, so a failed warning write suppresses the
 "Routed N legs" decision that should follow it. Two independent `try` blocks close it.
+
+## Overnight batch 2 — every remaining AGENT-FIRST item
+
+Five implementer dispatches and four Codex passes, run concurrently across the main tree and two
+isolated worktrees. Every item in `AGENT-FIRST.md` is now built.
+
+| Item | Where | State |
+|---|---|---|
+| 2 · sample trail `/app/trip/demo` | main | committed `656fc7b` |
+| 2 · clock-derived starter dates | main | committed `d2f638c` |
+| 4 · map-tool honesty | main | committed `27dc7b2` |
+| 3 · receipts | `wt/receipts` | `1eb444e`, awaiting merge |
+| 2b · agent band + demotion | `wt/layout` | `083eaeb`, awaiting merge |
+| middleware allowlist | main | built, held for Codex review |
+| fixture: dead evidence links | main | in flight |
+
+### What the implementers caught that the briefs did not
+
+- **The map tools promised four things the map never does.** I briefed one overclaim
+  (`get_map_view`'s phantom selection); the audit found that `target: 'trip'` moves no camera, the
+  hub view promises a distance `drawSpokes` never renders (two line layers, no symbol layer), and
+  the day branch counted stops with no coordinates. Four other claims were checked and left alone
+  *because they are true* — including one unreachable-as-false.
+- **The demo fixture's evidence links are fake.** Three of five stops point at
+  `instagram.com/reel/AAA|BBB|CCC`, all 404. On the one page whose purpose is proving evidence
+  provenance.
+- **The starter dates hid a cascade.** At 77 days out the weather stage returns nothing, so the
+  seeded trip would arrive with no forecast at all — and the comment justifying *which* reels appear
+  silently depended on those dates being in November.
+- **The agent band flashed and vanished** on an empty account's first frame, leaving a detached
+  button whose click was swallowed. Found because it broke two existing tests.
+- **Item 3 (map window) was cut with measurement, not judgement**: at a 520px pane the trays grid
+  drops entirely below the fold and page height goes 910 → 1589.
+
+### Verification that went beyond the tests
+
+- The middleware allowlist was proved against a **real production server with zero cookies** —
+  `/app/trip/demo` 200, every sibling route 307 — because unit tests do not prove an auth path. Its
+  fault injection was then reproduced independently here: swapping `===` for `.startsWith(` reddens
+  exactly the two exactness tests.
+- The layout was measured in a real browser at 1280x800 against the real palette tokens.
+- The sample route's reachability was checked with `next build` + `curl`, not by reading source.
+
+### Held, deliberately
+
+The middleware change is the only edit tonight touching a security boundary. It is verified and
+uncommitted, waiting on a cross-vendor review — a promise made before it was written, kept after it
+came back clean.
+
+### Merge plan — `git merge` is denied to the agent by repo policy, so this is Shaun's
+
+```
+git merge wt/receipts     # verified conflict-free
+git merge wt/layout       # ONE conflict: components/reels/TraysScreen.tsx
+```
+
+The layout branch pre-shaped its side: `buildAgentBandPrompt(start, end)` takes the dates as
+arguments, so the resolution is a one-line call-site change to `starterTripDates(new Date())` with
+no edit inside the prompt string. Receipts first, so a failure after the second step is
+unambiguously the layout.
+
+### Known and not fixed
+
+- Three of five tools run on the sample trail, not five: `get_itinerary` and `get_place_evidence`
+  share the `openTrip` seam that disarms the edit tools. ~3 lines in `GlobalTools.tsx`.
+- `save_reels` starts a paid extraction with no approval card, so "you approve every step" is not
+  literally true of every tool.
+- gstack `dist/browse` is a bare bun runtime after 1.71→1.72. Fallback:
+  `cd ~/.claude/skills/gstack/browse && ./dist/browse run src/cli.ts <cmd>`.
+- `vitest.setup.ts` dereferences `Element` at load, so no test file in this repo can opt into the
+  node environment.

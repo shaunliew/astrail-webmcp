@@ -66,7 +66,7 @@ function Entry({ entry }: { entry: ActivityEntry }) {
   )
 }
 
-export default function AgentActivityRail() {
+export default function AgentActivityRail({ compact = false }: { compact?: boolean }) {
   const registry = useOptionalWebMcpRegistry()
   const [showEarlier, setShowEarlier] = useState(false)
 
@@ -86,10 +86,18 @@ export default function AgentActivityRail() {
       {showEarlier && earlier.length > 0 && (
         /* `aria-live="off"` inside a polite region: expanding is the user reading back on their
            own initiative, and reciting the whole history at them is not that. Capped and
-           scrollable so a long session cannot bury the map the agent is supposed to be driving. */
+           scrollable so a long session cannot bury the map the agent is supposed to be driving.
+           The cap is route-aware for the same reason it exists at all: 45dvh of read-back is
+           peripheral over a map that owns the viewport, and three quarters of the screen over a
+           document page. `compact` trades the taller window for a shorter one — the list still
+           holds every entry and still scrolls, so nothing is discarded either way. */
         <div
           aria-live="off"
-          className="pointer-events-auto max-h-[45dvh] space-y-1.5 overflow-y-auto overscroll-contain"
+          aria-label="Earlier agent activity"
+          className={[
+            'pointer-events-auto space-y-1.5 overflow-y-auto overscroll-contain',
+            compact ? 'max-h-36' : 'max-h-[45dvh]',
+          ].join(' ')}
         >
           {earlier.map((e) => (
             <Entry key={e.id} entry={e} />

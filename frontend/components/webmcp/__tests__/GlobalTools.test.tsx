@@ -575,6 +575,11 @@ describe('get_app_state, answering a visitor with no account', () => {
     const out = await appStateOn(SAMPLE_PATH, 'no')
     expect(out).not.toContain('a trip you have already planned')
     expect(out).toMatch(/You are on: .*sample/)
+    /* Anchored on what is unique to the SIGNED-OUT label. The signed-in one also says "sample"
+       now, so a looser assertion here would quietly pass against it and stop catching the loss
+       of this branch — a test that still runs and no longer proves anything. */
+    expect(out).toContain('with no account and nothing spent')
+    expect(out).not.toContain('not one of yours')
   })
 
   it('answers a signed-in user exactly as it did before', async () => {
@@ -584,5 +589,55 @@ describe('get_app_state, answering a visitor with no account', () => {
     expect(out).toContain('plan_trip_from_reels')
     expect(out).not.toMatch(/Account: +none/)
     expect(out).toMatch(/^Blocked: {4}nothing$/m)
+  })
+})
+
+/**
+ * What a SIGNED-IN visitor is told they are looking at on `/app/trip/demo`.
+ *
+ * `ROUTE_LABEL` matches the page with `/^\/app\/trip\//` and calls it "a trip you have already
+ * planned". For the sample trail that is false twice over: this visitor did not plan it and
+ * nobody did — it is a fixture with no row behind it. On the one page whose whole purpose is
+ * demonstrating that this product does not invent things, the orientation tool telling a judge
+ * they planned a trip they did not plan is the wrong sentence to ship.
+ *
+ * The signed-out wording cannot just be reused. This reader HAS an account, all thirteen tools
+ * work for them, and their own library is sitting right there — so "say nothing about this
+ * person's own reels" would be false in the other direction.
+ */
+describe('the demo page tells a signed-in visitor what it actually is', () => {
+  it('does not claim they planned a trip nobody planned', async () => {
+    const out = await appStateOn(SAMPLE_PATH, 'yes')
+    expect(out).not.toContain('a trip you have already planned')
+    expect(out).toMatch(/You are on: .*example trip, not one of yours/)
+  })
+
+  it('says their own library is untouched, because it is', async () => {
+    // The correction must not overshoot into implying the demo page limits their account. It
+    // does not: all thirteen tools are registered here and every one of them still works.
+    const out = await appStateOn(SAMPLE_PATH, 'yes')
+    expect(out).toContain('Your own Reels and trips are untouched')
+  })
+
+  it('warns that this one trip cannot be edited, before the agent finds out by trying', async () => {
+    /* The five edit tools refuse the fixture at the reader, which is correct, but the refusal
+       reads as a malfunction to an agent looking straight at the trip: "Which trip?" about a trip
+       plainly on screen. Saying so up front turns a confusing failure into a known constraint. */
+    const out = await appStateOn(SAMPLE_PATH, 'yes')
+    expect(out).toMatch(/cannot be edited/)
+  })
+
+  it('leaves a real trip page saying exactly what it said before', async () => {
+    // Scoped to the fixture. A trip the user genuinely owns keeps its label.
+    const out = await appStateOn('/app/trip/8f2c1a9e-0000-4000-8000-000000000000', 'yes')
+    expect(out).toContain('You are on: a trip you have already planned')
+  })
+
+  it('matches the sample trail exactly, never as a prefix', async () => {
+    /* The same rule middleware:39 applies to the route itself, for the same reason: a prefix
+       match would hand the "not one of yours" label to a real trip the user does own. */
+    const out = await appStateOn('/app/trip/demo-2', 'yes')
+    expect(out).toContain('You are on: a trip you have already planned')
+    expect(out).not.toContain('not one of yours')
   })
 })

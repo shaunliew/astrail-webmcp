@@ -118,6 +118,28 @@ function useHasSession(pathname: string): boolean | null {
   return hasSession
 }
 
+/**
+ * The sample trail, described to someone who DOES have an account.
+ *
+ * `ROUTE_LABEL` below matches this page with `/^\/app\/trip\//` and calls it "a trip you have
+ * already planned", which is false twice over here: this visitor did not plan it and nobody did.
+ * On the one page whose whole purpose is demonstrating that Astrail does not invent things, the
+ * orientation tool claiming the visitor planned a trip that no one planned is the wrong sentence
+ * to ship.
+ *
+ * Deliberately NOT the signed-out wording. That one tells the agent to say nothing about this
+ * person's own reels and trips, which is right when there is no account and wrong here: all
+ * thirteen tools are registered for this reader and every one of them works on their own library.
+ * The correction has to land on the trip without overshooting onto the account.
+ *
+ * The last clause is here rather than in `blocked` on purpose. The five edit tools refuse the
+ * fixture at the reader — correctly — but the refusal reads as a malfunction to an agent looking
+ * straight at the trip: "Which trip?" about a trip plainly on screen. Naming the constraint up
+ * front turns a confusing failure into a known one.
+ */
+const SIGNED_IN_SAMPLE_LABEL =
+  'the public sample trail — an example trip, not one of yours. Your own Reels and trips are untouched and every tool still works on them; this one cannot be edited, because nobody owns it.'
+
 const ROUTE_LABEL: [RegExp, string][] = [
   [/^\/app\/trip\//, 'a trip you have already planned'],
   [/^\/app\/trips/, 'your saved trips'],
@@ -129,6 +151,12 @@ const ROUTE_LABEL: [RegExp, string][] = [
 ]
 
 function labelFor(pathname: string): string {
+  /* Ahead of the table, and by EXACT match against the same constant the registration gate and
+     the middleware allowlist use. Not a sixth regex row: a row would have to sit above the
+     `/^\/app\/trip\//` rule to win, so reordering the table would silently restore the false
+     label — and a prefix match would hand "not one of yours" to a real trip the user does own,
+     the same mistake middleware:39 calls out about the route itself. */
+  if (pathname === SAMPLE_TRIP_PATH) return SIGNED_IN_SAMPLE_LABEL
   return ROUTE_LABEL.find(([re]) => re.test(pathname))?.[1] ?? 'Astrail'
 }
 

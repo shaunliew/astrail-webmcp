@@ -19,6 +19,7 @@ import { createGenerationStore } from '../generation'
 const ctx: ToolContext = {
   readAppState: () => ({
     where: 'Saved Reels',
+    account: 'signed_in' as const,
     savedReels: 6,
     verifiedPlaces: 17,
     trips: { total: 2, complete: 1, unfinished: 1 },

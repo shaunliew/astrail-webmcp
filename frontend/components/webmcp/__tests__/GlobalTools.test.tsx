@@ -379,11 +379,11 @@ describe('the sample trail is NOT writable', () => {
  */
 
 /** Registered here AND answering on the sample trail with no session. */
-const PUBLIC_ANSWERS = ['get_itinerary', 'get_place_evidence']
+const PUBLIC_ANSWERS = ['get_app_state', 'get_itinerary', 'get_place_evidence']
 
 /** Registered here and failing, or pointing at something that fails, with no session. */
 const NEEDS_A_SESSION = [
-  'get_app_state', 'list_trips', 'list_saved_reels', 'save_reels', 'plan_trip_from_reels',
+  'list_trips', 'list_saved_reels', 'save_reels', 'plan_trip_from_reels',
   'get_trip_progress', 'add_place', 'move_place', 'remove_place', 'replan_trip', 'set_trip_dates',
 ]
 
@@ -477,7 +477,7 @@ describe('navigating does not leave a stale list', () => {
        thirteen now work. */
     const shell = shellOn(SAMPLE_PATH, { session: 'no' })
     await settle()
-    expect(shell.offered()).toHaveLength(2)
+    expect(shell.offered()).toHaveLength(3)
 
     h.session = 'yes'
     await shell.goTo('/app')
@@ -512,5 +512,77 @@ describe('the sample trail is not writable, at either layer', () => {
     for (const w of ['move_place', 'remove_place', 'add_place', 'set_trip_dates', 'replan_trip']) {
       expect(shell.offered()).not.toContain(w)
     }
+  })
+})
+
+/**
+ * What `get_app_state` SAYS to a visitor with no account — the other half of the same honesty.
+ *
+ * Registering it signed-out is only an improvement if its answer is true there. Left alone it
+ * reported an account the visitor does not have ("an unknown number of saved reels"), warned that
+ * counts could not be loaded when nothing had failed to load, and recommended
+ * `plan_trip_from_reels` and `save_reels` as next steps — tools that are no longer even offered on
+ * that page. That is the tool's own founding defect, reproduced on the free path: a stuck visitor
+ * asking "what can I do here?" and being pointed at things that cannot work.
+ */
+async function appStateOn(path: string, session: 'yes' | 'no'): Promise<string> {
+  const shell = shellOn(path, { session })
+  await waitFor(() => { expect(shell.offered()).toContain('get_app_state') })
+  const spec = h.specs.find((s) => s.name === 'get_app_state')!
+  return String(await spec.execute({}))
+}
+
+describe('get_app_state, answering a visitor with no account', () => {
+  it('is offered at all — the orientation tool is the likeliest first thing asked for', async () => {
+    const shell = shellOn(SAMPLE_PATH, { session: 'no' })
+    await settle()
+    expect(shell.offered()).toContain('get_app_state')
+  })
+
+  it('recommends only the five tools that actually answer on that page', async () => {
+    const out = await appStateOn(SAMPLE_PATH, 'no')
+    for (const t of ['get_itinerary', 'get_place_evidence', 'show_on_map', 'set_map_mode', 'get_map_view']) {
+      expect(out).toContain(`→ ${t}`)
+    }
+    // The two it used to push hardest, and which are no longer registered here at all.
+    expect(out).not.toContain('plan_trip_from_reels')
+    expect(out).not.toContain('save_reels')
+  })
+
+  it('names an account as the thing standing between them and the rest', async () => {
+    /* `blocked` is documented as "anything that would make an obvious next step fail, so the
+       agent doesn\'t try it". Without this the agent learns it by trying and failing in front of
+       whoever is watching. */
+    const out = await appStateOn(SAMPLE_PATH, 'no')
+    expect(out).toMatch(/^Blocked: {4}.*need an account/m)
+  })
+
+  it('claims nothing about the visitor\'s own reels, places or trips', async () => {
+    const out = await appStateOn(SAMPLE_PATH, 'no')
+    expect(out).not.toMatch(/saved reels/)
+    expect(out).not.toMatch(/unknown number/)
+    expect(out).toMatch(/Account: +none/)
+  })
+
+  it('does not warn that counts could not be loaded, because none were attempted', async () => {
+    const out = await appStateOn(SAMPLE_PATH, 'no')
+    expect(out).not.toContain('could not be loaded')
+  })
+
+  it('says where they are in terms of a public sample, not "a trip you have already planned"', async () => {
+    // The route label is right for a trip the user owns and wrong for this one twice over: the
+    // visitor did not plan it, and there is no account for it to belong to.
+    const out = await appStateOn(SAMPLE_PATH, 'no')
+    expect(out).not.toContain('a trip you have already planned')
+    expect(out).toMatch(/You are on: .*sample/)
+  })
+
+  it('answers a signed-in user exactly as it did before', async () => {
+    // The third state must cost the other two nothing, on the same route.
+    const out = await appStateOn(SAMPLE_PATH, 'yes')
+    expect(out).toContain('0 saved reels')
+    expect(out).toContain('plan_trip_from_reels')
+    expect(out).not.toMatch(/Account: +none/)
+    expect(out).toMatch(/^Blocked: {4}nothing$/m)
   })
 })

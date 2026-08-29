@@ -80,8 +80,18 @@ function WebMcpStatus() {
   return <WebMcpStatusBase open={open} onOpenChange={setOpen} />
 }
 
-/** Every tool name this browser was actually offered, in registration order. */
-const registered: string[] = []
+/** Every tool this browser was actually offered, in registration order. */
+type OfferedTool = { name: string; execute: (args: Record<string, unknown>) => Promise<unknown> }
+const registered: OfferedTool[] = []
+const names = () => registered.map((t) => t.name)
+
+/** Calls a tool the way the browser would, and unwraps the MCP envelope it answers in. */
+async function callTool(name: string): Promise<string> {
+  const tool = registered.find((t) => t.name === name)
+  if (!tool) throw new Error(`${name} was never offered — [${names().join(', ')}]`)
+  const res = (await tool.execute({})) as { content: { text: string }[] }
+  return res.content.map((c) => c.text).join('\n')
+}
 
 beforeEach(() => {
   registered.length = 0
@@ -96,7 +106,7 @@ beforeEach(() => {
   Object.defineProperty(document, 'modelContext', {
     configurable: true,
     value: {
-      registerTool: (tool: { name: string }) => { registered.push(tool.name) },
+      registerTool: (tool: OfferedTool) => { registered.push(tool) },
     },
   })
 })
@@ -124,19 +134,20 @@ function mountSampleTrail() {
   )
 }
 
-/** The five that answer with no account: two trip reads from the fixture, three live-map tools. */
+/** The six that answer with no account: orientation, two fixture reads, three live-map tools. */
 const ANSWERS_SIGNED_OUT = [
-  'get_itinerary', 'get_place_evidence', 'get_map_view', 'set_map_mode', 'show_on_map',
+  'get_app_state', 'get_itinerary', 'get_place_evidence',
+  'get_map_view', 'set_map_mode', 'show_on_map',
 ]
 
 describe('the public sample trail, as a judge with no account sees it', () => {
-  it('offers the browser only the five tools that answer there', async () => {
+  it('offers the browser only the six tools that answer there', async () => {
     /* The captured defect: sixteen tools were registered from the /app layout with no session
        gate of any kind, and eleven of them fail without a JWT. The agent was reading a menu of
        failures it had been invited to order from. */
     mountSampleTrail()
-    await waitFor(() => { expect(registered).toHaveLength(5) })
-    expect([...registered].sort()).toEqual([...ANSWERS_SIGNED_OUT].sort())
+    await waitFor(() => { expect(names()).toHaveLength(6) })
+    expect([...names()].sort()).toEqual([...ANSWERS_SIGNED_OUT].sort())
   })
 
   it('never offers a tool that needs a session, at any point during the load', async () => {
@@ -144,30 +155,43 @@ describe('the public sample trail, as a judge with no account sees it', () => {
        flight precisely so this holds for the whole load — a list that started at sixteen and
        shrank would advertise failures during the window a freshly loaded agent reads it. */
     mountSampleTrail()
-    await waitFor(() => { expect(registered).toHaveLength(5) })
-    for (const name of ['get_app_state', 'list_trips', 'list_saved_reels', 'save_reels',
-      'plan_trip_from_reels', 'get_trip_progress', 'add_place', 'move_place', 'remove_place',
-      'replan_trip', 'set_trip_dates']) {
-      expect(registered).not.toContain(name)
+    await waitFor(() => { expect(names()).toHaveLength(6) })
+    for (const name of ['list_trips', 'list_saved_reels', 'save_reels', 'plan_trip_from_reels',
+      'get_trip_progress', 'add_place', 'move_place', 'remove_place', 'replan_trip',
+      'set_trip_dates']) {
+      expect(names()).not.toContain(name)
     }
   })
 
   it('shows the same count on the page as it gave the browser', async () => {
     // Two surfaces, two code paths, one judge looking at both. README tells them to compare.
     mountSampleTrail()
-    await waitFor(() => { expect(registered).toHaveLength(5) })
+    await waitFor(() => { expect(names()).toHaveLength(6) })
     await screen.findByLabelText(`WebMCP active, ${registered.length} tools`)
-    expect(screen.getByText('WebMCP active · 5 tools')).toBeInTheDocument()
+    expect(screen.getByText('WebMCP active · 6 tools')).toBeInTheDocument()
   })
 
-  it('lists those five by name when the chip is opened', async () => {
+  it('lists those six by name when the chip is opened', async () => {
     mountSampleTrail()
-    const chip = await screen.findByLabelText('WebMCP active, 5 tools')
+    const chip = await screen.findByLabelText('WebMCP active, 6 tools')
     await userEvent.click(chip)
     for (const name of ANSWERS_SIGNED_OUT) {
       expect(await screen.findByText(name)).toBeInTheDocument()
     }
     expect(screen.queryByText('list_trips')).not.toBeInTheDocument()
+  })
+
+  it('recommends nothing it did not also offer', async () => {
+    /* The one assertion neither component can make alone: `get_app_state` is built in GlobalTools
+       and names three tools that TripTools registers, so only a mount of both can prove the
+       recommendation and the offer agree. If they ever drift, the agent is told to call something
+       the browser was never given — the exact failure this whole change exists to remove, just
+       arriving one turn later and through the tool the integration was justified by. */
+    mountSampleTrail()
+    await waitFor(() => { expect(names()).toHaveLength(6) })
+    const recommended = [...(await callTool('get_app_state')).matchAll(/→ (\w+)/g)].map((m) => m[1])
+    expect(recommended).toHaveLength(5)
+    for (const tool of recommended) expect(names()).toContain(tool)
   })
 
   it('gives a signed-in visitor to the same page all sixteen', async () => {
@@ -177,7 +201,7 @@ describe('the public sample trail, as a judge with no account sees it', () => {
     h.listTrips.mockResolvedValue([])
     h.listSavedReelCards.mockResolvedValue([])
     mountSampleTrail()
-    await waitFor(() => { expect(registered).toHaveLength(16) })
+    await waitFor(() => { expect(names()).toHaveLength(16) })
     expect(await screen.findByLabelText('WebMCP active, 16 tools')).toBeInTheDocument()
   })
 })

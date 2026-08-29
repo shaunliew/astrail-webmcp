@@ -49,7 +49,48 @@ const SAMPLE_TRIP_PATH = '/app/trip/demo'
  * in-page state, so they already work signed-out. Five tools answer on that page; five is what it
  * offers.
  */
-const PUBLIC_SAMPLE_TOOLS = new Set(['get_itinerary', 'get_place_evidence'])
+const PUBLIC_SAMPLE_STEPS: { label: string; tool: string }[] = [
+  { label: 'read the whole trail, day by day', tool: 'get_itinerary' },
+  { label: 'ask why a stop is on it — the verbatim caption quote and the Reel it came from', tool: 'get_place_evidence' },
+  { label: 'fly the 3D map to a day, or to a single stop', tool: 'show_on_map' },
+  { label: 'switch the map between the day route and the whole-trip view', tool: 'set_map_mode' },
+  { label: 'read where the map is pointed right now', tool: 'get_map_view' },
+]
+
+/**
+ * ONE list, feeding two things that must never disagree: which tools are OFFERED (the filter at
+ * the bottom of this file) and which ones `get_app_state` RECOMMENDS. Two lists would drift, and
+ * the drift lands as the exact failure this gate exists to remove — an agent told to call
+ * something it was never given — only one turn later and through the orientation tool itself.
+ *
+ * `get_app_state` is offered but is not a STEP, because a tool does not recommend itself — it is
+ * the one a lost visitor reaches for first, and it is what names the five below. `show_on_map`,
+ * `set_map_mode` and `get_map_view` are steps but are registered by TripTools from the trip page,
+ * so they fall out of this set harmlessly: they are pure in-page state and already work
+ * signed-out. What must hold, and what a test pins across both components, is that everything
+ * recommended is also offered.
+ */
+const PUBLIC_SAMPLE_TOOLS = new Set(['get_app_state', ...PUBLIC_SAMPLE_STEPS.map((step) => step.tool)])
+
+/** Where the visitor is, said in terms that are true without an account. */
+const PUBLIC_SAMPLE_LABEL =
+  'the public sample trail — a finished Tokyo trip anyone can open, with no account and nothing spent'
+
+/* `blocked` is documented as "anything that would make an obvious next step fail, so the agent
+   doesn't try it", and this is the whole of what fails here. Without it the agent finds out by
+   trying, in front of whoever is watching. */
+const PUBLIC_SAMPLE_BLOCKED =
+  'saving Reels, planning a trip and editing an itinerary all need an account — none of those tools are offered on this page'
+
+/**
+ * The public sample trail, seen without a session.
+ *
+ * Used TWICE on purpose — once to decide what is registered, once to decide what `get_app_state`
+ * says about what is registered. One predicate means the offer and the description of the offer
+ * cannot come to disagree.
+ */
+const isPublicSample = (path: string, hasSession: boolean | null): boolean =>
+  path === SAMPLE_TRIP_PATH && hasSession !== true
 
 /**
  * Whether this browser holds a session, asked through the SAME function the withheld tools call.
@@ -110,6 +151,10 @@ export default function GlobalTools() {
 
   const pathRef = useRef(pathname)
   pathRef.current = pathname
+  // Read at CALL time, never captured: `readAppState` is registered once and must answer about
+  // the session the browser holds now, not the one it held when the tool was registered.
+  const sessionRef = useRef(hasSession)
+  sessionRef.current = hasSession
   const tripsRef = useRef(trips)
   tripsRef.current = trips
   const reelsRef = useRef(reels)
@@ -135,6 +180,21 @@ export default function GlobalTools() {
     const all = tripsRef.current
     const savedReels = reelsRef.current
     const path = pathRef.current
+
+    /* A visitor with no account, on the one page they can reach. Answering them in terms of an
+       account would reproduce this tool's founding defect on the free path: it exists because
+       real users could not tell what to do here, and "an unknown number of saved reels · plan a
+       trip → plan_trip_from_reels" is worse than useless to someone who has neither. The counts
+       are not unknown, they are inapplicable — hence `signed_out` rather than a row of nulls,
+       which would print the could-not-load note over a read that never happened. */
+    if (isPublicSample(path, sessionRef.current)) {
+      return {
+        account: 'signed_out',
+        where: PUBLIC_SAMPLE_LABEL,
+        nextSteps: [...PUBLIC_SAMPLE_STEPS],
+        blocked: [PUBLIC_SAMPLE_BLOCKED],
+      }
+    }
 
     const complete =
       all === null ? null : all.filter((t) => t.status === 'complete' || t.status === 'saved_with_gaps').length
@@ -168,6 +228,7 @@ export default function GlobalTools() {
     const blocked: string[] = []
 
     return {
+      account: 'signed_in',
       where: labelFor(path),
       savedReels: savedReels?.count ?? null,
       verifiedPlaces: savedReels?.places ?? null,
@@ -404,8 +465,9 @@ export default function GlobalTools() {
      tools and then take eleven away, advertising failures during exactly the window a freshly
      loaded agent reads the list. An under-advertised tool costs a question; an over-advertised one
      costs a failed call the agent was invited to make. */
-  const publicSample = pathname === SAMPLE_TRIP_PATH && hasSession !== true
-  const offered = publicSample ? specs.filter((s) => PUBLIC_SAMPLE_TOOLS.has(s.name)) : specs
+  const offered = isPublicSample(pathname, hasSession)
+    ? specs.filter((s) => PUBLIC_SAMPLE_TOOLS.has(s.name))
+    : specs
 
   return <RegisterTools specs={offered} />
 }

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { formatAppState, getAppStateTool, type AppStateSnapshot } from '../tools/app-state'
 
 const base: AppStateSnapshot = {
+  account: 'signed_in',
   where: 'Saved Reels — where trips start',
   savedReels: 6,
   verifiedPlaces: 17,
@@ -56,6 +57,67 @@ describe('formatAppState', () => {
 
   it('says "nothing" rather than omitting the blocked line', () => {
     expect(formatAppState(base)).toContain('Blocked:    nothing')
+  })
+})
+
+/**
+ * The signed-out answer, on the one page a visitor can open without an account.
+ *
+ * `get_app_state` is the tool this whole integration was justified by — real users said it was
+ * "unclear how to navigate the website" — so "what can I do here?" is the likeliest first move on
+ * the free path. Registering it there and letting it answer in terms of an account the visitor
+ * does not have would reproduce the exact failure it was built to prevent.
+ *
+ * The counts are the delicate part. `null` already means "we tried and could not load this", and
+ * the formatter answers it with a note telling the agent not to claim the user has none. Signed
+ * out, nothing was tried and nothing failed — the question does not apply — so the snapshot says
+ * so in a THIRD state rather than borrowing `null`'s meaning for a second job.
+ */
+describe('formatAppState, signed out on the public sample trail', () => {
+  const publicSample: AppStateSnapshot = {
+    account: 'signed_out',
+    where: 'the public sample trail',
+    nextSteps: [{ label: 'read the whole trail', tool: 'get_itinerary' }],
+    blocked: ['saving Reels, planning a trip and editing an itinerary all need an account'],
+  }
+
+  it('makes no claim at all about the visitor\'s own reels, places or trips', () => {
+    // Not "0", which asserts they own nothing — they may have an account and simply not be
+    // signed in — and not "an unknown number", which asserts we tried and failed.
+    const out = formatAppState(publicSample)
+    expect(out).not.toMatch(/saved reels/)
+    expect(out).not.toMatch(/verified places/)
+    expect(out).not.toMatch(/unknown number/)
+    expect(out).not.toMatch(/\d+ trips/)
+  })
+
+  it('does not emit the could-not-load note, because nothing failed to load', () => {
+    /* The note is a repair for a FAILED read. Printing it here would send the agent hedging
+       about a library that is not there to hedge about, which is the same class of false
+       statement the note exists to prevent, pointed the other way. */
+    const out = formatAppState(publicSample)
+    expect(out).not.toContain('could not be loaded')
+    expect(out).not.toContain('do not tell the user they have none')
+  })
+
+  it('tells the agent outright that it knows nothing about this person', () => {
+    // Silence is not enough: an agent that simply sees no counts may still guess at them.
+    expect(formatAppState(publicSample)).toMatch(/Account: +none/)
+    expect(formatAppState(publicSample)).toMatch(/signed out/i)
+  })
+
+  it('still lists the next steps and the blockers', () => {
+    const out = formatAppState(publicSample)
+    expect(out).toContain('read the whole trail → get_itinerary')
+    expect(out).toContain('need an account')
+  })
+
+  it('leaves the signed-in shape completely alone', () => {
+    // The third state must not cost the other two anything.
+    const out = formatAppState({ ...base, savedReels: null })
+    expect(out).toContain('an unknown number of saved reels')
+    expect(out).toContain('do not tell the user they have none')
+    expect(out).not.toMatch(/Account: +none/)
   })
 })
 

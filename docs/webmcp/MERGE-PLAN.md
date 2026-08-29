@@ -52,9 +52,13 @@ The resolved result was reconstructed from the merge tree, the four hunks resolv
 and then built:
 
 ```
-feat/webmcp + wt/layout                      →  tsc clean · 112 files · 1209 tests passed
-feat/webmcp + wt/layout + wt/receipts        →  tsc clean · 112 files · 1215 tests passed
+feat/webmcp + wt/layout + wt/receipts   →  tsc clean · 112 files · 1242 tests passed
+                                        →  `next build` clean, production
 ```
+
+Re-verified at `b8f8183`, after a further seven commits landed on `feat/webmcp`. The conflict
+shape did not move: `wt/receipts` still merges clean, `wt/layout` still produces the same four
+hunks in the same two files, and all four still resolve toward layout.
 
 ## The thing tests cannot catch
 

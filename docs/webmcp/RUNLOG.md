@@ -697,3 +697,79 @@ unambiguously the layout.
   `cd ~/.claude/skills/gstack/browse && ./dist/browse run src/cli.ts <cmd>`.
 - `vitest.setup.ts` dereferences `Element` at load, so no test file in this repo can opt into the
   node environment.
+
+## Batch 3 — the cross-model sweep, and what it caught that we had already "verified"
+
+A Codex readiness sweep read the docs against the code instead of against the commit messages.
+It found a defect in the one tool that carries this entry's whole pitch, plus five doc claims a
+judge could disprove by reading. Every item below is fixed and committed.
+
+| Finding | Fix |
+|---|---|
+| `get_place_evidence` returned the research page, not the Reel | `ec06e6c` |
+| The demo fixture cited three invented Reel codes, all 404 | `ec06e6c` |
+| `get_trip_progress` silently ignored `trip_id` | `213d4e9` |
+| Both trial messages pointed at a card that is not on the agent screen | `213d4e9` |
+| Five doc claims false, stale or unprovable | `4ab1722` |
+| Eligibility record eleven deliveries behind | `4ab1722` |
+| The sample trail was unreachable signed-out | `d7b3514` |
+
+### The one that mattered
+
+`get_place_evidence` printed `evidence_json.source_url`. The type says of that field, verbatim:
+*"Independent research/venue page. Deliberately NOT the Reel — see source_reel_url."* So the tool
+whose entire job is proving provenance returned the wrong URL, while README, SUBMISSION and
+WHATS-NEW all promised "its source Reel." The fixture was lying in the same place — `/reel/AAA`,
+`/BBB`, `/CCC`, all 404, on the one page built to prove evidence is real.
+
+Nothing we had run would ever have caught it. The tests asserted the tool returned *a* URL. The
+contract test checked names and budgets. Only reading the type comment next to the call site did.
+
+### Two ways an implementer beat the brief
+
+- I said `TrialExhaustedCard` renders in one place. It renders in two, and the reachable one only
+  appears at the `brief` phase — so a trial-exhausted user in the agent flow cannot reach the seat
+  request **at all**: the button that opens that sheet is disabled with no organized places.
+- I predicted `TRIAL_SPENT_AFTER_ASKING` had the same false-card claim. It did not. Its flaw was
+  the inverse — it said only a seat lifts the limit and then gave no route to one, so the agent
+  improvises, and the nearest improvisation is the card its sibling used to hallucinate.
+
+### Fault injection caught a fake test, again
+
+`get_trip_progress`'s first mismatch tests all used a *generating* run, so removing the pre-wait
+check changed nothing — the post-wait check covered them. The uncovered case was the dangerous
+one: a finished run skips the wait entirely, so "the trip is ready" plus trip A's id goes to an
+agent that asked about B. The test only became load-bearing once a finished-run case existed.
+
+### An artifact that lied about a security boundary
+
+Verifying the middleware allowlist against `next start` in the main tree returned **500 on every
+`/app` route**, contradicting the implementer's recorded 200/307. The change was not at fault: a
+dev server had overwritten `frontend/.next` with a development build — 258 `eval("` module
+factories — and the edge runtime forbids code generation from strings, so the middleware threw at
+load. Rebuilt in an isolated worktree and the original evidence held exactly.
+
+**Lesson worth keeping: `.next` is shared mutable state.** A dev server running in another pane
+silently invalidates any production verification done in that tree. Build somewhere else.
+
+The rebuilt probe then went well past the original: encoded forms (`%64emo`, `dem%6f`,
+`demo%2Fextra`, `demo%00`) all fail **closed** because Next does not decode before middleware;
+every escape through the public path (`demo/../../settings`, `demo/..%2f..%2fsettings`,
+`demo/%2e%2e/%2e%2e/settings`) normalizes first and lands on the gate; and the RSC bypass class —
+`.rsc`, `RSC: 1`, `?_rsc=`, prefetch headers, `x-invoke-path` spoofing — does not exist here.
+
+### Codex is unusable for unattended review right now
+
+Its sandbox asks approval for **every** shell command, including `curl` against a server it was
+handed. Answering an agent's approval dialog on the user's behalf is not something to do, so the
+pane stalls. Both times the work still happened — declined the dialog, ran the probes directly —
+but a Codex pane cannot currently carry an unattended verification loop without pre-authorization.
+This is the exact stall the plan predicted, now measured twice.
+
+### Correction to the merge plan in batch 2
+
+Batch 2 called the `wt/layout` conflict "a one-line resolution." That was wrong and optimistic.
+`wt/layout` still references `STARTER_START_DATE`, `STARTER_END_DATE` and `STARTER_PROMPT` —
+constants **deleted** in `d2f638c`. A clean textual merge therefore produces a TypeScript failure,
+not a conflict marker. Land `wt/receipts` first, then repair layout's call sites onto
+`starterTripDates(new Date())` before merging it.

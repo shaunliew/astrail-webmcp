@@ -773,3 +773,57 @@ Batch 2 called the `wt/layout` conflict "a one-line resolution." That was wrong 
 constants **deleted** in `d2f638c`. A clean textual merge therefore produces a TypeScript failure,
 not a conflict marker. Land `wt/receipts` first, then repair layout's call sites onto
 `starterTripDates(new Date())` before merging it.
+
+## Batch 4 — the public path, and three lies told by labels
+
+The sample trail was reachable but dishonest in three separate ways, each found by a different
+pass. All three are the same species: the page told an agent something the page could not know.
+
+| Fix | Commit |
+|---|---|
+| Signed-out demo advertised 16 tools; 11 could not work | `0ab99d7` |
+| `get_app_state` restored signed-out, with a true answer | `2ff76d6` |
+| The demo told a signed-in judge they had planned it | `38d31bd` |
+
+### The counts problem, and why a union beat a flag
+
+`AppStateSnapshot`'s counts are `number | null`, and `null` carries a hard-won meaning: *could not
+load*. It exists because an early build reported a false `0` and the agent told a user with a full
+library they had nothing saved, then advised them to start by pasting a Reel.
+
+For a signed-out visitor **neither value is honest**. `0` asserts they own nothing, which we cannot
+know — they may have an account and simply not be signed in. `null` fires the "do not tell the user
+they have none" note over a read that never happened, which sets the agent hedging about a library
+that is not there to hedge about: the same false statement the note exists to prevent, aimed the
+other way.
+
+Resolved as a **union discriminated on `account`** — signed out, the count fields do not exist at
+all. A flag beside the numbers would have left `savedReels: null` meaning two things depending on a
+sibling field. The union makes that unreachable rather than merely discouraged, and the fault
+injection that collapses it back into nulls goes red, which is what proves it earns its place. The
+variants stay flat, so every existing `{...base, savedReels: null}` spread still typechecks.
+
+### The drift that would have reproduced the bug one turn later
+
+The recommended next steps and the actually-offered tool set now come from **one list**, behind one
+`isPublicSample` predicate. Two lists would drift, and the drift lands as exactly this bug again —
+the orientation tool recommending a tool the browser was never given. The test spanning both
+components is necessary because `get_app_state` is built in `GlobalTools` but names three tools
+`TripTools` registers, so neither component can prove the claim alone.
+
+### A test that had stopped proving anything
+
+*"says where they are in terms of a public sample"* asserted only that the label mentions a sample.
+Once both the signed-in and signed-out labels said so, it passed either way — still running, no
+longer load-bearing. The implementer found this in its own diff and said so. Worth repeating
+because it is the third time this sprint that a green test turned out to be decorative, and every
+time it was fault injection that exposed it.
+
+### Still open, with teeth
+
+`/^\/app\/trip\//` labels every trip "a trip you have already planned", across all six statuses.
+On a `generating` trip that is premature and on a `failed` one it is false — and it has
+consequences rather than just being untidy: the label invites the agent to offer an edit, the edit
+endpoints only admit `complete` and `saved_with_gaps`, so the agent walks into a refusal the label
+talked it into. That is the most likely state for a judge to be looking at, moments after
+approving a generation.

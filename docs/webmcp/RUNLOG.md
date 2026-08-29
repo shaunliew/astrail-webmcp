@@ -827,3 +827,75 @@ consequences rather than just being untidy: the label invites the agent to offer
 endpoints only admit `complete` and `saved_with_gaps`, so the agent walks into a refusal the label
 talked it into. That is the most likely state for a judge to be looking at, moments after
 approving a generation.
+
+## Batch 5 — the night the documents were audited against the code
+
+Four passes ran in parallel: a Fable claim audit, a video-script contract test, an approval-copy
+sweep, and a browser inspection of the overlay collision. Between them they found **seven false
+statements aimed directly at judges**, five of which we wrote ourselves this week.
+
+### The worst one was an instruction
+
+README and SUBMISSION both told a judge to type ***"Show me day 2 in 3D."*** `set_map_mode`'s enum
+is `route|hub`. There is no 3D mode, so the prompt returns an error — a judge following our own
+instructions watches them fail.
+
+It is not fixable by adding a mode either. The extruded-buildings layer is `minzoom: 15` and the
+deepest tool-driven camera is `zoom 14` (`TripMap.tsx:754`, `:834`), so **no tool can reach the
+buildings at all**. Only the popup's street-level button can, by click. The demo beat that had been
+in the plan since day one was never tool-reachable, and nobody noticed because nobody ran it.
+
+### Writing a test for a document found the document wrong
+
+The video script was written the same night and looked fine. A contract test that parses its
+quoted claims and executes the real tools against the real fixture found three false: the stop-4
+beat claimed the tool "says it has no Reel" (a suggested stop has no Reel to be missing, so no such
+line is printed); the 3D prompt above; and "the six tools that work" (six are *offered*, five are
+*recommended* — `get_app_state` leaves itself off its own list).
+
+It then caught the fix. The script's tool count is parsed out of the prose, so changing the number
+re-aimed the assertion and reddened it. A document that fails CI when it drifts is worth more than
+one proofread twice.
+
+### The same lie, on a bigger surface
+
+`AgentBand` told users "you approve every step here." `save_reels` starts a paid Apify extraction
+and raises no card — its own description argues, defensibly, that it should not. Fixing that
+surfaced two more on the **landing page**, which a judge sees *before* `/app`: `page.tsx:74` and the
+FAQ both claimed "anything that spends money or cannot be undone stops for approval on the page
+first". The FAQ was the worse of the two, because its question is literally *"Can it do things
+without asking me?"*
+
+All three now name `save_reels` as the bounded exception. That reads stronger than the absolute
+did: it shows we know where the line is, and a judge who probes finds the answer already written.
+
+### Two documents of ours disagreed about our own honesty
+
+README claimed all three edit tools "have been exercised live through an agent against a real
+trip". `T4-QUEUE.md` said `move_place` and `remove_place` are "unit-tested only — no live writes".
+Only `add_place` is corroborated — Shaun's Codex run that added Osaka Castle, which is what
+surfaced the stale-prose bug `replan_trip` now answers.
+
+### A merge rule that would have deleted a test
+
+"Take layout's side in all four hunks" is **position-sensitive**, not a property of the branch. An
+implementer added a test mid-block, git aligned it with `feat/webmcp`'s own new test into an
+add/add conflict at six hunks, and the blanket rule would have silently dropped main's clock test —
+no marker, no failure, just a missing test. Fixed by repositioning; both are now confirmed present
+in the merged tree by grep. `MERGE-PLAN.md` carries the warning.
+
+### The structure was right and the content drifted inside it
+
+`GlobalTools.tsx` describes `set_map_mode` to the agent as switching "between the day route and the
+whole-trip view". `hub` is the **hotel hub** view. That string is not a comment — it is what
+`get_app_state` recommends, so a signed-out judge's first orientation call got a wrong description.
+
+The ONE-list design guarantees everything recommended is also offered, and a test pins that across
+both components. **Nothing pinned whether the label beside the tool name was true.** A good
+invariant, holding, around a false string.
+
+### State
+
+`feat/webmcp` 112 files / 1235 tests, tsc clean. Merged with both branches: 113 / 1256, tsc clean,
+production build clean. Merge shape re-verified after both branches gained commits: still four
+hunks.

@@ -537,8 +537,15 @@ export default function TraysScreen({
           </p>
         ) : null}
       </div>
+      {/* "before anything runs" was an absolute this flow does not honour: an agent handed the
+          starter prompt may call `save_reels` on the way to planning, and that tool raises no
+          approval card while starting a paid extraction. The generation IS gated —
+          `plan_trip_from_reels` awaits confirm() before it creates the trip — so the sentence
+          names that step and claims nothing wider. It still says nothing about SPEND, unlike the
+          band on a populated home: this screen is shown to accounts whose trip entitlement may
+          already be gone, and promising them an allowance to spend is its own false claim. */}
       <p className="mt-3 text-[13px] text-[color:var(--text-faint)]">
-        Astrail will ask you to approve the plan on this page before anything runs.
+        Astrail will ask you to approve the plan on this page before it starts building the trip.
       </p>
     </section>
   )

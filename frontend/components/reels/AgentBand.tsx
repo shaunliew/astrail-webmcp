@@ -34,13 +34,22 @@ const COPY_FAILED = 'Copy did not work in this browser — select the prompt and
  * parent, and an in-flight read, a failed read and a genuinely empty library all arrive there
  * as an empty array. The sentence drops the number rather than print a "0 saved reels" that a
  * judge with a full library would immediately catch us out on.
+ *
+ * The consent clause names ONE step, and it used to name all three. "You approve every step
+ * here" was false about the middle one: `save_reels` raises no approval card at all, and it does
+ * not merely save — it starts a paid Apify extraction. (That is a defensible design, argued in
+ * the tool's own description: a daily limit bounds it and an already-analysed reel is never
+ * re-analysed. The copy was the defect, not the behaviour.) What is genuinely gated is
+ * `plan_trip_from_reels`, which awaits confirm() and shows a card ending "This uses your trip
+ * allowance" — so the clause borrows that card's own words. A judge who tests the claim meets
+ * the sentence it predicted, which is worth more than the absolute it replaces.
  */
 function capabilitySentence(savedCount: number | null): string {
   const library =
     savedCount === null
       ? 'your saved reels'
       : `your ${savedCount} saved reel${savedCount === 1 ? '' : 's'}`
-  return `With this page open, ChatGPT can read ${library}, save new links, and plan a trip from them — you approve every step here.`
+  return `With this page open, ChatGPT can read ${library}, save new links, and plan a trip from them — planning spends your trip allowance, so it asks for your approval here first.`
 }
 
 export default function AgentBand({

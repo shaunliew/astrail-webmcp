@@ -867,6 +867,30 @@ describe('TraysScreen', () => {
       expect(screen.queryByText(INVITATION_HEADING)).toBeNull()
       expect(screen.queryByText(CAPTURE_SUMMARY)).toBeNull()
     })
+
+    it('promises approval for the step that is actually gated, not for everything', async () => {
+      /* "before anything runs" was an absolute this flow does not honour. An agent handed the
+         starter prompt may call `save_reels` on its way to planning, and that tool raises NO
+         approval card while starting a paid extraction — it argues the case in its own
+         description (daily limit, never re-analyses). What IS gated is the generation:
+         `plan_trip_from_reels` awaits confirm() before it creates the trip. So the sentence
+         names that step and claims nothing wider.
+
+         It still says nothing about spend, for the reason the test above pins: this screen is
+         shown to accounts whose trip entitlement may already be gone. */
+      renderWithAgent(
+        <TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      await screen.findByText(INVITATION_HEADING)
+      expect(
+        screen.getByText(
+          'Astrail will ask you to approve the plan on this page before it starts building the trip.',
+        ),
+      ).toBeInTheDocument()
+      expect(screen.queryByText(/before anything runs/i)).toBeNull()
+    })
   })
 
   /* The same finding, one screen later. `/app` WITH content was a manual library with the agent
@@ -904,7 +928,7 @@ describe('TraysScreen', () => {
 
       expect(
         screen.getByText(
-          'With this page open, ChatGPT can read your 2 saved reels, save new links, and plan a trip from them — you approve every step here.',
+          'With this page open, ChatGPT can read your 2 saved reels, save new links, and plan a trip from them — planning spends your trip allowance, so it asks for your approval here first.',
         ),
       ).toBeInTheDocument()
 
@@ -944,7 +968,7 @@ describe('TraysScreen', () => {
       await screen.findByRole('button', { name: 'Tokyo winter' })
       expect(
         screen.getByText(
-          'With this page open, ChatGPT can read your saved reels, save new links, and plan a trip from them — you approve every step here.',
+          'With this page open, ChatGPT can read your saved reels, save new links, and plan a trip from them — planning spends your trip allowance, so it asks for your approval here first.',
         ),
       ).toBeInTheDocument()
     })

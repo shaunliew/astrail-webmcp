@@ -36,7 +36,7 @@ describe('AgentBand', () => {
 
     expect(
       screen.getByText(
-        'With this page open, ChatGPT can read your 12 saved reels, save new links, and plan a trip from them — you approve every step here.',
+        'With this page open, ChatGPT can read your 12 saved reels, save new links, and plan a trip from them — planning spends your trip allowance, so it asks for your approval here first.',
       ),
     ).toBeInTheDocument()
   })
@@ -46,7 +46,7 @@ describe('AgentBand', () => {
 
     expect(
       screen.getByText(
-        'With this page open, ChatGPT can read your 1 saved reel, save new links, and plan a trip from them — you approve every step here.',
+        'With this page open, ChatGPT can read your 1 saved reel, save new links, and plan a trip from them — planning spends your trip allowance, so it asks for your approval here first.',
       ),
     ).toBeInTheDocument()
   })
@@ -59,7 +59,7 @@ describe('AgentBand', () => {
 
     expect(
       screen.getByText(
-        'With this page open, ChatGPT can read your saved reels, save new links, and plan a trip from them — you approve every step here.',
+        'With this page open, ChatGPT can read your saved reels, save new links, and plan a trip from them — planning spends your trip allowance, so it asks for your approval here first.',
       ),
     ).toBeInTheDocument()
     expect(screen.queryByText(/0 saved/)).toBeNull()

@@ -245,8 +245,10 @@ This is the most-cited pattern in the practitioner literature under three names:
 Action Receipts ([Hatchworks](https://hatchworks.com/blog/ai-agents/agent-ux-patterns/)), Footprints
 ([Shape of AI](https://www.shapeof.ai/)).
 
-Also incomplete: `add_place`, `set_trip_dates` and `replan_trip` are missing from `LABELS`
-(`WebMcpRegistry.tsx:10`) and fall back to a generic "WORKING".
+~~Also incomplete: `add_place`, `set_trip_dates` and `replan_trip` are missing from `LABELS`
+(`WebMcpRegistry.tsx:10`) and fall back to a generic "WORKING".~~ ✅ **Fixed on `wt/receipts`** —
+its table covers all 16 tools where `main` has 5. Verified 2026-08-30 by diffing the two versions.
+It lands with that merge; nothing to do on `feat/webmcp`.
 
 ## 4. Tool-contract gaps + a truthful SUBMISSION.md
 
@@ -256,10 +258,9 @@ tool's name and whether it reads or changes things. **Tool names and description
 
 Fix, in this order:
 
-- `docs/webmcp/SUBMISSION.md:29` still says only four read-only tools exist and the rest is future
-  work; `:39` says every tool is read-only; `:35` describes a registration hook the README says was
-  removed. Judges may score from this document without opening the app. It currently **underclaims
-  the work while contradicting the repo.** Rewrite it.
+- ~~`docs/webmcp/SUBMISSION.md:29` still says only four read-only tools exist...~~ ✅ **Done** —
+  SUBMISSION was rewritten in `6354a60` and has since been audited against the code twice more
+  (`4ab1722`, `d04cf25`). The line references in this bullet are pre-rewrite and no longer resolve.
 - `add_place` reads `args.trip_id`, but `trip_id` is not in its schema and `additionalProperties` is
   `false` (`tools/edit.ts:136,:149`) — registered globally, it cannot reliably target a closed trip.
 - `get_map_view` claims to report the selected day and stop; it returns camera coordinates and trip

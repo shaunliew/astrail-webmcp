@@ -351,7 +351,13 @@ async function editErrorMessage(res: Response): Promise<string> {
   } catch {
     /* non-JSON error body */
   }
-  if (res.status === 404) return 'That trip or stop was not found.'
+  // A 404 here has two very different causes and the caller cannot tell them apart: the trip or
+  // stop genuinely does not exist, OR this deployment has WEBMCP_EDITS_ENABLED unset, in which
+  // case the backend hides the whole write surface behind the same bare 404 (main.py:_require_webmcp_edits_enabled).
+  // Saying only "not found" makes a correctly-disabled deployment look broken to an agent that is
+  // staring at the trip it was asked to edit. Name both, so nobody debugs the wrong one.
+  if (res.status === 404)
+    return 'That trip or stop was not found — or trip editing is not enabled on this deployment.'
   if (res.status === 409) {
     return message || 'This trip cannot be edited right now — it may still be generating.'
   }

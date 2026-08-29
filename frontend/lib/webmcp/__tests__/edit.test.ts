@@ -111,7 +111,7 @@ describe('remove_place', () => {
   })
 
   it('does not claim success when the backend fails', async () => {
-    const d = deps({ remove: vi.fn().mockRejectedValue(new Error('That trip or stop was not found.')) })
+    const d = deps({ remove: vi.fn().mockRejectedValue(new Error('That trip or stop was not found — or trip editing is not enabled on this deployment.')) })
     const out = String(await removePlaceTool(d).execute({ place: '1' }))
     expect(out).toContain('not found')
     expect(out).not.toContain('Removed')

@@ -25,7 +25,7 @@ Full detail in `docs/webmcp/MERGE-PLAN.md`.
 ```bash
 git merge wt/receipts     # zero conflicts
 git merge wt/layout       # 4 hunks in 2 files — take wt/layout's side in ALL FOUR
-cd frontend && npx tsc --noEmit && npx vitest run
+cd frontend && npx tsc --noEmit && npx vitest run   # expect 114 files / 1263 tests
 ```
 
 Taking layout's side is not a judgement call: in two hunks `feat/webmcp`'s side is *empty*, and in
@@ -94,11 +94,17 @@ surfaced the stale-prose bug `replan_trip` now answers. README now says exactly 
 
 ## Needs your judgment, not your keyboard
 
-- **The overlay collision.** Both merging branches add fixed overlay UI and neither knows the other
-  exists. jsdom has no layout engine, so no test can see the receipts dock landing on the
-  redesigned `/app`. An agent inspected it in a real browser overnight — read its findings and the
-  screenshots in `docs/webmcp/evidence/`. Whatever it reports, **look at `/app` yourself after
-  merging**; this is a taste call.
+- **The overlay collision was REAL, and is fixed.** Confirmed in a real browser and photographed:
+  at 390px the prompts panel covered the "Plan a trip from your 9 saved reels" CTA *with no user
+  interaction at all*, and at 1280px the Save button was genuinely unclickable — a hit-test probe
+  returned the panel, not the button. Neither branch could have caught it alone, which is why both
+  passed their own tests. Fixed on `wt/receipts` (`99c1384`); before/after screenshots are in
+  `docs/webmcp/evidence/merge-dock-*.png`. I checked the pair myself.
+  **Still look at `/app` after merging** — two residual states remain, both recorded in
+  `MERGE-PLAN.md`: on a phone with the read-back *expanded* the panel still covers the CTA (a state
+  the user opened and can close), and at 1280 the collapsed rail clips ~12px of the third tray
+  card while scrolled to the very top. Closing both properly needs a bottom pad in
+  `app/app/(shell)/layout.tsx`, which belongs to neither branch — deliberately left for after.
 - **`get_app_state` was rewritten after its logged ChatGPT verification.** SUBMISSION now says so
   rather than claiming live-verification it no longer has. One re-run in ChatGPT's browser fixes it
   properly.

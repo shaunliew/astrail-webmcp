@@ -43,7 +43,7 @@ tools are verified on the judged surface, in ChatGPT desktop's built-in browser.
 has *not* been run there — it is implemented, unit-tested and exercised against the real backend,
 and that is the honest state. The screen has caught up since: an empty `/app` now leads with the
 agent and a one-click starter prompt rather than a paste-a-URL form.
-What genuinely works today is everything downstream of a trip existing.
+What genuinely works today is both ends of the flow. **Upstream:** `save_reels` through the agent is proven end to end against the live backend — the reel is saved, extraction starts, the card shows Queued then Analyzing while you watch, and verified places land, with no manual refresh anywhere. **Downstream:** everything that follows a trip existing — reading it, its evidence, the map, and the edits. The single unproven link is the generation in the middle, and it is unproven for a reason we would rather state than hide: each run spends real Apify and OpenAI credit, so it was never right to fire it off unattended.
 
 ## 3. What can people and agents do together that was difficult or impossible before?
 

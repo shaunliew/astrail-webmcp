@@ -150,7 +150,7 @@ limitation we name.
 | ⚙ | `replan_trip`, `set_trip_dates` | Implemented and unit-tested; not live-run |
 | ⚠ | The five edit tools | Require `WEBMCP_EDITS_ENABLED=true` on the deployment |
 | ✅ | The signed-in landing screen | An empty account now leads with the agent and a starter prompt; the paste box is the fallback, not the front door |
-| ✅ | `/app/trip/demo` | A fixture-backed sample trail, reachable with **no account** — five tools answer there, and the edit tools deliberately cannot see it |
+| ✅ | `/app/trip/demo` | A fixture-backed sample trail, reachable with **no account** — six tools are offered and all six answer, and the edit tools deliberately cannot see it |
 
 ## Where this sits against WebMCP's own example
 

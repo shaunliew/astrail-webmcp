@@ -122,8 +122,11 @@ with **no account** — allowlisted by exact match in `frontend/middleware.ts:39
 production build with zero cookies — so a judge can see the map, the pins and the evidence without a
 credential, and without spending a generation.
 
-Five tools answer there: `get_itinerary`, `get_place_evidence`, `show_on_map`, `set_map_mode` and
-`get_map_view`. The edit tools deliberately **cannot** see this trip — it has no database row, and a
+Six tools are offered there, and all six answer: `get_app_state`, `get_itinerary`,
+`get_place_evidence`, `show_on_map`, `set_map_mode` and `get_map_view`. Ask *"what can I do here?"*
+first — signed out, `get_app_state` says you are on the public sample trail, lists exactly those
+six, and states that saving Reels, planning and editing need an account rather than letting the
+agent discover that by failing. The edit tools deliberately **cannot** see this trip — it has no database row, and a
 reader that could return it to a write tool would be a way to pretend an edit had happened. Ask
 *"why is stop 1 here?"* and you get a verbatim caption quote and a real Instagram Reel, both checked
 against the captured scrape in `backend/evals/fixtures/japan_demo_reels.json` by a test.

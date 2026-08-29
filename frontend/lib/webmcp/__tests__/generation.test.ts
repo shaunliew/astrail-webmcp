@@ -306,6 +306,114 @@ describe('get_trip_progress', () => {
   })
 })
 
+describe('get_trip_progress — the trip_id it was handed', () => {
+  /* The schema advertised `trip_id` while `execute` took no argument at all, so the parameter
+     was unreadable by construction — and its description, "Omit to use the run started in this
+     browser", implied that PASSING it did something else. The store is browser-local and holds
+     ONE run, so an agent with two trips in play could ask about A and be told, in confident
+     prose, about B, then narrate that to the user as fact. Nothing errored. A silent-wrong
+     answer in the one tool whose whole job is narrating truthfully. */
+
+  const A = 'trip-aaaaaaaa-1111'
+  const B = 'trip-bbbbbbbb-2222'
+
+  it('never reports the running trip under an id the agent did not ask about', async () => {
+    const h = harness()
+    h.start(A)
+    h.emit(stage('scrape', 'reel 1'))
+    h.tick(40)
+    const out = String(await getTripProgressTool(h.store, 0).execute({ trip_id: B }))
+    expect(out).not.toContain('generating')
+    expect(out).not.toContain('Scraping Reels')
+    expect(out).not.toContain('40s')
+    expect(out).toMatch(/not the run/i)
+  })
+
+  it('names the run it IS following, so the agent can correct itself', async () => {
+    // A bare refusal leaves the agent guessing which of its two trips this page holds.
+    const h = harness()
+    h.start(A)
+    const out = String(await getTripProgressTool(h.store, 0).execute({ trip_id: B }))
+    expect(out).toContain(A.slice(0, 8))
+  })
+
+  it('never hands another trip\'s FINISHED verdict to the agent that asked', async () => {
+    /* The sharpest form of it. A finished run skips the throttle entirely, and the complete
+       branch answers "the trip is ready" and hands back `get_itinerary (trip_id …)` — with A's
+       id, to an agent that asked about B. It would then fetch A and read it out as B's
+       itinerary. `failed` is the same shape of lie in the other direction: the user is told a
+       trip died that did not. */
+    const h = harness()
+    h.start(A)
+    h.emit({ type: 'result', content: JSON.stringify({ itinerary: {} }) })
+    const out = String(await getTripProgressTool(h.store, 0).execute({ trip_id: B }))
+    expect(out).not.toContain('the trip is ready')
+    expect(out).not.toContain('get_itinerary (trip_id')
+    expect(out).toMatch(/not the run/i)
+  })
+
+  it('never hands another trip\'s FAILURE to the agent that asked', async () => {
+    const h = harness()
+    h.start(A)
+    h.emit({ type: 'error', stage: 'scrape' as never, msg: 'apify timeout' })
+    const out = String(await getTripProgressTool(h.store, 0).execute({ trip_id: B }))
+    expect(out).not.toContain('failed')
+    expect(out).not.toContain('apify timeout')
+    expect(out).toMatch(/not the run/i)
+  })
+
+  it('answers normally when the id matches the run it is following', async () => {
+    const h = harness()
+    h.start(A)
+    h.emit(stage('scrape', 'reel 1'))
+    const out = String(await getTripProgressTool(h.store, 0).execute({ trip_id: A }))
+    expect(out).toContain('generating')
+    expect(out).toContain('Scraping Reels')
+  })
+
+  it('accepts the 8-char prefix this tool itself hands back', async () => {
+    /* The complete branch answers `next_tool: get_itinerary (trip_id trip-aaa)` — an 8-char
+       slice — so the id an agent echoes back is as often the prefix as the whole thing.
+       Refusing the form this tool prints would be a self-inflicted mismatch. */
+    const h = harness()
+    h.start(A)
+    h.emit(stage('scrape', 'reel 1'))
+    const out = String(await getTripProgressTool(h.store, 0).execute({ trip_id: A.slice(0, 8) }))
+    expect(out).toContain('generating')
+  })
+
+  it('refuses a prefix too short to identify anything', async () => {
+    // A loose match IS the bug. Below the prefix this tool prints, refuse rather than guess.
+    const h = harness()
+    h.start(A)
+    const out = String(await getTripProgressTool(h.store, 0).execute({ trip_id: 'trip' }))
+    expect(out).toMatch(/not the run/i)
+  })
+
+  it('still answers about the browser\'s own run when no trip_id is given', async () => {
+    const h = harness()
+    h.start(A)
+    h.emit(stage('scrape', 'reel 1'))
+    const out = String(await getTripProgressTool(h.store, 0).execute({}))
+    expect(out).toContain('generating')
+  })
+
+  it('does not answer under the old id when a NEW run starts mid-wait', async () => {
+    /* The self-throttle re-reads the store after waiting, and start() replaces the snapshot
+       wholesale. Checking the id only on the way in lets a run that began during those seconds
+       be reported as progress for the trip the agent asked about — the same silent-wrong,
+       arriving through the back door. */
+    const h = harness()
+    h.start(A)
+    const pending = getTripProgressTool(h.store, 15_000).execute({ trip_id: A })
+    h.start(B)
+    h.emit(stage('scrape', 'reel 1'))
+    const out = String(await pending)
+    expect(out).toMatch(/not the run/i)
+    expect(out).not.toContain('Scraping Reels')
+  })
+})
+
 describe('plan_trip_from_reels', () => {
   const deps = (over = {}) => ({
     store: createGenerationStore(),
@@ -541,6 +649,22 @@ describe('plan_trip_from_reels — an allowance it cannot spend', () => {
     expect(out).toMatch(/nothing was spent/i)
   })
 
+  it('does not send the user hunting for a card that is not on their screen', async () => {
+    /* The captured defect: this said `point them at the "Request a seat" card on this page`.
+       TrialExhaustedCard renders in exactly two places — SavedReelsFlow's plan sheet, and
+       CreateTripFlow, which only exists under the mock-auth demo shell. The agent-first trays
+       screen (TraysScreen) renders neither, and that is the flow these tools were built for. So
+       the agent confidently pointed at a card that was not on the screen: the user hunts for it,
+       finds nothing, and the agent looks broken at the exact moment it is delivering bad news.
+       Naming the button AND that it is not always on screen is true in either flow. */
+    const d = deps({ readAllowance: vi.fn().mockResolvedValue('trial_exhausted') })
+    const out = String(await run(d))
+    expect(out).not.toMatch(/on this page/i)
+    expect(out).toMatch(/not on every screen/i)
+    expect(out).toMatch(/no tool can request a seat/i)
+    expect(out).toMatch(/plan screen/i)
+  })
+
   it('does not even read the reel library for a spend that cannot happen', async () => {
     const readLibrary = vi.fn().mockResolvedValue([])
     const d = deps({ readAllowance: vi.fn().mockResolvedValue('trial_exhausted'), readLibrary })
@@ -607,6 +731,23 @@ describe('plan_trip_from_reels — refused by the backend after the user approve
     expect(out).toMatch(/does not reset/i)
     expect(out).toMatch(/no trip was created/i)
     expect(d.openStream).not.toHaveBeenCalled()
+  })
+
+  it('tells the agent where a seat is actually requested, so it invents no path', async () => {
+    /* This message named no card — but it named no route to a seat either, having said a seat
+       is the only thing that lifts the limit. An agent asked to relay that and given nowhere to
+       send the user improvises, and the nearest improvisation is the card the sibling message
+       used to hallucinate. Both refusals now carry the same, checkable answer. */
+    const d = deps({
+      create: vi.fn().mockRejectedValue(new ApiError(
+        403, ERROR_CODE_TRIAL_EXHAUSTED, 'Your free trip is planned.',
+      )),
+    })
+    const out = String(await run(d))
+    expect(out).toMatch(/no tool can request a seat/i)
+    expect(out).toMatch(/not on every screen/i)
+    expect(out).toMatch(/plan screen/i)
+    expect(out).not.toMatch(/on this page/i)
   })
 
   it("relays the backend's own sentence for a rate limit, inventing no reset time", async () => {

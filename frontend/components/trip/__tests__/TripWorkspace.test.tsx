@@ -315,3 +315,67 @@ describe('TripWorkspace', () => {
     expect(await screen.findByTestId('trip-feedback-panel')).toHaveTextContent('bundle-trip-id')
   })
 })
+
+/**
+ * The seeded (read-only sample) path — `/app/trip/demo`.
+ *
+ * A judge must be able to see a real 3D trail with no account, no generation and no spend, so
+ * the workspace accepts a bundle directly instead of fetching one. Nothing here has a database
+ * row behind it, which is what the read-only half is about: no feedback composer to post into a
+ * trip that does not exist, and a label that tells the agent the same thing.
+ */
+describe('TripWorkspace seeded with a bundle', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN = 'pk.test'
+  })
+  afterEach(() => { delete process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN })
+
+  function renderSeeded(extra: { readOnly?: boolean } = {}) {
+    return render(
+      <MapProvider>
+        <TripWorkspace tripId={TOKYO_TRIP.trip.id} bundle={TOKYO_TRIP} {...extra} />
+      </MapProvider>,
+    )
+  }
+
+  it('renders the bundle it was given without ever fetching', async () => {
+    renderSeeded()
+    expect(await screen.findByText(placesForDay(TOKYO_TRIP, 1)[0].place.name)).toBeInTheDocument()
+    expect(await screen.findByTestId('trip-map')).toBeInTheDocument()
+    expect(getTrip).not.toHaveBeenCalled()
+  })
+
+  // The fetch path is the one every real trip still takes; the prop must not have moved it.
+  it('leaves the fetching path alone when no bundle is passed', async () => {
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    renderWorkspace(TOKYO_TRIP.trip.id)
+    await screen.findByTestId('trip-map')
+    expect(getTrip).toHaveBeenCalledWith(TOKYO_TRIP.trip.id)
+  })
+
+  it('labels the read-only sample so the agent is not set up to fail', async () => {
+    renderSeeded({ readOnly: true })
+    expect(await screen.findByText(/sample trail — read-only/i)).toBeInTheDocument()
+  })
+
+  it('does not label an ordinary trip read-only', async () => {
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    renderWorkspace(TOKYO_TRIP.trip.id)
+    await screen.findByTestId('trip-map')
+    expect(screen.queryByText(/sample trail — read-only/i)).not.toBeInTheDocument()
+  })
+
+  // TOKYO_TRIP is `saved_with_gaps`, which is on the composer's allowlist — so this is the gate
+  // doing work, not the status. There is no trip row for feedback to reference.
+  it('keeps the feedback composer off the sample', async () => {
+    renderSeeded({ readOnly: true })
+    await screen.findByRole('link', { name: /all trails/i })
+    expect(screen.queryByTestId('trip-feedback-panel')).not.toBeInTheDocument()
+  })
+
+  it('still mounts the feedback composer on a seeded trip that is not read-only', async () => {
+    renderSeeded()
+    expect(await screen.findByTestId('trip-feedback-panel')).toBeInTheDocument()
+  })
+})

@@ -67,16 +67,34 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
-export default function TripWorkspace({ tripId }: { tripId: string }) {
+/**
+ * @param bundle    A trip supplied directly, instead of read from Supabase. `/app/trip/demo`
+ *                  passes the Tokyo fixture so a judge can see a real 3D trail with no account,
+ *                  no generation and nothing spent. Omit it and the fetch path below is unchanged.
+ * @param readOnly  There is no database row behind a seeded bundle, so nothing that writes may be
+ *                  offered against it — see the feedback composer below and the open-trip ref in
+ *                  <TripTools/>. Also labels the page, so the agent does not attempt an edit.
+ */
+export default function TripWorkspace({
+  tripId,
+  bundle: seeded,
+  readOnly = false,
+}: {
+  tripId: string
+  bundle?: TripBundle
+  readOnly?: boolean
+}) {
   const { acquire, release } = useSharedMap()
-  const [bundle, setBundle] = useState<TripBundle | null>(null)
-  const [status, setStatus] = useState<'loading' | 'ready' | 'not_found'>('loading')
-  const [activeDayNumber, setActiveDayNumber] = useState(1)
+  const [bundle, setBundle] = useState<TripBundle | null>(seeded ?? null)
+  const [status, setStatus] = useState<'loading' | 'ready' | 'not_found'>(seeded ? 'ready' : 'loading')
+  const [activeDayNumber, setActiveDayNumber] = useState(() => (seeded ? orderedDays(seeded)[0]?.day_number ?? 1 : 1))
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | null>(null)
   // Hotel-hub map (plan 2026-08-04-hotel-hub-map, T8) — ephemeral client state, no DB write.
   // Default selection = the route-central hotel (rank 1), which is `null` when NO hotel was
   // geocoded (honest-failure, C5); default layer = the existing itinerary route line.
-  const [selectedHotelId, setSelectedHotelId] = useState<string | null>(null)
+  const [selectedHotelId, setSelectedHotelId] = useState<string | null>(() =>
+    seeded ? recommendedHotelId(seeded) : null,
+  )
   const [layerMode, setLayerMode] = useState<'route' | 'hub'>('route')
   const [expanded, setExpanded] = useState(false)
   const [panelOpen, setPanelOpen] = useState(true)
@@ -84,6 +102,10 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
   const [selectedRestaurantPlaceId, setSelectedRestaurantPlaceId] = useState<string | null>(null)
 
   useEffect(() => {
+    // A seeded bundle is already the answer, and there is nothing to read: the fixture has no
+    // row. Returning before `setStatus('loading')` is what keeps the sample from flashing a
+    // loading screen it would never leave.
+    if (seeded) return
     let active = true
     setStatus('loading')
     getTrip(tripId).then((b) => {
@@ -95,15 +117,18 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
       setStatus('ready')
     })
     return () => { active = false }
-  }, [tripId])
+  }, [tripId, seeded])
 
   // Re-reads the trip INTO this page's state. Published to the WebMCP registry so an agent edit
   // becomes visible immediately; previously every change needed a manual page refresh.
   const refreshBundle = useCallback(async () => {
+    // A seeded bundle IS the current state and `tripId` names no row, so re-reading would ask
+    // Supabase for a trip that does not exist and answer null.
+    if (seeded) return seeded
     const fresh = await getTrip(tripId)
     if (fresh) setBundle(fresh)
     return fresh
-  }, [tripId])
+  }, [tripId, seeded])
 
   const days = useMemo(() => (bundle ? orderedDays(bundle) : []), [bundle])
   const placeIndex = useMemo(() => (bundle ? buildPlaceIndex(bundle) : new Map()), [bundle])
@@ -159,12 +184,18 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
         <a href="/app" className="type-label text-xs uppercase tracking-wide text-[var(--brass-bright)] underline-offset-2 hover:underline">
           Plan a new trip
         </a>
-        <p className="type-body max-w-md text-center text-sm text-[var(--muted)]">
-          Tell us what went wrong — it&apos;s the most useful feedback we get.
-        </p>
-        <div className="w-full max-w-md">
-          <TripFeedbackPanel key={bundle.trip.id} tripId={bundle.trip.id} />
-        </div>
+        {/* Same gate as the composer in the main return: a seeded bundle has no trip row for
+            feedback to reference, so the invitation goes with it rather than standing alone. */}
+        {!readOnly && (
+          <>
+            <p className="type-body max-w-md text-center text-sm text-[var(--muted)]">
+              Tell us what went wrong — it&apos;s the most useful feedback we get.
+            </p>
+            <div className="w-full max-w-md">
+              <TripFeedbackPanel key={bundle.trip.id} tripId={bundle.trip.id} />
+            </div>
+          </>
+        )}
       </main>
     )
   }
@@ -215,6 +246,7 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
         setLayerMode={setLayerMode}
         openPanel={() => setPanelOpen(true)}
         refresh={refreshBundle}
+        readOnly={readOnly}
       />
     {/* The interactive Mapbox canvas is a FIXED layer behind this route (MapProvider's
         `.shared-map`). This overlay must be click-through, or it swallows every pan/zoom/
@@ -343,6 +375,20 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
             </svg>
             All trails
           </Link>
+          {/* Said in the page, not only in the tool layer: an agent reading this workspace should
+              know before it tries that nothing here writes. The reviewer's exact ask — "label the
+              page so the agent is not set up to fail". */}
+          {readOnly && (
+            <div className="mb-3">
+              <p className="type-label inline-block rounded-full bg-[var(--brass-soft)] px-3 py-1 text-[11px] uppercase tracking-wide text-[var(--brass-bright)]">
+                Sample trail — read-only
+              </p>
+              <p className="type-body mt-1.5 text-xs text-[var(--muted)]">
+                A saved example, not an account. Nothing here can be changed or saved — plan your
+                own trail to edit an itinerary.
+              </p>
+            </div>
+          )}
           <OrchestratorSummary bundle={bundle} />
           {/* Day-pacing notes only ("Heads up") — the hotel comparison lives with the hotel
               list under "Where to stay" so there is ONE hotel decision surface, not two. */}
@@ -398,7 +444,7 @@ export default function TripWorkspace({ tripId }: { tripId: string }) {
               places_ready falls through to this return and must NOT show the panel. `key` +
               bundle.trip.id bind the panel to the LOADED trip and reset its state across a
               trip-to-trip route transition. */}
-          {(bundle.trip.status === 'complete' || bundle.trip.status === 'saved_with_gaps') && (
+          {!readOnly && (bundle.trip.status === 'complete' || bundle.trip.status === 'saved_with_gaps') && (
             <Section title="How was this trail?">
               <TripFeedbackPanel key={bundle.trip.id} tripId={bundle.trip.id} />
             </Section>

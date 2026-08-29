@@ -52,9 +52,22 @@ The resolved result was reconstructed from the merge tree, the four hunks resolv
 and then built:
 
 ```
-feat/webmcp + wt/layout + wt/receipts   →  tsc clean · 112 files · 1242 tests passed
+feat/webmcp + wt/layout + wt/receipts   →  tsc clean · 113 files · 1256 tests passed
                                         →  `next build` clean, production
 ```
+
+## ⚠ The take-layout's-side rule is POSITION-sensitive
+
+"Take layout's side in all four" describes the four hunks as they stand, **not a property of the
+branch.** An implementer working on `wt/layout` hit this: it added a test in the middle of the
+`agent-first empty state` describe — the same block `feat/webmcp` inserts its own new test into —
+and git aligned the two `it(` blocks into an **add/add conflict**, taking the count to six hunks.
+Applying the blanket rule there would have silently **deleted** main's clock test
+(`prints dates read off the clock, not a pair frozen into the source`).
+
+It was fixed by moving the new test to the end of that describe, and both tests are confirmed
+present in the merged tree. But if either branch gains another test in that block, re-check the
+hunk count before applying the rule. Six hunks means the rule no longer applies as written.
 
 Re-verified at `b8f8183`, after a further seven commits landed on `feat/webmcp`. The conflict
 shape did not move: `wt/receipts` still merges clean, `wt/layout` still produces the same four

@@ -28,9 +28,10 @@ import type { Entitlement } from '@/lib/entitlement'
  * session/navigation mocks that make a signed-out `/app/trip/demo` mountable — is local to this
  * directory. Reading a doc is just a path; mounting the page is not.
  *
- * WHAT THIS FILE DELIBERATELY DOES NOT ASSERT (three script claims that are false TODAY — they
- * are reported, not encoded, because writing a test around what the code happens to do would
- * quietly bless the wrong side):
+ * THREE CLAIMS THIS FILE REPORTED RATHER THAN ENCODED — ALL THREE HAVE SINCE BEEN CORRECTED IN
+ * THE SCRIPT (2026-08-31). They are kept here because the CODE FACTS below are what settle them,
+ * and the next person to edit the script needs them; a reader who only sees the corrected prose
+ * cannot tell which sentences are load-bearing. Do not read this list as a list of live defects.
  *
  *  1. VIDEO-SCRIPT.md:90 — stop 4 "says it has no Reel". It does not. `get_place_evidence`
  *     prints the no-Reel line ONLY for an `evidence_kind: 'reel_quote'` stop whose URL is missing
@@ -45,6 +46,13 @@ import type { Entitlement } from '@/lib/entitlement'
  *  3. VIDEO-SCRIPT.md:67 — get_app_state answers with "the six tools that work". Its output names
  *     FIVE (it does not recommend itself). Six is the registered count — what the Site tools list
  *     and the on-page chip show. Both numbers are pinned below, separately and honestly.
+ *
+ * Status, checked against the script on 2026-08-31: (1) now says the stop offers no Reel because
+ * it has none, and states outright that no sentence is printed saying so. (2) now opens with
+ * "Do not ask for 3D" and carries the minzoom-15-versus-zoom-14 reason. (3) now carries an
+ * explicit warning that the agent reads out five while six are offered, with the narration line
+ * to use. The reason none of the three is asserted here is unchanged and still right: a test
+ * written around what the code happens to do would bless whichever side it was pointed at.
  */
 
 const SCRIPT = readFileSync(resolve(process.cwd(), '..', 'docs/webmcp/VIDEO-SCRIPT.md'), 'utf8')

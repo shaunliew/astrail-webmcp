@@ -80,6 +80,8 @@ export default function SavedReelsFlow() {
   const organizeCursorRef = useRef<string | null>(null)
   const organizeHandleRef = useRef<{ cancel: () => void } | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  /** The run THIS mount has watched build. See the hand-over branch at the bottom of the render. */
+  const watchedRunRef = useRef<number | null>(null)
 
   useEffect(() => {
     activeRef.current = true
@@ -479,7 +481,37 @@ export default function SavedReelsFlow() {
      chat beside a website showing an unrelated screen. Approval is what makes the takeover
      intentional, and nothing underneath is destroyed by it — trays, selection and brief are this
      component's own state and are still there when the run ends. */
-  if (shellRun?.status === 'generating' || phase === 'generating') {
+  const waiting = shellRun?.status === 'generating' || phase === 'generating'
+
+  /* ...and it stays up through the HAND-OVER, until the route actually moves.
+
+     `router.push` is not the frame that replaces this page — the shell fires it from the result
+     handler and Next then fetches the trip route, which is many frames away. The status flip that
+     ends the run is committed immediately, so a branch keyed on 'generating' alone stopped
+     rendering the wait screen while /app was still the route on screen, and this component fell
+     straight through to the library underneath. That is the bounce through the home page the user
+     reported: build → home → trip.
+
+     `phase` hid it on the path this page starts itself (the exit effect leaves 'generating' alone
+     on a success, so the branch above still held), which is exactly why it survived a first fix.
+     A run this page did not start has no phase of its own: an AGENT-started run, and equally the
+     user's own run after they navigate away and back mid-build, both sit at 'inbox' the whole time
+     and bounced every time.
+
+     Latched per mount, and only while the run was actually GENERATING here:
+     - `run.status` never returns to idle, so a bare `=== 'complete'` would put the wait screen
+       back on screen for good the moment the user pressed Back from the finished trip.
+     - a NEW generation whose POST fails resets `phase` to 'brief' while the PREVIOUS run's
+       'complete' is still the current status; latching on anything looser would strand that user
+       on a wait screen for a trip that is already open.
+     Success only — 'failed' and 'unknown' navigate nowhere, and SavedReelsFlow's exit effect
+     above owns handing the page back with the reason. */
+  if (shellRun?.status === 'generating') watchedRunRef.current = shellRun.runId
+  const handingOver = shellRun?.status === 'complete'
+    && shellRun.tripId !== null
+    && watchedRunRef.current === shellRun.runId
+
+  if (waiting || handingOver) {
     return <GenerationScene tripId={shellRun?.tripId ?? null} events={shellRun?.events ?? []} />
   }
   if (phase === 'organizing') return <>{runNotice}<OrganizeGlobe message={organizeMessage} /></>

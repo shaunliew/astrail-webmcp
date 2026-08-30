@@ -1302,6 +1302,85 @@ describe('SavedReelsFlow is where an agent action lands', () => {
     expect(await screen.findByTestId('generation-progress')).toBeInTheDocument()
   })
 
+  /* The HAND-OVER. Reported twice from live runs: "it will go back the home page then only show
+     me the generated trip."
+
+     `router.push` is not the frame that replaces this page. The status flip to 'complete' commits
+     immediately; Next then fetches the trip route over many frames, with /app still on screen. A
+     wait screen keyed on 'generating' alone therefore stopped rendering while this component was
+     still mounted, and the library underneath painted in the gap. The page's OWN generation hid
+     it — `phase` stays 'generating' on a success — so only a run this page did not start bounced,
+     which is every agent-started run and every run the user navigates back into. */
+  it('holds the wait screen through the hand-off — the library must not flash in between', async () => {
+    const view = render(<Shell here={false} />)
+    await act(async () => { shellApi!.reserve()!.begin('trip-agent') })
+    await waitFor(() => expect(streamGeneration).toHaveBeenCalled())
+    view.rerender(<Shell here />)
+    await screen.findByTestId('generation-progress')
+
+    await act(async () => { emitToRun!({ type: 'result', content: JSON.stringify({ trip_id: 'trip-agent' }) }); await Promise.resolve() })
+
+    expect(push).toHaveBeenCalledWith('/app/trip/trip-agent')
+    // The route has NOT moved yet — this is exactly the gap the user was seeing.
+    expect(screen.getByTestId('generation-progress')).toBeInTheDocument()
+    expect(screen.queryByText('Tokyo Tower at sunset')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'mock-plan-trip' })).not.toBeInTheDocument()
+  })
+
+  it('gives the library back on a FRESH mount after the hand-off', async () => {
+    /* The other half of the hold: `run.status` never returns to idle, so a hold keyed on
+       'complete' alone would put the wait screen back for good the moment the user pressed Back
+       from the finished trip — a dead end with no route out. The hold belongs to the mount that
+       watched the run build, and to no other. */
+    const view = render(<Shell here={false} />)
+    await act(async () => { shellApi!.reserve()!.begin('trip-agent') })
+    await waitFor(() => expect(streamGeneration).toHaveBeenCalled())
+    view.rerender(<Shell here />)
+    await screen.findByTestId('generation-progress')
+    await act(async () => { emitToRun!({ type: 'result', content: JSON.stringify({ trip_id: 'trip-agent' }) }); await Promise.resolve() })
+    expect(screen.getByTestId('generation-progress')).toBeInTheDocument()
+
+    // The trip page opens, then the user comes back: this component is mounted afresh.
+    view.rerender(<Shell here={false} />)
+    view.rerender(<Shell here />)
+
+    expect(await screen.findByText('Tokyo Tower at sunset')).toBeInTheDocument()
+    expect(screen.queryByTestId('generation-progress')).not.toBeInTheDocument()
+  })
+
+  it('does not strand a failed NEW generation on the finished run’s wait screen', async () => {
+    /* The hold is latched while the run is GENERATING here, not merely while the wait screen is
+       up. `phase` goes to 'generating' before the POST and back to 'brief' when it throws — and
+       the previous run's 'complete' is still the current status throughout. A latch taken on the
+       wait screen being up would fire there, and the user whose new trip never started would be
+       parked on the wait screen of a trip that is already open. */
+    listSavedReelCards.mockResolvedValue([cardWithPlaces('r1', 'One-place reel', [placeProof({ place_id: 'p1', name: 'Place 1' })])])
+    const view = render(<Shell here={false} />)
+    await act(async () => { shellApi!.reserve()!.begin('trip-agent') })
+    await waitFor(() => expect(streamGeneration).toHaveBeenCalled())
+    view.rerender(<Shell here />)
+    await screen.findByTestId('generation-progress')
+    await act(async () => { emitToRun!({ type: 'result', content: JSON.stringify({ trip_id: 'trip-agent' }) }); await Promise.resolve() })
+    // Trip opened; the user returns to the library and builds another.
+    view.rerender(<Shell here={false} />)
+    view.rerender(<Shell here />)
+    await screen.findByText('One-place reel')
+
+    generateTrip.mockReset()
+    generateTrip.mockRejectedValueOnce(new Error('Could not reach the planner.'))
+    createTrail()
+    await screen.findByRole('heading', { name: 'Japan' })
+    fireEvent.click(screen.getByRole('checkbox', { name: /select Place 1/i }))
+    fireEvent.click(screen.getByRole('button', { name: /plan this trip/i }))
+    await screen.findByRole('heading', { name: /plan this trip/i })
+    pickTripDates()
+    fireEvent.click(await screen.findByRole('button', { name: /generate trip/i }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not reach the planner.')
+    expect(screen.getByRole('button', { name: /generate trip/i })).toBeInTheDocument()
+    expect(screen.queryByTestId('generation-progress')).not.toBeInTheDocument()
+  })
+
   it('still hands the page back when a run that arrived this way ends badly', async () => {
     /* The exit path, from the one mount that never had a 'generating' phase of its own. The shell
        navigates on SUCCESS only, so without this the wait screen is where the session ends. */

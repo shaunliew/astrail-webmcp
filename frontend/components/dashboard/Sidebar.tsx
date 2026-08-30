@@ -23,9 +23,16 @@ import { TALLY_FEEDBACK_FORM_ID } from '@/lib/tally'
 
 type IconProps = { className?: string }
 
+/* "Sample trail" reads as an example rather than one of the user's own — the row below it lists
+   their real trails, and the demo route's own <title> already calls it that. It sits in the rail,
+   not on a page, because README and SUBMISSION both send people to /app/trip/demo and nothing in
+   the running app linked there: from the rail it is reachable from every /app route.
+   Its own icon (not RouteIcon) because the mobile bar is icon-only, where two identical marks
+   would be indistinguishable from a duplicated Trails row. */
 const NAV: { href: string; label: string; Icon: ComponentType<IconProps> }[] = [
   { href: '/app', label: 'Home', Icon: HomeIcon },
   { href: '/app/trips', label: 'Trails', Icon: RouteIcon },
+  { href: '/app/trip/demo', label: 'Sample trail', Icon: CompassIcon },
 ]
 
 const RECENTS_LIMIT = 8
@@ -258,6 +265,15 @@ function RouteIcon({ className }: IconProps) {
       <path d="M6.8 18C11 18 13 6 17.2 6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
       <circle cx="5" cy="18.5" r="2.1" fill="currentColor" />
       <circle cx="19" cy="5.5" r="2.1" fill="none" stroke="currentColor" strokeWidth="1.6" />
+    </svg>
+  )
+}
+
+function CompassIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden className={className}>
+      <circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="1.6" />
+      <path d="m15 9-2 4-4 2 2-4Z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" />
     </svg>
   )
 }

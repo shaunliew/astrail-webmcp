@@ -348,6 +348,18 @@ async def _no_hotel(*_a, **_k):
     return (None, [])
 
 
+@pytest.fixture
+def hotel_search_enabled(monkeypatch):
+    """Hotel search ships OFF (`runner.HOTEL_SEARCH_ENABLED`) while Travala's MCP endpoint
+    answers 401 to every unauthenticated call. The stage's own behaviour is still worth
+    pinning for the day that auth is sorted, so every test that exercises it turns it back
+    on explicitly. That explicitness is load-bearing: it is what makes
+    `test_hotel_stage_does_not_run_while_travala_needs_auth` a gate on the switch rather
+    than a restatement of whatever the default happens to be.
+    """
+    monkeypatch.setattr(runner, "HOTEL_SEARCH_ENABLED", True)
+
+
 def _event_stages(c):
     return [e["stage"] for e in c.events]
 
@@ -962,8 +974,93 @@ async def test_runner_uses_extraction_cache_skips_scrape_and_extract():
     assert c.trip_updates[-1]["status"] == "complete"
 
 
+# ---------------------------------------------------------------------------------------------
+# Hotel search is OFF (2026-08-30).
+#
+# Travala's Travel MCP was a keyless public endpoint when `genagents/hotel.py` was written. It
+# now requires OAuth and has renamed itself "Travala Wallet MCP": `initialize`, `tools/list` and
+# `tools/call search_hotels` all answer `401 {"error":"invalid_token"}` unauthenticated. The
+# whole endpoint is gated, not just the search. So every generation was spending a doomed HTTP
+# call and writing a warning event for it.
+#
+# The two tests below are a pair on purpose. The first pins the OFF default end to end; the
+# second runs the identical setup with the switch flipped and proves the stage comes back — so
+# the first cannot pass for some unrelated reason (a broken fake, a missing trips row) while
+# claiming the switch works.
+# ---------------------------------------------------------------------------------------------
+
+def _hotel_stage_client():
+    """The seeded trip persist_hotels needs: it READS the trips row for dates + a location and
+    returns 0 without calling the fetcher if the row is missing (persist.py). Fake places carry
+    no city, so `destination_hint` is the location that lets a search run at all."""
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0,
+                       "started_at": None, "status": "pending"}])
+    c.db["trips"] = [{"id": "trip-1", "user_id": "user-1", "start_date": "2026-08-01",
+                      "end_date": "2026-08-01", "adult_count": 2, "room_count": 1,
+                      "destination_hint": "Tokyo"}]
+    return c
+
+
+async def _run_with_hotel_fetcher(c, fetcher):
+    async def scrape(url): return _reel(url)
+    async def extract(reel): return [_place("A", lat=35.60, lng=139.70),
+                                     _place("B", lat=35.62, lng=139.72)]
+    return await runner.run_generation(
+        "trip-1", "user-1", ["https://ig/r1"], "2026-08-01", "2026-08-01",
+        job_id="job-1", client=c, scrape=scrape, extract=extract, mem0=None,
+        weather=_no_weather, transport=_no_transport, restaurant=_no_restaurant,
+        narrator=_no_narrator, hotel=fetcher)
+
+
 @pytest.mark.asyncio
-async def test_runner_persists_hotel_suggestions():
+async def test_hotel_stage_does_not_run_while_travala_needs_auth():
+    """OFF means the work never happens — not that it happens and the result is hidden."""
+    c = _hotel_stage_client()
+    calls = []
+
+    async def hotel(location, check_in, check_out, rooms):
+        calls.append(location)
+        return "sess-1", [{"name": "Park Hyatt Tokyo", "star": 5, "pricePerNight": 900,
+                           "currency": "USD", "hotelId": 13278, "packageId": "pkg-a"}]
+
+    out = await _run_with_hotel_fetcher(c, hotel)
+
+    assert calls == [], "the hotel search still ran — the switch gates events, not the call"
+    # Not just the warning: NO hotels event of any kind. A `stage` event alone would still put
+    # "Looking for somewhere to stay" in the user's decision rail for work that never happens.
+    assert not [e for e in c.events if e["stage"] == "hotels"], _event_stages(c)
+    assert not c.db.get("hotel_suggestions")
+
+    # Guardrail #3: the trip completes. The gather has one fewer member, so this is also the
+    # proof that dropping it neither raises nor hangs.
+    assert out["itinerary"]["days"]
+    assert c.trip_updates[-1]["status"] == "complete"
+    assert c.db["jobs"][0]["status"] == "succeeded"
+    # ...and the siblings that share the gather still ran to completion.
+    for stage in ("transport", "restaurants", "summarize"):
+        assert _msgs(c, stage, "decision"), f"{stage} stopped completing when hotels was dropped"
+
+
+@pytest.mark.asyncio
+async def test_the_switch_is_the_only_thing_holding_the_hotel_stage_back(hotel_search_enabled):
+    """Fault injection for the test above: same setup, switch ON, stage returns."""
+    c = _hotel_stage_client()
+    calls = []
+
+    async def hotel(location, check_in, check_out, rooms):
+        calls.append(location)
+        return "sess-1", [{"name": "Park Hyatt Tokyo", "star": 5, "pricePerNight": 900,
+                           "currency": "USD", "hotelId": 13278, "packageId": "pkg-a"}]
+
+    await _run_with_hotel_fetcher(c, hotel)
+
+    assert calls, "flipping the switch back on did not restore the search"
+    assert _msgs(c, "hotels", "stage") and _msgs(c, "hotels", "decision")
+    assert c.db.get("hotel_suggestions")
+
+
+@pytest.mark.asyncio
+async def test_runner_persists_hotel_suggestions(hotel_search_enabled):
     c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     # persist_hotels READS the trips row (dates/occupancy) — the runner only UPDATEs trips, never
     # inserts, so seed it. destination_hint is the location fallback (the fake places carry no city).
@@ -982,11 +1079,19 @@ async def test_runner_persists_hotel_suggestions():
     hs = c.db.get("hotel_suggestions")
     assert hs and hs[0]["name"] == "Park Hyatt Tokyo" and hs[0]["source"] == "travala"
     assert any(e["stage"] == "hotels" for e in c.events)
+    # The hotel rewrite goes through its OWN fence (F3/B), in the enrich gather between the
+    # itinerary rewrite and the terminal completion. This assertion moved here from
+    # `test_runner_lease.py::test_the_terminal_result_and_the_job_status_land_together_through_
+    # one_rpc` when hotel search was switched off: that test pins what production does, and
+    # production no longer calls this RPC at all.
+    assert [name for name, _p in c.rpc_calls] == [
+        "claim_trip_job", "replace_trip_itinerary", "replace_hotel_suggestions",
+        "complete_trip_run"]
     assert c.trip_updates[-1]["status"] == "complete"   # 2 places / 1 day -> no blank day -> not degraded
 
 
 @pytest.mark.asyncio
-async def test_runner_says_so_when_the_hotel_search_finds_nothing():
+async def test_runner_says_so_when_the_hotel_search_finds_nothing(hotel_search_enabled):
     """A search that RAN and returned nothing is not a search that broke.
 
     Only the broken case said anything: an empty result emitted no event at all, so
@@ -1022,7 +1127,7 @@ async def test_runner_says_so_when_the_hotel_search_finds_nothing():
 
 
 @pytest.mark.asyncio
-async def test_runner_stays_silent_when_hotels_were_found():
+async def test_runner_stays_silent_when_hotels_were_found(hotel_search_enabled):
     """The warning must mark an ABSENCE, not fire on every run."""
     c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     c.db["trips"] = [{"id": "trip-1", "user_id": "user-1", "start_date": "2026-08-01",
@@ -1045,7 +1150,7 @@ async def test_runner_stays_silent_when_hotels_were_found():
 
 
 @pytest.mark.asyncio
-async def test_runner_hotel_failure_is_non_critical():
+async def test_runner_hotel_failure_is_non_critical(hotel_search_enabled):
     c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
     c.db["trips"] = [{"id": "trip-1", "user_id": "user-1", "start_date": "2026-08-01",
                       "end_date": "2026-08-01", "adult_count": 1, "room_count": 1,
@@ -1064,7 +1169,7 @@ async def test_runner_hotel_failure_is_non_critical():
 
 
 @pytest.mark.asyncio
-async def test_runner_hotel_lease_lost_emits_no_warning(monkeypatch):
+async def test_runner_hotel_lease_lost_emits_no_warning(monkeypatch, hotel_search_enabled):
     # A LeaseLost from the fenced hotel RPC (persist_hotels raises it when replace_hotel_suggestions
     # returns false) means a REPLACEMENT worker owns this run. Unlike a real hotel-search failure,
     # this superseded worker must NOT record a "couldn't find hotels" warning — that would pollute
@@ -1266,7 +1371,7 @@ async def test_runner_recovery_rerun_still_honours_a_clear_from_the_first_attemp
 
 
 @pytest.mark.asyncio
-async def test_run_persists_tradeoff_notes_and_comparisons():
+async def test_run_persists_tradeoff_notes_and_comparisons(hotel_search_enabled):
     # Integration proof that BOTH tradeoff halves are wired: notes from feasibility
     # warnings (computed pre-gather) and comparisons from persisted hotel rows
     # (computed post-gather), written together in ONE persist_tradeoffs call.
@@ -1389,7 +1494,7 @@ async def _run_late(c, *, hotel=None, transport=None, restaurant=None, narrator=
 
 
 @pytest.mark.asyncio
-async def test_every_concurrent_stage_reports_when_it_FINISHES_not_just_when_it_starts():
+async def test_every_concurrent_stage_reports_when_it_FINISHES_not_just_when_it_starts(hotel_search_enabled):
     """The point: something reaches the user DURING the gather, not only after it."""
     c = _late_stage_client()
     await _run_late(c, hotel=_hotel_found, transport=_leg("Ok"))
@@ -1403,7 +1508,7 @@ async def test_every_concurrent_stage_reports_when_it_FINISHES_not_just_when_it_
 
 
 @pytest.mark.asyncio
-async def test_completion_events_report_the_EXACT_count_that_was_written():
+async def test_completion_events_report_the_EXACT_count_that_was_written(hotel_search_enabled):
     """'Contains a digit' would pass on 'Found 0' after writing one row. Pin the number."""
     c = _late_stage_client()
     await _run_late(c, hotel=_hotel_found, transport=_leg("Ok"))
@@ -1492,7 +1597,7 @@ async def test_an_itinerary_with_nothing_to_route_still_says_so():
 
 
 @pytest.mark.asyncio
-async def test_an_empty_hotel_search_warns_and_does_not_also_claim_a_completion():
+async def test_an_empty_hotel_search_warns_and_does_not_also_claim_a_completion(hotel_search_enabled):
     """The absence warning and a 'Found 0 places to stay' would be two events disagreeing."""
     c = _late_stage_client()
 
@@ -1528,7 +1633,7 @@ async def test_the_map_is_told_when_stops_are_ACTUALLY_persisted():
 
 
 @pytest.mark.asyncio
-async def test_a_failed_hotel_search_does_not_claim_it_looked_near_your_route():
+async def test_a_failed_hotel_search_does_not_claim_it_looked_near_your_route(hotel_search_enabled):
     """The message Shaun saw on the first live WebMCP generation — "Couldn't find hotels near
     your route" — was emitted from a bare `except Exception`. It asserted a cause nobody
     established: that a search ran, covered his route, and came back empty.
@@ -1558,7 +1663,7 @@ async def test_a_failed_hotel_search_does_not_claim_it_looked_near_your_route():
 
 
 @pytest.mark.asyncio
-async def test_a_broken_hotel_search_and_an_empty_one_tell_the_traveller_different_things():
+async def test_a_broken_hotel_search_and_an_empty_one_tell_the_traveller_different_things(hotel_search_enabled):
     """"We searched and found nothing" and "the search failed" are different facts. Reporting
     one as the other is the defect; this pins that they can never collapse back together."""
     broke = _late_stage_client()
@@ -1578,7 +1683,7 @@ async def test_a_broken_hotel_search_and_an_empty_one_tell_the_traveller_differe
 
 
 @pytest.mark.asyncio
-async def test_a_failed_hotel_search_logs_its_exception_TYPE_so_it_can_be_diagnosed():
+async def test_a_failed_hotel_search_logs_its_exception_TYPE_so_it_can_be_diagnosed(hotel_search_enabled):
     """The reason the 401 took a live probe to find: the stage swallowed the exception whole.
     `/tmp/astrail-api.log` recorded nothing at all for the hotel stage, so "Travala rejected us"
     and "our own ranking code has a bug" were indistinguishable after the fact.
@@ -1612,7 +1717,7 @@ async def test_a_failed_hotel_search_logs_its_exception_TYPE_so_it_can_be_diagno
 
 
 @pytest.mark.asyncio
-async def test_hotels_that_were_FOUND_but_could_not_be_mapped_say_that_instead(monkeypatch):
+async def test_hotels_that_were_FOUND_but_could_not_be_mapped_say_that_instead(monkeypatch, hotel_search_enabled):
     """A ResolveError/CacheError can only reach this handler from RANKING, which only runs after
     the Travala fetch succeeded (pinned in test_persist.py::…preserves_prior_rows). So "we found
     hotels, we couldn't place them" IS established here, and is a different fact from "the search

@@ -151,6 +151,16 @@ export default function TripWorkspace({
   // disabled rather than flipping to a silently blank map (C5). Same signal that seeds the
   // default selection above, so "toggle enabled" and "a hub is selected" never disagree.
   const canUseHubLayer = useMemo(() => (bundle ? recommendedHotelId(bundle) !== null : false), [bundle])
+  // Hotel search is OFF (2026-08-30): Travala's Travel MCP became "Travala Wallet MCP" and now
+  // 401s every unauthenticated call, so `runner.HOTEL_SEARCH_ENABLED` is false and a trip
+  // generated from now on has NO hotel rows. Everything hotel-shaped is hidden on that basis.
+  //
+  // Gated on the DATA, not on a build-time flag, and the difference is not cosmetic: trips
+  // generated BEFORE the switch have real hotel rows in the database, and a flag would blank
+  // them out — deleting visible user data from the UI to hide a feature they already have. This
+  // way an old trip keeps its hotels and a new one simply never grows the surface.
+  const hotels = useMemo(() => (bundle ? tripHotels(bundle) : []), [bundle])
+  const hasHotels = hotels.length > 0
   const activeDay = days.find((d) => d.day_number === activeDayNumber) ?? null
   const dayPlaces = bundle ? placesForDay(bundle, activeDayNumber) : []
   const dayLegs = bundle && activeDay ? legsForDay(bundle, activeDay.id) : []
@@ -310,35 +320,44 @@ export default function TripWorkspace({
 
       {/* Map layer switch — route line vs. hotel hub-and-spokes, never both (plan decision #3).
           Floats over the map, clear of the left/bottom details panel. The Hotel segment is
-          disabled when no hotel could be placed, so it never flips to a blank map (C5). */}
-      <div
-        role="group"
-        aria-label="Map layer"
-        className={[
-          'paper-scope pointer-events-auto absolute z-20 left-1/2 top-4 -translate-x-1/2',
-          'flex items-center gap-0.5 rounded-full border border-[var(--line)]',
-          'bg-[rgba(253,251,245,0.94)] p-0.5 shadow-[0_2px_12px_rgba(0,0,0,0.2)] backdrop-blur-sm',
-        ].join(' ')}
-      >
-        <button
-          type="button"
-          onClick={() => setLayerMode('route')}
-          aria-pressed={layerMode === 'route'}
-          className={segClass(layerMode === 'route')}
+          disabled when no hotel could be placed, so it never flips to a blank map (C5).
+
+          The WHOLE control goes when the trip has no hotels, not just the Hotel segment: a
+          disabled toggle is still an affordance advertising a feature this build does not have,
+          and with hotels gone "Route" is the only mode there is. Removing it is also what makes
+          the hidden state recoverable — see lib/webmcp/tools/map.ts, where both map tools now
+          refuse to switch INTO a hub layer that would draw nothing, since with no toggle on
+          screen there would be no way back out of it. */}
+      {hasHotels ? (
+        <div
+          role="group"
+          aria-label="Map layer"
+          className={[
+            'paper-scope pointer-events-auto absolute z-20 left-1/2 top-4 -translate-x-1/2',
+            'flex items-center gap-0.5 rounded-full border border-[var(--line)]',
+            'bg-[rgba(253,251,245,0.94)] p-0.5 shadow-[0_2px_12px_rgba(0,0,0,0.2)] backdrop-blur-sm',
+          ].join(' ')}
         >
-          Route
-        </button>
-        <button
-          type="button"
-          onClick={() => setLayerMode('hub')}
-          aria-pressed={layerMode === 'hub'}
-          disabled={!canUseHubLayer}
-          title={canUseHubLayer ? undefined : 'No hotel could be placed on the map'}
-          className={[segClass(layerMode === 'hub'), canUseHubLayer ? '' : 'cursor-not-allowed opacity-40'].join(' ')}
-        >
-          Hotel
-        </button>
-      </div>
+          <button
+            type="button"
+            onClick={() => setLayerMode('route')}
+            aria-pressed={layerMode === 'route'}
+            className={segClass(layerMode === 'route')}
+          >
+            Route
+          </button>
+          <button
+            type="button"
+            onClick={() => setLayerMode('hub')}
+            aria-pressed={layerMode === 'hub'}
+            disabled={!canUseHubLayer}
+            title={canUseHubLayer ? undefined : 'No hotel could be placed on the map'}
+            className={[segClass(layerMode === 'hub'), canUseHubLayer ? '' : 'cursor-not-allowed opacity-40'].join(' ')}
+          >
+            Hotel
+          </button>
+        </div>
+      ) : null}
 
       <aside
         id="trip-details-panel"
@@ -454,19 +473,24 @@ export default function TripWorkspace({
             />
           </Section>
 
-          <Section title="Where to stay">
-            <div className="flex flex-col gap-3">
-              {/* Price-vs-rating context sits WITH the hotels it compares. It is context, not a
-                  second pick — the Recommended badge on the list below stays the single pick. */}
-              <TradeoffPanel tradeoffs={bundle.trip.tradeoffs} variant="comparisons" />
-              <HotelPanel
-                hotels={tripHotels(bundle)}
-                selectedHotelId={selectedHotelId}
-                onSelectHotel={setSelectedHotelId}
-                layerMode={layerMode}
-              />
-            </div>
-          </Section>
+          {/* Hidden outright when the trip has no hotels (see `hasHotels`), rather than shown
+              with HotelPanel's empty state: "No hotel suggestions for these dates" reports the
+              result of a search, and no search ran. */}
+          {hasHotels ? (
+            <Section title="Where to stay">
+              <div className="flex flex-col gap-3">
+                {/* Price-vs-rating context sits WITH the hotels it compares. It is context, not a
+                    second pick — the Recommended badge on the list below stays the single pick. */}
+                <TradeoffPanel tradeoffs={bundle.trip.tradeoffs} variant="comparisons" />
+                <HotelPanel
+                  hotels={hotels}
+                  selectedHotelId={selectedHotelId}
+                  onSelectHotel={setSelectedHotelId}
+                  layerMode={layerMode}
+                />
+              </div>
+            </Section>
+          ) : null}
 
           <Section title="Place detail">
             <PlaceIntelPanel tripPlace={selectedTripPlace} />

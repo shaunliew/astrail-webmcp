@@ -208,6 +208,37 @@ describe('map tools: claims the page actually keeps', () => {
     expect(out).toMatch(/no hotel/i)
   })
 
+  // Hotel search is OFF (2026-08-30 — Travala's MCP 401s every unauthenticated call), so
+  // TripWorkspace hides the whole Route/Hotel toggle for a trip with no hotels. That removes the
+  // only way BACK out of hub mode, which turns "switch first, then report honestly" from a
+  // cosmetic wart into a dead end: hub mode with no placed hotel draws nothing, so an agent call
+  // would leave the user on a blank map with no control to recover. Both tools now decline the
+  // switch instead of making it and apologising.
+  it('show_on_map does not switch INTO a hub layer that would draw nothing', () => {
+    const d = deps({ bundle: () => NO_PLACED_HOTEL })
+    const out = String(showOnMapTool(d).execute({ target: 'hotel_hub' }))
+    expect(d.setLayerMode).not.toHaveBeenCalled()
+    expect(out).toMatch(/no hotel/i)
+  })
+
+  it('set_map_mode does not switch INTO a hub layer that would draw nothing', () => {
+    const d = deps({ bundle: () => NO_PLACED_HOTEL })
+    const out = String(setMapModeTool(d).execute({ mode: 'hub' }))
+    expect(d.setLayerMode).not.toHaveBeenCalled()
+    expect(out).toMatch(/no hotel/i)
+  })
+
+  // The other half of the pair: a trip that DOES have a placed hotel still switches, so the two
+  // tests above pin the emptiness check rather than a tool that stopped switching altogether.
+  it('still switches for a trip whose hotel is on the map', () => {
+    const d = deps()
+    showOnMapTool(d).execute({ target: 'hotel_hub' })
+    expect(d.setLayerMode).toHaveBeenCalledWith('hub')
+    const d2 = deps()
+    setMapModeTool(d2).execute({ mode: 'hub' })
+    expect(d2.setLayerMode).toHaveBeenCalledWith('hub')
+  })
+
   it('set_map_mode still emits no caption-derived name — its audited hint is false', () => {
     // Reading the bundle to tell the truth about the hub must not start echoing the hotel's
     // NAME: spec-contract.test.ts audits this tool as untrustedContentHint:false.

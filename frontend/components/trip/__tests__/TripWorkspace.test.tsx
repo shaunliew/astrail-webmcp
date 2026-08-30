@@ -192,6 +192,32 @@ describe('TripWorkspace', () => {
     expect(await screen.findByRole('button', { name: /^hotel$/i })).toBeDisabled()
   })
 
+  // Hotel search is OFF (2026-08-30): Travala's MCP endpoint 401s every unauthenticated call, so
+  // a trip generated from now on has no hotel rows at all. The gate is the DATA, not a build
+  // flag, precisely so the two tests below can both be true at once — a trip generated BEFORE the
+  // switch still has real hotel rows in the database, and hiding them would delete visible user
+  // data from the UI.
+  it('hides the hotel surfaces entirely for a trip with no hotels', async () => {
+    getTrip.mockResolvedValueOnce({ ...TOKYO_TRIP, hotels: [] })
+    renderWorkspace(TOKYO_TRIP.trip.id)
+    // Wait for the bundle, via something that is NOT hotel-related.
+    await screen.findByRole('tab', { name: /day 1/i })
+    expect(screen.queryByRole('heading', { name: 'Where to stay' })).not.toBeInTheDocument()
+    // The whole segmented control goes, not just the Hotel segment: a disabled toggle is still
+    // an affordance offering a feature this build does not have.
+    expect(screen.queryByRole('group', { name: /map layer/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^hotel$/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^route$/i })).not.toBeInTheDocument()
+  })
+
+  it('still shows them for a trip that has hotel rows, so old trips keep their data', async () => {
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    renderWorkspace(TOKYO_TRIP.trip.id)
+    expect(await screen.findByRole('heading', { name: 'Where to stay' })).toBeInTheDocument()
+    expect(screen.getByRole('group', { name: /map layer/i })).toBeInTheDocument()
+    expect(screen.getAllByText(TOKYO_TRIP.hotels[0].name).length).toBeGreaterThan(0)
+  })
+
   // Merge-lite (2026-08-06): ONE hotel decision surface. The price-vs-rating card renders exactly
   // once (inside "Where to stay", not also at the top), and the pacing notes render as "Heads up".
   it('renders the price-vs-rating card once, with pacing notes under Heads up', async () => {

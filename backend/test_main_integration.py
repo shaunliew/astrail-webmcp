@@ -123,6 +123,11 @@ async def test_generate_trip_end_to_end(monkeypatch):
         )
 
     monkeypatch.setattr(main, "run_generation", run)
+    # Hotel search ships OFF (`runner.HOTEL_SEARCH_ENABLED`, 2026-08-30 — Travala's MCP endpoint
+    # 401s every unauthenticated call). This test injects a deterministic fake instead of calling
+    # Travala, and the hotel_suggestions assertion below is the only proof that persist_hotels
+    # still writes what the schema expects, so it turns the stage back on explicitly.
+    monkeypatch.setattr(runner, "HOTEL_SEARCH_ENABLED", True)
     token = jwt.encode(
         {"sub": user_id, "aud": "authenticated"},
         private_pem,

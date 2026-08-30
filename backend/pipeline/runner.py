@@ -41,6 +41,22 @@ _UNSET = object()
 
 logger = logging.getLogger(__name__)
 
+# HOTEL SEARCH — OFF since 2026-08-30. Travala's Travel MCP was a keyless public endpoint when
+# `genagents/hotel.py` was written against it. It now requires OAuth and has renamed itself
+# "Travala Wallet MCP": probed unauthenticated on 2026-08-30, `initialize`, `tools/list` AND
+# `tools/call search_hotels` each answer `401 {"error":"invalid_token","error_description":
+# "Bearer token required"}`. The whole endpoint is gated, not just the search — so `hotel.py`'s
+# keyless POST cannot succeed, and every generation was paying for a doomed HTTP call and writing
+# a warning event about it. We did not wire the OAuth: dynamic registration refuses
+# `client_credentials`, leaving only a human browser login storing a personal refresh token on a
+# wallet product whose scopes include `mcp:book` and `mcp:pay`.
+#
+# A SWITCH rather than deleted or commented-out code: `_stage_hotels`, `persist_hotels` and
+# `genagents/hotel.py` are all still exercised by their tests (see the `hotel_search_enabled`
+# fixture in pipeline/test_runner.py), so the day Travala's auth is sorted this is one line to
+# flip back — with working, tested code behind it, which commented-out code never is.
+HOTEL_SEARCH_ENABLED = False
+
 
 def _canonical_reel_url(url: str) -> str:
     """The form every OTHER writer of `source_reel_url` stores, so the column holds one string
@@ -680,8 +696,16 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                     except Exception:
                         pass   # best-effort — the summaries are saved either way
 
-                await asyncio.gather(_stage_transport(), _stage_restaurants(),
-                                     _stage_hotels(), _stage_narration(), return_exceptions=True)
+                # Built as a list so a disabled stage is NEVER CONSTRUCTED, let alone awaited:
+                # gating inside `_stage_hotels` would still schedule a coroutine, and its very
+                # first statement is the `stage` event ("Looking for somewhere to stay") that
+                # must not reach the user's decision rail for work that cannot happen. Order is
+                # preserved around the optional member for stable event interleaving.
+                stages = [_stage_transport(), _stage_restaurants()]
+                if HOTEL_SEARCH_ENABLED:
+                    stages.append(_stage_hotels())
+                stages.append(_stage_narration())
+                await asyncio.gather(*stages, return_exceptions=True)
 
                 # ONE tradeoffs write (notes computed pre-gather + comparisons from persisted hotels).
                 # No read-modify-write; best-effort (a failure must never fail the trip, guardrail #3).

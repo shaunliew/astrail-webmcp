@@ -94,12 +94,19 @@ async def test_the_terminal_result_and_the_job_status_land_together_through_one_
     assert job_row(client)["status"] == "succeeded"
     # The claim, then the fenced writes, in order. The claim leads because every lease instant
     # is the database's now; the itinerary rewrite is a destructive delete-reinsert through its
-    # own fence; the hotel stage's replace is fenced too (F3/B) and lands in the enrich gather
-    # between the itinerary rewrite and the terminal completion (even with no hotels, it runs to
-    # clear stale rows — the same delete-first idempotency, now fenced).
+    # own fence; the terminal completion closes the run.
+    #
+    # `replace_hotel_suggestions` used to sit between the last two: the hotel stage's replace is
+    # fenced too (F3/B) and ran in the enrich gather even with no hotels, to clear stale rows.
+    # It is absent now because hotel search ships OFF (`runner.HOTEL_SEARCH_ENABLED`, 2026-08-30
+    # — Travala's MCP endpoint 401s every unauthenticated call). This list pins what PRODUCTION
+    # does; the fenced hotel replace still has a home in `pipeline/test_runner.py::
+    # test_runner_persists_hotel_suggestions`, which runs with the switch on.
+    #
+    # The consequence worth naming: with the stage gated, nothing clears `hotel_suggestions` any
+    # more, so re-generating a trip built before the switch KEEPS its existing hotel rows.
     assert [name for name, _params in client.rpc_calls] == [
-        "claim_trip_job", "replace_trip_itinerary", "replace_hotel_suggestions",
-        "complete_trip_run"]
+        "claim_trip_job", "replace_trip_itinerary", "complete_trip_run"]
 
 
 async def test_a_run_without_a_job_id_still_writes_its_terminal_result():

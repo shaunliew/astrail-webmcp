@@ -813,8 +813,19 @@ function WatchRail() {
   return null
 }
 
+/** Answers the approval card yes, for the paths whose point is what happens AFTER consent. */
+function AutoApprove() {
+  const { pending } = useWebMcpRegistry()
+  useEffect(() => {
+    if (!pending) return
+    cardsShown.push(pending.summary)
+    pending.resolve(true)
+  }, [pending])
+  return null
+}
+
 /** A real trip page with a real open bundle, and the tools the agent would find on it. */
-async function editableTripPage(): Promise<Record<string, ToolSpec>> {
+async function editableTripPage({ approve = false } = {}): Promise<Record<string, ToolSpec>> {
   h.pathname = TRIP_PATH
   h.listTrips.mockResolvedValue([tripRow('complete')])
   h.listSavedReelCards.mockResolvedValue([])
@@ -822,7 +833,7 @@ async function editableTripPage(): Promise<Record<string, ToolSpec>> {
     <WebMcpRegistryProvider>
       <GlobalTools />
       <PublishOpenTrip bundle={bundleFor(TRIP_ID, 'complete')} />
-      <AutoDecline />
+      {approve ? <AutoApprove /> : <AutoDecline />}
       <WatchRail />
     </WebMcpRegistryProvider>,
   )
@@ -838,18 +849,86 @@ describe('the summary rewrite an edit starts', () => {
     vi.mocked(replanTripApi).mockReset()
   })
 
-  it('runs once for two edits in a row, not once each', async () => {
-    /* The narration is the expensive half of an edit and it rewrites the WHOLE trip, so a second
-       one started while the first is still running is pure waste: it re-describes the same stops
-       and overwrites prose that was about to be correct. */
-    vi.mocked(replanTripApi).mockReturnValue(new Promise(() => {}))
+  /** Hands back a lever per `replanTrip` call, so a rewrite can be held open across an edit. */
+  function heldReplans() {
+    const calls: { resolve: (r: { days_narrated: number; routes_refreshed: boolean }) => void; reject: (e: unknown) => void }[] = []
+    vi.mocked(replanTripApi).mockImplementation(
+      () => new Promise((resolve, reject) => { calls.push({ resolve, reject }) }),
+    )
+    return calls
+  }
+
+  const land = (call: { resolve: (r: { days_narrated: number; routes_refreshed: boolean }) => void }) =>
+    act(async () => { call.resolve({ days_narrated: 3, routes_refreshed: true }) })
+
+  it('does not let an edit join a rewrite whose prose predates it', async () => {
+    /* The defect coalescing introduced, and it is invisible from the browser: `persist_narration`
+       (backend/pipeline/persist.py) reads the trip's stops, THEN awaits the narrator for ~30s,
+       then writes what it wrote. So a rewrite started by edit A is already committed to prose
+       that cannot know about edit B. Joining B into it would land A-only summaries and report
+       them as matching the current stops — the exact self-contradiction this whole feature
+       exists to remove, restored one layer down and harder to see.
+       Sequential edits pass against the bug; the edit has to land WHILE the rewrite is open. */
+    const calls = heldReplans()
+    const tools = await editableTripPage()
+
+    await act(async () => { await tools.move_place.execute({ place: '1', to_day: 3 }) })
+    expect(calls).toHaveLength(1)
+
+    await act(async () => { await tools.move_place.execute({ place: '2', to_day: 3 }) })
+    expect(calls, 'a second run must not start while the first is open').toHaveLength(1)
+
+    await land(calls[0])
+    await waitFor(() => { expect(calls).toHaveLength(2) })
+  })
+
+  it('still costs two narrations for a burst of edits, not one each', async () => {
+    // What coalescing was FOR, kept: the queue holds exactly one follow-up however many edits
+    // land during a rewrite, so three edits mid-rewrite cost two runs and not four.
+    const calls = heldReplans()
     const tools = await editableTripPage()
 
     await act(async () => { await tools.move_place.execute({ place: '1', to_day: 3 }) })
     await act(async () => { await tools.move_place.execute({ place: '2', to_day: 3 }) })
+    await act(async () => { await tools.move_place.execute({ place: '3', to_day: 3 }) })
+    expect(calls).toHaveLength(1)
 
-    expect(replanTripApi).toHaveBeenCalledTimes(1)
-    expect(replanTripApi).toHaveBeenCalledWith(TRIP_ID, 'test-token')
+    await land(calls[0])
+    await waitFor(() => { expect(calls).toHaveLength(2) })
+    await land(calls[1])
+    // Nothing is owed any more, so nothing more is bought.
+    await act(async () => {})
+    expect(calls).toHaveLength(2)
+  })
+
+  it('still owes the queued edit a rewrite when the one before it failed', async () => {
+    /* A failed narration does not discharge the obligation — the prose is still behind, and the
+       follow-up reads the trip fresh either way. Dropping it here would leave the trip
+       permanently stale after one unlucky blip. */
+    const calls = heldReplans()
+    const tools = await editableTripPage()
+
+    await act(async () => { await tools.move_place.execute({ place: '1', to_day: 3 }) })
+    await act(async () => { await tools.move_place.execute({ place: '2', to_day: 3 }) })
+    await act(async () => { calls[0].reject(new Error('Itinerary narration could not be regenerated')) })
+
+    await waitFor(() => { expect(calls).toHaveLength(2) })
+  })
+
+  it('does not wedge itself when a rewrite is still open, and frees up when it lands', async () => {
+    /* The record outlives the run it describes, so `replanInFlight` must read the RUN. Asking
+       whether the map knows the trip would answer "a rewrite is running" forever after the first
+       edit, and `replan_trip` would silently stop asking for approval. */
+    const calls = heldReplans()
+    const tools = await editableTripPage()
+
+    await act(async () => { await tools.move_place.execute({ place: '1', to_day: 3 }) })
+    await land(calls[0])
+    await waitFor(() => { expect(calls).toHaveLength(1) })
+
+    // Nothing running now, so the agent's own replan_trip must raise its card again.
+    await act(async () => { void tools.replan_trip.execute({}) })
+    await waitFor(() => { expect(cardsShown).toHaveLength(1) })
   })
 
   it('is joined, not duplicated, when the agent calls replan_trip anyway', async () => {
@@ -906,6 +985,29 @@ describe('the summary rewrite an edit starts', () => {
       const entry = railEntries.find((e) => e.tool === 'replan_trip')
       expect(entry?.status).toBe('failed')
       expect(entry?.detail).toContain('The edit was saved')
+    })
+  })
+
+  it('does not invent an edit in the record when a manual rewrite fails', async () => {
+    /* `replan_trip` can be approved and run with no edit behind it at all, and on failure the
+       rail said "The edit was saved" regardless — a durable record asserting something that never
+       happened, while the tool's own reply said only that replanning failed. Two records of one
+       call, contradicting each other. Same class as the REMOVED entry written for a removal the
+       user had refused. */
+    vi.mocked(replanTripApi).mockRejectedValue(new Error('Itinerary narration could not be regenerated'))
+    const tools = await editableTripPage({ approve: true })
+
+    /* NOT wrapped in act(): the tool awaits its own approval card, and AutoApprove answers it
+       from an effect — awaiting the call inside act() deadlocks the two against each other. */
+    const call = tools.replan_trip.execute({})
+    await waitFor(() => { expect(cardsShown).toHaveLength(1) })
+    await call
+
+    await waitFor(() => {
+      const entry = railEntries.find((e) => e.tool === 'replan_trip')
+      expect(entry?.status).toBe('failed')
+      expect(entry?.detail).not.toContain('The edit was saved')
+      expect(entry?.detail).toContain('could not be rewritten')
     })
   })
 

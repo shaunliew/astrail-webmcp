@@ -347,12 +347,16 @@ describe('every edit rewrites the summaries itself', () => {
     ['set_trip_dates', (d) => Promise.resolve(setTripDatesTool(d).execute({ start_date: '2026-09-14' }))],
   ]
 
-  it.each(mutations)('%s starts exactly one rewrite', async (_name, run) => {
+  it.each(mutations)('%s starts exactly one rewrite, and says an edit is behind it', async (_name, run) => {
+    /* `afterEdit` is the half that cannot be dropped. The backend reads the stops and THEN awaits
+       the narrator for ~30s (`persist_narration`), so a rewrite already running was written from
+       the trip BEFORE this edit — without the flag the shell would satisfy this call with that
+       run and report prose that never saw the change as current. */
     const d = deps()
     await run(d)
     await settle()
     expect(d.replan).toHaveBeenCalledTimes(1)
-    expect(d.replan).toHaveBeenCalledWith(TOKYO_TRIP.trip.id)
+    expect(d.replan).toHaveBeenCalledWith(TOKYO_TRIP.trip.id, { afterEdit: true })
   })
 
   it.each(mutations)('%s says the rewrite is under way, in a STRUCTURED field', async (_name, run) => {
@@ -527,6 +531,28 @@ describe('replan_trip joins a rewrite an edit already started', () => {
     const d = joining()
     await replanTripTool(d).execute({})
     expect(d.replanInFlight).toHaveBeenCalledWith(TOKYO_TRIP.trip.id)
+  })
+
+  it('does not call the summaries current when an edit overtook the rewrite', async () => {
+    /* The stale-join defect, one level up. A narration returning is not what makes the summaries
+       current — the absence of a newer edit is. The backend reads the stops and THEN awaits the
+       narrator (`persist_narration`), so an edit that lands mid-rewrite leaves the prose one
+       change behind the moment it is written, and the shell has already queued the follow-up.
+       Answered from the shell rather than guessed: it clears `running` before this continuation
+       resumes, so a rewrite in flight NOW is by construction one a later edit asked for. */
+    const d = deps({ replanInFlight: vi.fn().mockReturnValueOnce(false).mockReturnValue(true) })
+    const out = envelope(await replanTripTool(d).execute({}))
+    expect(out.summaries_stale).toBe(true)
+    expect(out.summaries_rewriting).toBe(true)
+    expect(String(out.result)).toContain('changed again while it ran')
+  })
+
+  it('calls them current when nothing overtook it', async () => {
+    const d = deps()   // replanInFlight answers false throughout
+    const out = envelope(await replanTripTool(d).execute({}))
+    expect(out.summaries_stale).toBe(false)
+    expect(out.summaries_rewriting).toBeUndefined()
+    expect(String(out.result)).not.toContain('changed again')
   })
 })
 

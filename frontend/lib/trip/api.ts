@@ -407,11 +407,42 @@ export type ReplanTripResult = { days_narrated: number; routes_refreshed: boolea
  * SILENT: go through `GlobalTools`, which coalesces one rewrite per trip and puts it on the
  * activity rail, rather than calling this directly.
  */
+/**
+ * How long a rewrite may run before the browser stops waiting for it.
+ *
+ * Generous on purpose — the endpoint refreshes routes and then narrates the whole trip, which
+ * measured around 30 seconds for two days, so a long trip on a slow model must not be cut off
+ * mid-narration. The bound exists for the case where the response never arrives at all: this is
+ * the one call in the app whose promise is held in a per-trip map to stop a second rewrite
+ * starting, so a fetch that never settles does not merely lose one rewrite — it wedges the map,
+ * and every later edit joins a dead promise, is told the summaries are being rewritten, and
+ * never triggers another. The trip's prose would be frozen for the session with the UI insisting
+ * it is being updated. A timeout turns that into an honest failure.
+ */
+const REPLAN_TIMEOUT_MS = 120_000
+
 export async function replanTrip(tripId: string, accessToken: string): Promise<ReplanTripResult> {
-  const res = await fetch(`${BACKEND_URL}/trips/${tripId}/replan`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${accessToken}` },
-  })
+  // AbortController rather than AbortSignal.timeout: the latter is absent in some of the
+  // environments this runs under, and a silently-undefined signal is exactly no bound at all.
+  const controller = new AbortController()
+  const bell = setTimeout(() => controller.abort(), REPLAN_TIMEOUT_MS)
+  let res: Response
+  try {
+    res = await fetch(`${BACKEND_URL}/trips/${tripId}/replan`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}` },
+      signal: controller.signal,
+    })
+  } catch (e) {
+    // An abort reads as a DOMException named AbortError, whose own message ("The operation was
+    // aborted") tells a user nothing about what was being attempted or what to do next.
+    if (controller.signal.aborted) {
+      throw new Error('The summaries took too long to rewrite. The trip itself is unchanged — try again.')
+    }
+    throw e
+  } finally {
+    clearTimeout(bell)
+  }
   if (!res.ok) throw new Error(await editErrorMessage(res))
   return (await res.json()) as ReplanTripResult
 }

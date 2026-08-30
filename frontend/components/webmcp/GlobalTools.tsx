@@ -839,72 +839,151 @@ export default function GlobalTools() {
   )
 
   /**
-   * The one summary rewrite a trip may have running, whoever asked for it.
+   * Where each trip's prose stands relative to its stops, and what is being done about it.
    *
    * A ref rather than state: nothing renders from it, and a re-render must not drop it — the
    * whole point is that a rewrite started by `remove_place` is still findable by the
-   * `replan_trip` the agent calls a beat later. Keyed by trip id, so two different trips are
-   * never confused for each other, and the entry is dropped the moment the call settles.
+   * `replan_trip` the agent calls a beat later.
+   *
+   * `edits` is the version the prose has to catch up to, and it is why this is a record rather
+   * than a bare promise. The FIRST version of this coalesced any second caller into the run
+   * already in flight, which is wrong in a way that is invisible from here: `persist_narration`
+   * (backend/pipeline/persist.py) reads the trip's stops, THEN awaits the narrator for ~30s, then
+   * writes the prose. A run that started before an edit therefore writes prose that cannot know
+   * about it — so joining it and reporting the summaries as current states the opposite of the
+   * truth, on the surface this whole feature exists to keep honest. A join is only safe when the
+   * run in flight was started after every edit that has landed, which is exactly `covers ===
+   * edits`. Anything else queues ONE follow-up instead, which keeps the saving that coalescing
+   * was for — N edits during a rewrite still cost two narrations, not N + 1.
    */
-  const rewrites = useRef<Map<string, Promise<ReplanTripResult>>>(new Map())
+  type TripRewrites = {
+    /** Mutations that have landed for this trip, counted here because only this app knows. */
+    edits: number
+    /** The run in flight, with the `edits` value its backend snapshot is guaranteed to include. */
+    running: { promise: Promise<ReplanTripResult>; covers: number } | null
+    /** The single follow-up owed to everyone waiting for a run newer than the one in flight. */
+    follow: {
+      promise: Promise<ReplanTripResult>
+      resolve: (r: ReplanTripResult) => void
+      reject: (e: unknown) => void
+    } | null
+  }
+  const rewrites = useRef<Map<string, TripRewrites>>(new Map())
+
+  const rewriteState = useCallback((tripId: string): TripRewrites => {
+    const existing = rewrites.current.get(tripId)
+    if (existing) return existing
+    const fresh: TripRewrites = { edits: 0, running: null, follow: null }
+    rewrites.current.set(tripId, fresh)
+    return fresh
+  }, [])
 
   /**
    * Rewrite the summaries once, and say so where the user can see it.
    *
-   * Every itinerary edit now starts one of these (see `startSummaryRewrite` in
+   * Every itinerary edit starts one of these (see `startSummaryRewrite` in
    * `lib/webmcp/tools/edit.ts`), which makes both of these jobs load-bearing rather than tidy:
    *
-   *  - COALESCE. The agent has spent this whole feature being told to call `replan_trip` after an
-   *    edit, and models do not unlearn that the day the tool description changes. Without this,
-   *    the obedient agent buys a second narration of the same trip — a second 30-second LLM call
-   *    whose only effect is to overwrite the first one's prose with more of its own.
+   *  - COALESCE, but only where it is true. The agent has spent this whole feature being told to
+   *    call `replan_trip` after an edit, and models do not unlearn that the day a tool description
+   *    changes; without any coalescing the obedient agent buys a second narration of the same trip
+   *    whose only effect is to overwrite the first one's prose. The version check above is what
+   *    keeps that saving from becoming a lie.
    *  - ANNOUNCE. This is an LLM call nobody approved. It costs no trip allowance, but work done
    *    on the user's behalf that they cannot see is work they could not have consented to, and
    *    the activity rail is this app's answer to that everywhere else. It also does double duty
    *    as the "updating the plan" state: the entry sits at `REWRITE`, pulsing, for as long as the
-   *    narration runs, which is what stops a briefly-stale summary from being a silent one.
+   *    narration runs, which is what stops a briefly-stale summary from being a silent one. A
+   *    follow-up is a second real narration and gets its own entry, because it is one.
+   *
+   * Exactly one run per trip is ever in flight, which is also what stops an older snapshot's
+   * prose from landing on top of a newer one's.
    *
    * It rejects on failure, and that is deliberate too: `replan_trip` reports what went wrong from
    * the rejection, and guardrail #3 lives on the other side of it — the caller that started this
    * in the background swallows the rejection so a failed rewrite can never fail the edit that
    * already landed.
    */
-  const runReplan = useCallback(async (tripId: string): Promise<ReplanTripResult> => {
-    const running = rewrites.current.get(tripId)
-    if (running) return running
+  const startReplanRun = useCallback(
+    (tripId: string, state: TripRewrites, afterEdit: boolean): Promise<ReplanTripResult> => {
+      const covers = state.edits
+      const entry = beginActivity('replan_trip')
+      const run = (async () => {
+        try {
+          const result = await replanTrip(tripId, await getAccessToken())
+          const days = result.days_narrated
+          endActivity(
+            entry,
+            'done',
+            `Rewrote ${days} day summar${days === 1 ? 'y' : 'ies'} to match the current stops.` +
+              (result.routes_refreshed ? ' Routes recalculated.' : ' Routes could not be recalculated this time.'),
+          )
+          return result
+        } catch (e) {
+          /* `afterEdit` decides the first clause, and it has to: a rewrite the agent asked for
+             with no edit behind it has no edit to reassure anyone about, and saying "the edit was
+             saved" there invents one — the same class of false record as the REMOVED entry
+             written for a removal the user had refused. When there WAS an edit it is already
+             persisted, and a bare "failed" reads as it having been rolled back. */
+          const why = e instanceof Error ? ` — ${e.message}` : '.'
+          endActivity(
+            entry,
+            'failed',
+            afterEdit
+              ? `The edit was saved, but the day summaries could not be rewritten${why}`
+              : `The day summaries could not be rewritten${why}`,
+          )
+          throw e
+        } finally {
+          state.running = null
+          /* Settled, so the queued edits can have the run they are owed. Started on BOTH endings:
+             a failed rewrite does not cancel the obligation, and the follow-up reads the trip
+             fresh either way. It inherits `afterEdit` because a follow-up exists only because
+             edits landed. */
+          const follow = state.follow
+          if (follow) {
+            state.follow = null
+            startReplanRun(tripId, state, true).then(follow.resolve, follow.reject)
+          }
+        }
+      })()
+      /* Registered after the call is under way but before control leaves this function, so a
+         second caller in the same turn can only ever find it — never miss it and start its own. */
+      state.running = { promise: run, covers }
+      return run
+    },
+    [beginActivity, endActivity],
+  )
 
-    const entry = beginActivity('replan_trip')
-    const run = (async () => {
-      try {
-        const result = await replanTrip(tripId, await getAccessToken())
-        const days = result.days_narrated
-        endActivity(
-          entry,
-          'done',
-          `Rewrote ${days} day summar${days === 1 ? 'y' : 'ies'} to match the current stops.` +
-            (result.routes_refreshed ? ' Routes recalculated.' : ' Routes could not be recalculated this time.'),
-        )
-        return result
-      } catch (e) {
-        /* Named as the thing that failed AND as the thing that did not: the edit is already
-           persisted, so a bare "failed" here reads as the edit having been rolled back. */
-        endActivity(
-          entry,
-          'failed',
-          `The edit was saved, but the day summaries could not be rewritten${
-            e instanceof Error ? ` — ${e.message}` : '.'
-          }`,
-        )
-        throw e
-      } finally {
-        rewrites.current.delete(tripId)
+  /**
+   * The rewrite a caller is owed: the one in flight if it already covers every landed edit,
+   * otherwise the follow-up that will.
+   *
+   * `afterEdit` is what tells the two callers apart, and it is not a nicety. An edit RAISES the
+   * version the prose owes, so it can never be satisfied by a run that started before it. A bare
+   * "make the prose current" request raises nothing and is happy with a run already under way.
+   * Collapsing them would either lose the coalescing entirely or reinstate the stale-join bug.
+   */
+  const runReplan = useCallback(
+    (tripId: string, opts?: { afterEdit?: boolean }): Promise<ReplanTripResult> => {
+      const state = rewriteState(tripId)
+      if (opts?.afterEdit) state.edits += 1
+
+      if (state.running) {
+        if (state.running.covers === state.edits) return state.running.promise
+        if (!state.follow) {
+          let resolve!: (r: ReplanTripResult) => void
+          let reject!: (e: unknown) => void
+          const promise = new Promise<ReplanTripResult>((res, rej) => { resolve = res; reject = rej })
+          state.follow = { promise, resolve, reject }
+        }
+        return state.follow.promise
       }
-    })()
-    /* Registered after the call is under way but before control leaves this function, so a
-       second caller in the same turn can only ever find it — never miss it and start its own. */
-    rewrites.current.set(tripId, run)
-    return run
-  }, [beginActivity, endActivity])
+
+      return startReplanRun(tripId, state, opts?.afterEdit === true)
+    },
+    [rewriteState, startReplanRun],
+  )
 
   const edit = useMemo(
     () => ({
@@ -913,7 +992,11 @@ export default function GlobalTools() {
       setDates: async (tripId: string, body: Parameters<typeof editTripDates>[1]) =>
         editTripDates(tripId, body, await getAccessToken()),
       replan: runReplan,
-      replanInFlight: (tripId: string) => rewrites.current.has(tripId),
+      // `running`, not `has`: the record outlives the run it describes (it carries the edit
+      // count for the session), so asking whether the MAP knows this trip would answer "a
+      // rewrite is running" forever after the first edit — and `replan_trip` would stop asking
+      // for approval on every later call.
+      replanInFlight: (tripId: string) => rewrites.current.get(tripId)?.running != null,
       move: async (tripId: string, tpId: string, patch: { day_number?: number; sort_order?: number }) =>
         editTripPlace(tripId, tpId, patch, await getAccessToken()),
       remove: async (tripId: string, tpId: string) =>

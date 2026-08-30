@@ -72,9 +72,11 @@ const TOOLS: Record<string, ToolFacts> = {
   show_on_map:          { label: 'SHOWING',     attempt: 'SHOWING',    actor: 'Astrail', changes: false },
   set_map_mode:         { label: 'SWITCHING',   attempt: 'SWITCHING',  actor: 'Astrail', changes: false },
   save_reels:           { label: 'SAVING',      attempt: 'SAVING',     actor: 'Astrail', changes: true },
-  // The one durable edit that reaches the database without an approval card, which is exactly
-  // why the rail has to name it: unasked, unannounced anywhere else, and not reversible.
-  move_place:           { label: 'MOVED',       attempt: 'MOVE',       actor: 'Astrail', changes: true },
+  // 'You' since the move started raising its own approval card. It was the one durable edit an
+  // agent made on its own initiative, which is why the rail had to name it at all; now the same
+  // hand answers for it as for the other four, and `actor` follows the card rather than the
+  // tool's history.
+  move_place:           { label: 'MOVED',       attempt: 'MOVE',       actor: 'You',     changes: true },
   plan_trip_from_reels: { label: 'PLANNING',    attempt: 'PLANNING',   actor: 'You',     changes: true },
   add_place:            { label: 'ADDED',       attempt: 'ADD',        actor: 'You',     changes: true },
   remove_place:         { label: 'REMOVED',     attempt: 'REMOVE',     actor: 'You',     changes: true },

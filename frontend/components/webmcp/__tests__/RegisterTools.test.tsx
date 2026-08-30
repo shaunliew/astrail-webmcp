@@ -173,13 +173,13 @@ describe('an entry says how the call ended', () => {
 
   it('still records a move that DID happen as one, warning included', async () => {
     // The other direction matters as much: a rail that stopped claiming anything would be honest
-    // and useless. `move_place` is the one durable edit made with no approval card at all.
+    // and useless. `deps()` approves the card, which a move now raises like the other four.
     await callThroughBrowser(movePlaceTool(deps()), { place: '1', to_day: 3 })
 
     expect(screen.getByText('MOVED')).toBeInTheDocument()
     expect(screen.getByText("Astrail can't undo this")).toBeInTheDocument()
     // And the receipt reads as a sentence, not as the raw envelope the tool answers in.
-    expect(screen.getByText(/^Moved /)).toBeInTheDocument()
+    expect(screen.getByText(/^The user approved\. Moved /)).toBeInTheDocument()
     expect(screen.queryByText(/summaries_stale/)).toBeNull()
   })
 

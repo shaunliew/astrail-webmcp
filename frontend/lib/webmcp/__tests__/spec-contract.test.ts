@@ -250,7 +250,7 @@ describe('a gated tool tells the agent the page does the asking', () => {
 
   it('asks on the page in every tool that gates, and never in chat first', async () => {
     const raising = await cardRaisingTools()
-    expect(raising).toEqual(['add_place', 'plan_trip_from_reels', 'remove_place', 'replan_trip', 'set_trip_dates'])
+    expect(raising).toEqual(['add_place', 'move_place', 'plan_trip_from_reels', 'remove_place', 'replan_trip', 'set_trip_dates'])
     for (const name of [...PENDING]) expect(raising, `${name} no longer gates`).toContain(name)
 
     for (const name of raising.filter((n) => !PENDING.has(n))) {

@@ -281,7 +281,7 @@ export function movePlaceTool(deps: EditDeps): ToolSpec {
   return {
     name: 'move_place',
     description:
-      'Moves a stop to a different day, and optionally to a position within that day. Applies straight away and the map redraws. Identify the stop by its map-pin number (preferred) or its name. The reply records the day and position it came from. Astrail then rewrites the day summaries itself so they match the new order — do not call replan_trip afterwards.',
+      'Moves a stop to a different day, and optionally to a position within that day. Call it directly and do not ask the user in chat first — Astrail shows them an approval card on the page, and the reply says whether they accepted. Identify the stop by its map-pin number (preferred) or its name. The reply records the day and position it came from. Astrail then rewrites the day summaries to match the new order — do not call replan_trip afterwards.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -314,6 +314,19 @@ export function movePlaceTool(deps: EditDeps): ToolSpec {
       // The tool speaks 1-based positions because the user counts from 1; the column is 0-based.
       if (toPos !== undefined) patch.sort_order = toPos - 1
 
+      const where = toDay !== undefined ? `day ${toDay}` : `position ${toPos}`
+      /* Asked for, at last, and the reason is in the second line of the card rather than in this
+         tool's own cost. A move was deliberately cardless while it was a local reorder — the
+         rule was "reversible gets an undo, irreversible gets a confirm", and it was the one
+         durable edit an agent made on its own initiative. What changed is not the rule but the
+         price: every mutation now starts a narration (`startSummaryRewrite`), so a cardless move
+         spends an LLM call with nothing on screen having asked. The card says so, because a
+         consent card that does not name what it is consenting to is decoration. */
+      const approved = await deps.confirm(
+        `Move "${tp.place.name}" to ${where} of this trip.\nAstrail will rewrite the day summaries to match, which takes a moment.`,
+      )
+      if (!approved) return noChange('declined', `The user declined. "${tp.place.name}" has not moved.`)
+
       try {
         await deps.move(r.bundle.trip.id, tp.id, patch)
       } catch (e) {
@@ -324,7 +337,6 @@ export function movePlaceTool(deps: EditDeps): ToolSpec {
       // round-trips overlap rather than queue.
       startSummaryRewrite(deps, r.bundle.trip.id)
       const { fresh, stale } = await refreshView(deps, r.bundle.trip.id)
-      const where = toDay !== undefined ? `day ${toDay}` : `position ${toPos}`
       // A record of the origin, not a promise about it: a null `sort_order` is a legal row and
       // `to_position` cannot express one, so say the position is missing rather than imply the
       // stop can be restored exactly.
@@ -336,7 +348,7 @@ export function movePlaceTool(deps: EditDeps): ToolSpec {
           ? `It was on ${from} at position ${tp.sort_order + 1}.`
           : `It was on ${from}; its position within that day was not recorded.`
       return editResult({
-        result: `Moved "${tp.place.name}" to ${where}.${pinsLine(fresh, tp.place.name)} ${origin} ${stale ? STALE_VIEW : 'The map has redrawn.'}`,
+        result: `The user approved. Moved "${tp.place.name}" to ${where}.${pinsLine(fresh, tp.place.name)} ${origin} ${stale ? STALE_VIEW : 'The map has redrawn.'}`,
         summariesStale: true,
         summariesRewriting: true,
       })

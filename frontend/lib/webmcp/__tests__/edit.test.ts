@@ -59,6 +59,46 @@ describe('move_place', () => {
     expect(d.move).toHaveBeenCalledWith(TOKYO_TRIP.trip.id, expect.any(String), { sort_order: 0 })
   })
 
+  it('asks before moving anything, and says what it will cost', async () => {
+    /* A move was deliberately cardless while it was a local reorder — reversible gets an undo,
+       irreversible gets a confirm. What changed is not the rule but the price: every mutation now
+       starts a narration, so a cardless move spent an LLM call with nothing on screen asking. */
+    const d = deps()
+    await movePlaceTool(d).execute({ place: '1', to_day: 3 })
+    const summary = String((d.confirm as ReturnType<typeof vi.fn>).mock.calls[0][0])
+    expect(summary).toContain('Akasaka Station')
+    expect(summary).toContain('day 3')
+    expect(summary).toContain('rewrite the day summaries')
+  })
+
+  it('moves NOTHING when the user declines, and starts no rewrite either', async () => {
+    // The whole point of the card. A declined move that still narrated would spend the call the
+    // card exists to gate.
+    const d = deps({ confirm: vi.fn().mockResolvedValue(false) })
+    const out = envelope(await movePlaceTool(d).execute({ place: '1', to_day: 3 }))
+    await settle()
+    expect(d.move).not.toHaveBeenCalled()
+    expect(d.replan).not.toHaveBeenCalled()
+    expect(out.outcome).toBe('declined')
+    expect(String(out.result)).toContain('has not moved')
+  })
+
+  it('does not promise the map redraws before the user has answered', async () => {
+    // The description said "Applies straight away and the map redraws", which stopped being true
+    // the moment a card went in front of it.
+    expect(movePlaceTool(deps()).description).not.toMatch(/applies straight away/i)
+    expect(movePlaceTool(deps()).description).toMatch(/do not ask the user in chat first/i)
+  })
+
+  it('asks BEFORE it writes, never after', async () => {
+    /* Order is the whole gate: a card raised after the move would be a notification wearing a
+       question's clothes. Proved by the call that never happened, not by argument. */
+    const d = deps({ confirm: vi.fn().mockResolvedValue(false) })
+    await movePlaceTool(d).execute({ place: '1', to_day: 3 })
+    expect(d.confirm).toHaveBeenCalled()
+    expect(d.move).not.toHaveBeenCalled()
+  })
+
   it('refuses a no-op instead of calling the backend', async () => {
     const d = deps()
     const out = String(await movePlaceTool(d).execute({ place: '1' }))
@@ -601,6 +641,7 @@ describe('every reply says whether the trip changed', () => {
     ['replan_trip approved',    'done',     (d) => Promise.resolve(replanTripTool(d).execute({}))],
     // The user said no. The card is the whole point of these tools; recording it as a change
     // inverts the one decision the user actually made.
+    ['move_place declined',     'declined', (d) => Promise.resolve(movePlaceTool(d).execute({ place: '1', to_day: 3 }))],
     ['remove_place declined',   'declined', (d) => Promise.resolve(removePlaceTool(d).execute({ place: '1' }))],
     ['add_place declined',      'declined', (d) => Promise.resolve(addPlaceTool(d).execute({ name: 'USJ', day: 1 }))],
     ['set_trip_dates declined', 'declined', (d) => Promise.resolve(setTripDatesTool(d).execute({ start_date: '2026-09-14' }))],
@@ -681,7 +722,7 @@ describe('readToolOutcome — what the rail is allowed to believe', () => {
   it('shows the sentence, not the envelope it arrived in', async () => {
     // The rail used to print the raw JSON — braces, `summaries_stale` and all — as the receipt.
     const out = await movePlaceTool(deps()).execute({ place: '1', to_day: 3 })
-    expect(readToolOutcome(out).detail).toMatch(/^Moved /)
+    expect(readToolOutcome(out).detail).toMatch(/^The user approved\. Moved /)
     expect(readToolOutcome(out).detail).not.toContain('summaries_stale')
   })
 

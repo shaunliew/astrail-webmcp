@@ -186,12 +186,27 @@ describe('the rail is a record, not a toast', () => {
   })
 
   it('names who decided each action, in the words the app already uses', async () => {
-    withRail((r) => { r.beginActivity('move_place'); r.beginActivity('add_place') })
+    withRail((r) => { r.beginActivity('save_reels'); r.beginActivity('add_place') })
     // add_place puts an approval card in front of the user, so the decision was theirs.
     expect(await screen.findByText('You')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: /earlier/i }))
-    // move_place asks nobody — the one durable edit an agent makes on its own initiative.
+    /* `save_reels` asks nobody — it writes to the library on the agent's own initiative. It used
+       to be `move_place` here, which stopped being the example the day a move started raising its
+       own card: every mutation now starts a narration, so a cardless move spent an LLM call
+       nobody had approved. */
     expect(screen.getByText('Astrail')).toBeInTheDocument()
+  })
+
+  it('credits a move to the user, now that a move asks them first', async () => {
+    /* `move_place` used to be the counter-example on this rail — the one durable edit made on the
+       agent's own initiative, so `actor` read 'Astrail'. It raises its own approval card now,
+       because every mutation starts a narration and a cardless move spent an LLM call nobody had
+       approved. The record has to follow the card, or it credits the wrong hand for the decision. */
+    withRail((r) => { r.endActivity(r.beginActivity('move_place'), 'done', 'Moved "Senso-ji" to day 3.') })
+
+    expect(await screen.findByText('MOVED')).toBeInTheDocument()
+    expect(screen.getByText('You')).toBeInTheDocument()
+    expect(screen.queryByText('Astrail')).toBeNull()
   })
 
   it('names the three tools that used to fall back to a generic WORKING', async () => {

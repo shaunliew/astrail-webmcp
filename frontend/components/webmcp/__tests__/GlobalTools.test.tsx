@@ -835,7 +835,7 @@ function AutoApprove() {
 }
 
 /** A real trip page with a real open bundle, and the tools the agent would find on it. */
-async function editableTripPage({ approve = false } = {}): Promise<Record<string, ToolSpec>> {
+async function editableTripPage({ approve = true } = {}): Promise<Record<string, ToolSpec>> {
   h.pathname = TRIP_PATH
   h.listTrips.mockResolvedValue([tripRow('complete')])
   h.listSavedReelCards.mockResolvedValue([])
@@ -871,6 +871,20 @@ describe('the summary rewrite an edit starts', () => {
   const land = (call: { resolve: (r: { days_narrated: number; routes_refreshed: boolean }) => void }) =>
     act(async () => { call.resolve({ days_narrated: 3, routes_refreshed: true }) })
 
+  /**
+   * Run an edit that now asks first.
+   *
+   * NOT wrapped in act(): `move_place` awaits its own approval card and AutoApprove answers it
+   * from an effect, so awaiting the call inside act() deadlocks the two against each other. Wait
+   * for the card to be seen, THEN await the call.
+   */
+  async function edit(tool: ToolSpec, args: Record<string, unknown>): Promise<unknown> {
+    const before = cardsShown.length
+    const call = tool.execute(args)
+    await waitFor(() => { expect(cardsShown.length).toBeGreaterThan(before) })
+    return call
+  }
+
   it('does not let an edit join a rewrite whose prose predates it', async () => {
     /* The defect coalescing introduced, and it is invisible from the browser: `persist_narration`
        (backend/pipeline/persist.py) reads the trip's stops, THEN awaits the narrator for ~30s,
@@ -882,10 +896,10 @@ describe('the summary rewrite an edit starts', () => {
     const calls = heldReplans()
     const tools = await editableTripPage()
 
-    await act(async () => { await tools.move_place.execute({ place: '1', to_day: 3 }) })
+    await edit(tools.move_place, { place: '1', to_day: 3 })
     expect(calls).toHaveLength(1)
 
-    await act(async () => { await tools.move_place.execute({ place: '2', to_day: 3 }) })
+    await edit(tools.move_place, { place: '2', to_day: 3 })
     expect(calls, 'a second run must not start while the first is open').toHaveLength(1)
 
     await land(calls[0])
@@ -898,9 +912,9 @@ describe('the summary rewrite an edit starts', () => {
     const calls = heldReplans()
     const tools = await editableTripPage()
 
-    await act(async () => { await tools.move_place.execute({ place: '1', to_day: 3 }) })
-    await act(async () => { await tools.move_place.execute({ place: '2', to_day: 3 }) })
-    await act(async () => { await tools.move_place.execute({ place: '3', to_day: 3 }) })
+    await edit(tools.move_place, { place: '1', to_day: 3 })
+    await edit(tools.move_place, { place: '2', to_day: 3 })
+    await edit(tools.move_place, { place: '3', to_day: 3 })
     expect(calls).toHaveLength(1)
 
     await land(calls[0])
@@ -918,8 +932,8 @@ describe('the summary rewrite an edit starts', () => {
     const calls = heldReplans()
     const tools = await editableTripPage()
 
-    await act(async () => { await tools.move_place.execute({ place: '1', to_day: 3 }) })
-    await act(async () => { await tools.move_place.execute({ place: '2', to_day: 3 }) })
+    await edit(tools.move_place, { place: '1', to_day: 3 })
+    await edit(tools.move_place, { place: '2', to_day: 3 })
     await act(async () => { calls[0].reject(new Error('Itinerary narration could not be regenerated')) })
 
     await waitFor(() => { expect(calls).toHaveLength(2) })
@@ -932,13 +946,16 @@ describe('the summary rewrite an edit starts', () => {
     const calls = heldReplans()
     const tools = await editableTripPage()
 
-    await act(async () => { await tools.move_place.execute({ place: '1', to_day: 3 }) })
+    await edit(tools.move_place, { place: '1', to_day: 3 })
     await land(calls[0])
     await waitFor(() => { expect(calls).toHaveLength(1) })
 
-    // Nothing running now, so the agent's own replan_trip must raise its card again.
+    // Nothing running now, so the agent's own replan_trip must raise its card again. Matched on
+    // the card's own words, not on a count: the move that set this up raises one too.
     await act(async () => { void tools.replan_trip.execute({}) })
-    await waitFor(() => { expect(cardsShown).toHaveLength(1) })
+    await waitFor(() => {
+      expect(cardsShown.some((c) => c.includes('Rewrite the day summaries'))).toBe(true)
+    })
   })
 
   it('is joined, not duplicated, when the agent calls replan_trip anyway', async () => {
@@ -946,20 +963,22 @@ describe('the summary rewrite an edit starts', () => {
     vi.mocked(replanTripApi).mockReturnValue(new Promise(() => {}))
     const tools = await editableTripPage()
 
-    await act(async () => { await tools.move_place.execute({ place: '1', to_day: 3 }) })
+    await edit(tools.move_place, { place: '1', to_day: 3 })
     await act(async () => { void tools.replan_trip.execute({}) })
 
     await waitFor(() => { expect(railEntries.filter((e) => e.tool === 'replan_trip')).toHaveLength(1) })
     expect(replanTripApi).toHaveBeenCalledTimes(1)
-    // And no card: the work is already running, so there is nothing left to approve or refuse.
-    expect(cardsShown).toHaveLength(0)
+    /* And no card FOR THE REWRITE: the work is already running, so there is nothing left to
+       approve or refuse. Matched on the card's own words rather than on a count, because the move
+       that set this up raises one of its own now. */
+    expect(cardsShown.some((c) => c.includes('Rewrite the day summaries'))).toBe(false)
   })
 
   it('shows on the rail while it runs, so a stale summary is never a silent one', async () => {
     vi.mocked(replanTripApi).mockReturnValue(new Promise(() => {}))
     const tools = await editableTripPage()
 
-    await act(async () => { await tools.move_place.execute({ place: '1', to_day: 3 }) })
+    await edit(tools.move_place, { place: '1', to_day: 3 })
 
     await waitFor(() => {
       /* Matched on the SUBJECT too, because that is what the trip page keys its "updating"
@@ -973,7 +992,7 @@ describe('the summary rewrite an edit starts', () => {
     vi.mocked(replanTripApi).mockResolvedValue({ days_narrated: 3, routes_refreshed: true })
     const tools = await editableTripPage()
 
-    await act(async () => { await tools.move_place.execute({ place: '1', to_day: 3 }) })
+    await edit(tools.move_place, { place: '1', to_day: 3 })
 
     await waitFor(() => {
       const entry = railEntries.find((e) => e.tool === 'replan_trip')
@@ -988,10 +1007,7 @@ describe('the summary rewrite an edit starts', () => {
     vi.mocked(replanTripApi).mockRejectedValue(new Error('Itinerary narration could not be regenerated'))
     const tools = await editableTripPage()
 
-    let out: { outcome?: string } = {}
-    await act(async () => {
-      out = JSON.parse(String(await tools.move_place.execute({ place: '1', to_day: 3 })))
-    })
+    const out = JSON.parse(String(await edit(tools.move_place, { place: '1', to_day: 3 }))) as { outcome?: string }
     expect(out.outcome).toBe('done')
 
     await waitFor(() => {
@@ -1030,9 +1046,9 @@ describe('the summary rewrite an edit starts', () => {
     vi.mocked(replanTripApi).mockResolvedValue({ days_narrated: 3, routes_refreshed: true })
     const tools = await editableTripPage()
 
-    await act(async () => { await tools.move_place.execute({ place: '1', to_day: 3 }) })
+    await edit(tools.move_place, { place: '1', to_day: 3 })
     await waitFor(() => { expect(replanTripApi).toHaveBeenCalledTimes(1) })
-    await act(async () => { await tools.move_place.execute({ place: '2', to_day: 3 }) })
+    await edit(tools.move_place, { place: '2', to_day: 3 })
     await waitFor(() => { expect(replanTripApi).toHaveBeenCalledTimes(2) })
   })
 })

@@ -44,9 +44,10 @@ FALLBACK_MODEL = "gpt-4o"
 # rather than the venue.
 MAX_HOURS_CHARS = 120
 
-# Ceiling on ONE day's search. `weather.py` and `transport.py` both bound their outbound call and
-# this one did not, so a hosted web search that never returned held its day open indefinitely —
-# and, before the days ran concurrently, the whole trip behind it.
+# Ceiling on ONE day's search — the WHOLE call, primary attempt plus any fallback, sharing one
+# deadline (see `fetch_restaurant_details`). `weather.py` and `transport.py` both bound their
+# outbound call and this one did not, so a hosted web search that never returned held its day open
+# indefinitely — and, before the days ran concurrently, the whole trip behind it.
 #
 # A runaway bound, not a latency lever. Sized against the measured run (generation_events, trip
 # d7ea5c14): ~58s per day for the suggest+details PAIR, of which this call is the larger part —
@@ -180,10 +181,14 @@ async def _default_runner(agent, user_input: str):
     return await Runner.run(agent, user_input, max_turns=8)
 
 
-async def _run_bounded(run, agent, user_input: str):
-    """`run`, under DETAIL_TIMEOUT_S. Wraps the INJECTED runner rather than living inside
-    `_default_runner`, so the bound holds for every caller instead of only the live one."""
-    async with asyncio.timeout(DETAIL_TIMEOUT_S):
+async def _run_bounded(run, agent, user_input: str, *, deadline: float):
+    """`run`, under the ATTEMPT's shared deadline. Wraps the INJECTED runner rather than living
+    inside `_default_runner`, so the bound holds for every caller instead of only the live one.
+
+    `deadline` is an event-loop timestamp, not a duration, and every attempt of one call gets the
+    SAME one — see `fetch_restaurant_details`. A per-attempt duration made `DETAIL_TIMEOUT_S` a
+    bound on an attempt while it is documented as a bound on the day."""
+    async with asyncio.timeout_at(deadline):
         return await run(agent, user_input)
 
 
@@ -208,8 +213,18 @@ async def fetch_restaurant_details(
     model = model or os.environ.get("ASTRAIL_RESTAURANT_DETAILS_MODEL", DEFAULT_MODEL)
     run = runner or _default_runner
     user_input = build_detail_input(pois, city=city)
+    # ONE deadline for the whole call — primary AND fallback — because DETAIL_TIMEOUT_S is a
+    # ceiling on one day's search, and a per-attempt bound was not that. `APITimeoutError` is
+    # classified fallback-worthy below, so the error most likely to have SPENT the budget was also
+    # the one that bought a second full one: a primary hanging to ~90s followed by a stuck fallback
+    # gave a single day nearly 180 seconds against a documented 90.
+    #
+    # An event-loop deadline rather than a duration passed down, so the fallback inherits what is
+    # LEFT rather than being handed a fresh budget computed at its own start. Agent construction
+    # sits inside it too (a warm in-process import, microseconds after the first day).
+    deadline = asyncio.get_running_loop().time() + DETAIL_TIMEOUT_S
     try:
-        result = await _run_bounded(run, build_detail_agent(model), user_input)
+        result = await _run_bounded(run, build_detail_agent(model), user_input, deadline=deadline)
     except TimeoutError:
         # NOT retried on the fallback model: the budget is already spent, and a retry would double
         # exactly the wait this bound exists to cap. The typed fallback below answers a model being
@@ -218,7 +233,15 @@ async def fetch_restaurant_details(
         return {}
     except _model_errors():
         try:
-            result = await _run_bounded(run, build_detail_agent(FALLBACK_MODEL), user_input)
+            result = await _run_bounded(run, build_detail_agent(FALLBACK_MODEL), user_input,
+                                        deadline=deadline)
+        except TimeoutError:
+            # The SHARED deadline, hit while the fallback ran. Reported as the timeout it is and
+            # not as "model unavailable": the primary's typed error said the model was the problem,
+            # the bound firing says the budget was, and a log that conflates them sends the next
+            # person debugging a slow generation looking at the wrong thing.
+            print("  [restaurant-details] skipped (timed out)", file=sys.stderr)
+            return {}
         except Exception:
             print("  [restaurant-details] skipped (model unavailable)", file=sys.stderr)
             return {}

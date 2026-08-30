@@ -202,3 +202,48 @@ async def test_a_timed_out_search_is_not_retried_on_the_fallback_model(monkeypat
 
     assert await asyncio.wait_for(fetch_restaurant_details(POIS, runner=runner), timeout=5) == {}
     assert runs == 1
+
+
+def test_a_model_timeout_is_classified_fallback_worthy():
+    """Why the ceiling has to be SHARED rather than per-attempt. `APITimeoutError` is in the
+    fallback set, so the one error most likely to have consumed the whole budget is also the one
+    that buys a second attempt. Pinned explicitly because the test below injects `RuntimeError`
+    as its model error (house style — credential-free, no openai import in the hot path), and
+    would otherwise be exercising a scenario that could quietly stop existing."""
+    from openai import APITimeoutError
+
+    assert APITimeoutError in rd._model_errors()
+
+
+@pytest.mark.asyncio
+async def test_the_fallback_shares_the_primary_budget_instead_of_getting_a_fresh_one(monkeypatch):
+    """DETAIL_TIMEOUT_S is documented as the ceiling on ONE day's search, and a per-attempt bound
+    was not that: a primary that burned nearly all of its budget and then reported a model problem
+    handed the fallback a SECOND full budget — up to ~180s for one day against a 90s bound, on
+    exactly the tail a user sits through waiting for their trip.
+
+    Fault injection: give each attempt its own `asyncio.timeout(DETAIL_TIMEOUT_S)` again and the
+    measured window roughly doubles, from one budget to one-and-most-of-another."""
+    monkeypatch.setattr(rd, "DETAIL_TIMEOUT_S", 0.4)
+    monkeypatch.setattr(rd, "_model_errors", lambda: (RuntimeError,))
+    # Warm the lazy Agents-SDK import OUT of the measured window: `build_detail_agent` is called
+    # inside the bound, so a cold import on this test's first attempt would spend budget that
+    # belongs to the search and make the assertion below depend on import speed.
+    rd.build_detail_agent(rd.FALLBACK_MODEL)
+    attempts: list[float] = []
+
+    async def runner(_agent, _user_input):
+        attempts.append(asyncio.get_running_loop().time())
+        if len(attempts) == 1:
+            await asyncio.sleep(0.3)              # most of the budget...
+            raise RuntimeError("model unavailable")   # ...then a fallback-worthy failure
+        await asyncio.sleep(3600)                 # the fallback hangs
+
+    kept = await asyncio.wait_for(fetch_restaurant_details(POIS, runner=runner), timeout=10)
+    end = asyncio.get_running_loop().time()
+
+    assert kept == {}                 # guardrail #3: garnish is best-effort, never a trip failure
+    assert len(attempts) == 2, "the fallback never ran — this assertion would pass vacuously"
+    # ONE budget, measured from the first attempt's own start so the agent construction ahead of
+    # it cannot inflate the window. Two budgets would be ~0.7s here.
+    assert end - attempts[0] < 0.6, f"the fallback bought a second budget: {end - attempts[0]:.2f}s"

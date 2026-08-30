@@ -1056,3 +1056,38 @@ route's read-only exact-path public access, and WHATS-NEW's hotel limitation.
 Left deliberately: README:86's deployment TODO and page.tsx:121's "Submission blocked" banner
 are HONEST — no deployment exists yet. Not inventing a URL.
 
+### Task 6 · `move_place` approval card · `b2a9c9d` · PASS
+
+Verified independently, not on the report: replacing the `deps.confirm` call with `true` reddens
+**six** tests — the decline test, the asks-before-it-writes test, the outcome-table row, the
+no-rewrite-on-decline test, and the DERIVED contract set that pins every gating tool carries the
+anti-double-ask clause. Restored by inverse edit; `git status` byte-identical.
+
+The card names what it costs — *"Astrail will rewrite the day summaries to match, which takes a
+moment"* — which is the whole reason it exists. `move_place` is currently the only one of the
+five whose card mentions the rewrite; the other four were off-limits when that copy was written.
+Worth one sweep when someone owns approval copy again.
+
+**Unrequested and correct:** the rail's actor for a move moved from 'Astrail' to 'You'. It was
+'Astrail' *because* there was no card; leaving it would credit the wrong hand for a decision the
+user now makes.
+
+**Two items in my brief referred to code that does not exist.** I told the agent to decide the
+fate of a 10-second undo and to match `remove_place`'s ghost pin. Neither has ever shipped —
+I took both from the PLAN and stated them as shipped code. `AgentActivityRail` says the opposite
+outright ("There is deliberately no undo button. Astrail has no inverse to offer") and has a test
+pinning it. Same defect class I have been hunting all night, in my own instructions.
+
+**Watch item, seen twice tonight:** re-pointing an existing test to a different example silently
+removed the only assertion on the thing being changed, and the injection came back GREEN until a
+pinning test was added. A retargeted test may no longer be watching anything.
+
+### Known red, expected, owned
+
+`app/__tests__/readme-webmcp-contract.test.ts` fails against `claims-fix`'s uncommitted README
+edit — it removed the phrase the contract pins ("…nothing here is evidence about a deployed…").
+That test exists to stop the deployment caveat being quietly dropped, which is exactly finding
+10's territory. Told `claims-fix` to keep the SUBSTANCE and re-pin the new wording, never to
+resolve it by deleting the assertion. Not a gate failure — it is in-flight work in a file that
+agent owns.
+

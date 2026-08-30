@@ -150,8 +150,10 @@ limitation we name.
 |---|---|---|
 | ✅ | Tool registration, the address-bar list, annotations | **Live-verified** in ChatGPT's built-in browser |
 | ◐ | `get_app_state`, `list_saved_reels` | Executed and returned in ChatGPT's built-in browser on 29 Aug — but `get_app_state` was **rewritten after** that run (signed-out variant, trip-status labels), so what was verified is not quite what ships. `list_saved_reels` is unchanged since |
-| ⚙ | `plan_trip_from_reels` end to end, and the page takeover it drives | **Implemented and unit-tested; one live run outstanding** |
-| ⚙ | `replan_trip`, `set_trip_dates` | Implemented and unit-tested; not live-run |
+| ✅ | `plan_trip_from_reels` end to end, and the page takeover it drives | **Live-run 2026-08-30** — approval card before spend, real stage narration, map on completion |
+| ✅ | `replan_trip` | **Live-run 2026-08-30** — after an add and after a remove; rewrote the trip title, day titles and day summaries, checked in the database |
+| ✅ | `add_place`, `remove_place` | **Live-run 2026-08-30** through the agent, each with its on-page approval |
+| ⚙ | `move_place`, `set_trip_dates` | Implemented and unit-tested; not live-run |
 | ⚠ | The five edit tools | Require `WEBMCP_EDITS_ENABLED=true` on the deployment |
 | ✅ | The signed-in landing screen | An empty account now leads with the agent and a starter prompt; the paste box is the fallback, not the front door |
 | ✅ | `/app/trip/demo` | A fixture-backed sample trail, reachable with **no account** — six tools are offered and all six answer, and the edit tools deliberately cannot see it |

@@ -25,9 +25,15 @@ export default function WebMcpStatus({
   const count = tools.length
 
   return (
-    <div className="pointer-events-auto flex w-[min(22rem,100%)] flex-col items-end gap-2 text-xs">
+    /* `pointer-events-none`, with `auto` on the two things that are actually painted.
+       This box is 22rem wide and the chip inside it is not: at 1280 the chip measured 171px
+       and at 390 it measured 47px, both right-aligned, which left 181px and 305px of
+       transparent wrapper that still swallowed every click on the map behind it. An invisible
+       catcher is worse than an opaque panel — there is nothing on screen to explain why the
+       click did nothing. Same rule the dock's column already follows. */
+    <div className="pointer-events-none flex w-[min(22rem,100%)] flex-col items-end gap-2 text-xs">
       {open && (
-        <div className="w-full overflow-hidden rounded-xl border border-white/15 bg-black/90 text-white/85 shadow-xl backdrop-blur">
+        <div className="pointer-events-auto w-full overflow-hidden rounded-xl border border-white/15 bg-black/90 text-white/85 shadow-xl backdrop-blur">
           <div className="flex items-center justify-between gap-2 border-b border-white/10 px-3 py-2">
             <p className="text-[11px] uppercase tracking-wider text-white/50">
               {supported ? 'Tools an agent can use here' : 'Agent tools unavailable'}
@@ -91,7 +97,7 @@ export default function WebMcpStatus({
         aria-expanded={open}
         aria-label={supported ? `WebMCP active, ${count} tools` : 'WebMCP unavailable'}
         className={[
-          'flex items-center gap-2 rounded-full border px-3 py-1.5 backdrop-blur transition',
+          'pointer-events-auto flex items-center gap-2 rounded-full border px-3 py-1.5 backdrop-blur transition',
           supported
             ? 'border-[#C9974E]/50 bg-black/60 text-[#E8D5B0] hover:border-[#C9974E]'
             : 'border-white/20 bg-black/50 text-white/60 hover:border-white/40',

@@ -200,3 +200,62 @@ describe('WebMcpDock — minimising', () => {
     expect(screen.getByLabelText('Earlier agent activity').className).toContain('max-h-36')
   })
 })
+
+/**
+ * Nothing in the dock may take a click on a region it does not paint.
+ *
+ * This is 99c1384's finding again, on the route that fix deliberately spared. There it was an
+ * opaque panel over the /app content column — visible, at least. Here it was invisible: the status
+ * chip's wrapper is `w-[min(22rem,100%)]` with the chip right-aligned inside it, and the WHOLE
+ * wrapper carried `pointer-events-auto` while only the chip was painted. Measured on the demo trail
+ * with elementFromPoint: a 352x30 catcher around a 171px chip at 1280x800, and around a 47px chip
+ * at 390x844 — a 181px and a 305px strip of transparent nothing that ate every click on the map
+ * behind it, with no visual cue that anything was there. The dock's own header comment already
+ * states the rule ("`pointer-events-none` on the column with `auto` on the children"); the status
+ * chip was the one child that broke it.
+ *
+ * jsdom has no layout engine, so this cannot be a geometry assertion. It is the structural
+ * invariant underneath the geometry: a node that accepts a pointer must be a control, a painted
+ * surface, or the scroller that needs the wheel. Anything else is a catcher the user cannot see.
+ */
+describe('WebMcpDock — the dock never swallows an invisible click', () => {
+  const invisibleCatchers = () => {
+    const el = document.querySelector('div.fixed.bottom-0')
+    if (!el) throw new Error('dock not rendered')
+    return Array.from(el.querySelectorAll('.pointer-events-auto'))
+      .filter((n) => {
+        const cn = String(n.className)
+        // A button is its own affordance; `bg-` means the user can see what they are hitting;
+        // the read-back list must keep the wheel to scroll and is filled edge to edge by cards.
+        return n.tagName !== 'BUTTON' && !/\bbg-/.test(cn) && !cn.includes('overflow-y-auto')
+      })
+      .map((n) => String(n.className).replace(/\s+/g, ' ').slice(0, 80))
+  }
+
+  it('paints every surface that accepts a pointer, over the map', () => {
+    mockPath.value = '/app/trip/abc'
+    dock()
+    expect(invisibleCatchers()).toEqual([])
+  })
+
+  it('paints every surface that accepts a pointer, on a document route', () => {
+    dock()
+    expect(invisibleCatchers()).toEqual([])
+  })
+
+  it('still holds with the tool list and the read-back both open', async () => {
+    mockPath.value = '/app/trip/abc'
+    dock(4)
+    await userEvent.click(screen.getByLabelText('Show earlier agent activity'))
+    await userEvent.click(screen.getByRole('button', { name: /WebMCP/i }))
+    expect(screen.getByText(/Tools an agent can use here/)).toBeInTheDocument()
+    expect(invisibleCatchers()).toEqual([])
+  })
+
+  it('still holds while minimised', async () => {
+    mockPath.value = '/app/trip/abc'
+    dock()
+    await userEvent.click(screen.getByRole('button', { name: /minimise/i }))
+    expect(invisibleCatchers()).toEqual([])
+  })
+})

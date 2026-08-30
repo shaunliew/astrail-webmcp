@@ -1091,3 +1091,47 @@ That test exists to stop the deployment caveat being quietly dropped, which is e
 resolve it by deleting the assertion. Not a gate failure — it is in-flight work in a file that
 agent owns.
 
+### Task 5 (cont.) · round-6 fixes · `8e39f46` · PASS
+
+Verified independently: removing the one line that preserves a status-derived refusal
+(`if (e === refusal) throw e`) reddens both new tests — the named 409 and the any-status case.
+Restored by inverse edit, byte-identical.
+
+**The message states uncertainty in both directions now**, and the prose comment asserting "So
+the trip HAS changed" went with it — it was the same absolute in a different register. We had
+replaced a false certainty with its opposite; the fix is not a better guess.
+
+**The 409 half is the sharpest catch of the night.** A refusal read off a real status now wins
+over the timeout for ANY status, not only the ones we name. The reasoning in the code is the
+right one and worth keeping: *a status is evidence, a timeout is an inference, so the inference
+must not overwrite the evidence.* A 409 whose body stalls surfaces as "This trip cannot be
+edited right now" instead of a sentence guessing that routes were refreshed when the editability
+guard had refused before touching anything.
+
+**The marker tagging moved rather than the comment** — the agent's reasoning being that a marker
+standing with nothing in flight is the same lie the approval card told, and shipping it twice
+was not worth a comment. A failed token still opens an entry so a rewrite cannot vanish silently.
+
+**All four overclaims corrected to per-tab, including the agent-facing one**, which is now pinned
+by a test: agent-facing copy is where an overclaim costs most, because the agent repeats it to
+the user as fact.
+
+### OPEN — not a failure, a known hazard, deliberately not fixed tonight
+
+**A token that never settles leaves no activity entry AND still holds the trip's slot in
+`rewrites`.** That is the fetch wedge one step earlier: `getAccessToken()` hanging on a stuck
+Supabase auth lock would freeze that trip's rewrites for the session with nothing on screen.
+`auto-replan` declined to add a second timeout mechanism at this hour without a test story for
+it, and I agree with that judgement — it is a narrower edge than the fetch case and inventing an
+unbounded-token bound half-asleep is how the first bound came to cover only the headers.
+**Needs a card. Not urgent for the demo.**
+
+### The pattern of the night, stated once
+
+Three separate times a fault injection came back GREEN and revealed the test was not watching the
+thing it named. The last was the most instructive: both new marker tests passed against the bug
+because **a mutation reads the token FIRST for its own write** — so with a stalled session,
+`move_place` never reaches `startSummaryRewrite` at all, and a test built on an edit sees no
+rewrite entry either way. Re-pointed through `replan_trip`, which reaches the token with no prior
+read, and both reddened. None of the three would have been caught without injecting.
+

@@ -74,9 +74,18 @@ export type GenerationDeps = {
    * job and the generation pipeline both scrape through Apify on a cache miss (backend/
    * organizer.py `_process_item`, backend/pipeline/runner.py) and share one write-through cache
    * keyed on normalized_url + EXTRACTOR_VERSION. Queuing extraction here would race the run this
-   * tool is about to start and pay Apify twice for the same reel. Left out, the pipeline's own
-   * scrape fills that cache first and organizing these reels afterwards reuses it — no scrape,
-   * and no daily analysis slot either (the quota is reserved only on a cache MISS).
+   * tool is about to start and pay Apify twice for the same reel, every time. Left out, the
+   * pipeline's own scrape normally fills that cache first and organizing these reels afterwards
+   * reuses it — no scrape, and no daily analysis slot (the quota is reserved only on a cache
+   * MISS).
+   *
+   * NORMALLY, not always, and the difference is the user's money. The runner's cache write is
+   * best-effort and can fail after the paid scrape succeeded (runner.py); a run can complete with
+   * an individual Reel having failed, so that Reel was never cached at all; and the organizer
+   * treats a cache READ failure exactly like a miss, reserving a slot and extracting again
+   * (organizer.py). Sequencing is the cheapest ordering available, not a free one — say so
+   * wherever this is described to a user or an agent, because an agent told something is free
+   * will call it freely.
    *
    * "Afterwards" is the CALLER's job, not the agent's: GlobalTools organizes exactly these reels
    * on the run's successful terminal frame. The agent is told so, and told not to do it itself.
@@ -199,9 +208,11 @@ async function saveReelsToLibrary(
 function describeLibraryOutcome(saved: number, total: number): string {
   const noun = total === 1 ? 'reel' : 'reels'
   const ordering = `The places are not filled in yet — the ${noun} will be organized ` +
-    'automatically once the trip finishes, reusing what this run read, at no extra cost. Do not ' +
-    'call save_reels on these links to organize them yourself: it is already handled, and doing ' +
-    'it while the trip is still building reads them again.'
+    'automatically once the trip finishes, and it normally reuses what this run read rather than ' +
+    'reading them again. Not a guarantee: a Reel this run failed on, or a cached read that does ' +
+    'not come back, is read again and costs an analysis slot. Do not call save_reels on these ' +
+    'links to organize them yourself: it is already handled, and doing it while the trip is ' +
+    'still building reads them again for certain.'
   if (saved === 0) {
     return total === 1
       ? 'The reel could not be added to the library. The trip is unaffected — tell the user the ' +

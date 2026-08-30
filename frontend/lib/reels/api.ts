@@ -6,6 +6,22 @@ import type {
 
 const BACKEND_URL = resolveBackendUrl()
 export const ACTIVE_ORGANIZE_CONFLICT_MESSAGE = 'One of those Reels is already being organized. Wait for it to finish, or deselect it and organize the others.'
+
+/**
+ * The 409 an organize earns when another active job already holds one of its reels.
+ *
+ * Typed rather than a bare Error because the two callers who meet it need OPPOSITE behaviour from
+ * a request that genuinely failed: those reels are being read right now, by the job that won the
+ * race, so retrying earns the same 409 and reporting it as a failed organize tells the user
+ * something untrue. The message is unchanged, so anything that only renders `err.message` is
+ * unaffected.
+ */
+export class ActiveOrganizeConflictError extends Error {
+  constructor(message: string = ACTIVE_ORGANIZE_CONFLICT_MESSAGE) {
+    super(message)
+    this.name = 'ActiveOrganizeConflictError'
+  }
+}
 const SAFE_SAVED_REEL_CARD_COLUMNS = [
   'id', 'user_id', 'normalized_url', 'source_platform', 'reel_cache_id',
   'analysis_status', 'personal_label', 'retry_after', 'analyzed_at',
@@ -39,7 +55,7 @@ async function backendJson<T>(path: string, token: string, init: RequestInit = {
   })
   if (!response.ok) {
     if (response.status === 409 && path === '/saved-reels/organize') {
-      throw new Error(ACTIVE_ORGANIZE_CONFLICT_MESSAGE)
+      throw new ActiveOrganizeConflictError()
     }
     const body = await response.json().catch(() => null)
     // An empty-string code is not a code — fall through to STATUS_TO_CODE instead of rendering

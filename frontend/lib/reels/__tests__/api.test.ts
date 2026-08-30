@@ -8,7 +8,7 @@ const { from, getSession, createClient } = vi.hoisted(() => ({
 
 vi.mock('@/lib/supabase/client', () => ({ createClient }))
 
-import { captureSavedReel, listSavedReelCards, startOrganize, streamOrganize } from '@/lib/reels/api'
+import { ActiveOrganizeConflictError, captureSavedReel, listSavedReelCards, startOrganize, streamOrganize } from '@/lib/reels/api'
 
 describe('saved reels api', () => {
   beforeEach(() => {
@@ -75,6 +75,23 @@ describe('saved reels api', () => {
     await expect(startOrganize(['saved-1'], 'jwt-token')).rejects.toThrow(
       'One of those Reels is already being organized. Wait for it to finish, or deselect it and organize the others.',
     )
+  })
+
+  it('types the overlap so a caller can tell the fence working from a real failure', async () => {
+    /* The reels ARE being organized, by the job that won the race — so a caller retrying it, or
+       reporting it to the user as a failed organize, would be wrong twice. Message matching would
+       do, until someone edits the copy; the class is what makes the distinction survive that. */
+    vi.mocked(fetch).mockResolvedValueOnce(new Response('', { status: 409 }))
+
+    await expect(startOrganize(['saved-1'], 'jwt-token')).rejects.toBeInstanceOf(ActiveOrganizeConflictError)
+  })
+
+  it('does not type an unrelated failure as an overlap', async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(new Response('', { status: 500 }))
+
+    const error = await startOrganize(['saved-1'], 'jwt-token').catch((e: unknown) => e)
+    expect(error).toBeInstanceOf(Error)
+    expect(error).not.toBeInstanceOf(ActiveOrganizeConflictError)
   })
 
   it('maps a capture 422 envelope to the friendly capture validation copy', async () => {

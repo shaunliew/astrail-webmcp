@@ -41,7 +41,11 @@ vi.mock('next/navigation', () => ({ usePathname: () => '/app', useRouter: () => 
 
 vi.mock('@/lib/trip/supabase-api', () => ({ listTrips: () => Promise.resolve([]), getTrip: vi.fn() }))
 
-vi.mock('@/lib/reels/api', () => ({
+/* The three network calls are stubbed; everything else comes from the REAL module. The conflict
+   error GlobalTools branches on is a class exported from there, and a factory that omitted it made
+   `instanceof` compare against undefined — a mock that silently disables the branch under test. */
+vi.mock('@/lib/reels/api', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/lib/reels/api')>(),
   listSavedReelCards: () => Promise.resolve([]),
   captureSavedReel: (url: string, token: string) => h.captureSavedReel(url, token),
   startOrganize: (ids: string[], token: string) => h.startOrganize(ids, token),
@@ -79,8 +83,29 @@ vi.mock('../RegisterTools', () => ({
 }))
 
 const { createGenerationStore } = await import('@/lib/webmcp/generation')
+const { ActiveOrganizeConflictError } = await import('@/lib/reels/api')
+const { ORGANIZE_FAILED_MESSAGE, organizeJobs, resetOrganizeJobs } = await import('@/lib/reels/organize-jobs')
 const { WebMcpRegistryProvider, useWebMcpRegistry } = await import('../WebMcpRegistry')
-const { default: GlobalTools } = await import('../GlobalTools')
+const { default: GlobalTools, ORGANIZE_RETRY_DELAYS_MS } = await import('../GlobalTools')
+
+/** Total time the retry ladder can take, plus room for the calls themselves. */
+const RETRY_WINDOW_MS = ORGANIZE_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0) + 2_000
+
+/**
+ * Attempts a failing organize gets, pinned as a NUMBER.
+ *
+ * Deliberately not `ORGANIZE_RETRY_DELAYS_MS.length + 1`: derived from the constant, the
+ * assertion holds for an empty ladder too, so deleting every retry left the test green. The
+ * policy is "one attempt plus two retries", and a change to it should have to be made here.
+ */
+const ORGANIZE_ATTEMPTS = 3
+
+/** A promise this test resolves by hand, so a request can still be in flight at a chosen moment. */
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((r) => { resolve = r })
+  return { promise, resolve }
+}
 
 /**
  * A shell whose reservation opens a real run on a real store, and hands us its event sink.
@@ -162,6 +187,9 @@ function land(event: StreamEvent) {
 }
 
 beforeEach(() => {
+  // The job store is a module, so it outlives a render the way it outlives a page — which is the
+  // whole point of it, and exactly why each test has to start from empty.
+  resetOrganizeJobs()
   h.specs = []
   h.shell = makeShell()
   h.emit = null
@@ -240,7 +268,7 @@ describe('organizing the reels a generation planned from', () => {
     const record = (reason: unknown) => { escaped.push(reason) }
     process.on('unhandledRejection', record)
     try {
-      h.startOrganize.mockRejectedValue(new Error('One of those Reels is already being organized.'))
+      h.startOrganize.mockRejectedValue(new ActiveOrganizeConflictError())
       const { result } = await planTrip()
       land(SUCCESS)
       await waitFor(() => { expect(h.startOrganize).toHaveBeenCalledTimes(1) })
@@ -330,5 +358,181 @@ describe('organizing the reels a generation planned from', () => {
     land(SUCCESS)
     await Promise.resolve()
     expect(h.startOrganize).not.toHaveBeenCalled()
+  })
+})
+
+describe('the organize outlives the page that started it', () => {
+  /* The race Codex found: `GenerationProvider` marks the run terminal and navigates to the trip in
+     the same breath, which unmounts the library page — while `startOrganize` is still awaiting its
+     response. The job id used to be handed to that page through an OPTIONAL ref the page owned and
+     nulled on unmount, so the id was dropped on the floor; and an id that did land lived in that
+     page's own state and died with it. Either way the user came back to /app and read "Not
+     analyzed" for a job running perfectly well — the very complaint this feature exists to answer.
+
+     So the job is owned by a module now. These tests are about that ownership, not about the
+     poll — what a followed job renders is SavedReelsFlow's own suite. */
+
+  it('follows the job even when the page unmounts before the request lands', async () => {
+    const started = deferred<{ job_id: string }>()
+    h.startOrganize.mockImplementation(() => started.promise)
+    const { unmount } = await planTrip()
+    land(SUCCESS)
+    await waitFor(() => { expect(h.startOrganize).toHaveBeenCalledTimes(1) })
+
+    // The navigation, at its worst: everything React owns goes away mid-request.
+    unmount()
+    started.resolve({ job_id: 'job-late' })
+
+    await waitFor(() => { expect(organizeJobs().jobIds).toEqual(['job-late']) })
+  })
+
+  it('retries a request that fails, and keeps the reels for the attempt after that', async () => {
+    /* The record used to be cleared BEFORE the call, so one dropped connection was permanently
+       terminal: nothing was left to retry with and nothing said so. */
+    h.startOrganize.mockRejectedValue(new Error('network blip'))
+    await planTrip()
+    land(SUCCESS)
+
+    await waitFor(
+      () => { expect(h.startOrganize).toHaveBeenCalledTimes(ORGANIZE_ATTEMPTS) },
+      { timeout: RETRY_WINDOW_MS },
+    )
+    expect(ORGANIZE_RETRY_DELAYS_MS).toHaveLength(ORGANIZE_ATTEMPTS - 1)
+    // Every attempt asked for the same reels — the record survived all of them.
+    for (const call of h.startOrganize.mock.calls) expect(call[0]).toEqual(['reel-1', 'reel-2'])
+
+    // ...and it is still there for the next terminal frame, which is what "retryable" means.
+    h.startOrganize.mockResolvedValue({ job_id: 'job-2' })
+    await act(async () => { await Promise.resolve() })
+    land(SUCCESS)
+    await waitFor(() => { expect(organizeJobs().jobIds).toEqual(['job-2']) })
+    expect(h.startOrganize).toHaveBeenLastCalledWith(['reel-1', 'reel-2'], 'test-token')
+  })
+
+  it('says so, where the user will see it, when it runs out of attempts', async () => {
+    // Swallowing is right for the TRIP (guardrail #3 — the trip is built and on screen), and
+    // wrong for the library: those reels have no places and nothing would ever have said why.
+    h.startOrganize.mockRejectedValue(new Error('network blip'))
+    await planTrip()
+    land(SUCCESS)
+
+    await waitFor(
+      () => { expect(organizeJobs().failure).not.toBeNull() },
+      { timeout: RETRY_WINDOW_MS },
+    )
+    expect(organizeJobs().failure).toEqual({
+      savedReelIds: ['reel-1', 'reel-2'], message: ORGANIZE_FAILED_MESSAGE,
+    })
+    expect(organizeJobs().jobIds).toEqual([])
+  })
+
+  it('clears a standing failure once an attempt gets through', async () => {
+    h.startOrganize.mockRejectedValue(new Error('network blip'))
+    await planTrip()
+    land(SUCCESS)
+    await waitFor(() => { expect(organizeJobs().failure).not.toBeNull() }, { timeout: RETRY_WINDOW_MS })
+
+    h.startOrganize.mockResolvedValue({ job_id: 'job-2' })
+    await act(async () => { await Promise.resolve() })
+    land(SUCCESS)
+    await waitFor(() => { expect(organizeJobs().failure).toBeNull() })
+  })
+
+  it('neither retries nor reports the 409 a second tab earns', async () => {
+    /* The server-side fence working, not a failure: those reels are being read right now by the
+       job that won the race. Retrying earns the same 409, and telling the user their reels were
+       not organized would be false. */
+    h.startOrganize.mockRejectedValue(new ActiveOrganizeConflictError())
+    await planTrip()
+    land(SUCCESS)
+    await waitFor(() => { expect(h.startOrganize).toHaveBeenCalledTimes(1) })
+
+    await new Promise((r) => setTimeout(r, RETRY_WINDOW_MS / 2))
+    expect(h.startOrganize).toHaveBeenCalledTimes(1)
+    expect(organizeJobs().failure).toBeNull()
+
+    // ...and the record is spent, because the work IS happening.
+    land(SUCCESS)
+    await act(async () => { await Promise.resolve() })
+    expect(h.startOrganize).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not start a second organize while the first request is still in flight', async () => {
+    // The old fence was clearing the record before the call. Losing that fence to keep the record
+    // would trade one defect for a worse one: two paid jobs for the same reels.
+    const started = deferred<{ job_id: string }>()
+    h.startOrganize.mockImplementation(() => started.promise)
+    await planTrip()
+    land(SUCCESS)
+    await waitFor(() => { expect(h.startOrganize).toHaveBeenCalledTimes(1) })
+
+    land({ type: 'heartbeat', elapsed_s: 91 })
+    land(SUCCESS)
+    await act(async () => { await Promise.resolve() })
+    expect(h.startOrganize).toHaveBeenCalledTimes(1)
+
+    started.resolve({ job_id: 'job-1' })
+    await waitFor(() => { expect(organizeJobs().jobIds).toEqual(['job-1']) })
+  })
+
+  it('does not spend the NEXT run\'s record when this one\'s request finally lands', async () => {
+    /* Found by fault injection: clearing `plannedReelsRef` on a successful organize without
+       checking WHICH run the attempt was made for. A second generation can start while the first
+       run's organize is still in flight — the lock came back the moment that run went terminal —
+       and the clear then wiped the new run's record, so its reels were never organized at all.
+       The same case is why the attempt is fenced on the RECORD and not on the component: a
+       component-wide flag would have blocked the second organize outright. */
+    const started = deferred<{ job_id: string }>()
+    h.startOrganize.mockImplementationOnce(() => started.promise)
+    const { plan } = await mountTools()
+    await runPlan(plan, PLAN_ARGS)
+    land(SUCCESS)
+    await waitFor(() => { expect(h.startOrganize).toHaveBeenCalledTimes(1) })
+
+    // The next run opens its own record while the first organize is still in flight.
+    h.generateTrip.mockResolvedValue({ trip_id: 'trip-2' })
+    h.captureSavedReel.mockResolvedValue({ saved_reel: { id: 'reel-B' } })
+    h.startOrganize.mockResolvedValue({ job_id: 'job-2' })
+    await runPlan(plan, { ...PLAN_ARGS, reel_urls: ['https://www.instagram.com/reel/Cxyz789/'] })
+
+    started.resolve({ job_id: 'job-1' })
+    await waitFor(() => { expect(organizeJobs().jobIds).toEqual(['job-1']) })
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+
+    land(SUCCESS)
+    await waitFor(() => { expect(h.startOrganize).toHaveBeenCalledTimes(2) })
+    expect(h.startOrganize).toHaveBeenLastCalledWith(['reel-B'], 'test-token')
+  })
+})
+
+describe('captured reels belong to the run that captured them', () => {
+  it('does not record a late capture from one run against the next', async () => {
+    /* `saveReelForRun` awaited the save and then wrote into whatever record was open when it
+       LANDED. Two runs in one session is all it takes: the first run's captures resolve after the
+       second has opened its own record, and the second run's organize then pays to read reels it
+       never planned from — while the first run's reels are still owed one. */
+    const first = deferred<{ saved_reel: { id: string } }>()
+    const second = deferred<{ saved_reel: { id: string } }>()
+    const pending = [first, second]
+    h.captureSavedReel.mockImplementation(() => pending.shift()!.promise)
+
+    const { plan } = await mountTools()
+    const runA = runPlan(plan, PLAN_ARGS)
+    await waitFor(() => { expect(h.captureSavedReel).toHaveBeenCalledTimes(2) })
+
+    // Run A dies, so its record is never spent — and the lock comes back for run B.
+    land(FAILURE)
+    h.generateTrip.mockResolvedValue({ trip_id: 'trip-2' })
+    h.captureSavedReel.mockImplementation(() => Promise.resolve({ saved_reel: { id: 'reel-B' } }))
+    await runPlan(plan, { ...PLAN_ARGS, reel_urls: ['https://www.instagram.com/reel/Cxyz789/'] })
+
+    // ...and only NOW do run A's captures land, into a browser whose open record is run B's.
+    first.resolve({ saved_reel: { id: 'reel-A1' } })
+    second.resolve({ saved_reel: { id: 'reel-A2' } })
+    await runA
+
+    land(SUCCESS)
+    await waitFor(() => { expect(h.startOrganize).toHaveBeenCalledTimes(1) })
+    expect(h.startOrganize).toHaveBeenCalledWith(['reel-B'], 'test-token')
   })
 })

@@ -2,6 +2,10 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { captureSavedReel, getOrganizeStatus, listSavedReelCards, startOrganize, streamOrganize } from '@/lib/reels/api'
+import {
+  clearOrganizeFailure, organizeJobs, retireOrganizeJobs, subscribeOrganizeJobs, trackOrganizeJob,
+  type OrganizeJobsSnapshot,
+} from '@/lib/reels/organize-jobs'
 import type { OrganizeItemStatus, OrganizeJob, OrganizeStreamEvent, SavedReelCard, SavedReelPlaceProof } from '@/lib/reels/backend-types'
 import { groupPlacesByCountry, type CountryTray } from '@/lib/reels/organize'
 import { overlayLiveStatus, wasAlreadySaved } from '@/lib/reels/labels'
@@ -40,9 +44,9 @@ export function toReelBriefItem(place: SavedReelPlaceProof): DraftInspirationIte
   }
 }
 
-/** Most adopted organize jobs followed at once. Real use adds one per `save_reels` call; the cap
- *  only bites on a job that never reaches a terminal status and so is never retired. */
-const MAX_ADOPTED_JOBS = 8
+/** Nothing adopted yet. A constant, so the first render is identical on the server and in the
+ *  browser — the real set is read in an effect, once there is a browser to read it in. */
+const NO_ORGANIZE_JOBS: OrganizeJobsSnapshot = { jobIds: [], failure: null }
 
 // What the user is told when a run ends any way but complete. The shell navigates on SUCCESS only,
 // so without these the wait screen is where the session ends. `unknown` is deliberately not worded
@@ -128,19 +132,26 @@ export default function SavedReelsFlow() {
      that OVERLAP an active job's saved reels. Two disjoint batches run happily side by side, so
      a second `save_reels` while the first is still extracting used to replace the first job and
      abandon it, leaving its cards stale until something unrelated refreshed them. */
-  const [toolJobIds, setToolJobIds] = useState<string[]>([])
+  /* SUBSCRIBED to, not owned. The set used to live in this component's state and arrive through
+     an optional ref this component published — and both die on unmount, which is precisely what
+     the terminal navigation does while the organize request is still in flight. The module owns
+     it now (lib/reels/organize-jobs), so a job started while this page was elsewhere is picked up
+     the moment it mounts. The ref is still published, so a caller that reaches for it lands in
+     the same durable set rather than in a slot that is null half the time. */
+  const [organize, setOrganize] = useState<OrganizeJobsSnapshot>(NO_ORGANIZE_JOBS)
   const [liveItems, setLiveItems] = useState<Record<string, OrganizeItemStatus>>({})
+  useEffect(() => {
+    const sync = () => setOrganize(organizeJobs())
+    sync()
+    return subscribeOrganizeJobs(sync)
+  }, [])
   useEffect(() => {
     const slot = registry?.adoptOrganizeJob
     if (!slot) return
-    // Bounded: a job is normally retired when it reaches a terminal status, but one that never
-    // does (deleted, permanently unreadable) would otherwise be polled for the life of the page
-    // and grow the batch forever. Oldest out — a stalled job is the least likely to still matter.
-    slot.current = (id: string) => setToolJobIds((prev) => (
-      prev.includes(id) ? prev : [...prev, id].slice(-MAX_ADOPTED_JOBS)
-    ))
+    slot.current = trackOrganizeJob
     return () => { slot.current = null }
   }, [registry])
+  const toolJobIds = organize.jobIds
 
   // Items whose refetch has ALREADY landed, keyed `jobId:reelId` — a reel re-analysed by a LATER
   // job must not be suppressed by the earlier job having settled it.
@@ -193,7 +204,7 @@ export default function SavedReelsFlow() {
            good: the effect was already disabled, its interval already cleared, and no retry left. */
         if (finished.length > 0) {
           const done = new Set(finished.map((j) => j.job_id))
-          setToolJobIds((prev) => prev.filter((id) => !done.has(id)))
+          retireOrganizeJobs(done)
           setLiveItems((prev) => Object.fromEntries(
             Object.entries(prev).filter(([id]) => !finished.some((j) => j.items.some((i) => i.saved_reel_id === id))),
           ))
@@ -233,6 +244,11 @@ export default function SavedReelsFlow() {
     const token = await getAccessToken()
     if (!activeRef.current) return
     const result = await startOrganize(submittedIds, token)
+    /* The post-run organize that failed is now being done by hand — but only if THESE are the
+       reels it was owed. A different batch is no evidence that those were ever read, and dropping
+       the notice for it would hide the one place the failure is visible. */
+    const owed = organizeJobs().failure
+    if (owed && owed.savedReelIds.every((id) => submittedIds.includes(id))) clearOrganizeFailure()
     if (!activeRef.current) return
     submittedReelIdsRef.current = submittedIds
     setJobId(result.job_id)
@@ -541,12 +557,18 @@ export default function SavedReelsFlow() {
       ) : undefined}
     />
   )
+  /* The library's one line of news, and the organize that failed behind the user's back is part
+     of it. The message from what they just DID wins: it is about this second, while the standing
+     failure is about a trip that finished minutes ago and stays until those reels are read. Both
+     in one slot rather than two stacked alerts — the inbox has one place to look. */
+  const inboxNotice = inboxMessage ?? organize.failure?.message ?? null
+
   return (
     <div>
       {runNotice}
-      {inboxMessage ? (
+      {inboxNotice ? (
         <p role="alert" className="mb-6 rounded-lg border border-dashed border-[color:var(--line-soft)] bg-[color:var(--surface-2)] p-3 text-[13px] text-[color:var(--text-muted)]">
-          {inboxMessage}
+          {inboxNotice}
         </p>
       ) : null}
       <TraysScreen cards={liveCards} cardsStatus={cardsStatus} onCapture={handleCapture} onOrganize={handleOrganize} onCreateTrail={onCreateTrail} />

@@ -3,6 +3,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { pickTripDates } from '@/test/pickTripDates'
 import { WebMcpRegistryProvider, useWebMcpRegistry } from '@/components/webmcp/WebMcpRegistry'
 import { requestViewIntent, resetViewIntent, takeViewIntent } from '@/lib/webmcp/view-intent'
+import {
+  ORGANIZE_FAILED_MESSAGE, organizeJobs, recordOrganizeFailure, resetOrganizeJobs, trackOrganizeJob,
+} from '@/lib/reels/organize-jobs'
 
 const { push, getAccessToken, listSavedReelCards, startOrganize, streamOrganize, getOrganizeStatus, generateTrip, streamGeneration, useEntitlement, requestSeat, mapInstance } = vi.hoisted(() => ({
   push: vi.fn(),
@@ -162,6 +165,11 @@ async function flushMicrotasks() {
     await Promise.resolve()
   })
 }
+
+/* The adopted-job set lives in a module, so it survives a render the way it survives a page —
+   which is the whole point of it, and exactly why every test in this file has to start from
+   empty. */
+beforeEach(() => { resetOrganizeJobs() })
 
 describe('SavedReelsFlow', () => {
   afterEach(() => { cleanup(); vi.useRealTimers() })
@@ -1054,6 +1062,72 @@ describe('an agent-started extraction shows progress without a reload', () => {
     await act(async () => { await Promise.resolve() })
     await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
     expect(getOrganizeStatus).not.toHaveBeenCalled()
+  })
+
+  it('follows a job that was started while this page was not mounted', async () => {
+    /* The reported reproduction, and the one a page-local job set could never survive: a finished
+       generation navigates to the trip, which unmounts this page while the organize request is
+       still in flight. Coming back to /app has to show the job running — not "Not analyzed", which
+       is what the user complained about in the first place. */
+    listSavedReelCards.mockResolvedValue([{ ...cards[0], analysis_status: 'not_analyzed' }])
+    getOrganizeStatus.mockClear()
+    getOrganizeStatus.mockResolvedValue(job('processing', 'processing'))
+
+    trackOrganizeJob('job-1')       // nothing is mounted at this moment; that is the point
+    renderInRegistry()
+
+    await waitFor(() => expect(getOrganizeStatus).toHaveBeenCalledWith('job-1', 'token'))
+  })
+
+  it('retires a finished job from the shared set, not just from its own state', async () => {
+    // Otherwise the next mount picks a terminal job straight back up and polls it for ever.
+    listSavedReelCards.mockResolvedValue([{ ...cards[0], analysis_status: 'not_analyzed' }])
+    getOrganizeStatus.mockClear()
+    getOrganizeStatus.mockResolvedValue(job('succeeded', 'organized'))
+
+    trackOrganizeJob('job-1')
+    renderInRegistry()
+
+    await waitFor(() => expect(organizeJobs().jobIds).toEqual([]))
+  })
+
+  it('tells the user when the post-run organize could not be started', async () => {
+    /* Swallowed is right for the trip and wrong for the library: those reels are saved with no
+       places and, before this, nothing anywhere said why. */
+    listSavedReelCards.mockResolvedValue([{ ...cards[0], analysis_status: 'not_analyzed' }])
+    recordOrganizeFailure({ savedReelIds: ['saved-1'], message: ORGANIZE_FAILED_MESSAGE })
+
+    renderInRegistry()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/could not organize the Reels/i)
+  })
+
+  it('drops that notice once the user organizes the reels it names', async () => {
+    listSavedReelCards.mockResolvedValue([{ ...cards[0], analysis_status: 'not_analyzed' }])
+    recordOrganizeFailure({ savedReelIds: ['saved-1'], message: ORGANIZE_FAILED_MESSAGE })
+    startOrganize.mockResolvedValue({ job_id: 'job-retry' })
+
+    renderInRegistry()
+    await screen.findByRole('alert')
+
+    // TraysScreen is mocked down to a button that organizes the first card — 'saved-1'.
+    fireEvent.click(await screen.findByRole('button', { name: 'mock-plan-trip' }))
+
+    await waitFor(() => expect(organizeJobs().failure).toBeNull())
+  })
+
+  it('keeps the notice up when the user organizes something else', async () => {
+    // A different batch is no evidence that the reels which failed were ever read.
+    listSavedReelCards.mockResolvedValue([{ ...cards[0], analysis_status: 'not_analyzed' }])
+    recordOrganizeFailure({ savedReelIds: ['saved-elsewhere'], message: ORGANIZE_FAILED_MESSAGE })
+    startOrganize.mockResolvedValue({ job_id: 'job-retry' })
+
+    renderInRegistry()
+    await screen.findByRole('alert')
+    fireEvent.click(await screen.findByRole('button', { name: 'mock-plan-trip' }))
+
+    await waitFor(() => expect(startOrganize).toHaveBeenCalled())
+    expect(organizeJobs().failure?.savedReelIds).toEqual(['saved-elsewhere'])
   })
 })
 

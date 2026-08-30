@@ -5,7 +5,10 @@ import { usePathname, useRouter } from 'next/navigation'
 import type { Trip, TripBundle, TripStatus } from '@/lib/trip/backend-types'
 import { getTrip, listTrips } from '@/lib/trip/supabase-api'
 import { addTripPlace, deleteTripPlace, editTripDates, editTripPlace, generateTrip, replanTrip } from '@/lib/trip/api'
-import { captureSavedReel, listSavedReelCards, startOrganize } from '@/lib/reels/api'
+import { ActiveOrganizeConflictError, captureSavedReel, listSavedReelCards, startOrganize } from '@/lib/reels/api'
+import {
+  ORGANIZE_FAILED_MESSAGE, clearOrganizeFailure, recordOrganizeFailure, trackOrganizeJob,
+} from '@/lib/reels/organize-jobs'
 import { getAccessToken } from '@/lib/supabase/session'
 import { TRIAL_LIFETIME_LIMIT, readEntitlement } from '@/lib/entitlement'
 import { globalTools } from '@/lib/webmcp/tools'
@@ -155,6 +158,39 @@ const SAMPLE_NOT_EDITABLE =
 const TRIP_PATH_PREFIX = '/app/trip/'
 
 /**
+ * How long to wait before each retry of the post-run organize, and therefore how many attempts.
+ *
+ * Two retries, because the alternative is that one dropped connection permanently costs the user
+ * the places for the reels they just planned from, with nothing said. Bounded and short because
+ * the thing being retried is a job CREATION — a plain insert behind an already-finished trip — and
+ * because a request that keeps failing on this ladder is not transient. A 409 is not on this
+ * ladder at all: it is the server-side fence working, and every retry earns the same answer.
+ */
+export const ORGANIZE_RETRY_DELAYS_MS = [400, 1_200]
+
+/** The reels ONE run planned from, and the identity that says which run that was. */
+type PlannedReels = {
+  /**
+   * Increments per run. The trip id would nearly do, but "nearly" is what finding 4 was: this is
+   * compared across an awaited capture, and it must be impossible for a second run to look like
+   * the first — including the case where a retried create hands back the same trip id.
+   */
+  token: number
+  tripId: string
+  savedReelIds: string[]
+  /**
+   * An organize request for these reels is in flight.
+   *
+   * On the RECORD rather than on the component, and that is the whole of the difference: a flag
+   * shared by every run would let one run's slow request fence the NEXT run's organize out
+   * entirely, and nothing would ever notify again to lift it. Each record fences only itself.
+   */
+  attempting: boolean
+}
+
+const wait = (ms: number) => new Promise<void>((resolve) => { setTimeout(resolve, ms) })
+
+/**
  * What the trip route is actually showing, per status.
  *
  * One label for all six was wrong in two directions. That route renders whatever the id resolves
@@ -209,7 +245,7 @@ export default function GlobalTools() {
   const pathname = usePathname() ?? '/app'
   const router = useRouter()
   const hasSession = useHasSession(pathname)
-  const { requestConfirm, openTrip, refreshOpenTrip, refreshSavedReels, adoptOrganizeJob } = useWebMcpRegistry()
+  const { requestConfirm, openTrip, refreshOpenTrip, refreshSavedReels } = useWebMcpRegistry()
   // The run belongs to the shell, not to this component. It must outlive any single tool call
   // (the stream runs 60-180s while `plan_trip_from_reels` returns in about a second) AND outlive
   // whichever page happens to be mounted, so the page can render the same run the agent narrates.
@@ -222,11 +258,15 @@ export default function GlobalTools() {
   // hands the id back for streaming — so the reservation taken by the first has to reach the
   // second. A ref, because nothing renders from it and a re-render must not drop it.
   const reservationRef = useRef<RunReservation | null>(null)
-  /* The reels ONE run planned from, held only until that run lands.
-     Keyed by trip so a record can never be spent on a different run, and cleared the moment it
-     is used, so the organize fires once. A ref rather than state: nothing renders from it, and a
-     re-render must not drop it — it has to survive the 60-180s the pipeline takes. */
-  const plannedReelsRef = useRef<{ tripId: string; savedReelIds: string[] } | null>(null)
+  /* The reels ONE run planned from, held until that run's organize has actually been accepted.
+     Keyed by trip AND by token so a record can never be spent on a different run, and cleared once
+     the request has landed, so the organize fires once. A ref rather than state: nothing renders
+     from it, and a re-render must not drop it — it has to survive the 60-180s the pipeline takes.
+     GlobalTools is mounted by the /app layout, so it survives the terminal navigation too. */
+  const plannedReelsRef = useRef<PlannedReels | null>(null)
+  /* Hands out the token above. A counter rather than a timestamp: two runs in the same
+     millisecond are not distinguishable by the clock, and nothing here needs a time. */
+  const runTokenRef = useRef(0)
 
   const pathRef = useRef(pathname)
   pathRef.current = pathname
@@ -436,16 +476,20 @@ export default function GlobalTools() {
   const analyzeReels = useCallback(async (savedReelIds: string[]) => {
     const token = await getAccessToken()
     const res = await startOrganize(savedReelIds, token)
+    /* The job is filed with the MODULE, not handed to a page.
+       It used to go through `registry.adoptOrganizeJob`, an optional ref owned by SavedReelsFlow
+       and nulled on unmount — and the terminal navigation unmounts that page while this very
+       request is in flight, so the id was dropped on the floor. Progress is DERIVED from the job
+       rather than written into saved_reels (a status persisted there has no owner: a job failing
+       between its steps would strand a reel reading "Analyzing…" forever), so losing the id is
+       losing the progress — the user comes back to /app and reads "Not analyzed" for a job that
+       is running. Filed here, the page picks it up whenever it next mounts. */
+    trackOrganizeJob(res.job_id)
     void refreshReels()
-    // Show the new reels straight away...
+    // Show the new reels straight away, if a page is there to show them.
     void refreshSavedReels.current?.()
-    // ...and hand the page the job so it can follow it. Progress is DERIVED from the job rather
-    // than written into saved_reels: a status persisted there has no owner, so a job that fails
-    // between its steps would strand a reel reading "Analyzing…" forever, and an idempotent retry
-    // would drag a reel that is genuinely processing back to "queued".
-    adoptOrganizeJob.current?.(res.job_id)
     return res
-  }, [refreshReels, refreshSavedReels, adoptOrganizeJob])
+  }, [refreshReels, refreshSavedReels])
 
   /**
    * Capture a reel for the run now starting, and remember that this run is what planned from it.
@@ -456,18 +500,53 @@ export default function GlobalTools() {
    * about a second and the run it started has another two minutes to go.
    *
    * A capture that fails records nothing, which is right — there is no row to organize.
+   *
+   * The run is identified BEFORE the await and compared after it. Reading only `.current` on the
+   * way out wrote into whatever record happened to be open when the save landed, so two runs in
+   * one session cross-contaminated: run A's slow capture became one of run B's reels, and run B's
+   * organize then paid to read a reel it never planned from while run A's reel was still owed one.
+   * `create` opens the record before any capture starts (see the tool's ordering), so a capture
+   * with no token to carry is a capture with no run behind it.
    */
   const saveReelForRun = useCallback(async (url: string) => {
+    const token = plannedReelsRef.current?.token ?? null
     const saved = await saveReel(url)
     const planned = plannedReelsRef.current
     // A new object, never a push into the old one: `create` swaps this ref wholesale when the
     // next run starts, and a mutated array would let a late capture write into a record that has
     // already been spent — which is the second, unfenced organize this is built to avoid.
-    if (planned) {
+    if (planned && token !== null && planned.token === token) {
       plannedReelsRef.current = { ...planned, savedReelIds: [...planned.savedReelIds, saved.id] }
     }
     return saved
   }, [saveReel])
+
+  /**
+   * Ask for this run's organize, retrying a request that fails, and resolve with whether the
+   * record has been SPENT — that is, whether a job now exists for these reels.
+   *
+   * `true` for an accepted job and for the 409, which means another active job already holds these
+   * reels: the fence working, not a failure, and every retry earns the same answer. `false` only
+   * when the ladder is exhausted, and then the reels are named where the user will see them rather
+   * than dropped in silence.
+   */
+  const organizeForRun = useCallback(async (savedReelIds: string[]): Promise<boolean> => {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await analyzeReels(savedReelIds)
+        // A success supersedes anything an earlier attempt said about these reels.
+        clearOrganizeFailure()
+        return true
+      } catch (err) {
+        if (err instanceof ActiveOrganizeConflictError) return true
+        if (attempt >= ORGANIZE_RETRY_DELAYS_MS.length) {
+          recordOrganizeFailure({ savedReelIds, message: ORGANIZE_FAILED_MESSAGE })
+          return false
+        }
+        await wait(ORGANIZE_RETRY_DELAYS_MS[attempt])
+      }
+    }
+  }, [analyzeReels])
 
   /**
    * Organize the run's reels once — and only once — that run has actually landed.
@@ -480,22 +559,29 @@ export default function GlobalTools() {
    * reads `get_cached_places(normalized_url, EXTRACTOR_VERSION)` first, and both the daily-analysis
    * quota reserve and the Apify call live inside its `if places is None` miss branch
    * (backend/organizer.py). Run after a successful pipeline — which has just written that exact
-   * key (pipeline/runner.py, same `EXTRACTOR_VERSION`) — the job is a cache hit: no scrape, no
-   * analysis slot, only Mapbox grounding and the DB writes.
+   * key (pipeline/runner.py, same `EXTRACTOR_VERSION`) — the job normally READS that cache instead
+   * of scraping again. Normally, not always, and the difference is the user's money: the runner's
+   * cache write is best-effort and can fail after the paid scrape succeeded, a run can complete
+   * with an individual Reel having failed, and the organizer treats a cache READ failure exactly
+   * like a miss — reserving an analysis slot and extracting again. Expected, then, rather than
+   * guaranteed. It is still the cheapest ordering available, which is why it is this one.
    *
    * So the gate is the successful terminal state and nothing looser:
    *   - `complete` only. `failed` would spend grounding on a trip that does not exist, and
    *     `unknown` (an unreadable result frame) is not evidence that one does.
    *   - The trip must MATCH. The store outlives this component and holds the last run either way,
    *     so a record taken for a run that has not started yet must not read a previous verdict.
-   *   - The record is cleared BEFORE the call, so a later frame — a duplicate result, a late
-   *     heartbeat — finds nothing left to spend. Server-side, the organize RPC fences the same
-   *     thing harder for the two-tab case: it row-locks the reels and raises AS409 if any of them
-   *     already sits in an active job.
+   *   - One attempt at a time PER RECORD, and the record is cleared only once a job EXISTS.
+   *     Clearing it before the call also fenced the duplicate frames — a late heartbeat, a
+   *     repeated result — but it made one dropped connection permanently terminal: nothing was
+   *     left to retry with and nothing said so. `attempting` fences the duplicates instead, which
+   *     leaves the record to survive a failure. Server-side, the organize RPC fences the two-tab
+   *     case harder still: it row-locks the reels and raises AS409 if any of them already sits in
+   *     an active job, which arrives here as ActiveOrganizeConflictError.
    *
-   * The failure is SWALLOWED, deliberately (guardrail #3). The trip is built, saved and on screen
-   * by the time this runs; a library write must never resurface as a trip failure, and the 409 a
-   * second tab earns is the fence working, not an error the user needs to read.
+   * The failure never reaches the TRIP (guardrail #3): it is built, saved and on screen by the
+   * time this runs, and a library write must not resurface as a trip failure. It is not swallowed
+   * either — `organizeForRun` files it, and the library page says so the next time it is on screen.
    */
   useEffect(() => {
     const store = shell.store
@@ -504,13 +590,29 @@ export default function GlobalTools() {
       if (snap?.status !== 'complete') return
       const planned = plannedReelsRef.current
       if (!planned || planned.tripId !== snap.tripId || planned.savedReelIds.length === 0) return
-      plannedReelsRef.current = null
-      void analyzeReels(planned.savedReelIds).catch(() => {})
+      if (planned.attempting) return
+      plannedReelsRef.current = { ...planned, attempting: true }
+      void (async () => {
+        let spent = false
+        try {
+          spent = await organizeForRun(planned.savedReelIds)
+        } catch {
+          // `organizeForRun` reports its own outcomes; a throw out of it is a bug, and it must
+          // still not escape into the stream's call stack with nothing there to receive it.
+        }
+        // Only the record this attempt was made FOR. A new run may have opened its own while the
+        // request was in flight, and that one is owed its own organize — not this one's verdict.
+        const current = plannedReelsRef.current
+        if (current?.token !== planned.token) return
+        // Spent: a job exists for these reels. Otherwise the fence lifts and the reels stay, so
+        // the next terminal frame can try again.
+        plannedReelsRef.current = spent ? null : { ...current, attempting: false }
+      })()
     })
     // Wrapped rather than returned directly: `subscribe` hands back a Set#delete, whose boolean
     // is not the `void` a cleanup may return.
     return () => { unsubscribe() }
-  }, [shell, analyzeReels])
+  }, [shell, organizeForRun])
 
   // Declared above `generation` because the approval card reads it too: plan_trip_from_reels
   // reports how many of the chosen reels are already read before the user approves the spend.
@@ -579,8 +681,12 @@ export default function GlobalTools() {
           const res = await generateTrip(req, token)
           // Opened here, filled by `saveReelForRun` as the captures land a moment later. Empty is
           // the honest starting value: nothing has been saved yet, and nothing is owed an organize
-          // until something has.
-          plannedReelsRef.current = { tripId: res.trip_id, savedReelIds: [] }
+          // until something has. The token is what a capture carries across its own await, so a
+          // slow one from the PREVIOUS run cannot be filed against this record.
+          runTokenRef.current += 1
+          plannedReelsRef.current = {
+            token: runTokenRef.current, tripId: res.trip_id, savedReelIds: [], attempting: false,
+          }
           return res.trip_id
         } catch (err) {
           // No backend job exists, so the lock goes back immediately. Holding it would block
@@ -620,10 +726,11 @@ export default function GlobalTools() {
          that also links the reel's `reel_cache` row by normalized_url, which is what puts the
          caption and cover back on the card for a reel Astrail has already read.
          Extraction stays out OF THIS CALL because an organize job racing the generation would miss
-         the shared cache on both sides and buy the same Apify scrape twice. It is not left to the
-         agent to remember: `saveReelForRun` notes which reels this run planned from, and the
-         subscription above organizes them the moment the run lands — after the pipeline has filled
-         the cache, so the job is a cache hit. */
+         the shared cache on both sides and buy the same Apify scrape twice, every time. It is not
+         left to the agent to remember: `saveReelForRun` notes which reels this run planned from,
+         and the subscription above organizes them the moment the run lands — after the pipeline
+         has normally filled the cache, so the job normally reads it rather than scraping again.
+         Normally: see that subscription for the four ways this ordering still costs a read. */
       saveToLibrary: saveReelForRun,
       readAllowance,
     }),

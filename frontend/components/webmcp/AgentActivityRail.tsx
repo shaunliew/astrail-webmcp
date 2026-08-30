@@ -144,15 +144,47 @@ export default function AgentActivityRail({
   const [showEarlier, setShowEarlier] = useState(false)
   /** The newest entry the user had already seen when the rail was put away. Null while open. */
   const [seenThroughId, setSeenThroughId] = useState<number | null>(null)
+  /**
+   * The newest entry the user has dismissed. Everything at or below it is gone from the rail.
+   *
+   * A WATERMARK, not a delete: the registry's list is append-only and stays that way. The record
+   * is an audit surface, and an audit surface the audited thing can shorten is not one — a tool
+   * that could reach `setActivity` could erase itself. Nothing recovers a cleared entry from the
+   * UI, so from the user's side this is a clear and not a filing cabinet; the store simply is not
+   * the place to enforce that.
+   */
+  const [cleared, setCleared] = useState<{ throughId: number; spared: readonly number[] }>({
+    throughId: 0,
+    spared: [],
+  })
   const latestIdRef = useRef(0)
 
-  const activity = registry?.activity
   const collapsible = onCollapsedChange !== undefined
   const isCollapsed = collapsible && collapsed
 
+  /**
+   * What the rail is showing: everything since the last clear, plus anything still in flight.
+   *
+   * The exception is the whole point. A clear says "I have read these and they are done", which
+   * is a thing you cannot have decided about a call that has not come back yet — and a user who
+   * clears mid-generation must not be left believing the run died.
+   *
+   * Spared by ID rather than by live status, so the call survives to its OUTCOME. Sparing the
+   * status alone would make the entry vanish the instant it landed, which on a generation means
+   * the rail flickers an entry into view and out again every twenty seconds — worse than either
+   * keeping it or dropping it. The next clear takes it, because by then the user has read it.
+   *
+   * Note what this covers and what it does not: an in-flight tool CALL, not the generation behind
+   * it. Between two polls of a live run there is no running entry at all, so a clear landing in
+   * that window empties the rail until the next poll writes to it.
+   */
+  const activity = registry?.activity
+  const visible = activity?.filter((e) => e.id > cleared.throughId || cleared.spared.includes(e.id))
+  const latestVisibleId = visible?.length ? visible[visible.length - 1].id : 0
+
   useEffect(() => {
-    latestIdRef.current = activity?.length ? activity[activity.length - 1].id : 0
-  }, [activity])
+    latestIdRef.current = latestVisibleId
+  }, [latestVisibleId])
 
   useEffect(() => {
     // Read through the ref and depend on the COLLAPSE alone. Depending on `activity` would re-arm
@@ -160,12 +192,12 @@ export default function AgentActivityRail({
     setSeenThroughId(isCollapsed ? latestIdRef.current : null)
   }, [isCollapsed])
 
-  if (!registry || !activity?.length) return null
+  if (!registry || !visible?.length) return null
 
   if (isCollapsed) {
     // Ids come from a monotonic counter in the registry, so "arrived since" is exact rather than
     // a timestamp comparison that a clock change could get wrong.
-    const unread = seenThroughId === null ? [] : activity.filter((e) => e.id > seenThroughId)
+    const unread = seenThroughId === null ? [] : visible.filter((e) => e.id > seenThroughId)
     return (
       <div
         aria-live="polite"
@@ -181,8 +213,8 @@ export default function AgentActivityRail({
     )
   }
 
-  const latest = activity[activity.length - 1]
-  const earlier = activity.slice(0, -1)
+  const latest = visible[visible.length - 1]
+  const earlier = visible.slice(0, -1)
 
   return (
     <div
@@ -229,6 +261,22 @@ export default function AgentActivityRail({
                          text-[10px] uppercase tracking-wider text-[#E8D5B0] backdrop-blur transition hover:border-[#C9974E]"
             >
               {showEarlier ? 'Hide earlier' : `${earlier.length} earlier`}
+            </button>
+          )}
+          {collapsible && (
+            <button
+              type="button"
+              onClick={() =>
+                setCleared({
+                  throughId: latest.id,
+                  spared: visible.filter((e) => e.status === 'running').map((e) => e.id),
+                })
+              }
+              aria-label="Clear agent activity"
+              className="pointer-events-auto rounded-full border border-white/20 bg-black/60 px-3 py-1
+                         text-[10px] uppercase tracking-wider text-white/70 backdrop-blur transition hover:border-white/50"
+            >
+              Clear
             </button>
           )}
           {collapsible && (

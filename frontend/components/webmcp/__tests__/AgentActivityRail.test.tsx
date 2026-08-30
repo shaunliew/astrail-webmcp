@@ -309,3 +309,118 @@ describe('the rail can be put away', () => {
     expect(await screen.findByText('READING')).toBeInTheDocument()
   })
 })
+
+/**
+ * Clearing, the way you clear a notification tray.
+ *
+ * 1eb444e made this a session record rather than a fading toast, and that decision stands: an
+ * agent action must not disappear while the user was looking elsewhere. A clear the USER pressed
+ * is the opposite of that — they have seen the entries and dismissed them. So the record may go,
+ * and it goes completely: cleared entries are gone from the read-back too, not filed somewhere.
+ *
+ * Two things a clear may not do. It may not silence a call that has not finished — an in-flight
+ * tool call is not something anyone has read and dismissed, and a user watching a run needs to
+ * see it is still going. And it may not mute what happens NEXT: clearing dismisses what has
+ * happened, it does not turn the rail off.
+ */
+describe('the rail can be cleared', () => {
+  let api: ReturnType<typeof useWebMcpRegistry> | null = null
+  const Capture = () => { api = useWebMcpRegistry(); return null }
+
+  function Clearable({ run }: { run: (r: ReturnType<typeof useWebMcpRegistry>) => void }) {
+    const [collapsed, setCollapsed] = useState(false)
+    return (
+      <WebMcpRegistryProvider>
+        <Capture />
+        <Runner run={run} />
+        <AgentActivityRail collapsed={collapsed} onCollapsedChange={setCollapsed} />
+      </WebMcpRegistryProvider>
+    )
+  }
+  const clearable = (run: (r: ReturnType<typeof useWebMcpRegistry>) => void) =>
+    render(<Clearable run={run} />)
+
+  beforeEach(() => { api = null })
+
+  it('takes the read entries off the screen entirely', async () => {
+    const { container } = clearable((r) => {
+      for (let i = 0; i < 3; i++) r.endActivity(r.beginActivity('get_itinerary'), 'done', `read ${i}`)
+    })
+    expect(await screen.findByText('READING')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /clear agent activity/i }))
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('leaves no way back to them — this is a clear, not a filing cabinet', async () => {
+    clearable((r) => {
+      for (let i = 0; i < 4; i++) r.endActivity(r.beginActivity('get_itinerary'), 'done', `read ${i}`)
+    })
+    await screen.findByText('READING')
+    await userEvent.click(screen.getByRole('button', { name: /clear agent activity/i }))
+    api!.beginActivity('move_place')
+    expect(await screen.findByText('MOVED')).toBeInTheDocument()
+    // One entry now, and nothing behind it: the four reads did not become "4 earlier".
+    expect(screen.queryByRole('button', { name: /earlier/i })).toBeNull()
+  })
+
+  it('cannot clear a call that has not finished — a live run must stay visible', async () => {
+    clearable((r) => {
+      r.endActivity(r.beginActivity('get_itinerary'), 'done', 'Kyoto · 3 days')
+      r.beginActivity('get_trip_progress')          // still in flight
+    })
+    expect(await screen.findByText('WATCHING')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /clear agent activity/i }))
+
+    expect(screen.getByText('WATCHING')).toBeInTheDocument()   // survives
+    expect(screen.queryByText('READING')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Kyoto/)).not.toBeInTheDocument()
+  })
+
+  it('lets that call clear once it lands', async () => {
+    let running = 0
+    clearable((r) => { running = r.beginActivity('get_trip_progress') })
+    await screen.findByText('WATCHING')
+    await userEvent.click(screen.getByRole('button', { name: /clear agent activity/i }))
+    expect(screen.getByText('WATCHING')).toBeInTheDocument()
+
+    await act(async () => { api!.endActivity(running, 'done', 'complete · 92s') })
+    await userEvent.click(screen.getByRole('button', { name: /clear agent activity/i }))
+    expect(screen.queryByText('WATCHING')).not.toBeInTheDocument()
+  })
+
+  it('still announces what the agent does next', async () => {
+    const { container } = clearable((r) => {
+      r.endActivity(r.beginActivity('get_itinerary'), 'done', 'read the page')
+    })
+    await screen.findByText('READING')
+    await userEvent.click(screen.getByRole('button', { name: /clear agent activity/i }))
+    expect(container).toBeEmptyDOMElement()
+
+    api!.beginActivity('save_reels')
+    // Clearing dismisses what has happened; it does not turn the rail off.
+    expect(await screen.findByText('SAVING')).toBeInTheDocument()
+  })
+
+  it('counts a post-clear action as unread while minimised', async () => {
+    clearable((r) => {
+      r.endActivity(r.beginActivity('get_itinerary'), 'done', 'read the page')
+      r.beginActivity('get_trip_progress')
+    })
+    await screen.findByText('WATCHING')
+    await userEvent.click(screen.getByRole('button', { name: /clear agent activity/i }))
+    await userEvent.click(screen.getByRole('button', { name: /minimise/i }))
+
+    await act(async () => { api!.beginActivity('save_reels') })
+    // The cleared read must not be counted; the new write must.
+    expect(
+      screen.getByRole('button', { name: /show agent activity, 1 new, including a change/i }),
+    ).toBeInTheDocument()
+  })
+
+  it('offers no clear where the rail is only a passenger', async () => {
+    withRail((r) => { r.beginActivity('get_itinerary') })
+    await screen.findByText('READING')
+    // Same rule as minimise: the standalone rail draws no control its parent never wired up.
+    expect(screen.queryByRole('button', { name: /clear agent activity/i })).toBeNull()
+  })
+})

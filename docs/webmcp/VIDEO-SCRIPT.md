@@ -129,7 +129,13 @@ Pre-recorded, sped up, with a visible "time-compressed" label. Do not fake the d
 
 Type exactly:
 
-> **Plan me a Tokyo trip from these Instagram Reels:** *(three links, both dates)*
+> **Plan me a Tokyo trip from these Instagram Reels:**
+> **https://www.instagram.com/reel/DYGH3jFBZHz/ https://www.instagram.com/reel/DYM_I5IvLSv/**
+> **https://www.instagram.com/reel/DXwcVVliX3B/ Start date <10 days out>, end date <+2 days>.**
+> **Mid-range budget, walkable days.**
+>
+> Recompute the dates on the day — 10 days out keeps the trip inside Open-Meteo's ~16-day
+> forecast window, so the weather stage actually returns something.
 
 Show: the approval card appearing **before** anything is spent, then the wait screen narrating
 real stages, then the finished map.

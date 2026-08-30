@@ -55,7 +55,9 @@ understood "day 2 is too packed" could only describe what the user should do.
 
 Now: `move_place`, `remove_place`, `add_place`, `set_trip_dates` and `replan_trip` change the real
 itinerary through owner-checked FastAPI endpoints, routes recompute, and the map redraws. Each
-mutation resolves only once the UI reflects it — when the agent says "done, it's on day 3", the
+mutation resolves only once the write has landed AND the page has been refreshed — and when that
+refresh itself fails, the tool says the page may still be showing the old order rather than claiming
+otherwise. When the agent says "done, it's on day 3", the
 route has already been redrawn on screen. (The edit tools redraw; they do not move the camera. Only
 `show_on_map` flies it, and that is a separate tool on purpose.)
 
@@ -134,9 +136,10 @@ open **Available site tools** — 13 are listed on the app, 16 once a trip is op
    Reel links. They do **not** need to be saved first. An approval card appears on the page; nothing
    is spent until you accept it. The wait screen then takes over the browser and the map fills in as
    places are verified.
-3. *"Why is stop 4 on this trip?"* — `get_place_evidence` returns the verbatim caption quote and the
-   Reel it came from.
-4. *"Show me day 2 on the map"*, *"move stop 7 to day 3"*, *"add Osaka Castle to day 1"* — the map and the
+3. *"Why is stop 1 on this trip?"* — `get_place_evidence` returns the verbatim caption quote and the
+   Reel it came from. Ask about any pin you can actually see: pin numbers are whatever the trip
+   produced, and a stop Astrail suggested answers with its reasoning instead of a Reel.
+4. *"Show me day 2 on the map"*, *"move stop 2 to day 1"*, *"add Osaka Castle to day 1"* — the map and the
    itinerary change in front of you, and the reply names `replan_trip` when the day summaries have
    fallen behind the stops.
 

@@ -51,7 +51,7 @@ Every string derived from an Instagram caption is treated as untrusted content. 
 
 ## Run locally
 
-Prerequisites: Node.js with npm, Python 3.11+, [`uv`](https://docs.astral.sh/uv/), a Supabase project, and a public Mapbox token.
+Prerequisites: Node.js with npm, Python 3.14+, [`uv`](https://docs.astral.sh/uv/), a Supabase project, and a public Mapbox token.
 
 Create `frontend/.env.local` with these browser-safe values:
 
@@ -191,7 +191,7 @@ Common `code` values: `unauthorized` (401), `not_found` (404), `validation_error
 
 ### Rate limits (on `POST /generate-trip`)
 - **Burst:** 3 requests/minute per user.
-- **Daily:** 5 trips/user/day (durable).
+- **Daily:** `DAILY_TRIP_QUOTA` trips/user/day (durable; defaults to 5, set per deployment). A `trial` account is additionally capped at `TRIAL_LIFETIME_LIMIT` — one generation, ever.
 - Both return **429** with `code: "rate_limited"`. Distinguish them by the `Retry-After` header:
   - **Burst** 429 carries `Retry-After: <n>` (seconds until the 1-min window resets; 1–60, not a fixed 60) + `X-RateLimit-*`.
   - **Daily-cap** 429 has **no** `Retry-After`; message is `"Daily trip limit reached. Try again tomorrow."`

@@ -10,7 +10,9 @@ Before the challenge, Astrail was already a working travel-planning application.
 
 - Instagram Reel ingestion and scraping (Apify, direct HTTP), caption and transcript collection.
 - Place extraction from Reel content, canonical place matching, deduplication, and confidence-backed evidence records.
-- Place enrichment — geocoding through Mapbox Search Box, weather, transport routing, restaurant grounding, hotel search via Travala.
+- Place enrichment — geocoding through Mapbox Search Box, weather, transport routing, restaurant
+  grounding, and hotel search via Travala. **Hotel search stopped working during the challenge
+  window** — see "Honest limits" below.
 - Itinerary generation, day grouping, routing, trade-off handling, and generated trip narration.
 - The Next.js 15 / React 19 application: saved-Reels flow, trip creation, trip pages, and the surrounding UI.
 - The Mapbox GL 3D map, trip pins, routes and day views.
@@ -32,7 +34,7 @@ All of `frontend/lib/webmcp/` is new. Tools are registered through `document.mod
 | `list_saved_reels` | Global | The saved-Reel library, so a trip can be planned without re-pasting links. |
 | `save_reels` | Global | Saves up to 5 Instagram URLs **and starts extracting their places**, exactly as the app's own save button does. |
 | `get_itinerary` | Global | A day-by-day itinerary keyed by the map's own pin numbers. |
-| `get_place_evidence` | Global | The verbatim caption behind one stop, its source Reel and confidence. |
+| `get_place_evidence` | Global | Why a stop is there: the verbatim caption and its source Reel when it came from one, otherwise Astrail's reasoning or the traveller's own request. Links are labelled and optional. |
 | `plan_trip_from_reels` | Global | Starts a real 60–180s generation, behind an on-page approval gate. |
 | `get_trip_progress` | Global | Polls a running generation and narrates each stage. |
 | `move_place` | Global | Moves a stop to another day or position. |
@@ -61,7 +63,7 @@ Supporting modules, all new:
 
 ### Backend
 
-- Owner-checked, flag-gated edit endpoints: `POST /trips/{id}/places`, `PATCH`/`DELETE /trips/{id}/places/{tp_id}`, `PATCH /trips/{id}`, `POST /trips/{id}/replan`. All hidden unless `WEBMCP_EDITS_ENABLED`, all 404-not-403 on a foreign trip, all refusing an unfinished trip or one with a running job, all resequencing days so pin numbers stay hole-free.
+- Owner-checked, flag-gated edit endpoints: `POST /trips/{id}/places`, `PATCH`/`DELETE /trips/{id}/places/{tp_id}`, `PATCH /trips/{id}`, `POST /trips/{id}/replan`. All gated by `WEBMCP_EDITS_ENABLED` — note the flag makes the **endpoints** 404, it does not hide the tools, which stay registered either way — all 404-not-403 on a foreign trip, all refusing an unfinished trip or one with a running job, all resequencing days so pin numbers stay hole-free.
 - `evidence_json.source_reel_url` — the field that records **which Reel** a stop came from. `source_url` is the research page by construction, so before this the Reel had nowhere to live.
 - `genagents/restaurant_details.py` — opening hours and official websites for restaurant suggestions, via a separate web-search agent whose input is exclusively Mapbox-sourced, keeping the labeller's no-tool property intact.
 - Email/password sign-in and env-driven demo credentials, so judges never meet an OAuth redirect.
@@ -73,7 +75,7 @@ An agent moving a map the user is watching is the point of the entry, so the map
 
 - Teardrop pins carrying **the source Reel's own cover frame** as evidence, with a numbered badge and a label chip. Stops with no Reel behind them get one universal placeholder — never a borrowed photograph.
 - Evidence popups that answer "why is this on **my** trip", not "what is this place": position in the day, how you arrive, what to eat nearby, the verbatim caption, and a link to **the Reel** rather than a scraped directory page.
-- "Where to eat" and "Where to stay" as findable pins with their own cards — cuisine, address, why it was picked; class, guest score, nightly and total price, cancellation terms.
+- "Where to eat" as findable pins with their own cards — cuisine, address, why it was picked. ("Where to stay" was built the same way and still renders for trips generated while Travala worked, but no new trip has hotels — see "Honest limits".)
 - Day-coloured routes, 3D buildings, and a selected-place camera that leaves room for the card.
 
 ### Safety posture
@@ -81,7 +83,7 @@ An agent moving a map the user is watching is the point of the entry, so the map
 - Every caption-derived output carries `untrustedContentHint`; Reel captions are attacker-controlled third-party text.
 - No tool accepts or returns an access token; no arbitrary-URL fetch; no account-lifecycle tools; no raw SQL surface.
 - `save_reels` validates against an Instagram allowlist **before** any request — a tool that fetches a URL lifted from a caption is an SSRF primitive by construction.
-- Anything that spends money or cannot be undone stops for on-page approval, with the request rendered verbatim first.
+- Planning a trip, and anything that cannot be undone, stops for on-page approval with the request rendered verbatim first. `save_reels` is the one paid action that does not ask: it is bounded by a daily limit and never re-analyses a Reel already in the library.
 - Where a fact does not exist, nothing is shown in its place: no invented opening hours, no borrowed photographs, no Reel cited for a stop that did not come from one.
 
 ## Challenge commit record
@@ -142,5 +144,19 @@ Stated here rather than left for a judge to find:
 
 - **Cross-tab Reel reading, if demonstrated, is ChatGPT's browser orchestration — not a WebMCP capability.** A site's tools belong to the page that registered them and do not follow the agent to another tab. `save_reels` receives an array either way.
 - **Opening hours are unavailable for most Japanese venues.** Measured, not assumed: Mapbox returns empty POI metadata for 20 of 20 restaurants near the Osaka trip we measured against. The enrichment returns nothing rather than inventing something.
-- **Hotel results are search only.** No booking, no payments, and the card says so.
+- **Hotel search is currently unavailable, and trips return no places to stay.** Travala's Travel
+  MCP was a keyless public endpoint when this was built. It now requires OAuth — it has renamed
+  itself "Travala **Wallet** MCP" and every call returns `401 invalid_token`, including `initialize`
+  and `tools/list`. Verified against the live endpoint on 2026-08-30.
+
+  We chose not to wire it. Its dynamic registration refuses `client_credentials` outright
+  (*"grant_types may contain only authorization_code and refresh_token"*), so the only path is a
+  human browser login storing a personal refresh token — on a wallet product whose scopes include
+  `mcp:book` and `mcp:pay`. Binding a demo to one person's payment-capable credential, days before
+  judging, to fill one panel, is a trade we declined.
+
+  Nothing pretends otherwise: the hub toggle disables itself when no hotel has coordinates, and both
+  map tools say so in as many words rather than flying the camera to nothing — *"no hotel on this
+  trip has a location yet, so the map has nothing to draw."*
+- **Hotel results were always search only.** No booking, no payments, and the card said so.
 - **`replan_trip` has not been run against a live trip.** It is implemented and unit-tested; that is the honest state.

@@ -1,6 +1,10 @@
 # End-to-end test — ChatGPT in-app browser
 
 Everything is running locally: frontend `:3000`, backend `:8001`, edit tools enabled,
+**Note the port.** `frontend/.env.local` points at `:8001`, but `backend/scripts/dev.sh` defaults to
+`8000` — start it with `PORT=8001`, or nothing will connect. Edit tools also need
+`WEBMCP_EDITS_ENABLED=true` in `backend/.env`; without it every edit returns 404.
+The seeded account is not provisioned by anything in this repo — sign in with your own via OTP,
 deletion sweep off.
 
 ## Setup

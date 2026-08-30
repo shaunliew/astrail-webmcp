@@ -1459,3 +1459,107 @@ async def test_the_map_is_told_when_stops_are_ACTUALLY_persisted():
     # Ordering is the whole point: it must come AFTER the dispatch that used to trigger the fetch.
     order = [f'{e["event_type"]}:{e["stage"]}' for e in c.events]
     assert order.index("decision:save") > order.index("stage:save")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_hotel_search_does_not_claim_it_looked_near_your_route():
+    """The message Shaun saw on the first live WebMCP generation — "Couldn't find hotels near
+    your route" — was emitted from a bare `except Exception`. It asserted a cause nobody
+    established: that a search ran, covered his route, and came back empty.
+
+    What actually happened is that Travala's MCP endpoint now answers `401 Bearer token
+    required`, so `search_hotels` raised before it ever searched anything. There is no route
+    proximity involved, and — because `rank_hotels` returns every hotel as `placed` OR
+    `unresolved` and never drops one — there is no near-route filter that could empty the list
+    even in principle. The old string could not be true of any run.
+    """
+    c = _late_stage_client()
+
+    async def hotel(location, check_in, check_out, rooms):
+        raise RuntimeError("travala HTTP 401")
+
+    await _run_late(c, hotel=hotel)
+
+    warnings = _msgs(c, "hotels", "warning")
+    assert warnings, "a failed hotel search told the traveller nothing"
+    assert "route" not in warnings[0], \
+        f"still asserts an unestablished route-proximity cause: {warnings[0]!r}"
+    assert "unavailable" in warnings[0], warnings[0]
+    # ...and a failure must never also claim a completion.
+    assert not _msgs(c, "hotels", "decision")
+    # Guardrail #3: a hotel failure stays non-critical.
+    assert c.trip_updates[-1]["status"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_a_broken_hotel_search_and_an_empty_one_tell_the_traveller_different_things():
+    """"We searched and found nothing" and "the search failed" are different facts. Reporting
+    one as the other is the defect; this pins that they can never collapse back together."""
+    broke = _late_stage_client()
+
+    async def raises(location, check_in, check_out, rooms):
+        raise RuntimeError("travala HTTP 401")
+
+    async def empty(location, check_in, check_out, rooms):
+        return "sess-1", []
+
+    await _run_late(broke, hotel=raises)
+    found_nothing = _late_stage_client()
+    await _run_late(found_nothing, hotel=empty)
+
+    assert _msgs(broke, "hotels", "warning") != _msgs(found_nothing, "hotels", "warning")
+    assert _msgs(found_nothing, "hotels", "warning") == ["No hotel suggestions for this trip"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_hotel_search_logs_its_exception_TYPE_so_it_can_be_diagnosed():
+    """The reason the 401 took a live probe to find: the stage swallowed the exception whole.
+    `/tmp/astrail-api.log` recorded nothing at all for the hotel stage, so "Travala rejected us"
+    and "our own ranking code has a bug" were indistinguishable after the fact.
+
+    Type only, never the message — a Mapbox/tooling error can carry a token in its URL
+    (guardrail: token safety), the same rule `_rank_hotels_best_effort` already follows.
+    """
+    c = _late_stage_client()
+
+    async def hotel(location, check_in, check_out, rooms):
+        raise RuntimeError("travala HTTP 401 secret-token-abc123")
+
+    with pytest.MonkeyPatch.context():
+        import logging as _logging
+        records: list[_logging.LogRecord] = []
+
+        class _Capture(_logging.Handler):
+            def emit(self, record): records.append(record)
+
+        handler = _Capture()
+        runner.logger.addHandler(handler)
+        try:
+            await _run_late(c, hotel=hotel)
+        finally:
+            runner.logger.removeHandler(handler)
+
+    logged = [r.getMessage() for r in records]
+    assert any("hotel_search_unavailable" in m and "RuntimeError" in m for m in logged), logged
+    assert not any("secret-token-abc123" in m for m in logged), \
+        "the exception message was logged verbatim — that is how a token leaks"
+
+
+@pytest.mark.asyncio
+async def test_hotels_that_were_FOUND_but_could_not_be_mapped_say_that_instead(monkeypatch):
+    """A ResolveError/CacheError can only reach this handler from RANKING, which only runs after
+    the Travala fetch succeeded (pinned in test_persist.py::…preserves_prior_rows). So "we found
+    hotels, we couldn't place them" IS established here, and is a different fact from "the search
+    never ran" — reporting the latter sends whoever reads it to the wrong service.
+    """
+    from geocode.errors import ResolveError
+
+    c = _late_stage_client()
+
+    async def persist_hotels(*_a, **_k):
+        raise ResolveError("mapbox down")
+
+    monkeypatch.setattr(runner, "persist_hotels", persist_hotels)
+    await _run_late(c, hotel=_hotel_found)
+
+    assert _msgs(c, "hotels", "warning") == ["Found hotels but couldn't place them on the map"]

@@ -20,6 +20,7 @@ import contextlib
 import logging
 import os
 
+from geocode.errors import CacheError, ResolveError  # leaf module — import-keyless, no cycle
 from models.place import PlaceResult
 from pipeline.dedup import dedupe_places
 from pipeline.feasibility import group_places_by_day
@@ -561,10 +562,35 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                         # event stream. This is NOT a hotel-search failure; the run's lease backstops
                         # (`_abort_when_lease_lost` / the fenced completion) drive the actual abort.
                         return
-                    except Exception:
+                    except Exception as exc:
+                        # "Couldn't find hotels near your route" used to be emitted here, for ANY
+                        # exception. It asserted a cause nobody established — that a search ran,
+                        # covered the route, and came back empty — and it could not be true of any
+                        # run: `rank_hotels` returns every hotel `placed` OR `unresolved` and never
+                        # drops one, so no near-route filter can empty the list even in principle.
+                        # What it actually reported, on the first live WebMCP generation, was
+                        # Travala answering `401 Bearer token required`.
+                        #
+                        # Two facts are separable here and only two. A ResolveError/CacheError can
+                        # only reach this handler from RANKING, which runs only after the fetch
+                        # succeeded (persist_hotels re-raises it ahead of the write so the prior
+                        # rows survive) — so "found them, couldn't place them" is established.
+                        # Anything else means the search itself did not complete; that is all we
+                        # know, and all we say. Never name Travala: the traveller cannot act on a
+                        # vendor name, and the next failure here may not be Travala's.
+                        placed_only = isinstance(exc, (ResolveError, CacheError))
+                        # Type only, never the message (a Mapbox/tooling error can carry a token in
+                        # its URL) — the same rule `_rank_hotels_best_effort` follows. The absence
+                        # of THIS line is why the 401 took a live probe to find: the stage swallowed
+                        # the exception whole and the log recorded nothing for the hotel stage.
+                        logger.warning("hotel_search_unavailable trip_id=%s error=%s placed_only=%s",
+                                       trip_id, type(exc).__name__, placed_only)
                         try:
-                            await record_event(client, trip_id, event_type="warning", stage="hotels",
-                                               message="Couldn't find hotels near your route")
+                            await record_event(
+                                client, trip_id, event_type="warning", stage="hotels",
+                                message=("Found hotels but couldn't place them on the map"
+                                         if placed_only else
+                                         "Hotel search unavailable — no places to stay in this trip"))
                         except Exception:
                             pass   # best-effort — hotel failure is non-critical
                         return

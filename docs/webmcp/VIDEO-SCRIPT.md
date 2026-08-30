@@ -9,9 +9,11 @@ the code actually does today. Nothing here is aspirational.
 
 ## The one structural decision
 
-**Do not build the video around a live generation.** It takes 60–180s (measured 76.8s cold) and
-the budget is 180s total. A generation is also the one path not yet verified end to end on the
-judged surface.
+**Do not build the video around a live generation.** It takes 60–180s — most recently a measured
+123.5s, of which restaurant enrichment was roughly 94% — and the budget is 180s total. It would eat
+the whole video. (It is *not* an unproven path: a full generation ran through an agent on 30 Aug,
+approval card to finished map. Like everything else here it ran against a backend on `localhost`;
+nothing in this repository has been run on a deployed URL, because there is no deployment yet.)
 
 So the backbone is **`/app/trip/demo`** — the sample trail. It needs no account, spends nothing,
 renders instantly, and every tool on it answers. Generation gets one short pre-recorded beat,
@@ -174,4 +176,4 @@ plan it by talking, while the map moves in front of you."
 | Tool list empty | Wrong model or site tools off. Both are in Recording notes; fix and restart |
 | A tool errors | Cut to the sample trail — every tool there answers, which is why it is the backbone |
 | Generation stalls | It is pre-recorded. Use the recording |
-| Over 3:00 | Cut generation (2:05) first, then the 3D half of the map beat. **Never cut 0:35 or 1:00** |
+| Over 3:00 | Cut generation (2:05) first, then trim the map beat (1:35) to the day fly-to. **Never cut 0:35 or 1:00** |

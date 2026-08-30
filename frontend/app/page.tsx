@@ -6,7 +6,7 @@ import StoryStage from "@/components/story/stage/StoryStage";
 export const metadata: Metadata = {
   title: "Astrail — a WebMCP Challenge build",
   description:
-    "A trip planner an agent can operate. 16 WebMCP tools let an agent read the signed-in page, save Instagram Reels, run a generation, drive the live map, and restructure a finished route — every stop still carrying the caption it came from.",
+    "A trip planner an agent can operate. 16 WebMCP tools let an agent read the signed-in page, save Instagram Reels, run a generation, drive the live map, and restructure a finished route — every stop still saying where it came from: the Reel caption, Astrail's own reasoning, or you.",
 };
 
 // One-Stage proof slice (beats 0→2) under review — the full 8-beat stage
@@ -53,7 +53,7 @@ export default function LandingPage() {
               <li className="flex gap-3">
                 <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
                 <span className="min-w-0">
-                  The agent can read your saved Reels, your trips, any day&apos;s itinerary, and the <b className="text-[color:var(--ink-900)]">verbatim caption</b> behind a given stop.
+                  The agent can read your saved Reels, your trips, any day&apos;s itinerary, and why a given stop is on it &mdash; the <b className="text-[color:var(--ink-900)]">verbatim caption</b> where the stop came from a Reel, Astrail&apos;s own reasoning where it suggested one, and a plain &ldquo;you asked for this&rdquo; where you did.
                 </span>
               </li>
               <li className="flex gap-3">
@@ -71,7 +71,7 @@ export default function LandingPage() {
               <li className="flex gap-3">
                 <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
                 <span className="min-w-0">
-                  Planning a trip and anything that cannot be undone stop for approval on the page first, and the edit endpoints behind them are owner-checked, flag-gated and status-guarded. Saving a Reel is the one paid action that does not ask: it is bounded by a daily limit and never re-analyses a Reel you already have.
+                  Planning a trip and every edit to a finished one stop for approval on the page first &mdash; including the paid coordinate lookup behind a stop you asked for &mdash; and the edit endpoints behind them are owner-checked, flag-gated and status-guarded. Saving a Reel is the one action that spends with no card in front of it: bounded by a daily limit, and skipped for a Reel whose places are already extracted.
                 </span>
               </li>
               <li className="flex gap-3">

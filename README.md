@@ -2,7 +2,7 @@
 
 > This repository is the WebMCP Challenge build of Astrail — an experiment in planning trips with an agent, not a product you can sign up for.
 
-Astrail turns Instagram Reel URLs into an evidence-backed travel itinerary on a Mapbox 3D map. Its existing pipeline extracts and verifies real places, deduplicates them, enriches the route, and attaches the source evidence to every stop. WebMCP changes the interface: an agent in ChatGPT's built-in browser can now inspect the signed-in page, start and follow a trip, retrieve its evidence, and operate the same live map and itinerary state the person is watching.
+Astrail turns Instagram Reel URLs into an evidence-backed travel itinerary on a Mapbox 3D map. Its existing pipeline extracts and verifies real places, deduplicates them, enriches the route, and makes every stop say where it came from: a stop lifted from a Reel carries the verbatim caption quote and a link back to that Reel, a stop Astrail suggested carries its reasoning and a research link, and a stop the traveller asked for says so. Three provenances, one label on every pin — nothing is on the map unattributed. WebMCP changes the interface: an agent in ChatGPT's built-in browser can now inspect the signed-in page, start and follow a trip, retrieve its evidence, and operate the same live map and itinerary state the person is watching.
 
 ## Why this exists
 
@@ -21,21 +21,25 @@ The current code registers **16 tools**: 13 throughout the signed-in `/app` shel
 | `save_reels` | Global app | Changes Reel library | Validates and saves up to five Instagram Reel or post URLs, reporting each result. |
 | `list_saved_reels` | Global app | Reads Reel library | Groups saved Reels by verified country and exposes the places needed to plan without re-pasting links. |
 | `get_itinerary` | Global app | Reads a trip | Returns a compact day-by-day route with the same pin numbers the user sees on the map. |
-| `get_place_evidence` | Global app | Reads evidence | Returns the verbatim Reel-caption quote, confidence, and up to two labelled links for one stop: `reel:` the source Instagram Reel, `research:` an independent venue page. Says so explicitly when a stop has no Reel. |
+| `get_place_evidence` | Global app | Reads evidence | Returns exactly one "why" line for a stop — the verbatim Reel-caption quote where there is one, Astrail's reasoning where it suggested the stop, or a plain statement that the traveller asked for it — plus a confidence and up to two labelled links: `reel:` the source Instagram Reel, `research:` an independent venue page. Never dresses a suggestion up as a quote. |
 | `plan_trip_from_reels` | Global app | Creates a trip | Shows an in-page approval card, starts the pipeline, and returns a trip ID without pretending generation is finished. |
 | `get_trip_progress` | Global app | Reads generation state | Reports the live pipeline stage and elapsed time until the agent can fetch the itinerary. |
-| `move_place` | Global app | Changes itinerary | Moves a stop to another day or position, refreshes the trip, and reports how to reverse the move. |
+| `move_place` | Global app | Changes itinerary | Moves a stop to another day or position behind an approval card, refreshes the trip, and reports where the stop came from — or says its old position was never recorded, rather than implying it can be put back exactly. There is no undo control; reversing a move means asking for it. |
 | `remove_place` | Global app | Changes itinerary | Requests explicit in-page approval, removes a stop, then warns that the remaining pins were renumbered. |
 | `add_place` | Global app | Changes itinerary | Adds a stop the user asked for, recorded as `requested_by_you` with no invented evidence behind it. |
 | `set_trip_dates` | Global app | Changes a trip | Moves the trip's dates, keeping day numbering and the itinerary intact. |
 | `replan_trip` | Global app | Changes a trip | Re-routes the legs and re-narrates the days, so the prose matches the stops after edits. |
-| `show_on_map` | Trip page | Changes visible map state | Flies the live camera to a trip, day, stop, or hotel-hub view and opens the matching panel. |
-| `set_map_mode` | Trip page | Changes visible map state | Switches the live map between day-by-day route and hotel-hub views. |
+| `show_on_map` | Trip page | Changes visible map state | Flies the live camera to a day or a stop and opens the matching panel. `trip` restores the route trail without moving the camera; `hotel_hub` works only on trips generated before hotel search was switched off, and says so. |
+| `set_map_mode` | Trip page | Changes visible map state | Switches the live map between the day-by-day route and the hotel-hub view. Hotel search is off in this build, so on a newly generated trip the hub switch is **declined**, not made. |
 | `get_map_view` | Trip page | Reads visible map state | Reports the current camera and trip size so the agent can ground words such as “here” or “up north.” |
 
-**What has actually been run, and what has not.** On 2026-08-30 the full arc was driven through an agent in ChatGPT's built-in browser, against a real backend and a real account: `plan_trip_from_reels` generated a trip end to end (approval card, live stage narration, the map on completion); `save_reels` and the extraction it starts landed places without a refresh; `add_place` put a new stop on a finished trip; `remove_place` took one off and the route recomputed; and `replan_trip` rewrote the trip title, the day titles and both day summaries to match — verified in the database, not just in the reply. `get_place_evidence`, `get_itinerary`, `get_app_state` and the map tools have all answered on the judged surface.
+**What has actually been run, and what has not.** Read the next two paragraphs as one claim: the arc has been run live, and it has never been run on a deployed URL, because there is no deployment yet.
 
-Still unproven live, and marked as such deliberately: **`move_place`** and **`set_trip_dates`** are unit-tested only — no live write has been made through either. And every run above was against a **local** backend, so nothing here is evidence about a deployed environment.
+On 2026-08-30 the full arc was driven through an agent in ChatGPT's built-in browser, against a real backend and a real account: `plan_trip_from_reels` generated a trip end to end (approval card, live stage narration, the map on completion); `save_reels` and the extraction it starts landed places without a refresh; `add_place` put a new stop on a finished trip; `remove_place` took one off and the route recomputed; and `replan_trip` rewrote the trip title, the day titles and both day summaries to match — verified in the database, not just in the reply. `get_place_evidence`, `get_itinerary`, `get_app_state` and the map tools have all answered on the judged surface.
+
+Still unproven live, and marked as such deliberately: **`move_place`** and **`set_trip_dates`** are unit-tested only — no live write has been made through either.
+
+And every run above was against a **local** backend on `localhost`, measured end to end at 123.5 s for a full generation. The judged deployment does not exist yet, so **nothing in this repository has been run against a judged URL** — not one tool, not one generation. Where another document says a path is proven, it means proven locally, in that browser, in exactly this sense.
 
 The FastAPI endpoints behind the edit tools are protected by owner, pair, trip-status, running-job and dense-ordering guards, and `WEBMCP_EDITS_ENABLED` is **off by default** — the write surface 404s entirely unless a deployment opts in.
 
@@ -79,7 +83,7 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). A real generation needs valid backend credentials for Supabase, Apify, and OpenAI; unit tests do not make those network calls.
+Open [http://localhost:3000](http://localhost:3000). A real generation needs valid backend credentials in `backend/.env` — `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `APIFY_TOKEN`, `OPENAI_API_KEY`, and `MAPBOX_SECRET_TOKEN` (the `sk.` token, not the browser's `pk.` one: place grounding reads it, and without it verified places have nowhere to come from). `backend/.env.example` is the full list, and startup names every missing one at once rather than degrading quietly. Unit tests make none of those calls.
 
 ## Test in ChatGPT
 
@@ -113,9 +117,10 @@ Then:
      suggested rather than took from a Reel answers with its reasoning and a research link
      instead, and says so — that is the tool being honest, not failing.
    - *"Show me day 2 on the map"* and *"move stop 7 to day 3"* → the map changes in front of you.
-     `set_map_mode` switches between the **route** view and the **hotel hub** view; it has no 3D
-     mode, and no tool zooms deep enough to extrude buildings — that is the popup's street-level
-     button, driven by a click rather than by the agent.
+     `set_map_mode` takes **route** or **hub**; hotel search is off in this build, so on a trip you
+     just generated the hub switch is declined with a sentence saying why, rather than leaving you
+     on an empty map. It has no 3D mode either, and no tool zooms deep enough to extrude buildings
+     — that is the popup's street-level button, driven by a click rather than by the agent.
 
 The five edit tools require `WEBMCP_EDITS_ENABLED=true` on the deployment; they return 404 when it
 is unset.
@@ -304,7 +309,7 @@ Always `200` — a memory outage must not break the settings screen (guardrail #
 2. **scrape** — fetch each Reel's caption + transcript via Apify. Write-through cached in `reel_cache`; a re-run of the same Reel emits `cache_hit` and skips scrape+extract.
 3. **extract** — pull candidate places from the caption/transcript (OpenAI). Every place must verify (real `lat`/`lng` + evidence) or it is **dropped — no hallucinated places** (guardrail #1). If nothing verifies, the run ends with an error `result` (`"no verified places after extraction"`) rather than inventing stops.
 4. **dedup → narrate (assemble)** — the deterministic spine geo-orders places into day groups + feasibility warnings (e.g. `empty_day` when a day has no stops).
-5. **enrich** (best-effort, parallel) — weather, transport, restaurants, hotels, LLM narration; any one may fail without failing the trip (guardrail #3).
+5. **enrich** (best-effort, parallel) — weather, transport, restaurants, LLM narration; any one may fail without failing the trip (guardrail #3). **Hotel search is switched off** (`HOTEL_SEARCH_ENABLED = False`, `backend/pipeline/runner.py:58`) since Travala's MCP began returning `401` on every call: the stage is not constructed at all, and its slot instead clears any hotel rows an earlier run left behind, so a trip never shows a place to stay that this run did not find.
 6. **save** — terminal `result` event, then `data: [DONE]`.
 
 **SSE `result` vs the DB — important for the frontend:**

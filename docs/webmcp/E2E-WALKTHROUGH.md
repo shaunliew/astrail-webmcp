@@ -42,9 +42,12 @@ and what to do next.
 
 **Expect:** cards appear and move **Queued → Analyzing → places land**, with no refresh.
 
-⚠ No approval card here, deliberately: `save_reels` is the one paid action that does not ask.
+⚠ No approval card here, deliberately: `save_reels` is the one action that spends with no card in
+front of it. Save one of these twice to see the other half — a reel whose places are already
+extracted comes back "already in your library" and is **not** re-extracted, while one that was saved
+but never finished extraction is queued again.
 
-## 4 · The generation — the path never run through WebMCP
+## 4 · The generation — run through WebMCP on 30 Aug, never on a deployed URL
 
 > Plan me a Tokyo trip from these Instagram Reels: https://www.instagram.com/reel/DYGH3jFBZHz/ https://www.instagram.com/reel/DYM_I5IvLSv/ https://www.instagram.com/reel/DXwcVVliX3B/ Start date 2026-09-09, end date 2026-09-14. Mid-range budget, walkable days.
 
@@ -57,6 +60,11 @@ and what to do next.
 ❌ **Fail if anything is spent before you approve.** That is the gate that protects the trial.
 
 Dates are 10 days out on purpose — inside Open-Meteo's ~16-day window, so weather actually returns.
+
+This whole arc ran through an agent on 30 Aug and completed in a measured 123.5s, of which
+restaurant enrichment was roughly 94%. It ran against a backend on `localhost`, which is the only
+kind of run anything in this repository has had — there is no deployment yet, so nothing here has
+been exercised on a URL a judge would open.
 
 ## 5 · On the trip
 
@@ -74,19 +82,29 @@ Check the tool count again. **Expect 16.**
 returns an error. No tool can extrude buildings — that layer is minzoom 15, the deepest tool camera
 is zoom 14.
 
-## 6 · Edit, then replan — the Osaka Castle bug
+## 6 · Edit, and watch the prose catch up on its own — the Osaka Castle bug
 
 > Move stop 3 to day 1
 
-**Expect:** the route redraws, and the reply tells the agent the summaries are now stale and names
-`replan_trip`.
+**Expect, in order:**
+1. An **approval card** naming the move *and* saying Astrail will rewrite the day summaries. A move
+   is cheap; the rewrite it triggers is not, which is why it asks.
+2. You approve → the route redraws and the stop numbers shift.
+3. The reply says the summaries are stale **and already being rewritten**
+   (`summaries_rewriting: true`), and tells the agent **not** to call `replan_trip`.
+4. ~30s later the activity rail turns `REWRITE` → `REWROTE`, and the day descriptions match the new
+   order.
 
-> Now replan the trip
+❌ **Fail if the agent calls `replan_trip` anyway** — that buys a second narration for work already
+running. ❌ Fail if the prose never catches up.
 
-**Expect: the day descriptions and plan text update to match the new order.**
+Do not type "now replan the trip" here. That was the old flow: `move_place` used to hand the agent
+`next_tool: replan_trip`, and it still does for the one case that needs it — prose stale with no
+rewrite running. Ask for a replan only when you want the wording refreshed for its own sake.
 
 This is the bug you reported — an edited trip still describing the old itinerary. It is the entire
-reason `replan_trip` exists, and it has never been run live.
+reason `replan_trip` exists. It has been run live through the agent (30 Aug, after an add and after
+a remove, checked in the database), against a **local** backend like everything else here.
 
 ## 7 · The free path, signed out
 

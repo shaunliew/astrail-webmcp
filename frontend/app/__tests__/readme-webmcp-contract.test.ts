@@ -59,8 +59,18 @@ describe('README WebMCP submission contract', () => {
        What is still unproven is `move_place` and `set_trip_dates`. Judges weight the README
        heavily and may never open the app, so an overstatement here is the most expensive kind —
        and an UNDERSTATEMENT costs the same marks while being far easier to miss, because nobody
-       fact-checks a modest claim. Move this again when those two are run; do not delete it. */
+       fact-checks a modest claim. Move this again when those two are run; do not delete it.
+
+       The second assertion moved on 2026-08-31 for the same reason and in the same direction. It
+       used to pin "nothing here is evidence about a deployed environment", which was true but read
+       as a caveat on one list. Four documents were meanwhile split between "generation was never
+       run" and "generation ran live", and both were half-right — it HAS run, in ChatGPT's built-in
+       browser, against `localhost`, and there is no deployment for it to have run on. So the
+       README now states the absolute rather than the caveat, and this pins the absolute. Delete it
+       only when a judged URL exists AND something has actually been run against it. */
     expect(readme).toMatch(/move_place[\s\S]{0,120}set_trip_dates[\s\S]{0,120}unit-tested only/i)
-    expect(readme).toMatch(/local[\s\S]{0,120}nothing\s+here\s+is\s+evidence\s+about\s+a\s+deployed/i)
+    expect(readme).toMatch(
+      /local[\s\S]{0,200}nothing\s+in\s+this\s+repository\s+has\s+been\s+run\s+against\s+a\s+judged\s+URL/i,
+    )
   })
 })

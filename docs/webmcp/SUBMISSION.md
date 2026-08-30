@@ -18,9 +18,14 @@ rendered on screen (`frontend/lib/webmcp/tools/map.ts`). The agent does not desc
 ask the person to reproduce it — the camera flies, the pin grows, the day chip turns brass.
 
 The tools also inherit context instead of rebuilding it. They run inside the page, so they already
-have the signed-in session, the `TripBundle` in memory, which day is selected and whether a
-generation is still running. A remote server would have to maintain a second, staler copy of all of
-that.
+have the signed-in session, the `TripBundle` in memory, the camera the traveller is actually looking
+at, and whether a generation is still running. A remote server would have to maintain a second,
+staler copy of all of that.
+
+Where that inheritance stops is stated in the tool rather than papered over. The page does not hand
+the tools which day or stop is *selected* — `MapDeps` carries the setters and the camera, not the
+selection (`frontend/lib/webmcp/tools/map.ts:17`) — so `get_map_view` says so in its own description
+and tells the agent to ask which stop "this one" means instead of guessing at it.
 
 And the agent's vocabulary is the user's vocabulary. Tools address stops by **map-pin number** —
 the numbers the traveller can see. "Move stop 7 to day 3" means the same thing to both parties. No
@@ -38,12 +43,26 @@ The usual fix is better affordances. WebMCP allows a different one: stop making 
 button. `get_app_state` reports where they are, what they have, and what is available next, so an
 agent can answer "what can I do here?" and then do it.
 
-**Being honest about how far that has got.** Tool registration, the address-bar list and the read
-tools are verified on the judged surface, in ChatGPT desktop's built-in browser. A full generation
-has *not* been run there — it is implemented, unit-tested and exercised against the real backend,
-and that is the honest state. The screen has caught up since: an empty `/app` now leads with the
-agent and a one-click starter prompt rather than a paste-a-URL form.
-What genuinely works today is both ends of the flow. **Upstream:** `save_reels` through the agent is proven end to end against the live backend — the reel is saved, extraction starts, the card shows Queued then Analyzing while you watch, and verified places land, with no manual refresh anywhere. **Downstream:** everything that follows a trip existing — reading it, its evidence, the map, and the edits. The single unproven link is the generation in the middle, and it is unproven for a reason we would rather state than hide: each run spends real Apify and OpenAI credit, so it was never right to fire it off unattended.
+**Being honest about how far that has got.** Two different claims get called "verified", so this
+document separates them and keeps the same words for them everywhere below.
+
+- **In the judged browser** — driven by an agent in ChatGPT desktop's built-in browser, against a
+  backend running on `localhost`. This is where all of the work below has been exercised.
+- **On a judged URL** — the same thing against the deployment a judge would open. **Nothing has
+  been run on a judged URL, because that deployment does not exist yet.** Every claim on this page
+  is the first kind.
+
+In the judged browser, the arc runs end to end. **Upstream:** `save_reels` through the agent — the
+reel is saved, extraction starts, the card moves Queued → Analyzing while you watch, and verified
+places land with no manual refresh anywhere. **The middle:** a full generation, approval card before
+anything is spent, real stage narration, the map on completion; measured at 123.5 seconds, of which
+restaurant enrichment is roughly 94%. **Downstream:** reading the trip, its evidence, the map, and
+the edits — including `replan_trip` rewriting the trip title, the day titles and both day summaries,
+checked in the database rather than taken from the reply.
+
+Two tools are still unproven and marked as such in the table below: `move_place` and
+`set_trip_dates` are unit-tested only. The screen caught up alongside: an empty `/app` now leads
+with the agent and a one-click starter prompt rather than a paste-a-URL form.
 
 ## 3. What can people and agents do together that was difficult or impossible before?
 
@@ -94,15 +113,30 @@ text, and every tool whose output can carry a caption-derived string is annotate
 an SSRF primitive by construction. No tool takes or returns an access token, and there is no
 arbitrary-fetch, navigate, or raw-SQL tool at any price.
 
-**Spending and irreversible actions get an in-page approval card.** `plan_trip_from_reels`,
-`add_place`, `remove_place`, `set_trip_dates` and `replan_trip` render a card and await a click before anything is
-spent or destroyed. The summary — including any free-text preferences — is rendered as **plain text,
-never innerHTML**, so a prompt-injected caption cannot dress itself up as interface chrome.
+**Spending and irreversible actions get an in-page approval card.** Every tool that changes a trip,
+plus the one that creates one — `plan_trip_from_reels`, `move_place`, `add_place`, `remove_place`,
+`set_trip_dates` and `replan_trip` — renders a card and awaits a click before anything is spent or
+destroyed. `move_place`
+was the last to get one, and not because moving a stop became irreversible: every edit now starts a
+summary rewrite, so a cardless move spent an LLM call with nothing on screen having asked. Its card
+says so, because a consent card that does not name what it is consenting to is decoration. The
+summary — including any free-text preferences — is rendered as **plain text, never innerHTML**, so a
+prompt-injected caption cannot dress itself up as interface chrome.
 
-Two honest limits on that sentence. `save_reels` can start a paid extraction **without** a card — it
-is bounded instead by URL validation, a per-account daily limit, and a cache that never re-analyses a
-reel. And the `{signal}` passed at registration governs the tool's registration lifetime, not the
-pending card: an agent abort does not currently dismiss an open approval.
+Three honest limits on that sentence.
+
+- `replan_trip` skips the card on one branch, deliberately: when it is *joining* a rewrite an edit
+  has already started. That work is running and cannot be called back, so a card there would offer
+  a choice that does not exist, and answering "no" would be followed by the summaries changing
+  anyway. It starts nothing and spends nothing extra, and the reply names which branch it took.
+- `save_reels` can start a paid extraction **without** a card — bounded instead by URL validation, a
+  per-account daily limit, and a skip for reels already done. The skip keys on the reel being fully
+  organized, so a reel saved earlier that never made it through extraction **is** queued again.
+- The `{signal}` passed at registration governs the tool's registration lifetime, not the pending
+  card: an agent abort does not currently dismiss an open approval. And there is no undo control
+  anywhere in the surface — `move_place` reports where a stop came from so the move can be reversed
+  by asking, but a stop can have had no recorded position at all, and the reply says that rather
+  than promising an exact restoration.
 
 **Output is budgeted against what actually ships.** `fit.ts` measures
 `JSON.stringify(envelope).length`, not `text.length`, because the MCP content envelope costs ~40
@@ -114,8 +148,16 @@ guessing when a name is ambiguous.
 description and parameter limits, structural schema validity, required annotations, non-overlapping
 scopes, and the serialized envelope budget against a real fixture — because a silently rejected
 registration is an *absent tool*, and a judge would find it before we did. The synthetic 40-stop
-budget cases live beside it in `fit.test.ts` and `format.test.ts` rather than inside the gate. The
-suite is **1222 tests**.
+budget cases live beside it in `fit.test.ts` and `format.test.ts` rather than inside the gate.
+
+The suite is deliberately not quoted here as a number — a count in a document is a claim nobody can
+check, and it was wrong within a day of being written. Run it instead; both halves are network-free
+and need no API key:
+
+```bash
+cd frontend && npx vitest run     # tool, contract, formatting and component tests
+cd backend  && uv run pytest -q   # pipeline, endpoints and the edit surface
+```
 
 ## What a judge can do, and what state each path is in
 
@@ -140,11 +182,14 @@ open **Available site tools** — 13 are listed on the app, 16 once a trip is op
    Reel it came from. Ask about any pin you can actually see: pin numbers are whatever the trip
    produced, and a stop Astrail suggested answers with its reasoning instead of a Reel.
 4. *"Show me day 2 on the map"*, *"move stop 2 to day 1"*, *"add Osaka Castle to day 1"* — the map and the
-   itinerary change in front of you, and the reply names `replan_trip` when the day summaries have
-   fallen behind the stops.
+   itinerary change in front of you. Do **not** then ask for a replan: every edit now starts the
+   summary rewrite itself, the reply carries `summaries_rewriting: true` and tells the agent not to
+   call `replan_trip`, and the activity rail shows the rewrite land ~30s later. `replan_trip`
+   remains for the one case the agent must still act on — prose stale with no rewrite running.
 
 **State of each path.** Stated plainly, because a claim a judge can disprove costs more than a
-limitation we name.
+limitation we name. Every "live-run" below means *in the judged browser, against a local backend*,
+in the sense defined in §2 — no row here is a claim about a deployed URL.
 
 | | Path | State |
 |---|---|---|

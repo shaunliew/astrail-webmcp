@@ -37,11 +37,11 @@ All of `frontend/lib/webmcp/` is new. Tools are registered through `document.mod
 | `get_place_evidence` | Global | Why a stop is there: the verbatim caption and its source Reel when it came from one, otherwise Astrail's reasoning or the traveller's own request. Links are labelled and optional. |
 | `plan_trip_from_reels` | Global | Starts a real 60–180s generation, behind an on-page approval gate. |
 | `get_trip_progress` | Global | Polls a running generation and narrates each stage. |
-| `move_place` | Global | Moves a stop to another day or position. |
+| `move_place` | Global | Moves a stop to another day or position, behind a confirmation. |
 | `remove_place` | Global | Removes a stop, behind a confirmation. |
-| `add_place` | Global | Adds a stop the user asks for. |
-| `set_trip_dates` | Global | Changes the trip's dates. |
-| `replan_trip` | Global | Re-routes and re-narrates so the prose matches the stops after edits. |
+| `add_place` | Global | Adds a stop the user asks for, behind a confirmation. Astrail geocodes the name itself before ever asking the agent for coordinates. |
+| `set_trip_dates` | Global | Changes the trip's dates, behind a confirmation. |
+| `replan_trip` | Global | Re-routes and re-narrates so the prose matches the stops after edits. Every edit starts this by itself, so the agent is told not to call it after one. |
 | `show_on_map` | Trip page | Flies the live map to a trip, day, stop or hotel hub. |
 | `set_map_mode` | Trip page | Switches between the route view and the hotel hub view. |
 | `get_map_view` | Trip page | Reads the current camera plus the trip's day and stop totals. It states plainly that it cannot see which day or stop is selected — the page does not expose it — rather than guessing at "this one". |
@@ -66,6 +66,8 @@ Supporting modules, all new:
 - Owner-checked, flag-gated edit endpoints: `POST /trips/{id}/places`, `PATCH`/`DELETE /trips/{id}/places/{tp_id}`, `PATCH /trips/{id}`, `POST /trips/{id}/replan`. All gated by `WEBMCP_EDITS_ENABLED` — note the flag makes the **endpoints** 404, it does not hide the tools, which stay registered either way — all 404-not-403 on a foreign trip, all refusing an unfinished trip or one with a running job, all resequencing days so pin numbers stay hole-free.
 - `evidence_json.source_reel_url` — the field that records **which Reel** a stop came from. `source_url` is the research page by construction, so before this the Reel had nowhere to live.
 - `genagents/restaurant_details.py` — opening hours and official websites for restaurant suggestions, via a separate web-search agent whose input is exclusively Mapbox-sourced, keeping the labeller's no-tool property intact.
+- `geocode/requested_place.py` — a requested place name resolved through Mapbox **before** the agent is ever asked for coordinates, and accepted only if it declares one of the trip's own countries and lands within range of it. A model reciting a landmark's coordinates from memory is the hallucinated place guardrail #1 exists to stop; asking the agent survives only as the last resort. The paid call is third in line, after a free reuse of a place the trip already knows.
+- `HOTEL_SEARCH_ENABLED = False` (`pipeline/runner.py`) — hotel search switched off as a one-line switch rather than deleted code, its stage never constructed, and its slot repurposed to **clear** hotel rows an earlier run persisted, so no trip shows a place to stay that this run did not find.
 - Email/password sign-in and env-driven demo credentials, so judges never meet an OAuth redirect.
 - `backend/test_webmcp_edits.py` — network-free guard and mutation coverage for the whole edit surface.
 
@@ -77,13 +79,14 @@ An agent moving a map the user is watching is the point of the entry, so the map
 - Evidence popups that answer "why is this on **my** trip", not "what is this place": position in the day, how you arrive, what to eat nearby, the verbatim caption, and a link to **the Reel** rather than a scraped directory page.
 - "Where to eat" as findable pins with their own cards — cuisine, address, why it was picked. ("Where to stay" was built the same way and still renders for trips generated while Travala worked, but no new trip has hotels — see "Honest limits".)
 - Day-coloured routes, 3D buildings, and a selected-place camera that leaves room for the card.
+- The itinerary beside the map rebuilt as a **timeline** rather than a stack of cards, numbered from the same trail the map and the tools use — so "move stop 7" means one stop to all three readers — carrying each Reel's cover, and refusing to print a clock time the trip never established.
 
 ### Safety posture
 
 - Every caption-derived output carries `untrustedContentHint`; Reel captions are attacker-controlled third-party text.
 - No tool accepts or returns an access token; no arbitrary-URL fetch; no account-lifecycle tools; no raw SQL surface.
 - `save_reels` validates against an Instagram allowlist **before** any request — a tool that fetches a URL lifted from a caption is an SSRF primitive by construction.
-- Planning a trip, and anything that cannot be undone, stops for on-page approval with the request rendered verbatim first. `save_reels` is the one paid action that does not ask: it is bounded by a daily limit and never re-analyses a Reel already in the library.
+- Planning a trip, and every edit to a finished one, stops for on-page approval with the request rendered verbatim first — a move included, since every edit now buys a summary rewrite. The one branch that skips the card is `replan_trip` *joining* a rewrite an edit already started, which spends nothing extra and cannot be called back. `save_reels` is the one action that spends with no card in front of it: it is bounded by a daily limit and skips any Reel whose places are already extracted — a Reel saved earlier that never finished extraction is queued again, which is the reason that sentence does not say "already in the library".
 - Where a fact does not exist, nothing is shown in its place: no invented opening hours, no borrowed photographs, no Reel cited for a stop that did not come from one.
 
 ## Challenge commit record
@@ -137,6 +140,28 @@ Representative deliveries, in order:
 | `38d31bd` | Stop telling a signed-in judge they planned a trip nobody planned |
 | `b8f8183` | Trip labels made status-aware, so the agent stops offering edits the backend will refuse |
 | `22339cc` | A disabled edit surface no longer reads as a missing trip |
+| `c1abf24` | The page follows the agent — an agent-started trip reaches the screen |
+| `b647dd2` | Hotel search switched off: Travala's MCP now `401`s every call |
+| `0e7486c` | A generation that searched no hotels stops publishing hotels — the disabled stage clears what an earlier run left |
+| `648afe8` | Stop blaming the route for a hotel search that never ran |
+| `fbd26bb` | The reels a trip was planned from land in the library |
+| `05dfd1e` | …and are organized once the generation lands, so they are not re-extracted |
+| `82191e0` | That post-generation organize given an owner that outlives the page |
+| `c9bf7bc` | The itinerary reads as a route, not a stack of cards |
+| `d4e2f31` | The itinerary panel numbers its stops the way the map and the tools do |
+| `5399d2e` | The stop list rebuilt as a timeline — and refusing to invent its clock |
+| `ef893e1` | Reel covers wired through the timeline, which says when the prose is being rewritten |
+| `74da744` | The no-account sample trail offered from the challenge notice on `/` |
+| `45a918c` | `add_place` geocodes the name itself before ever asking the agent for coordinates |
+| `22b216e` | …with the country gate actually running, and the agent's pin no longer trusted |
+| `476535d` | Every edit rewrites the summaries it invalidated, instead of leaving stale prose |
+| `61fcaad` | Never join a rewrite whose prose predates the edit |
+| `49031f8` | The agent stops asking in chat before the page asks |
+| `d5561be` | `add_place` stops asking twice too, closing the last exemption |
+| `675306c` `6dbd0ed` | The agent rail clears like a notification tray; the dock can be minimised |
+| `fcae00d` `b559758` | Restaurant enrichment — days fetched concurrently, two venues verified per day |
+| `1976cce` | The whole replan call bounded, and the marker guessing stopped |
+| `b2a9c9d` | Ask before moving a stop, now that a move costs a narration — the last cardless mutation |
 
 ## Honest limits
 
@@ -159,4 +184,4 @@ Stated here rather than left for a judge to find:
   map tools say so in as many words rather than flying the camera to nothing — *"no hotel on this
   trip has a location yet, so the map has nothing to draw."*
 - **Hotel results were always search only.** No booking, no payments, and the card said so.
-- **`replan_trip` has not been run against a live trip.** It is implemented and unit-tested; that is the honest state.
+- **`move_place` and `set_trip_dates` have not been run against a live trip.** They are implemented and unit-tested; that is the honest state. (`replan_trip` was in this list until 30 Aug, when it was run through the agent after an add and after a remove, and the rewritten title and day summaries were checked in the database. Everything ever run here ran against a backend on `localhost` — see the README for what that does and does not prove.)

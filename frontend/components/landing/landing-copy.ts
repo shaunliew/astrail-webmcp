@@ -35,7 +35,7 @@ export const faqs = [
   {
     question: "Can it do things without asking me?",
     answer:
-      "Not the ones that matter. Planning a trip stops for approval on the page first, and so does anything that cannot be undone — the request is shown to you in full before it is sent. There is one paid action that does not ask: saving a Reel starts analysing it, which costs us a little. It is bounded by a daily limit and never re-analyses a Reel you already have, so it is closer to a reversible action than to a purchase. Reading is free and reversible actions just happen — a confirmation on every click would make the whole thing tiresome to use.",
+      "Not the ones that matter. Planning a trip stops for approval on the page first, and so does every edit to a finished one — moving a stop included, because a move now costs a rewrite. The request is shown to you in full before it is sent, and so is the spending inside it: looking up the coordinates for a stop you asked for is a paid call, and it happens after you accept the card, not before. Exactly one action spends with no card in front of it — saving a Reel starts extracting the places in it. That one is bounded by a daily limit, and it skips a Reel whose places it has already extracted, though a Reel that was saved but never made it through extraction is tried again. Reading is free and stays silent; a confirmation on every click would make the whole thing tiresome to use.",
   },
   {
     question: "What stops it inventing things?",
@@ -50,7 +50,7 @@ export const faqs = [
   {
     question: "Does it book hotels or flights?",
     answer:
-      "No. Hotel results come from a live search and are shown with their price and cancellation terms, but Astrail does not take payments and there is no booking step anywhere in the flow. A price on a card is a search result, not an offer being held for you.",
+      "No, and in this build it does not even search. Astrail's hotel results came from Travala's travel MCP, which now refuses every call it used to answer, so hotel search is switched off and a trip you generate today comes back with no places to stay — the app hides that panel rather than showing you an empty one, and trips generated before the switch keep the hotels they already have. None of it was ever a booking: no payments, no booking step anywhere in the flow, and a price on a card was a search result, never an offer being held for you.",
   },
 ] as const;
 

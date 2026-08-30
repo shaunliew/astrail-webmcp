@@ -38,7 +38,7 @@ const STEPS = [
   {
     eyebrow: 'Step 3',
     title: 'Change it by saying so',
-    body: 'A day-by-day itinerary on a real map, every stop traceable to the reel it came from. \u201cDay 2 is packed \u2014 move stop 7 to day 3\u201d and the route redraws while you watch, because the agent drives the same setters your click does.',
+    body: 'A day-by-day itinerary on a real map, every stop traceable \u2014 to the reel it came from, to Astrail\u2019s own reasoning where it suggested one, or to you. \u201cDay 2 is packed \u2014 move stop 7 to day 3\u201d and the route redraws while you watch, because the agent drives the same setters your click does.',
     src: SCREENS.tripWorkspace,
     alt: 'Astrail trip workspace: itinerary beside the live map',
     slotLabel: 'real screenshot \u2014 trip workspace',

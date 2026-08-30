@@ -60,7 +60,7 @@ const countBadge = (label: string) =>
    Hardcoded here rather than imported from the component, so these are a SPEC and not a
    tautology: the prompt has to stay runnable as written, and `plan_trip_from_reels` will
    refuse it without 1-5 reel URLs AND both dates as YYYY-MM-DD. The dates are read off the
-   clock now, so every test that reads the prompt pins the clock to PINNED_NOW and spells out
+   clock now, so every test that reads a prompt pins the clock to PINNED_NOW and spells out
    the pair it must produce — determinism comes from pinning the clock, not from freezing the
    value in the product. */
 const PINNED_NOW = new Date('2026-08-29T00:00:00Z')
@@ -72,6 +72,12 @@ https://www.instagram.com/reel/DYGH3jFBZHz/
 https://www.instagram.com/reel/DYM_I5IvLSv/
 https://www.instagram.com/reel/DXwcVVliX3B/
 Start date ${PINNED_START}, end date ${PINNED_END}. Mid-range budget, walkable days.`
+
+/* The band's prompt for a home that HAS reels — same date pair, so the two prompts on this
+   screen are proved to be built from ONE reading of the clock, not two that can disagree. */
+const AGENT_BAND_PROMPT =
+  'Look at my saved reels in Astrail and plan me a trip from them. ' +
+  `Start date ${PINNED_START}, end date ${PINNED_END}. Mid-range budget, walkable days.`
 
 const INVITATION_HEADING = 'No Reels of your own? Start here.'
 const CAPTURE_SUMMARY = 'Prefer to paste Reel links here?'
@@ -878,6 +884,185 @@ describe('TraysScreen', () => {
       expect(await screen.findByText(/your inspiration starts here/i)).toBeInTheDocument()
       expect(screen.queryByText(INVITATION_HEADING)).toBeNull()
       expect(screen.queryByText(CAPTURE_SUMMARY)).toBeNull()
+    })
+
+    it('promises approval for the step that is actually gated, not for everything', async () => {
+      /* "before anything runs" was an absolute this flow does not honour. An agent handed the
+         starter prompt may call `save_reels` on its way to planning, and that tool raises NO
+         approval card while starting a paid extraction — it argues the case in its own
+         description (daily limit, never re-analyses). What IS gated is the generation:
+         `plan_trip_from_reels` awaits confirm() before it creates the trip. So the sentence
+         names that step and claims nothing wider.
+
+         It still says nothing about spend, for the reason the test above pins: this screen is
+         shown to accounts whose trip entitlement may already be gone. */
+      renderWithAgent(
+        <TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      await screen.findByText(INVITATION_HEADING)
+      expect(
+        screen.getByText(
+          'Astrail will ask you to approve the plan on this page before it starts building the trip.',
+        ),
+      ).toBeInTheDocument()
+      expect(screen.queryByText(/before anything runs/i)).toBeNull()
+    })
+  })
+
+  /* The same finding, one screen later. `/app` WITH content was a manual library with the agent
+     in a dismissible corner dock, so the loudest thing on the page was still a paste box and a
+     24px "Your inspiration starts here". Whatever the screen says loudest is what the agent says
+     back. The band takes the top; the library keeps everything it had, at row rank. */
+  describe('agent band on a home that has content', () => {
+    const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+
+    beforeEach(() => {
+      // Only Date is faked: setTimeout stays real so waitFor/findBy still resolve normally.
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(PINNED_NOW)
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+      if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+      else Reflect.deleteProperty(navigator as object, 'clipboard')
+    })
+
+    const band = () => screen.getByRole('region', { name: 'Astrail agent' })
+
+    it('puts the band above the greeting and the library, counted against the library', async () => {
+      renderWithAgent(
+        <TraysScreen
+          cards={[card({ id: 'r1' }), card({ id: 'r2' })]}
+          onCapture={noop} onOrganize={noop} onCreateTrail={noop}
+        />,
+        { supported: true },
+      )
+
+      const library = await screen.findByRole('button', { name: /your inspiration starts here/i })
+      const greeting = screen.getByText(/welcome back/i)
+
+      expect(
+        screen.getByText(
+          'With this page open, ChatGPT can read your 2 saved reels, save new links, and plan a trip from them — planning spends your trip allowance, so it asks for your approval here first.',
+        ),
+      ).toBeInTheDocument()
+
+      // First thing read, not merely present: the agent reads the page top-down.
+      expect(band().compareDocumentPosition(greeting) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(band().compareDocumentPosition(library) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    })
+
+    it('hands the band the same clock-derived dates the starter prompt states', async () => {
+      /* The band's prompt is the OTHER consumer of the demo date pair, and the one a user with
+         reels actually copies. It has to carry the derived window too — a band left on a frozen
+         pair would ask `plan_trip_from_reels` for a trip past the forecast horizon, or, read a
+         year on, for one in the past. Matched on FULL text: a partial match would not prove the
+         prompt runs as written. */
+      renderWithAgent(
+        <TraysScreen cards={[card({ id: 'r1' })]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      expect(
+        await screen.findByText(
+          (_content, el) => el?.tagName === 'PRE' && el.textContent === AGENT_BAND_PROMPT,
+        ),
+      ).toBeInTheDocument()
+    })
+
+    it('does not claim a count the parent has not finished reading', async () => {
+      // cards=[] with an in-flight saved-reel fetch is indistinguishable from an empty library
+      // by length alone, so the band must not print a number it cannot stand behind.
+      listCollections.mockResolvedValue([collection({ id: 'c1', name: 'Tokyo winter' })])
+
+      renderWithAgent(
+        <TraysScreen cards={[]} cardsStatus="loading" onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      await screen.findByRole('button', { name: 'Tokyo winter' })
+      expect(
+        screen.getByText(
+          'With this page open, ChatGPT can read your saved reels, save new links, and plan a trip from them — planning spends your trip allowance, so it asks for your approval here first.',
+        ),
+      ).toBeInTheDocument()
+    })
+
+    it('does not flash the band on an empty account while the trays read is still open', async () => {
+      /* Regression. Painted on "supported and not the empty-state invitation", the band appears
+         on the FIRST frame of an empty account — `loading` is still true there, so
+         `confirmedEmpty` is not true YET — and the invitation then replaces it. Besides the
+         flicker in the one position that must not move, the button is detached for that window:
+         a click in it is silently swallowed, which is exactly how the copy-prompt tests failed. */
+      listCollections.mockReturnValue(new Promise(() => {})) // never settles: hold the first frame
+
+      renderWithAgent(
+        <TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      expect(screen.queryByRole('region', { name: 'Astrail agent' })).toBeNull()
+      expect(screen.queryByRole('button', { name: /copy prompt/i })).toBeNull()
+    })
+
+    it('paints the band immediately when reels are already in hand, without waiting on trays', () => {
+      // The wait above is only owed by an account that LOOKS empty. Reels in hand already say
+      // this is a home with content, so the top of the page must not sit blank behind a fetch.
+      listCollections.mockReturnValue(new Promise(() => {}))
+
+      renderWithAgent(
+        <TraysScreen cards={[card({ id: 'r1' })]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      expect(screen.getByRole('region', { name: 'Astrail agent' })).toBeInTheDocument()
+    })
+
+    it('shows no agent copy in a browser with no agent, and leaves the library route intact', async () => {
+      renderWithAgent(
+        <TraysScreen cards={[card({ id: 'r1' })]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: false },
+      )
+
+      expect(await screen.findByRole('button', { name: /your inspiration starts here/i })).toBeInTheDocument()
+      expect(screen.queryByRole('region', { name: 'Astrail agent' })).toBeNull()
+      expect(screen.queryByText(/chatgpt/i)).toBeNull()
+      expect(screen.getByLabelText(/paste a reel or post link/i)).toBeVisible()
+    })
+
+    it('never stacks the band on top of the empty-account invitation', async () => {
+      // Two agent blocks with two "Copy prompt" buttons and two different prompts is worse than
+      // either alone; the invitation already owns the empty case.
+      renderWithAgent(
+        <TraysScreen cards={[]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      expect(await screen.findByText(INVITATION_HEADING)).toBeInTheDocument()
+      expect(screen.queryByRole('region', { name: 'Astrail agent' })).toBeNull()
+      expect(screen.getAllByRole('button', { name: /copy prompt/i })).toHaveLength(1)
+    })
+
+    it('demotes the library from a hero banner to a row header above the trays', async () => {
+      // jsdom has no layout, so rank is asserted through the type tokens: the library entry has
+      // to read at the SAME rank as the section header under it, not a size above it, and it
+      // must no longer carry the brass hero box that made it the loudest block on the page.
+      renderWithAgent(
+        <TraysScreen cards={[card({ id: 'r1' })]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />,
+        { supported: true },
+      )
+
+      const library = await screen.findByRole('button', { name: /your inspiration starts here/i })
+      const title = within(library).getByText('Your inspiration starts here')
+
+      expect(title.className).toContain('text-[18px]')
+      expect(screen.getByRole('heading', { name: 'Your trays' }).className).toContain('text-[18px]')
+      expect(library.className).not.toContain('brass-wash')
+      // …and the band that replaced it is a band, not a new hero in the same spot.
+      expect(band().className).not.toContain('brass-wash')
     })
   })
 })

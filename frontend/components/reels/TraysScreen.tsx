@@ -12,6 +12,7 @@ import {
 } from '@/lib/reels/collections'
 import type { ReelCollection, SavedReelCard } from '@/lib/reels/backend-types'
 import { useOptionalWebMcpRegistry } from '@/components/webmcp/WebMcpRegistry'
+import AgentBand from './AgentBand'
 import TrayCard, { type TrayCover } from './TrayCard'
 import TrayDetail from './TrayDetail'
 import LibraryPanel from './LibraryPanel'
@@ -88,6 +89,21 @@ function buildStarterPrompt(now: Date): string {
   return `Plan me a Tokyo trip from these Instagram Reels:
 ${STARTER_REEL_URLS.join('\n')}
 Start date ${start}, end date ${end}. Mid-range budget, walkable days.`
+}
+
+/* The band's prompt, for an account that already HAS reels — so it names no destination and
+   pastes no links: the agent reads the user's own library with `list_saved_reels` and hands
+   those URLs to `plan_trip_from_reels`, which spells that recovery out in its own description
+   ("Call list_saved_reels or ask the user for links"). Both ISO dates are still stated
+   literally, for the same reason the starter prompt states them: the tool refuses without them.
+
+   Takes the pair as ARGUMENTS rather than reading the dates itself, which is what let the
+   screen swap a frozen pair for `starterTripDates` without touching this function: the demo
+   window keeps exactly one definition here, so this prompt cannot drift out of step with the
+   starter one. It also keeps date policy out of the band entirely: AgentBand is handed a
+   finished string, so nothing about it is clock-dependent and its tests need no fake timers. */
+function buildAgentBandPrompt(start: string, end: string): string {
+  return `Look at my saved reels in Astrail and plan me a trip from them. Start date ${start}, end date ${end}. Mid-range budget, walkable days.`
 }
 
 export default function TraysScreen({
@@ -266,10 +282,38 @@ export default function TraysScreen({
      `document.modelContext` this fork would hide the one control that works and leave a dead end. */
   const agentFirst = confirmedEmpty && registry?.supported === true
 
+  /* The same finding, one screen later. On a home that HAS content the agent was still reading
+     a manual library off the page — asked "what can I do here?" it described "Trails, New trail
+     and Settings", strings that exist only in Sidebar.tsx and in no tool description anywhere.
+     So the band takes the top here too.
+
+     Gated on `supported` for the same reason `agentFirst` is: agent copy in a browser with no
+     agent tells a judge in Safari to talk to nobody. Mutually exclusive with `agentFirst` —
+     two agent blocks with two Copy buttons and two different prompts is worse than either
+     alone, and the empty case already has an owner. Unlike `agentFirst` this fork HIDES
+     NOTHING: the capture form, the library and the trays all stay exactly where they were, so
+     a confirmed count is a nicety here and not the load-bearing decision it is up there.
+
+     `homeShapeKnown` is not politeness. Painted on `!agentFirst` alone, the band appears on the
+     FIRST frame of an EMPTY account — where `loading` is still true, so `confirmedEmpty` is not
+     yet true either — and is then torn out and replaced by the invitation a beat later. A flash
+     in the one position on the page that must not move, and a genuinely detached button in
+     between (a click landing in that window does nothing at all, which is how the existing
+     copy-prompt tests caught it). Reels already in hand settle the question with no wait; only
+     an account that looks empty has to hear back from the collections read first. */
+  const homeShapeKnown = cards.length > 0 || !loading
+  const agentBand = registry?.supported === true && !confirmedEmpty && homeShapeKnown
+
   /* Read once per mount rather than on every render, so the text the Copy button writes is
      always byte-for-byte the text on screen — a re-render that straddled UTC midnight would
-     otherwise hand the user a prompt a day off from the one they had just read. */
-  const starterPrompt = useMemo(() => buildStarterPrompt(new Date()), [])
+     otherwise hand the user a prompt a day off from the one they had just read. BOTH prompts
+     come off this single reading: the band and the invitation never render together, but two
+     separate `new Date()` calls would still be two windows that can disagree. */
+  const { starterPrompt, agentBandPrompt } = useMemo(() => {
+    const now = new Date()
+    const { start, end } = starterTripDates(now)
+    return { starterPrompt: buildStarterPrompt(now), agentBandPrompt: buildAgentBandPrompt(start, end) }
+  }, [])
 
   async function copyStarterPrompt() {
     try {
@@ -493,8 +537,15 @@ export default function TraysScreen({
           </p>
         ) : null}
       </div>
+      {/* "before anything runs" was an absolute this flow does not honour: an agent handed the
+          starter prompt may call `save_reels` on the way to planning, and that tool raises no
+          approval card while starting a paid extraction. The generation IS gated —
+          `plan_trip_from_reels` awaits confirm() before it creates the trip — so the sentence
+          names that step and claims nothing wider. It still says nothing about SPEND, unlike the
+          band on a populated home: this screen is shown to accounts whose trip entitlement may
+          already be gone, and promising them an allowance to spend is its own false claim. */}
       <p className="mt-3 text-[13px] text-[color:var(--text-faint)]">
-        Astrail will ask you to approve the plan on this page before anything runs.
+        Astrail will ask you to approve the plan on this page before it starts building the trip.
       </p>
     </section>
   )
@@ -502,6 +553,19 @@ export default function TraysScreen({
   return (
     <>
     <div className="mx-auto flex w-full max-w-5xl flex-col">
+      {/* ABOVE the greeting, deliberately. The agent reads this page top-down and repeats back
+          whatever it meets first; leaving a 36px display name in that position is how a travel
+          planner ends up describing its own nav rail. The count is passed only when the parent
+          has actually READ the library — `cards` is empty while that fetch is in flight, while
+          it is failing, and when there is genuinely nothing, and the band prints no number it
+          cannot stand behind. */}
+      {agentBand ? (
+        <AgentBand
+          savedCount={cardsStatus === 'ready' && cards.length > 0 ? cards.length : null}
+          prompt={agentBandPrompt}
+        />
+      ) : null}
+
       <header className="mb-10">
         <p className="text-[14px] text-[color:var(--text-muted)]">Welcome back,</p>
         <span
@@ -552,18 +616,27 @@ export default function TraysScreen({
         </div>
       ) : (
         <>
-          {/* Library banner — the doorway into every saved reel. Opens the full-surface
-              LibraryPanel (T1.3), which owns filter/search/browse-fan/select→organize. */}
+          {/* Library row — the doorway into every saved reel. Opens the full-surface
+              LibraryPanel (T1.3), which owns filter/search/browse-fan/select→organize.
+
+              DEMOTED, not removed: this was a 24px display heading in a brass box `px-8 py-9`
+              tall, which made a filing cabinet the loudest thing on the page — and the loudest
+              thing on the page is what the agent says back when you ask what you can do here.
+              It now reads at the SAME rank as the "Your trays" header below it: a row you scan
+              past on the way to the grid. Every word, the click target and the destination are
+              unchanged, so nothing moved out of reach and no test of the library flow moved
+              with it. Ungated by `supported` on purpose — this is a hierarchy change, not agent
+              copy, and a browser with no agent must not get a second, divergent layout. */}
           <button
             type="button"
             onClick={() => setLibraryOpen(true)}
-            className="mb-8 flex w-full items-center justify-between gap-4 rounded-2xl border border-[color:var(--brass-deep)] bg-[color:var(--brass-wash)] px-8 py-9 text-left transition-colors hover:bg-[color:var(--surface-2)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]"
+            className="mb-6 flex w-full flex-wrap items-baseline justify-between gap-x-4 gap-y-1 rounded-lg px-1 py-2 text-left transition-colors hover:bg-[color:var(--surface-2)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]"
           >
-            <span>
-              <span className="block font-display text-[24px] font-medium leading-tight text-[color:var(--text)]">Your inspiration starts here</span>
-              <span className="mt-1.5 block text-[14px] text-[color:var(--text-muted)]">Every reel you saved, in one place.</span>
+            <span className="flex min-w-0 flex-wrap items-baseline gap-x-2.5">
+              <span className="font-display text-[18px] font-medium text-[color:var(--text)]">Your inspiration starts here</span>
+              <span className="text-[13px] text-[color:var(--text-muted)]">Every reel you saved, in one place.</span>
             </span>
-            <span aria-hidden className="text-[14px] font-medium text-[color:var(--brass-deep)]">Open</span>
+            <span aria-hidden className="text-[13px] font-medium text-[color:var(--brass-deep)]">Open</span>
           </button>
 
           {/* Your trays */}

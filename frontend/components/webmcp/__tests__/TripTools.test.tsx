@@ -139,7 +139,12 @@ describe('TripTools', () => {
     const confirm = vi.fn(async () => true)
     const result = await movePlaceAgainstOpenTrip({ move, confirm }).execute({ place: '1', to_day: 2 })
 
-    expect(String(result)).toBe('Which trip? Call list_trips and pass its trip_id.')
+    expect(JSON.parse(String(result))).toMatchObject({
+      result: 'Which trip? Call list_trips and pass its trip_id.',
+      // Not merely the words: a reply that ends this way must also say it changed nothing, or
+      // the activity rail records the refusal as a completed move.
+      outcome: 'failed',
+    })
     expect(move).not.toHaveBeenCalled()
     expect(confirm).not.toHaveBeenCalled()
   })

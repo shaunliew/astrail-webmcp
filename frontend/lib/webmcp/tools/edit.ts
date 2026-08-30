@@ -43,9 +43,32 @@ function pinsLine(bundle: TripBundle | null, name: string): string {
   return pin ? ` It is now stop ${pin}.` : ''
 }
 
+/**
+ * Whether the call did the thing, or did not — as a closed set rather than a sentence.
+ *
+ * Every mutating tool here has three ordinary endings and only one of them is a change: the edit
+ * lands, the user declines the approval card, or it never happens (a backend refusal, or an
+ * argument the tool bounced). All three used to leave by the same door — a plain string, returned
+ * normally — so the only thing downstream could tell was that `execute` had not thrown. The
+ * activity rail read that as success and wrote `REMOVED · You · done` with "Astrail can't undo
+ * this" under it, for a removal the user had just refused. A durable record asserting the
+ * opposite of what happened, on the surface we advertise as the accountability layer.
+ *
+ * The alternative was to sniff the prose ("The user declined."). That is a claim assembled from
+ * text that is partly caption-derived (guardrail #11) and it rots the first time someone reworks
+ * a sentence. This is a value our own code writes before any output is assembled: the model
+ * cannot pick it and a caption cannot reach it.
+ */
+export type EditVerdict = 'done' | 'declined' | 'failed'
+
+/** The vocabulary itself, so a reader can validate rather than trust. */
+export const EDIT_VERDICTS: readonly EditVerdict[] = ['done', 'declined', 'failed']
+
 type EditOutcome = {
   /** What happened, in the words the agent repeats to the user. */
   result: string
+  /** Whether the trip actually changed. Omitted means it did — the only path that writes. */
+  verdict?: EditVerdict
   /** True when the persisted summaries now describe stops the trip no longer has. */
   summariesStale: boolean
   /** Anything the agent must act on before its next call — renumbering, a stale forecast. */
@@ -77,10 +100,69 @@ function editResult(outcome: EditOutcome): string {
   ]
   return JSON.stringify({
     result: outcome.result,
+    // Named for the agent as much as for the rail: a model reading "The user declined." as prose
+    // among a dozen other result sentences mis-reads it, in exactly the way `next_tool` exists to
+    // prevent. One value, one meaning, told to both readers — the alternative, a side channel the
+    // rail sees and the agent does not, would give the two of them different accounts of the same
+    // call, which is the fault being fixed rather than a fix for it.
+    outcome: outcome.verdict ?? 'done',
     summaries_stale: outcome.summariesStale,
     ...(outcome.summariesStale ? { next_tool: 'replan_trip' } : {}),
     ...(notes.length > 0 ? { note: notes.join(' ') } : {}),
   })
+}
+
+/**
+ * A call that ended without changing anything.
+ *
+ * Every bail-out in this file goes through here, not only the two the approval card produces. A
+ * `move_place` that resolved no stop, or was handed neither a day nor a position, is just as
+ * incapable of having moved anything as one the user refused — and the rail was labelling those
+ * `MOVED` too. The agent still reads the same sentence it always did; nothing about the wording
+ * changed, only that the reply now says which of the three endings it is.
+ */
+function noChange(verdict: 'declined' | 'failed', result: string): string {
+  return editResult({ result, verdict, summariesStale: false })
+}
+
+/**
+ * Read a tool's reply the way the activity rail has to: outcome first, prose second.
+ *
+ * Lives beside the writer so the vocabulary cannot drift between the two ends of it. Two rules
+ * carry the safety:
+ *
+ *  - An outcome is only believed when it is one of `EDIT_VERDICTS`. Anything else — a missing
+ *    field, a tool that answers in plain prose, a number — is not evidence of failure and is not
+ *    treated as one.
+ *  - `detail` is display text and never a claim. It is the reply's own `result` line when there
+ *    is one (the rail used to print the whole raw envelope, JSON braces and all), and otherwise
+ *    the first line of whatever came back.
+ *
+ * A caption cannot forge an outcome here. `editResult` builds the object literally and
+ * `JSON.stringify` escapes every string field, so caption text lands inside `result` as data; it
+ * cannot introduce a sibling key, and a duplicate `outcome` cannot be produced at all.
+ */
+export function readToolOutcome(value: unknown): { outcome: EditVerdict; detail?: string } {
+  if (typeof value !== 'string') return { outcome: 'done' }
+
+  const firstLine = (text: string) => text.split('\n')[0]
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch {
+    return { outcome: 'done', detail: firstLine(value) }
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return { outcome: 'done', detail: firstLine(value) }
+  }
+
+  const envelope = parsed as { result?: unknown; outcome?: unknown }
+  const declared = envelope.outcome
+  return {
+    outcome: EDIT_VERDICTS.includes(declared as EditVerdict) ? (declared as EditVerdict) : 'done',
+    detail: firstLine(typeof envelope.result === 'string' ? envelope.result : value),
+  }
 }
 
 export function movePlaceTool(deps: EditDeps): ToolSpec {
@@ -105,14 +187,14 @@ export function movePlaceTool(deps: EditDeps): ToolSpec {
     annotations: { readOnlyHint: false, untrustedContentHint: true },
     execute: async (args) => {
       const r = await resolveBundle(deps.trips, typeof args.trip_id === 'string' ? args.trip_id : undefined)
-      if (!r.ok) return r.message
+      if (!r.ok) return noChange('failed', r.message)
       const found = resolvePlaceRef(r.bundle, String(args.place ?? ''))
-      if (!found.ok) return found.message
+      if (!found.ok) return noChange('failed', found.message)
 
       const tp = found.tripPlace
       const toDay = typeof args.to_day === 'number' ? args.to_day : undefined
       const toPos = typeof args.to_position === 'number' ? args.to_position : undefined
-      if (toDay === undefined && toPos === undefined) return 'Give to_day, to_position, or both.'
+      if (toDay === undefined && toPos === undefined) return noChange('failed', 'Give to_day, to_position, or both.')
 
       const fromDay = tp.day_number
       const patch: { day_number?: number; sort_order?: number } = {}
@@ -123,7 +205,7 @@ export function movePlaceTool(deps: EditDeps): ToolSpec {
       try {
         await deps.move(r.bundle.trip.id, tp.id, patch)
       } catch (e) {
-        return e instanceof Error ? e.message : 'The move failed.'
+        return noChange('failed', e instanceof Error ? e.message : 'The move failed.')
       }
 
       const fresh = await deps.refresh(r.bundle.trip.id)
@@ -164,21 +246,21 @@ export function removePlaceTool(deps: EditDeps): ToolSpec {
     annotations: { readOnlyHint: false, untrustedContentHint: true },
     execute: async (args) => {
       const r = await resolveBundle(deps.trips, typeof args.trip_id === 'string' ? args.trip_id : undefined)
-      if (!r.ok) return r.message
+      if (!r.ok) return noChange('failed', r.message)
       const found = resolvePlaceRef(r.bundle, String(args.place ?? ''))
-      if (!found.ok) return found.message
+      if (!found.ok) return noChange('failed', found.message)
 
       const tp = found.tripPlace
       const approved = await deps.confirm(
         `Remove "${tp.place.name}"${tp.day_number ? ` from day ${tp.day_number}` : ''} from this trip.\nThis cannot be undone.`,
       )
       // Never report a success the user did not authorise.
-      if (!approved) return `The user declined. "${tp.place.name}" is still on the trip.`
+      if (!approved) return noChange('declined', `The user declined. "${tp.place.name}" is still on the trip.`)
 
       try {
         await deps.remove(r.bundle.trip.id, tp.id)
       } catch (e) {
-        return e instanceof Error ? e.message : 'The removal failed.'
+        return noChange('failed', e instanceof Error ? e.message : 'The removal failed.')
       }
 
       await deps.refresh(r.bundle.trip.id)
@@ -217,21 +299,21 @@ export function addPlaceTool(deps: EditDeps): ToolSpec {
     annotations: { readOnlyHint: false, untrustedContentHint: true },
     execute: async (args) => {
       const r = await resolveBundle(deps.trips, typeof args.trip_id === 'string' ? args.trip_id : undefined)
-      if (!r.ok) return r.message
+      if (!r.ok) return noChange('failed', r.message)
 
       const name = String(args.name ?? '').trim()
-      if (!name) return 'What place should be added?'
+      if (!name) return noChange('failed', 'What place should be added?')
       const day = typeof args.day === 'number' ? args.day : null
-      if (day === null) return 'Which day should it go on?'
+      if (day === null) return noChange('failed', 'Which day should it go on?')
 
       const hasLat = typeof args.lat === 'number'
       const hasLng = typeof args.lng === 'number'
-      if (hasLat !== hasLng) return 'Give both lat and lng, or neither.'
+      if (hasLat !== hasLng) return noChange('failed', 'Give both lat and lng, or neither.')
 
       const approved = await deps.confirm(
         `Add "${name}" to day ${day} of this trip.\nIt will be marked as a place you asked for, with no Reel evidence behind it.`,
       )
-      if (!approved) return `The user declined. "${name}" was not added.`
+      if (!approved) return noChange('declined', `The user declined. "${name}" was not added.`)
 
       try {
         await deps.add(r.bundle.trip.id, {
@@ -242,7 +324,7 @@ export function addPlaceTool(deps: EditDeps): ToolSpec {
           lng: hasLng ? (args.lng as number) : null,
         })
       } catch (e) {
-        return e instanceof Error ? e.message : 'Adding the place failed.'
+        return noChange('failed', e instanceof Error ? e.message : 'Adding the place failed.')
       }
 
       const fresh = await deps.refresh(r.bundle.trip.id)
@@ -272,25 +354,25 @@ export function setTripDatesTool(deps: EditDeps): ToolSpec {
     annotations: { readOnlyHint: false, untrustedContentHint: false },
     execute: async (args) => {
       const r = await resolveBundle(deps.trips, typeof args.trip_id === 'string' ? args.trip_id : undefined)
-      if (!r.ok) return r.message
+      if (!r.ok) return noChange('failed', r.message)
 
       const start = typeof args.start_date === 'string' ? args.start_date : null
       const end = typeof args.end_date === 'string' ? args.end_date : null
-      if (!start && !end) return 'Give start_date, end_date, or both, as YYYY-MM-DD.'
+      if (!start && !end) return noChange('failed', 'Give start_date, end_date, or both, as YYYY-MM-DD.')
       for (const [label, value] of [['start_date', start], ['end_date', end]] as const) {
-        if (value && !ISO_DATE.test(value)) return `${label} must be YYYY-MM-DD.`
+        if (value && !ISO_DATE.test(value)) return noChange('failed', `${label} must be YYYY-MM-DD.`)
       }
-      if (start && end && end < start) return 'end_date is before start_date.'
+      if (start && end && end < start) return noChange('failed', 'end_date is before start_date.')
 
       const from = `${r.bundle.trip.start_date ?? '?'} to ${r.bundle.trip.end_date ?? '?'}`
       const to = `${start ?? r.bundle.trip.start_date ?? '?'} to ${end ?? r.bundle.trip.end_date ?? '?'}`
       const approved = await deps.confirm(`Move this trip from ${from} to ${to}.\nEvery day keeps its stops; only the dates change.`)
-      if (!approved) return 'The user declined. The dates are unchanged.'
+      if (!approved) return noChange('declined', 'The user declined. The dates are unchanged.')
 
       try {
         await deps.setDates(r.bundle.trip.id, { start_date: start, end_date: end })
       } catch (e) {
-        return e instanceof Error ? e.message : 'Changing the dates failed.'
+        return noChange('failed', e instanceof Error ? e.message : 'Changing the dates failed.')
       }
 
       const fresh = await deps.refresh(r.bundle.trip.id)
@@ -332,7 +414,7 @@ export function replanTripTool(deps: EditDeps): ToolSpec {
     annotations: { readOnlyHint: false, untrustedContentHint: false },
     execute: async (args) => {
       const r = await resolveBundle(deps.trips, typeof args.trip_id === 'string' ? args.trip_id : undefined)
-      if (!r.ok) return r.message
+      if (!r.ok) return noChange('failed', r.message)
 
       const dayCount = r.bundle.days.length
       // Approval is not optional: this rewrites prose the user may have read, and it spends
@@ -340,18 +422,25 @@ export function replanTripTool(deps: EditDeps): ToolSpec {
       const approved = await deps.confirm(
         `Rewrite the day summaries for this trip so they match its current stops.\n${dayCount} day${dayCount === 1 ? '' : 's'} will be re-described. This uses your credit.`,
       )
-      if (!approved) return 'The user declined. The summaries are unchanged.'
+      if (!approved) return noChange('declined', 'The user declined. The summaries are unchanged.')
 
       let result: { days_narrated: number; routes_refreshed: boolean }
       try {
         result = await deps.replan(r.bundle.trip.id)
       } catch (e) {
-        return e instanceof Error ? e.message : 'Replanning failed.'
+        return noChange('failed', e instanceof Error ? e.message : 'Replanning failed.')
       }
 
       await deps.refresh(r.bundle.trip.id)
       const routes = result.routes_refreshed ? 'Routes recalculated.' : 'Routes could not be recalculated this time.'
-      return `The user approved. Rewrote ${result.days_narrated} day summar${result.days_narrated === 1 ? 'y' : 'ies'} to match the current stops. ${routes}`
+      // The one success path here that used to answer in bare prose. Its three other endings now
+      // answer in the envelope, and a reply whose SHAPE depends on how it went is a second thing
+      // the reader has to know before it can read the first.
+      return editResult({
+        result: `The user approved. Rewrote ${result.days_narrated} day summar${result.days_narrated === 1 ? 'y' : 'ies'} to match the current stops. ${routes}`,
+        // This is the tool that un-stales them. Saying so is the whole point of the field.
+        summariesStale: false,
+      })
     },
   }
 }

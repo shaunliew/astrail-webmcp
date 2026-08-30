@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { useEffect } from 'react'
-import AgentActivityRail from '../AgentActivityRail'
+import { useEffect, useState } from 'react'
+import AgentActivityRail, { NOTHING_CLEARED, type ClearedMark } from '../AgentActivityRail'
 import { RegisterTools } from '../RegisterTools'
 import { WebMcpRegistryProvider, useWebMcpRegistry } from '../WebMcpRegistry'
 import type { ToolSpec } from '@/lib/webmcp/types'
@@ -13,18 +13,31 @@ function Runner({ run }: { run: (r: ReturnType<typeof useWebMcpRegistry>) => voi
   return null
 }
 
+/**
+ * The rail plus the state its owner holds.
+ *
+ * The clear watermark lives in `WebMcpDock` in the app, because the dock is what unmounts the
+ * rail when it folds. This stands in for that owner so these tests can drive the rail alone —
+ * and it is deliberately NOT a default inside the component: the mount that survives a fold is
+ * the behaviour, so it is proven where it lives (`WebMcpDock.test.tsx`), not simulated here.
+ */
+function Rail({ compact }: { compact?: boolean }) {
+  const [cleared, setCleared] = useState<ClearedMark>(NOTHING_CLEARED)
+  return <AgentActivityRail compact={compact} cleared={cleared} onClear={setCleared} />
+}
+
 const withRail = (run: (r: ReturnType<typeof useWebMcpRegistry>) => void) =>
   render(
     <WebMcpRegistryProvider>
       <Runner run={run} />
-      <AgentActivityRail />
+      <Rail />
     </WebMcpRegistryProvider>,
   )
 
 describe('AgentActivityRail', () => {
   it('renders nothing when the agent has done nothing', () => {
     const { container } = render(
-      <WebMcpRegistryProvider><AgentActivityRail /></WebMcpRegistryProvider>,
+      <WebMcpRegistryProvider><Rail /></WebMcpRegistryProvider>,
     )
     expect(container).toBeEmptyDOMElement()
   })
@@ -94,7 +107,7 @@ describe('tool execution is logged automatically', () => {
     render(
       <WebMcpRegistryProvider>
         <Probe />
-        <AgentActivityRail />
+        <Rail />
       </WebMcpRegistryProvider>,
     )
     expect(await screen.findByText(/Kyoto · 3 days/)).toBeInTheDocument()
@@ -109,7 +122,7 @@ describe('tool execution is logged automatically', () => {
       render(
         <WebMcpRegistryProvider>
           <RegisterTools specs={[spec]} />
-          <AgentActivityRail />
+          <Rail />
         </WebMcpRegistryProvider>,
       )
       await waitFor(() => {
@@ -220,7 +233,7 @@ describe('the rail can be cleared', () => {
       <WebMcpRegistryProvider>
         <Capture />
         <Runner run={run} />
-        <AgentActivityRail />
+        <Rail />
       </WebMcpRegistryProvider>,
     )
 
@@ -352,7 +365,7 @@ describe('an entry says how old it is', () => {
       const one = render(
         <WebMcpRegistryProvider>
           <Runner run={(r) => { r.beginActivity('get_itinerary') }} />
-          <AgentActivityRail />
+          <Rail />
         </WebMcpRegistryProvider>,
       )
       await act(async () => { await vi.advanceTimersByTimeAsync(0) })
@@ -362,7 +375,7 @@ describe('an entry says how old it is', () => {
       render(
         <WebMcpRegistryProvider>
           <Runner run={(r) => { for (let i = 0; i < 8; i++) r.beginActivity('get_itinerary') }} />
-          <AgentActivityRail />
+          <Rail />
         </WebMcpRegistryProvider>,
       )
       // The read-back has to be OPEN for this to mean anything: collapsed, the rail draws one
@@ -384,7 +397,7 @@ describe('an entry says how old it is', () => {
       const view = render(
         <WebMcpRegistryProvider>
           <Runner run={(r) => { r.beginActivity('get_itinerary') }} />
-          <AgentActivityRail />
+          <Rail />
         </WebMcpRegistryProvider>,
       )
       await act(async () => { await vi.advanceTimersByTimeAsync(0) })

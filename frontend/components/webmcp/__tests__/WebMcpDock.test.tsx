@@ -385,3 +385,87 @@ describe('WebMcpDock — what arrives while folded', () => {
     ).toBeInTheDocument()
   })
 })
+
+/**
+ * A clear has to survive the fold.
+ *
+ * Clearing was the rail's own state, and folding UNMOUNTS the rail — so expanding again mounted a
+ * fresh one with the watermark back at zero against a registry that still held every entry, and
+ * the whole cleared list returned. The suite missed it for a precise reason worth naming: the
+ * combined test cleared and minimised, and never expanded again.
+ *
+ * The property that made clearing defensible is unchanged and is asserted here too: the store is
+ * append-only, a clear only ever hides, and nothing a tool can reach shortens the record.
+ */
+describe('WebMcpDock — clearing outlives the fold', () => {
+  let api: ReturnType<typeof useWebMcpRegistry> | null = null
+  const Capture = () => { api = useWebMcpRegistry(); return null }
+
+  const live = (entries = 1) =>
+    render(
+      <WebMcpRegistryProvider>
+        <Capture />
+        <Session entries={entries} />
+        <WebMcpDock />
+      </WebMcpRegistryProvider>,
+    )
+
+  beforeEach(() => { api = null; mockPath.value = '/app/trip/abc' })
+
+  it('does not resurrect cleared entries when the dock is minimised and reopened', async () => {
+    live(3)
+    await userEvent.click(screen.getByRole('button', { name: /clear agent activity/i }))
+    expect(screen.queryByText('READING')).toBeNull()
+
+    await userEvent.click(screen.getByRole('button', { name: /minimise/i }))
+    await userEvent.click(screen.getByRole('button', { name: /show agent activity/i }))
+
+    // The rail is mounted again — the dock is expanded — and the dismissed reads stay dismissed.
+    expect(screen.getByRole('button', { name: /minimise/i })).toBeInTheDocument()
+    expect(screen.queryByText('READING')).toBeNull()
+    // Not merely collapsed out of view: there is no read-back holding them either.
+    expect(screen.queryByRole('button', { name: /earlier/i })).toBeNull()
+  })
+
+  it('still shows what the agent does after that reopen', async () => {
+    // A clear dismisses what has happened; it does not turn the rail off, and a fold in between
+    // must not turn it off either.
+    live(2)
+    await userEvent.click(screen.getByRole('button', { name: /clear agent activity/i }))
+    await userEvent.click(screen.getByRole('button', { name: /minimise/i }))
+    await userEvent.click(screen.getByRole('button', { name: /show agent activity/i }))
+
+    await act(async () => { api!.beginActivity('move_place') })
+    expect(screen.getByText('MOVED')).toBeInTheDocument()
+    // And the two cleared reads did not come back UNDER it either. The rail collapses to the
+    // newest entry, so `queryByText` alone would pass while three entries sat in the read-back.
+    expect(screen.queryByRole('button', { name: /earlier/i })).toBeNull()
+  })
+
+  it('keeps the record itself intact — a clear hides, it never shortens the store', async () => {
+    // The audit property. The rail may show less; the append-only list the registry holds is
+    // exactly as long as it was, because a tool that could shorten it could erase itself.
+    live(3)
+    const before = api!.activity.length
+    await userEvent.click(screen.getByRole('button', { name: /clear agent activity/i }))
+    await userEvent.click(screen.getByRole('button', { name: /minimise/i }))
+    await userEvent.click(screen.getByRole('button', { name: /show agent activity/i }))
+    expect(api!.activity).toHaveLength(before)
+    expect(before).toBe(3)
+  })
+
+  it('spares a call still in flight, and keeps sparing it across a fold', async () => {
+    // A clear says "I have read these and they are done", which cannot have been decided about a
+    // call that has not come back. Folding must not quietly retract that exception either.
+    live(1)
+    await act(async () => { api!.beginActivity('get_trip_progress') })
+    await userEvent.click(screen.getByRole('button', { name: /clear agent activity/i }))
+    expect(screen.getByText('WATCHING')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: /minimise/i }))
+    await userEvent.click(screen.getByRole('button', { name: /show agent activity/i }))
+    expect(screen.getByText('WATCHING')).toBeInTheDocument()
+    // The spared call, and ONLY it: the cleared read is not hiding in the read-back behind it.
+    expect(screen.queryByRole('button', { name: /earlier/i })).toBeNull()
+  })
+})

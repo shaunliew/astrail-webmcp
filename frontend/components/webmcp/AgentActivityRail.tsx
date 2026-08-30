@@ -56,6 +56,20 @@ export function ageLabel(at: number, now: number): string | null {
   return 'over an hour ago'
 }
 
+/**
+ * What the card announces, given how the call ended.
+ *
+ * Past tense only for a change that landed. The other two endings are the same action named
+ * without the claim, plus what became of it — `REMOVE DECLINED`, `MOVE FAILED` — because a
+ * past-tense word cannot be negated in place and `REMOVED` on a refused removal is the record
+ * asserting the opposite of what happened.
+ */
+function headline(entry: ActivityEntry): string {
+  if (entry.status === 'declined') return `${entry.attempt} DECLINED`
+  if (entry.status === 'failed') return `${entry.attempt} FAILED`
+  return entry.label
+}
+
 /** One receipt. The card the rail has always drawn, plus the two things it never said. */
 function Entry({ entry, now }: { entry: ActivityEntry; now: number }) {
   const age = ageLabel(entry.at, now)
@@ -66,10 +80,15 @@ function Entry({ entry, now }: { entry: ActivityEntry; now: number }) {
           aria-hidden
           className={[
             'inline-block h-1.5 w-1.5 shrink-0 rounded-full',
-            entry.status === 'running' ? 'animate-pulse bg-[#C9974E]' : entry.status === 'failed' ? 'bg-red-400' : 'bg-[#C9974E]/60',
+            entry.status === 'running' ? 'animate-pulse bg-[#C9974E]'
+              : entry.status === 'failed' ? 'bg-red-400'
+              // Declined is not an error — the gate did its job — so it is neither alarming red
+              // nor the brass the rail uses for a change that landed.
+              : entry.status === 'declined' ? 'bg-white/40'
+              : 'bg-[#C9974E]/60',
           ].join(' ')}
         />
-        <span className="text-[10px] uppercase tracking-wider text-[#E8D5B0]">{entry.label}</span>
+        <span className="text-[10px] uppercase tracking-wider text-[#E8D5B0]">{headline(entry)}</span>
         {/* "By whom", in the same two words the evidence chips already use. Right-aligned so a
             column of entries reads down as one who-column rather than a ragged second label. */}
         {/* `title`, not `aria-label`: a bare span has the `generic` role, which prohibits an
@@ -104,22 +123,40 @@ function Entry({ entry, now }: { entry: ActivityEntry; now: number }) {
   )
 }
 
-export default function AgentActivityRail({ compact = false }: { compact?: boolean }) {
+/**
+ * The newest entry the user has dismissed, and the in-flight ones spared from that dismissal.
+ *
+ * A WATERMARK, not a delete: the registry's list is append-only and stays that way. The record is
+ * an audit surface, and an audit surface the audited thing can shorten is not one — a tool that
+ * could reach `setActivity` could erase itself. Nothing recovers a cleared entry from the UI, so
+ * from the user's side this is a clear and not a filing cabinet; the store simply is not the
+ * place to enforce that.
+ */
+export type ClearedMark = { throughId: number; spared: readonly number[] }
+
+export const NOTHING_CLEARED: ClearedMark = { throughId: 0, spared: [] }
+
+/**
+ * The rail draws the record; it does not own how much of it the user has dismissed.
+ *
+ * Held one level up, in the dock, because the dock is what UNMOUNTS this component when it folds.
+ * While the mark lived here, minimising and reopening reset it to zero against a registry that
+ * still held the whole append-only history, so every cleared entry came back — a clear that a
+ * fold silently undoes is not a clear. It is the same reason the dock owns `collapsed` rather
+ * than the panels it collapses. Controlled outright rather than defaulted, so there is no second
+ * uncontrolled path that the tests could pass through while the shipped one fails.
+ */
+export default function AgentActivityRail({
+  compact = false,
+  cleared,
+  onClear,
+}: {
+  compact?: boolean
+  cleared: ClearedMark
+  onClear: (mark: ClearedMark) => void
+}) {
   const registry = useOptionalWebMcpRegistry()
   const [showEarlier, setShowEarlier] = useState(false)
-  /**
-   * The newest entry the user has dismissed, and the in-flight ones spared from that dismissal.
-   *
-   * A WATERMARK, not a delete: the registry's list is append-only and stays that way. The record
-   * is an audit surface, and an audit surface the audited thing can shorten is not one — a tool
-   * that could reach `setActivity` could erase itself. Nothing recovers a cleared entry from the
-   * UI, so from the user's side this is a clear and not a filing cabinet; the store simply is not
-   * the place to enforce that.
-   */
-  const [cleared, setCleared] = useState<{ throughId: number; spared: readonly number[] }>({
-    throughId: 0,
-    spared: [],
-  })
   const [now, setNow] = useState(() => Date.now())
 
   /**
@@ -216,7 +253,7 @@ export default function AgentActivityRail({ compact = false }: { compact?: boole
         <button
           type="button"
           onClick={() =>
-            setCleared({
+            onClear({
               throughId: latest.id,
               spared: visible.filter((e) => e.status === 'running').map((e) => e.id),
             })

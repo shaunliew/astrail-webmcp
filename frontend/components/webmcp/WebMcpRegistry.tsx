@@ -6,11 +6,14 @@ import { createContext, useCallback, useContext, useMemo, useRef, useState } fro
 /**
  * What the rail can say about a call, knowing only which tool was named.
  *
- * `RegisterTools` wraps every execute and passes the tool NAME and nothing else, so everything
- * the record asserts has to be a static property of the tool rather than of the invocation.
- * That is a constraint worth keeping: a per-call claim assembled from a tool's prose output
- * would be a claim about untrusted text (guardrail #11), and a record that can be written by
- * the thing it audits is not a record.
+ * `RegisterTools` passes the tool NAME, so WHAT an action is comes entirely from this table —
+ * a per-call claim assembled from a tool's prose output would be a claim about untrusted text
+ * (guardrail #11), and a record that can be written by the thing it audits is not a record.
+ *
+ * Exactly one thing about a call cannot be a static property, and pretending otherwise is what
+ * made the rail lie: whether the action HAPPENED. That arrives as `ActivityStatus`, a closed set
+ * our own code picks (`readToolOutcome` believes nothing else), never a phrase parsed out of a
+ * reply. The table still owns the vocabulary; the call only says which of these words applies.
  */
 type ToolFacts = {
   /**
@@ -18,6 +21,20 @@ type ToolFacts = {
    * "MOVED  7 - Senso-ji -> Day 3", not `move_place({place_ref:"7"})`.
    */
   label: string
+  /**
+   * The same action named in a form that claims nothing — used the moment a call ends in
+   * anything but a change.
+   *
+   * `label` is past tense for every write, and past tense is an assertion: `REMOVED` says the
+   * stop is gone. On a declined approval card, or a backend refusal, it was gone from the record
+   * and still on the map. There is no way to negate a past-tense word in place, so the entry
+   * switches to the attempt plus what became of it — `REMOVE DECLINED`, `MOVE FAILED`.
+   *
+   * A running entry deliberately keeps `label`. For the reads, which are most calls, `label` is
+   * already the present participle a live call wants (`READING`), and the pulsing dot marks the
+   * few seconds a write spends there.
+   */
+  attempt: string
   /**
    * Who decided the call happens — the accountability half of an audit log.
    *
@@ -39,31 +56,31 @@ type ToolFacts = {
 }
 
 const TOOLS: Record<string, ToolFacts> = {
-  get_app_state:        { label: 'READING',     actor: 'Astrail', changes: false },
-  list_trips:           { label: 'READING',     actor: 'Astrail', changes: false },
-  get_itinerary:        { label: 'READING',     actor: 'Astrail', changes: false },
-  list_saved_reels:     { label: 'READING',     actor: 'Astrail', changes: false },
-  get_place_evidence:   { label: 'CHECKING',    actor: 'Astrail', changes: false },
-  get_map_view:         { label: 'LOOKING',     actor: 'Astrail', changes: false },
-  get_trip_progress:    { label: 'WATCHING',    actor: 'Astrail', changes: false },
-  show_on_map:          { label: 'SHOWING',     actor: 'Astrail', changes: false },
-  set_map_mode:         { label: 'SWITCHING',   actor: 'Astrail', changes: false },
-  save_reels:           { label: 'SAVING',      actor: 'Astrail', changes: true },
+  get_app_state:        { label: 'READING',     attempt: 'READ',       actor: 'Astrail', changes: false },
+  list_trips:           { label: 'READING',     attempt: 'READ',       actor: 'Astrail', changes: false },
+  get_itinerary:        { label: 'READING',     attempt: 'READ',       actor: 'Astrail', changes: false },
+  list_saved_reels:     { label: 'READING',     attempt: 'READ',       actor: 'Astrail', changes: false },
+  get_place_evidence:   { label: 'CHECKING',    attempt: 'CHECK',      actor: 'Astrail', changes: false },
+  get_map_view:         { label: 'LOOKING',     attempt: 'LOOK',       actor: 'Astrail', changes: false },
+  get_trip_progress:    { label: 'WATCHING',    attempt: 'WATCH',      actor: 'Astrail', changes: false },
+  show_on_map:          { label: 'SHOWING',     attempt: 'SHOW',       actor: 'Astrail', changes: false },
+  set_map_mode:         { label: 'SWITCHING',   attempt: 'SWITCH',     actor: 'Astrail', changes: false },
+  save_reels:           { label: 'SAVING',      attempt: 'SAVE',       actor: 'Astrail', changes: true },
   // The one durable edit that reaches the database without an approval card, which is exactly
   // why the rail has to name it: unasked, unannounced anywhere else, and not reversible.
-  move_place:           { label: 'MOVED',       actor: 'Astrail', changes: true },
-  plan_trip_from_reels: { label: 'PLANNING',    actor: 'You',     changes: true },
-  add_place:            { label: 'ADDED',       actor: 'You',     changes: true },
-  remove_place:         { label: 'REMOVED',     actor: 'You',     changes: true },
-  set_trip_dates:       { label: 'RESCHEDULED', actor: 'You',     changes: true },
-  replan_trip:          { label: 'REWROTE',     actor: 'You',     changes: true },
+  move_place:           { label: 'MOVED',       attempt: 'MOVE',       actor: 'Astrail', changes: true },
+  plan_trip_from_reels: { label: 'PLANNING',    attempt: 'PLAN',       actor: 'You',     changes: true },
+  add_place:            { label: 'ADDED',       attempt: 'ADD',        actor: 'You',     changes: true },
+  remove_place:         { label: 'REMOVED',     attempt: 'REMOVE',     actor: 'You',     changes: true },
+  set_trip_dates:       { label: 'RESCHEDULED', attempt: 'RESCHEDULE', actor: 'You',     changes: true },
+  replan_trip:          { label: 'REWROTE',     attempt: 'REWRITE',    actor: 'You',     changes: true },
 }
 
 /**
  * A tool the table has not met. `changes: true` is the fail-safe direction: it costs an extra
  * "can't undo" line on something harmless, where guessing `false` would hide a real write.
  */
-const UNKNOWN_TOOL: ToolFacts = { label: 'WORKING', actor: 'Astrail', changes: true }
+const UNKNOWN_TOOL: ToolFacts = { label: 'WORKING', attempt: 'WORK', actor: 'Astrail', changes: true }
 
 /**
  * A view of what is currently registered, so the UI can SHOW the user what the agent can do.
@@ -81,11 +98,20 @@ export type RegisteredToolView = {
   registered: boolean
 }
 
+/**
+ * How a call ended, as the record has to distinguish them.
+ *
+ * `done` is the only one that may be written in the past tense or carry a "can't undo" line.
+ * `declined` and `failed` both mean nothing changed; they are kept apart because WHO stopped it
+ * is the accountability question this rail exists to answer.
+ */
+export type ActivityStatus = 'done' | 'declined' | 'failed'
+
 export type ActivityEntry = ToolFacts & {
   id: number
   tool: string
   detail: string | null
-  status: 'running' | 'done' | 'failed'
+  status: 'running' | ActivityStatus
   at: number
 }
 
@@ -139,7 +165,7 @@ type RegistryValue = {
   /** Visible log of what the agent did. Reads included — a silent read cannot be consented to. */
   activity: ActivityEntry[]
   beginActivity: (tool: string) => number
-  endActivity: (id: number, status: 'done' | 'failed', detail?: string) => void
+  endActivity: (id: number, status: ActivityStatus, detail?: string) => void
   /** Whether `document.modelContext` exists at all — false in an ordinary browser. */
   supported: boolean
   report: (view: RegisteredToolView) => void
@@ -185,7 +211,7 @@ export function WebMcpRegistryProvider({ children }: { children: React.ReactNode
     return id
   }, [])
 
-  const endActivity = useCallback((id: number, status: 'done' | 'failed', detail?: string) => {
+  const endActivity = useCallback((id: number, status: ActivityStatus, detail?: string) => {
     setActivity((prev) => prev.map((e) => (e.id === id ? { ...e, status, detail: detail ?? null } : e)))
   }, [])
 

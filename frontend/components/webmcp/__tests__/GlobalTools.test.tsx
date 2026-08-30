@@ -348,8 +348,11 @@ describe('the sample trail is NOT writable', () => {
     // `trip_tokyo_demo` has no row. move_place applies without a card, but add/remove/dates/
     // replan ask first — so a write tool that could see the sample would take consent for a
     // change the backend cannot make.
-    const out = String(await (await toolOn(SAMPLE_PATH, 'move_place')).execute({ place: '1', to_day: 3 }))
-    expect(out).toBe('Which trip? Call list_trips and pass its trip_id.')
+    const out = JSON.parse(String(await (await toolOn(SAMPLE_PATH, 'move_place')).execute({ place: '1', to_day: 3 })))
+    expect(out.result).toBe('Which trip? Call list_trips and pass its trip_id.')
+    // And it says so as an OUTCOME, not only in the sentence: the activity rail read a returned
+    // string as a completed move and recorded `MOVED · can't undo` for calls like this one.
+    expect(out.outcome).toBe('failed')
     expect(cardsShown).toHaveLength(0)
     expect(editTripPlace).not.toHaveBeenCalled()
   })

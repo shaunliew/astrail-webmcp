@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { usePathname } from 'next/navigation'
 
-import AgentActivityRail from './AgentActivityRail'
+import AgentActivityRail, { NOTHING_CLEARED, type ClearedMark } from './AgentActivityRail'
 import ExamplePrompts from './ExamplePrompts'
 import WebMcpStatus from './WebMcpStatus'
 import { useOptionalWebMcpRegistry, type ActivityEntry } from './WebMcpRegistry'
@@ -135,6 +135,15 @@ export default function WebMcpDock() {
    * mount, so this effect has always landed before there is anything for it to hide.
    */
   const [collapsed, setCollapsed] = useState(false)
+  /**
+   * How much of the record the user has cleared — held HERE, not in the rail, for the same
+   * reason `collapsed` is: folding unmounts the rail. State inside it died with the mount and
+   * came back at zero against a registry still holding every entry, so a clear followed by a
+   * minimise and a reopen resurrected the whole list. The clear stayed defensible either way —
+   * the store is append-only and this only ever hides — but a dismissal a fold undoes is not
+   * one, and the fold is precisely what someone does with a rail they have just emptied.
+   */
+  const [cleared, setCleared] = useState<ClearedMark>(NOTHING_CLEARED)
   /** The newest entry the user had already seen when the dock was folded. Null while open. */
   const [seenThroughId, setSeenThroughId] = useState<number | null>(null)
   const latestIdRef = useRef(0)
@@ -212,7 +221,7 @@ export default function WebMcpDock() {
           route split above, and expanding on a document route brings back exactly what was
           there: the rail, capped, and no prompts panel. */}
       {overCanvas && !toolsOpen && !collapsed && <ExamplePrompts />}
-      {!collapsed && <AgentActivityRail compact={!overCanvas} />}
+      {!collapsed && <AgentActivityRail compact={!overCanvas} cleared={cleared} onClear={setCleared} />}
       {foldable &&
         (collapsed ? (
           /* Folded, the rail is unmounted and the live region it carries goes with it, so the

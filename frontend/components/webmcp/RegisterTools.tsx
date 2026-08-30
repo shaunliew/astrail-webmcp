@@ -2,6 +2,7 @@
 
 import { useEffect } from 'react'
 import { useRegisterTool } from '@/lib/webmcp/use-register-tool'
+import { readToolOutcome } from '@/lib/webmcp/tools/edit'
 import type { ToolSpec } from '@/lib/webmcp/types'
 import { useOptionalWebMcpRegistry } from './WebMcpRegistry'
 
@@ -42,7 +43,16 @@ function ToolRegistration({ spec, enabled = true }: { spec: ToolSpec; enabled?: 
         const id = beginActivity?.(spec.name)
         try {
           const result = await spec.execute(args)
-          if (id !== undefined) endActivity?.(id, 'done', typeof result === 'string' ? result.split('\n')[0] : undefined)
+          // NOT "it returned, therefore it worked". A declined approval card and a backend
+          // refusal both come back as an ordinary value, and reading those as success is what
+          // put `REMOVED · You · done — Astrail can't undo this` in a permanent record for a
+          // removal the user had refused, with the stop still on the map beside it. The reply
+          // says which of the three it was; `readToolOutcome` believes it only when it is one
+          // of the three words, so a tool that says nothing is still recorded as it was before.
+          if (id !== undefined) {
+            const { outcome, detail } = readToolOutcome(result)
+            endActivity?.(id, outcome, detail)
+          }
           return result
         } catch (e) {
           if (id !== undefined) endActivity?.(id, 'failed', e instanceof Error ? e.message : undefined)

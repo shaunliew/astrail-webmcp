@@ -23,3 +23,34 @@ claims were born:
 - `robots: noindex` and the what's-new block: report state, do not change metadata without
   asking. That is deployment behaviour and Shaun owns it.
 
+### Task 7 · eleven false claims corrected · `b17a890` · PASS
+
+Spot-verified the three highest-cost ones against the code rather than the report:
+
+- **The evidence claim** is now both true and better. Was "attaches the source evidence to every
+  stop"; now names all three provenances and closes with *"Three provenances, one label on every
+  pin — nothing is on the map unattributed."* The overstatement had been costing us the actual
+  differentiator: a stop that says "you asked for this, no Reel behind it" is the honesty no
+  other entry will have, and the false universal buried it.
+- **The hotel claim** is gone from `landing-copy.ts` — the app had been more honest than its own
+  marketing, since `TripWorkspace` already told users newly generated trips have none.
+- **"Sixteen tools answer" is gone from `StoryStage`**, which is the one a judge could have
+  disproved in ten seconds: `GlobalTools` mounts only under `/app`, so the root page registers
+  none.
+
+Full suite green after it: **122 files / 1656 passed, 0 failed.** The `readme-webmcp-contract`
+test that had been red for two rounds is passing — the deployment caveat survived the rewrite,
+which was the requirement.
+
+### Task 5 (final) · Codex round 7 dispatched · code half only
+
+The code half of the night is frozen (`b2a9c9d`, `8e39f46`), so it goes to review now rather
+than waiting on the doc work. Asked specifically for what my own injections could NOT see:
+whether a DECLINED move leaves state behind in the edit counter (a declined move that raised
+`edits` would make a later rewrite look permanently stale), whether 'You' is the right rail
+actor on the decline and failure paths too, whether `refusal` can leak into the success path or
+go stale across calls, and whether any entry can be opened without being closed.
+
+Told it explicitly not to re-report the known token hazard, and to say plainly if the batch is
+clean rather than manufacture findings at this hour.
+

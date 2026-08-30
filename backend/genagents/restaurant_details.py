@@ -48,11 +48,18 @@ MAX_HOURS_CHARS = 120
 # this one did not, so a hosted web search that never returned held its day open indefinitely —
 # and, before the days ran concurrently, the whole trip behind it.
 #
-# Deliberately GENEROUS: this is a runaway bound, not a latency lever. A real multi-turn search
-# over a day's few venues is expected to take tens of seconds, and cutting it short would drop the
-# verified hours this agent exists to produce — trading the evidence for speed is the deal this
-# feature was created to refuse. Now that `persist_restaurants` fetches the days concurrently, this
-# caps the SLOWEST day rather than accumulating once per day. Revisit it against real percentiles.
+# A runaway bound, not a latency lever. Sized against the measured run (generation_events, trip
+# d7ea5c14): ~58s per day for the suggest+details PAIR, of which this call is the larger part —
+# event ordering puts it at >=26s and most likely ~45s, since the labeller has no tools. So 90s is
+# roughly 2x the median of what it actually bounds. Comparing it to the full 58s understates the
+# headroom, because the suggest call is not inside this timeout.
+#
+# Left at 90 rather than raised, because the downside of firing is SMALLER than it looks: `suggest`
+# has already returned by then, so the day still persists its restaurants, pins, cuisine, summaries
+# and Mapbox evidence — only that one day's opening-hours/website garnish is missing. Against that,
+# a bigger number lands squarely on the tail a judge sits through: at a 3-day fan-out a 4-6 day trip
+# is two waves, so every second here is paid twice in the worst case. Revisit if a real p95 for THIS
+# call (not the pair) ever says otherwise.
 DETAIL_TIMEOUT_S = 90.0
 
 DETAIL_INSTRUCTIONS = """\

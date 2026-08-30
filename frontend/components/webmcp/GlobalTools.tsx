@@ -169,6 +169,16 @@ const TRIP_PATH_PREFIX = '/app/trip/'
  */
 export const ORGANIZE_RETRY_DELAYS_MS = [400, 1_200]
 
+/**
+ * Runs that can be owed an organize at once.
+ *
+ * One record per run, and each is removed as soon as a job exists for its reels — so this only
+ * ever holds runs that failed (inert: a record is organized only once it has LANDED) and the one
+ * or two still finishing their captures. Bounded anyway, because a record nothing ever retires
+ * would otherwise accumulate for the life of the tab.
+ */
+const MAX_PLANNED_RUNS = 4
+
 /** The reels ONE run planned from, and the identity that says which run that was. */
 type PlannedReels = {
   /**
@@ -179,6 +189,16 @@ type PlannedReels = {
   token: number
   tripId: string
   savedReelIds: string[]
+  /**
+   * This run reached `complete`, and is owed an organize as soon as its captures are in.
+   *
+   * Remembered HERE rather than re-read from the store, which is the whole of the two-run fix.
+   * The store holds one run: the moment the next generation begins it replaces the snapshot
+   * wholesale, so a run whose captures are still in flight when that happens can never be
+   * confirmed complete again — and its reels were silently abandoned. A verdict this component
+   * has already seen is a fact about the run, not a question to re-ask the store later.
+   */
+  landed: boolean
   /**
    * Captures for this run that have started and not yet settled.
    *
@@ -270,12 +290,17 @@ export default function GlobalTools() {
   // hands the id back for streaming — so the reservation taken by the first has to reach the
   // second. A ref, because nothing renders from it and a re-render must not drop it.
   const reservationRef = useRef<RunReservation | null>(null)
-  /* The reels ONE run planned from, held until that run's organize has actually been accepted.
-     Keyed by trip AND by token so a record can never be spent on a different run, and cleared once
-     the request has landed, so the organize fires once. A ref rather than state: nothing renders
-     from it, and a re-render must not drop it — it has to survive the 60-180s the pipeline takes.
-     GlobalTools is mounted by the /app layout, so it survives the terminal navigation too. */
-  const plannedReelsRef = useRef<PlannedReels | null>(null)
+  /* The reels each run planned from, held until that run's organize has actually been accepted.
+     A LIST, not a slot. A single slot meant `create` destroyed the previous run's obligation, so a
+     run whose captures were still in flight when the user planned again lost its reels entirely —
+     the same class as the cross-run contamination the token fixed, except the token protects the
+     WRITE and the slot was the thing being overwritten. Runs are concurrent here even though only
+     one can be GENERATING: the lock comes back the moment a run goes terminal, and its captures
+     may outlive it.
+     A ref rather than state: nothing renders from it, and a re-render must not drop it — it has to
+     survive the 60-180s the pipeline takes. GlobalTools is mounted by the /app layout, so it
+     survives the terminal navigation too. */
+  const plannedReelsRef = useRef<PlannedReels[]>([])
   /* Hands out the token above. A counter rather than a timestamp: two runs in the same
      millisecond are not distinguishable by the clock, and nothing here needs a time. */
   const runTokenRef = useRef(0)
@@ -525,7 +550,29 @@ export default function GlobalTools() {
    * sentence, because "some were already being organized" is a different thing to be told than
    * "something went wrong".
    */
+  /**
+   * Replace one run's record, or drop it when the patch returns null.
+   *
+   * Addressed BY TOKEN, which is what makes every write safe across an await: a run that has been
+   * retired, or evicted at the cap, is simply not found and the write is a no-op. New arrays and
+   * new objects only — nothing here mutates a record another closure is holding.
+   */
+  const patchRun = useCallback((token: number, patch: (run: PlannedReels) => PlannedReels | null) => {
+    const runs = plannedReelsRef.current
+    const index = runs.findIndex((run) => run.token === token)
+    if (index === -1) return
+    const next = patch(runs[index])
+    plannedReelsRef.current = next === null
+      ? [...runs.slice(0, index), ...runs.slice(index + 1)]
+      : [...runs.slice(0, index), next, ...runs.slice(index + 1)]
+  }, [])
+
   const organizeForRun = useCallback(async (savedReelIds: string[]): Promise<boolean> => {
+    /* The conflict sentence CLAIMS a cause — that the batch was refused because another job held
+       one of these reels — so it is only earned by a ladder that saw nothing else. Keyed on the
+       last error alone, a run that failed for one reason and happened to end on a 409 told the
+       user the wrong story about why their reels have no places. */
+    let conflictsOnly = true
     for (let attempt = 0; ; attempt += 1) {
       try {
         await analyzeReels(savedReelIds)
@@ -534,12 +581,11 @@ export default function GlobalTools() {
         clearOrganizeFailureFor(savedReelIds)
         return true
       } catch (err) {
+        if (!(err instanceof ActiveOrganizeConflictError)) conflictsOnly = false
         if (attempt >= ORGANIZE_RETRY_DELAYS_MS.length) {
           recordOrganizeFailure({
             savedReelIds,
-            message: err instanceof ActiveOrganizeConflictError
-              ? ORGANIZE_CONFLICT_MESSAGE
-              : ORGANIZE_FAILED_MESSAGE,
+            message: conflictsOnly ? ORGANIZE_CONFLICT_MESSAGE : ORGANIZE_FAILED_MESSAGE,
           })
           return false
         }
@@ -585,32 +631,37 @@ export default function GlobalTools() {
    */
   const maybeOrganize = useCallback(() => {
     const snap = shell.store.snapshot()
-    if (snap?.status !== 'complete') return
-    const planned = plannedReelsRef.current
-    if (!planned || planned.tripId !== snap.tripId) return
-    // Captures still landing. Organizing a subset here would file a job for some of the run's
-    // reels and silently drop the rest — the last capture to settle asks again.
-    if (planned.pending > 0) return
-    if (planned.savedReelIds.length === 0) return
-    if (planned.attempting) return
-    plannedReelsRef.current = { ...planned, attempting: true }
-    void (async () => {
-      let spent = false
-      try {
-        spent = await organizeForRun(planned.savedReelIds)
-      } catch {
-        // `organizeForRun` reports its own outcomes; a throw out of it is a bug, and it must
-        // still not escape into the stream's call stack with nothing there to receive it.
-      }
-      // Only the record this attempt was made FOR. A new run may have opened its own while the
-      // request was in flight, and that one is owed its own organize — not this one's verdict.
-      const current = plannedReelsRef.current
-      if (current?.token !== planned.token) return
-      // Spent: a job exists for these reels. Otherwise the fence lifts and the reels stay, so
-      // the next terminal frame can try again.
-      plannedReelsRef.current = spent ? null : { ...current, attempting: false }
-    })()
-  }, [shell, organizeForRun])
+    /* Record the verdict while the store still holds it. `complete` is the only status that earns
+       anything: `failed` would spend grounding on a trip that does not exist, and `unknown` (an
+       unreadable result frame) is not evidence that one does — those records simply stay inert. */
+    if (snap?.status === 'complete') {
+      plannedReelsRef.current = plannedReelsRef.current.map(
+        (run) => (run.tripId === snap.tripId && !run.landed ? { ...run, landed: true } : run),
+      )
+    }
+    for (const run of plannedReelsRef.current) {
+      if (!run.landed) continue
+      // Captures still landing. Organizing a subset here would file a job for some of the run's
+      // reels and silently drop the rest — the last capture to settle asks again.
+      if (run.pending > 0) continue
+      if (run.savedReelIds.length === 0) continue
+      if (run.attempting) continue
+      patchRun(run.token, (r) => ({ ...r, attempting: true }))
+      void (async () => {
+        let spent = false
+        try {
+          spent = await organizeForRun(run.savedReelIds)
+        } catch {
+          // `organizeForRun` reports its own outcomes; a throw out of it is a bug, and it must
+          // still not escape into the stream's call stack with nothing there to receive it.
+        }
+        // Spent: a job exists for these reels, so the run is owed nothing more. Otherwise the
+        // fence lifts and the reels stay, so a later capture or frame can try again. Addressed by
+        // token, so a record already retired is simply not there to write to.
+        patchRun(run.token, (r) => (spent ? null : { ...r, attempting: false }))
+      })()
+    }
+  }, [shell, organizeForRun, patchRun])
 
   useEffect(() => {
     const unsubscribe = shell.store.subscribe(maybeOrganize)
@@ -637,33 +688,29 @@ export default function GlobalTools() {
    * with no token to carry is a capture with no run behind it.
    */
   const saveReelForRun = useCallback(async (url: string) => {
-    const opened = plannedReelsRef.current
-    const token = opened?.token ?? null
+    // The run now starting is the newest record — `create` opens it before any capture begins.
+    const runs = plannedReelsRef.current
+    const token = runs.length > 0 ? runs[runs.length - 1].token : null
     // Counted BEFORE the await, so a terminal frame arriving mid-capture can see that this batch
     // is not finished yet. The tool starts every capture in one synchronous map, so all of them
     // are counted in before any can settle.
-    if (opened) plannedReelsRef.current = { ...opened, pending: opened.pending + 1 }
+    if (token !== null) patchRun(token, (r) => ({ ...r, pending: r.pending + 1 }))
     try {
       const saved = await saveReel(url)
-      const planned = plannedReelsRef.current
-      // A new object, never a push into the old one: `create` swaps this ref wholesale when the
-      // next run starts, and a mutated array would let a late capture write into a record that has
-      // already been spent — which is the second, unfenced organize this is built to avoid.
-      if (planned && token !== null && planned.token === token) {
-        plannedReelsRef.current = { ...planned, savedReelIds: [...planned.savedReelIds, saved.id] }
+      // Addressed by token, so a capture that outlived its run writes nowhere rather than into
+      // whichever record happens to be newest now.
+      if (token !== null) {
+        patchRun(token, (r) => ({ ...r, savedReelIds: [...r.savedReelIds, saved.id] }))
       }
       return saved
     } finally {
-      const planned = plannedReelsRef.current
-      if (planned && token !== null && planned.token === token) {
-        plannedReelsRef.current = { ...planned, pending: planned.pending - 1 }
-      }
+      if (token !== null) patchRun(token, (r) => ({ ...r, pending: r.pending - 1 }))
       /* ...and ask again, because the run may already have landed while this was in flight. A
          capture that FAILED asks too: it has no row to organize, but the reels that did land are
          still owed a job and must not wait on a sibling that is never coming. */
       maybeOrganize()
     }
-  }, [saveReel, maybeOrganize])
+  }, [saveReel, maybeOrganize, patchRun])
 
   // Declared above `generation` because the approval card reads it too: plan_trip_from_reels
   // reports how many of the chosen reels are already read before the user approves the spend.
@@ -719,14 +766,9 @@ export default function GlobalTools() {
           throw new Error('A trip is already being built. Wait for it to finish, then try again.')
         }
         reservationRef.current = reservation
-        /* A new run supersedes any record the last one left behind — a failed run never spends
-           its own. Belt to the trip-match guard's braces rather than the thing that stops a wrong
-           organize (that guard is what no test can be made to pass without); this only keeps the
-           invariant "the record belongs to the run starting now" true by construction.
-           AFTER the lock check, and that part IS load-bearing: a second call refused by the lock
-           must not wipe the record of the run that is still building, or those reels quietly stop
-           being organized. */
-        plannedReelsRef.current = null
+        /* No wiping of what the last run left behind — that was the two-run defect. A previous
+           run's record is inert unless it LANDED, and a landed one is an obligation this run has
+           no business cancelling: its captures may still be in flight. */
         try {
           const token = await getAccessToken()
           const res = await generateTrip(req, token)
@@ -735,10 +777,13 @@ export default function GlobalTools() {
           // until something has. The token is what a capture carries across its own await, so a
           // slow one from the PREVIOUS run cannot be filed against this record.
           runTokenRef.current += 1
-          plannedReelsRef.current = {
-            token: runTokenRef.current, tripId: res.trip_id, savedReelIds: [],
-            pending: 0, attempting: false,
-          }
+          plannedReelsRef.current = [
+            ...plannedReelsRef.current,
+            {
+              token: runTokenRef.current, tripId: res.trip_id, savedReelIds: [],
+              pending: 0, landed: false, attempting: false,
+            },
+          ].slice(-MAX_PLANNED_RUNS)
           return res.trip_id
         } catch (err) {
           // No backend job exists, so the lock goes back immediately. Holding it would block

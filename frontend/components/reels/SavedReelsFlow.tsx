@@ -221,13 +221,21 @@ export default function SavedReelsFlow() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobKey])
 
-  /* The standing failure, retired once its reels have places — by whatever route.
-     Without this the notice is permanent in the one case that produces it most: an overlap 409
-     means the batch was refused BECAUSE another job was already reading one of these reels, so
-     those reels get organized minutes later and a hand-cleared-only notice would still be sitting
-     over them. Keyed on the CARDS, which is the record that actually knows.
+  /* The standing failure, retired once some job has taken every reel it names — by whatever route.
+     Without this the notice is permanent in the case that produces it most: an overlap 409 means
+     the batch was refused BECAUSE another job was already reading one of these reels, so those
+     reels are organized minutes later and a hand-cleared-only notice would still be sitting over
+     them. Keyed on the CARDS, which is the record that actually knows.
 
-     Every named reel must be found AND past `not_analyzed`. A missing card is not evidence of
+     The test is `analysis_status !== 'not_analyzed'`, and it is deliberately about OWNERSHIP
+     rather than about places. This notice says one thing — "we could not start an organize" — and
+     any other status is a reel some job did take: 'queued' and 'processing' mean one has it now,
+     'organized', 'location_not_found' and 'failed' mean one finished with it and the CARD now
+     carries that outcome, including the bad ones. A reel that ends with no places is not this
+     notice's business; it is the card's, and leaving the notice up would say something untrue
+     about why.
+
+     Every named reel must be FOUND and past `not_analyzed`. A missing card is not evidence of
      anything, and neither is a library that failed to load — `every` over zero cards is vacuously
      true, so the read must have succeeded before this can conclude anything at all. */
   useEffect(() => {

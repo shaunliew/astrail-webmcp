@@ -41,10 +41,16 @@ export const ORGANIZE_FAILED_MESSAGE =
  * Worth its own sentence because the cause changes what the user should think. Nothing broke, and
  * the reels the other job holds WILL be read — it is the rest of the batch that was never started.
  * "Something went wrong" would send them looking for a fault that is not there.
+ *
+ * Worded to stay true for as long as it is on screen, which is the harder half. It is shown only
+ * after every attempt has been refused as an overlap, and by the time anyone reads it that other
+ * job has very likely finished — so it says what was true (past tense) and what to do, and claims
+ * nothing about the present. The caller earns it by seeing NOTHING but conflicts; a ladder that
+ * also hit something else gets ORGANIZE_FAILED_MESSAGE, because this sentence names a cause.
  */
 export const ORGANIZE_CONFLICT_MESSAGE =
-  'Some of those Reels were already being organized, so the rest were not started. Open your ' +
-  'library, select them, and organize them again.'
+  'At least one of those Reels was still tied up in another analysis, so none of this batch was ' +
+  'started. Open your library, select them, and organize them again.'
 
 export type OrganizeFailure = {
   /** The reels that were never organized, so whoever retries knows what to ask for. */

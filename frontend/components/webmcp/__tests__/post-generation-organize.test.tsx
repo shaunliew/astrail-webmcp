@@ -470,6 +470,19 @@ describe('the organize outlives the page that started it', () => {
     expect(organizeJobs().jobIds).toEqual([])
   })
 
+  it('does not blame an overlap when the ladder also saw something else', async () => {
+    /* The conflict sentence claims the batch was refused BECAUSE another job held a reel. Keyed
+       on the last error alone, a ladder that failed for one reason and then happened to end on a
+       409 told the user the wrong story about why their reels have no places. */
+    h.startOrganize.mockRejectedValueOnce(new Error('backend down'))
+    h.startOrganize.mockRejectedValue(new ActiveOrganizeConflictError())
+    await planTrip()
+    land(SUCCESS)
+
+    await waitFor(() => { expect(organizeJobs().failure).not.toBeNull() }, { timeout: RETRY_WINDOW_MS })
+    expect(organizeJobs().failure?.message).toBe(ORGANIZE_FAILED_MESSAGE)
+  })
+
   it('says the overlap happened, not that something broke', async () => {
     // Different cause, different next step: "some were already being organized" tells the user
     // why the rest were not, which the generic failure line does not.
@@ -653,6 +666,49 @@ describe('a run that lands before its captures do', () => {
 
     await waitFor(() => { expect(h.startOrganize).toHaveBeenCalledTimes(1) })
     expect(h.startOrganize).toHaveBeenCalledWith(['reel-1'], 'test-token')
+  })
+
+  it("still organizes the earlier run's reels when a NEW run starts mid-capture", async () => {
+    /* The one-run race was closed by counting captures; this is the two-run one, and it is the
+       same class as the cross-run contamination the tokens fixed — the token protected the WRITE,
+       but the record itself was a single slot that `create` replaced. Run A's still-pending
+       captures then decremented into a record that was no longer theirs and their reels were
+       never organized.
+
+       Remembering it cannot be done by re-reading the store either: the next run replaces the
+       snapshot wholesale, so run A's `complete` is gone the moment run B begins. The landing has
+       to be remembered ON the record. */
+    const first = deferred<{ saved_reel: { id: string } }>()
+    const second = deferred<{ saved_reel: { id: string } }>()
+    const pending = [first, second]
+    h.captureSavedReel.mockImplementation(() => pending.shift()!.promise)
+
+    const { plan } = await mountTools()
+    const runA = runPlan(plan, PLAN_ARGS)
+    await waitFor(() => { expect(h.captureSavedReel).toHaveBeenCalledTimes(2) })
+
+    // Run A finishes while both of its captures are still in flight.
+    land(SUCCESS)
+    await act(async () => { await Promise.resolve() })
+    expect(h.startOrganize).not.toHaveBeenCalled()
+
+    // The user plans again straight away — the lock came back when run A went terminal.
+    h.generateTrip.mockResolvedValue({ trip_id: 'trip-2' })
+    h.captureSavedReel.mockImplementation(() => Promise.resolve({ saved_reel: { id: 'reel-B' } }))
+    await runPlan(plan, { ...PLAN_ARGS, reel_urls: ['https://www.instagram.com/reel/Cxyz789/'] })
+
+    // ...and only now do run A's captures land, with run B's record the one that is open.
+    first.resolve({ saved_reel: { id: 'reel-A1' } })
+    second.resolve({ saved_reel: { id: 'reel-A2' } })
+    await runA
+
+    await waitFor(() => { expect(h.startOrganize).toHaveBeenCalledTimes(1) })
+    expect(h.startOrganize).toHaveBeenCalledWith(['reel-A1', 'reel-A2'], 'test-token')
+
+    // ...and run B is still owed its own, which it gets when it lands.
+    land(SUCCESS)
+    await waitFor(() => { expect(h.startOrganize).toHaveBeenCalledTimes(2) })
+    expect(h.startOrganize).toHaveBeenLastCalledWith(['reel-B'], 'test-token')
   })
 
   it('organizes nothing when the run lands and every capture then fails', async () => {

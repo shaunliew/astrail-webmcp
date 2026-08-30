@@ -534,6 +534,16 @@ describe('the sample trail is not writable, at either layer', () => {
 async function appStateOn(path: string, session: 'yes' | 'no'): Promise<string> {
   const shell = shellOn(path, { session })
   await waitFor(() => { expect(shell.offered()).toContain('get_app_state') })
+  /* `get_app_state` registers with or without a session — it is in PUBLIC_ANSWERS — so its
+     presence proves the shell mounted and NOTHING about whether the session landed. On the
+     sample path that gap is answerable: the signed-out branch returns a complete, plausible
+     answer, so a `session: 'yes'` case that executes too early gets the signed-OUT reply and
+     fails on wording, looking like a copy regression. Seen once in a full parallel run and not
+     on the next; a flake this shape costs an hour to re-diagnose every time it surfaces. One of
+     the session-only tools is the honest signal, since none of them register without one. */
+  if (session === 'yes') {
+    await waitFor(() => { expect(shell.offered()).toContain('list_trips') })
+  }
   const spec = h.specs.find((s) => s.name === 'get_app_state')!
   return String(await spec.execute({}))
 }

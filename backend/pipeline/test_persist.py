@@ -2902,6 +2902,39 @@ async def test_persist_hotels_lease_fence_stale_token_leaves_live_rows():
 
 
 @pytest.mark.asyncio
+async def test_clear_hotels_lease_fence_stale_token_leaves_live_rows():
+    """`clear_hotels` deletes and writes nothing back, which is exactly when a missing fence would
+    be least visible: a superseded worker would silently destroy the REPLACEMENT's hotel rows and
+    leave no evidence it had. Same fence, same LeaseLost."""
+    from organizer import LeaseLost
+
+    c = _hotel_ranking_client(extra={
+        "jobs": [{"id": "job-1", "trip_id": "trip-1", "lease_token": "tok-1", "status": "running"}],
+        "hotel_suggestions": [{"id": "live", "trip_id": "trip-1", "name": "Live Hotel"}],
+    })
+
+    with pytest.raises(LeaseLost):
+        await persist.clear_hotels(c, "trip-1", job_id="job-1", lease_token="WRONG-TOKEN")
+
+    assert [h["id"] for h in c.db["hotel_suggestions"]] == ["live"]
+
+
+@pytest.mark.asyncio
+async def test_clear_hotels_lease_holder_removes_this_trips_rows_only():
+    """The lease holder's clear empties THIS trip and nothing else — the scoping that lets an
+    older, un-regenerated trip keep the hotels its own run really found."""
+    c = _hotel_ranking_client(extra={
+        "jobs": [{"id": "job-1", "trip_id": "trip-1", "lease_token": "tok-1", "status": "running"}],
+        "hotel_suggestions": [{"id": "mine", "trip_id": "trip-1", "name": "old"},
+                              {"id": "theirs", "trip_id": "trip-2", "name": "someone else's"}],
+    })
+
+    await persist.clear_hotels(c, "trip-1", job_id="job-1", lease_token="tok-1")
+
+    assert [h["id"] for h in c.db["hotel_suggestions"]] == ["theirs"]
+
+
+@pytest.mark.asyncio
 async def test_persist_hotels_lease_fence_matching_token_replaces():
     """The lease holder writes: a matching token routes the delete-reinsert through the fenced
     RPC, clearing the stale row and inserting the ranked row (with trip_id, added by the RPC)."""

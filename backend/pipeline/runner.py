@@ -26,7 +26,7 @@ from pipeline.dedup import dedupe_places
 from pipeline.feasibility import group_places_by_day
 from pipeline.geo import centroid
 from pipeline.offline_harness import _date_range, assemble_itinerary
-from pipeline.persist import persist_hotels, persist_itinerary, persist_narration, persist_restaurants, persist_tradeoffs, persist_transport, persist_weather
+from pipeline.persist import clear_hotels, persist_hotels, persist_itinerary, persist_narration, persist_restaurants, persist_tradeoffs, persist_transport, persist_weather
 from pipeline.tradeoffs import build_hotel_comparisons, warnings_to_notes
 from scrape.reel_url import normalize_reel_url  # leaf module — pure stdlib, import-keyless, no cycle
 from jobs import _heartbeat, mark_job_running
@@ -669,6 +669,33 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                     except Exception:
                         pass   # best-effort — the hotels are saved either way
 
+                async def _clear_stale_hotels():
+                    """The other half of the switch: with `_stage_hotels` gated, `persist_hotels` —
+                    the ONLY writer of hotel_suggestions — never runs, so rows an EARLIER run wrote
+                    survive into this one. Regenerating a trip built before the switch republished
+                    its old hotels, at old prices for old dates, and the tradeoff derivation below
+                    computed a NEW price-vs-rating recommendation from them. This generation
+                    searched no hotels; it must publish none, and assert nothing about any.
+
+                    Silent by design — no `stage`, no `decision`, no `warning`. Housekeeping for
+                    work that did not happen is not a beat in the traveller's story, and the
+                    absence of the hotel panel is the honest signal (the frontend gates it on the
+                    trip having rows). Best-effort like every sibling here (guardrail #3): a trip
+                    must never fail over a delete."""
+                    try:
+                        await clear_hotels(client, trip_id, job_id=job_id, lease_token=lease_token)
+                    except LeaseLost:
+                        # Superseded — the replacement owns this job's rows and is writing its own.
+                        # Same reasoning as `_stage_hotels`: silence, and let the lease backstops
+                        # drive the abort.
+                        return
+                    except Exception as exc:
+                        # Type only, never the message (guardrail: a client error can carry a token).
+                        # The comparison guard below is INDEPENDENT of this, so a failed clear
+                        # leaves stale rows visible but still derives no advice from them.
+                        logger.warning("hotel_clear_failed trip_id=%s error=%s",
+                                       trip_id, type(exc).__name__)
+
                 async def _stage_narration():
                     # MUST run after persist_weather (above): reads trip_days.weather_summary.
                     try:
@@ -699,24 +726,30 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
                 # Built as a list so a disabled stage is NEVER CONSTRUCTED, let alone awaited:
                 # gating inside `_stage_hotels` would still schedule a coroutine, and its very
                 # first statement is the `stage` event ("Looking for somewhere to stay") that
-                # must not reach the user's decision rail for work that cannot happen. Order is
-                # preserved around the optional member for stable event interleaving.
+                # must not reach the user's decision rail for work that cannot happen. The slot
+                # is always filled — the disabled arm still has to CLEAR what an earlier run
+                # persisted — so the position holds for stable event interleaving either way.
                 stages = [_stage_transport(), _stage_restaurants()]
-                if HOTEL_SEARCH_ENABLED:
-                    stages.append(_stage_hotels())
+                stages.append(_stage_hotels() if HOTEL_SEARCH_ENABLED else _clear_stale_hotels())
                 stages.append(_stage_narration())
                 await asyncio.gather(*stages, return_exceptions=True)
 
                 # ONE tradeoffs write (notes computed pre-gather + comparisons from persisted hotels).
                 # No read-modify-write; best-effort (a failure must never fail the trip, guardrail #3).
                 _comparisons = []
-                try:
-                    _hotel_rows = (await client.table("hotel_suggestions")
-                                   .select("id,name,star_rating,price_snapshot")
-                                   .eq("trip_id", trip_id).execute()).data or []
-                    _comparisons = build_hotel_comparisons(_hotel_rows)
-                except Exception:
-                    _comparisons = []   # a hotel-query blip must NOT discard the independently-valid notes
+                # Not read at all when no hotels were searched. A comparison is ADVICE — "pay more
+                # for the better-rated one" — and deriving it from rows this run did not produce
+                # states a conclusion about a search that never happened. Independent of the clear
+                # above rather than relying on it: the clear is best-effort, and one failed delete
+                # must not be enough to bring the stale recommendation back.
+                if HOTEL_SEARCH_ENABLED:
+                    try:
+                        _hotel_rows = (await client.table("hotel_suggestions")
+                                       .select("id,name,star_rating,price_snapshot")
+                                       .eq("trip_id", trip_id).execute()).data or []
+                        _comparisons = build_hotel_comparisons(_hotel_rows)
+                    except Exception:
+                        _comparisons = []   # a hotel-query blip must NOT discard the independently-valid notes
                 try:
                     await persist_tradeoffs(client, trip_id, user_id,
                                             notes=_tradeoff_notes, comparisons=_comparisons)

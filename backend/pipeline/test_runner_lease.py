@@ -96,17 +96,19 @@ async def test_the_terminal_result_and_the_job_status_land_together_through_one_
     # is the database's now; the itinerary rewrite is a destructive delete-reinsert through its
     # own fence; the terminal completion closes the run.
     #
-    # `replace_hotel_suggestions` used to sit between the last two: the hotel stage's replace is
-    # fenced too (F3/B) and ran in the enrich gather even with no hotels, to clear stale rows.
-    # It is absent now because hotel search ships OFF (`runner.HOTEL_SEARCH_ENABLED`, 2026-08-30
-    # — Travala's MCP endpoint 401s every unauthenticated call). This list pins what PRODUCTION
-    # does; the fenced hotel replace still has a home in `pipeline/test_runner.py::
-    # test_runner_persists_hotel_suggestions`, which runs with the switch on.
+    # `replace_hotel_suggestions` sits between the last two, and with hotel search OFF
+    # (`runner.HOTEL_SEARCH_ENABLED`, 2026-08-30 — Travala's MCP endpoint 401s every
+    # unauthenticated call) it is a CLEAR: an empty row set through the same F3/B fence the hotel
+    # stage writes under. Production calls it on every run because the alternative is worse than
+    # a round trip — `persist_hotels` is the only writer of `hotel_suggestions`, so with the stage
+    # gated nothing cleared the table and a trip regenerated after the switch republished the
+    # hotels, prices and dates of a search this generation never made.
     #
-    # The consequence worth naming: with the stage gated, nothing clears `hotel_suggestions` any
-    # more, so re-generating a trip built before the switch KEEPS its existing hotel rows.
+    # FENCED rather than a bare delete precisely because it deletes: a superseded worker that can
+    # write nothing must not be able to destroy the replacement's rows either.
     assert [name for name, _params in client.rpc_calls] == [
-        "claim_trip_job", "replace_trip_itinerary", "complete_trip_run"]
+        "claim_trip_job", "replace_trip_itinerary", "replace_hotel_suggestions",
+        "complete_trip_run"]
 
 
 async def test_a_run_without_a_job_id_still_writes_its_terminal_result():

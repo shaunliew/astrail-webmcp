@@ -1059,6 +1059,90 @@ async def test_the_switch_is_the_only_thing_holding_the_hotel_stage_back(hotel_s
     assert c.db.get("hotel_suggestions")
 
 
+# ---------------------------------------------------------------------------------------------
+# ...and OFF has to mean the DATA is gone too, not just the search.
+#
+# `persist_hotels` is the only writer of `hotel_suggestions`, so gating the stage left nothing to
+# clear the table: a trip generated back when Travala worked kept its rows, the frontend rendered
+# them as this generation's hotels (old prices, old dates), and the tradeoff panel derived a FRESH
+# price-vs-rating recommendation from them. Stale data is one defect; freshly-computed advice about
+# stale data is the product asserting something it never determined — the exact class of failure
+# guardrail #1 exists to prevent.
+#
+# Scoped to the REGENERATION path deliberately. A trip nobody regenerates never reaches this code
+# and keeps the hotels it legitimately earned (the frontend gates its hotel panel on the trip
+# having rows, and no backend path touches the table outside a run). Carrying them FORWARD into a
+# run that searched nothing is the lie; showing what an earlier run really found is not.
+# ---------------------------------------------------------------------------------------------
+
+def _earlier_runs_hotels(trip_id="trip-1"):
+    """Two rows as a working Travala search left them — priced, starred and same-currency, so
+    `build_hotel_comparisons` has everything it needs to write advice about them. Rows it could
+    not compare would make an empty `comparisons` prove nothing."""
+    return [
+        {"id": f"{trip_id}-hs-1", "trip_id": trip_id, "name": "Cheap Inn", "star_rating": 3.0,
+         "price_snapshot": {"pricePerNight": 8000, "currency": "JPY"}},
+        {"id": f"{trip_id}-hs-2", "trip_id": trip_id, "name": "Grand", "star_rating": 5.0,
+         "price_snapshot": {"pricePerNight": 12000, "currency": "JPY"}},
+    ]
+
+
+async def _must_not_search(*_a, **_k):
+    raise AssertionError("the hotel search must not run while the switch is off")
+
+
+@pytest.mark.asyncio
+async def test_a_regeneration_with_hotels_off_publishes_none_of_the_earlier_run_s_hotels():
+    c = _hotel_stage_client()
+    c.db["hotel_suggestions"] = _earlier_runs_hotels()
+    c.db["trips"][0]["tradeoffs"] = {"notes": [], "comparisons": [{"axis": "price_vs_rating"}]}
+
+    await _run_with_hotel_fetcher(c, _must_not_search)
+
+    assert c.db["hotel_suggestions"] == [], "the earlier run's hotels rode along into this one"
+    assert c.db["trips"][0]["tradeoffs"]["comparisons"] == [], "fresh advice about hotels we never searched"
+    # Through the FENCE, never a bare delete: a superseded worker must not be able to destroy the
+    # replacement's hotel rows, which is the whole point of F3/B.
+    assert "replace_hotel_suggestions" in [name for name, _p in c.rpc_calls]
+    # ...and silently. "Looking for somewhere to stay" must not reach the decision rail for work
+    # that cannot happen, and housekeeping is not a beat in the user's story either.
+    assert not [e for e in c.events if e["stage"] == "hotels"], _event_stages(c)
+    assert c.trip_updates[-1]["status"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_hotels_that_outlive_a_failed_clear_still_get_no_fresh_advice(monkeypatch):
+    """The two halves of the fix are independent on purpose. Clearing is best-effort — a lost lease
+    returns silently, a transient failure is logged — so a derivation that merely relied on the
+    table being empty would put the product back to recommending from rows this generation did not
+    search, the moment one delete failed. Injected here as a clear that does nothing."""
+    async def _clear_nothing(*_a, **_k):
+        return None
+
+    monkeypatch.setattr(runner, "clear_hotels", _clear_nothing)
+    c = _hotel_stage_client()
+    c.db["hotel_suggestions"] = _earlier_runs_hotels()
+
+    await _run_with_hotel_fetcher(c, _must_not_search)
+
+    assert c.db["hotel_suggestions"], "the injected clear ran after all — this proves nothing"
+    assert c.db["trips"][0]["tradeoffs"]["comparisons"] == []
+
+
+@pytest.mark.asyncio
+async def test_clearing_this_trip_s_hotels_leaves_another_trip_s_alone():
+    """A trip nobody regenerated keeps what it earned. The clear is ONE trip's rewrite, fenced on
+    that trip's job, exactly as `persist_hotels` writes — so re-opening an older trip (a frontend
+    read of `hotel_suggestions`; no backend path touches the table outside a generation) still
+    finds the hotels its own run really found."""
+    c = _hotel_stage_client()
+    c.db["hotel_suggestions"] = _earlier_runs_hotels() + _earlier_runs_hotels("trip-2")
+
+    await _run_with_hotel_fetcher(c, _must_not_search)
+
+    assert [r["trip_id"] for r in c.db["hotel_suggestions"]] == ["trip-2", "trip-2"]
+
+
 @pytest.mark.asyncio
 async def test_runner_persists_hotel_suggestions(hotel_search_enabled):
     c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "attempt_count": 0, "started_at": None, "status": "pending"}])
@@ -1080,10 +1164,10 @@ async def test_runner_persists_hotel_suggestions(hotel_search_enabled):
     assert hs and hs[0]["name"] == "Park Hyatt Tokyo" and hs[0]["source"] == "travala"
     assert any(e["stage"] == "hotels" for e in c.events)
     # The hotel rewrite goes through its OWN fence (F3/B), in the enrich gather between the
-    # itinerary rewrite and the terminal completion. This assertion moved here from
-    # `test_runner_lease.py::test_the_terminal_result_and_the_job_status_land_together_through_
-    # one_rpc` when hotel search was switched off: that test pins what production does, and
-    # production no longer calls this RPC at all.
+    # itinerary rewrite and the terminal completion. `test_runner_lease.py::test_the_terminal_
+    # result_and_the_job_status_land_together_through_one_rpc` pins the same four-call sequence
+    # for what production actually does — where, with the switch off, the third call is the
+    # CLEAR (an empty row set through the same fence) rather than this search's write.
     assert [name for name, _p in c.rpc_calls] == [
         "claim_trip_job", "replace_trip_itinerary", "replace_hotel_suggestions",
         "complete_trip_run"]

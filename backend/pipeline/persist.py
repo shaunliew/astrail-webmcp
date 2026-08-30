@@ -1224,6 +1224,24 @@ async def persist_hotels(client, trip_id: str, *, fetch=None, geocode=None, matr
     return len(rows)
 
 
+async def clear_hotels(client, trip_id: str, *,
+                       job_id: str | None = None, lease_token: str | None = None) -> None:
+    """Drop this trip's hotel_suggestions — for a generation that searched no hotels AT ALL.
+
+    The write `persist_hotels` ends with, with an empty row set and no search in front of it, so
+    the delete carries the same lease fence: a superseded worker must not be able to destroy the
+    replacement's rows, and "we wrote nothing" is exactly the case where that is easiest to get
+    wrong. A lost lease raises `LeaseLost` from `_replace_hotel_rows` for the caller to swallow.
+
+    WHY THIS EXISTS. Hotel search ships OFF (`runner.HOTEL_SEARCH_ENABLED`), and with the stage
+    gated `persist_hotels` — the only writer of this table — never runs. Rows an EARLIER run
+    persisted therefore outlived it: a trip regenerated after the switch republished old hotels at
+    old prices for old dates, and the tradeoff panel derived a FRESH price-vs-rating recommendation
+    from them. Deleting them is scoped to the run: a trip that is merely re-opened never reaches
+    this code and keeps what its own generation really found."""
+    await _replace_hotel_rows(client, trip_id, [], job_id=job_id, lease_token=lease_token)
+
+
 def _dump(items) -> list[dict]:
     return [it.model_dump() if hasattr(it, "model_dump") else dict(it) for it in (items or [])]
 

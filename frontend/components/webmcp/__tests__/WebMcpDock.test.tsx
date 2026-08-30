@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useEffect } from 'react'
 import WebMcpDock from '../WebMcpDock'
@@ -257,5 +257,131 @@ describe('WebMcpDock — the dock never swallows an invisible click', () => {
     dock()
     await userEvent.click(screen.getByRole('button', { name: /minimise/i }))
     expect(invisibleCatchers()).toEqual([])
+  })
+})
+
+/**
+ * The fold is the DOCK's control, not the rail's.
+ *
+ * It lived on the rail, which renders nothing until a tool has run — so the one state a judge
+ * actually arrives in, a first visit to /app/trip/demo with no agent activity, had the prompts
+ * panel taking ~22% of a phone viewport and no fold anywhere. The only escape was the panel's own
+ * ✕, which dismisses the examples permanently. "Not right now" is a much better thing to offer
+ * someone than "never show me this again", and it has to be reachable before the agent acts.
+ */
+describe('WebMcpDock — the fold works before anything has happened', () => {
+  it('offers the fold with no activity at all, over the map', () => {
+    mockPath.value = '/app/trip/abc'
+    dock(0)
+    expect(screen.getByText(/move stop 7 to day 3/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /minimise/i })).toBeInTheDocument()
+  })
+
+  it('folds the prompts panel away when there is no rail to fold with it', async () => {
+    mockPath.value = '/app/trip/abc'
+    dock(0)
+    await userEvent.click(screen.getByRole('button', { name: /minimise/i }))
+    expect(screen.queryByText(/move stop 7 to day 3/)).not.toBeInTheDocument()
+    // Still findable: the fold is a fold, never a vanishing.
+    expect(screen.getByRole('button', { name: /show agent activity/i })).toBeInTheDocument()
+    expect(screen.getByText(/WebMCP/)).toBeInTheDocument()
+  })
+
+  it('unfolds again from that state', async () => {
+    mockPath.value = '/app/trip/abc'
+    dock(0)
+    await userEvent.click(screen.getByRole('button', { name: /minimise/i }))
+    await userEvent.click(screen.getByRole('button', { name: /show agent activity/i }))
+    expect(screen.getByText(/move stop 7 to day 3/)).toBeInTheDocument()
+  })
+
+  it('offers no fold on a bare document route — there would be nothing under it', () => {
+    // /app with no activity is the chip and nothing else. A fold there is a control over a
+    // scrolling content column that folds away nothing, which is what 99c1384 was about.
+    dock(0)
+    expect(screen.queryByRole('button', { name: /minimise/i })).toBeNull()
+  })
+
+  it('offers no fold in a browser with no agent', () => {
+    mockPath.value = '/app/trip/abc'
+    render(
+      <WebMcpRegistryProvider>
+        <WebMcpDock />
+      </WebMcpRegistryProvider>,
+    )
+    expect(screen.queryByRole('button', { name: /minimise/i })).toBeNull()
+  })
+
+  it('still announces a fresh action to a screen reader while folded', async () => {
+    // Folded, the rail is unmounted, so the live region it used to carry goes with it. The
+    // count is the only thing left that can say an agent just did something.
+    mockPath.value = '/app/trip/abc'
+    dock(0)
+    await userEvent.click(screen.getByRole('button', { name: /minimise/i }))
+    expect(screen.getByLabelText('Agent activity')).toHaveAttribute('aria-live', 'polite')
+  })
+})
+
+/**
+ * The count on the folded pill.
+ *
+ * This coverage used to sit on the rail and moved here with the control. A silent agent action is
+ * the thing the rail exists to prevent, so folding may not mute one — but auto-expanding on every
+ * arrival would undo the fold three times a minute during a generation. The count is the middle.
+ */
+describe('WebMcpDock — what arrives while folded', () => {
+  let api: ReturnType<typeof useWebMcpRegistry> | null = null
+  const Capture = () => { api = useWebMcpRegistry(); return null }
+
+  const live = (entries = 1) =>
+    render(
+      <WebMcpRegistryProvider>
+        <Capture />
+        <Session entries={entries} />
+        <WebMcpDock />
+      </WebMcpRegistryProvider>,
+    )
+
+  beforeEach(() => { api = null; mockPath.value = '/app/trip/abc' })
+
+  it('counts it instead of opening itself over the map', async () => {
+    live()
+    await userEvent.click(screen.getByRole('button', { name: /minimise/i }))
+    await act(async () => { api!.beginActivity('get_itinerary'); api!.beginActivity('get_map_view') })
+
+    expect(screen.queryByText('READING')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /show agent activity, 2 new/i })).toBeInTheDocument()
+  })
+
+  it('says when one of those was a change, because a count flattens the difference', async () => {
+    live()
+    await userEvent.click(screen.getByRole('button', { name: /minimise/i }))
+    await act(async () => { api!.beginActivity('get_map_view'); api!.beginActivity('save_reels') })
+
+    // In the ACCESSIBLE NAME, not only the dot: the user who cannot see the dot is exactly the
+    // user who cannot otherwise tell that something was written.
+    expect(
+      screen.getByRole('button', { name: /show agent activity, 2 new, including a change/i }),
+    ).toBeInTheDocument()
+  })
+
+  it('counts nothing when nothing has happened since', async () => {
+    live()
+    await userEvent.click(screen.getByRole('button', { name: /minimise/i }))
+    const pill = screen.getByRole('button', { name: /show agent activity/i })
+    expect(pill).toHaveAccessibleName('Show agent activity')
+    expect(pill.textContent).not.toMatch(/\d/)
+  })
+
+  it('counts only what arrived after a clear', async () => {
+    live(3)
+    await userEvent.click(screen.getByRole('button', { name: /clear agent activity/i }))
+    await userEvent.click(screen.getByRole('button', { name: /minimise/i }))
+    await act(async () => { api!.beginActivity('save_reels') })
+
+    // The three cleared reads are below the fold marker, so only the new write counts.
+    expect(
+      screen.getByRole('button', { name: /show agent activity, 1 new, including a change/i }),
+    ).toBeInTheDocument()
   })
 })

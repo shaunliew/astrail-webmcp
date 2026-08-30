@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { useOptionalWebMcpRegistry, type ActivityEntry } from './WebMcpRegistry'
 
 /**
@@ -66,86 +66,11 @@ function Entry({ entry }: { entry: ActivityEntry }) {
   )
 }
 
-/**
- * The rail put away: one line, and never nothing.
- *
- * The dock is the only place this app says out loud that an agent is attached to the page, so a
- * control that could hide it completely would let someone lose the affordance the whole
- * integration exists to show. Every showcase app keeps a small persistent indicator
- * (docs/webmcp/SHOWCASE-PATTERNS.md), and this is ours: the surface is still here, and here is
- * how much happened while you were not looking.
- *
- * The count is deliberately quiet rather than self-opening. An agent following a generation calls
- * `get_trip_progress` about every twenty seconds, so expanding on each arriving entry would
- * re-cover the map three times a minute — it would undo the collapse the user just asked for,
- * which is not a control, it is a control that argues back.
- *
- * It does carry the one distinction the rail already draws: a write is not a read. And it carries
- * it in the ACCESSIBLE NAME, not only in the colour of the dot, because the person who cannot see
- * the dot is exactly the person who otherwise has no way to tell the two apart.
- */
-function CollapsedPill({
-  unread,
-  hasChange,
-  onExpand,
-}: {
-  unread: number
-  hasChange: boolean
-  onExpand: () => void
-}) {
-  const label =
-    unread === 0
-      ? 'Show agent activity'
-      : hasChange
-        ? `Show agent activity, ${unread} new, including a change`
-        : `Show agent activity, ${unread} new`
-
-  return (
-    <button
-      type="button"
-      onClick={onExpand}
-      aria-expanded={false}
-      aria-label={label}
-      className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-[#C9974E]/40 bg-black/70 px-3 py-1
-                 text-[10px] uppercase tracking-wider text-[#E8D5B0] backdrop-blur transition hover:border-[#C9974E]"
-    >
-      <span
-        aria-hidden
-        className={[
-          'inline-block h-1.5 w-1.5 shrink-0 rounded-full',
-          hasChange ? 'bg-[#C9974E]' : unread > 0 ? 'bg-white/50' : 'bg-[#C9974E]/40',
-        ].join(' ')}
-      />
-      Agent{unread > 0 ? ` · ${unread}` : ''}
-    </button>
-  )
-}
-
-export default function AgentActivityRail({
-  compact = false,
-  collapsed = false,
-  onCollapsedChange,
-}: {
-  compact?: boolean
-  /**
-   * Owned by the dock, not by the rail, because minimising has to take the prompts panel with it.
-   * One gesture, one state, and the dock is the only component that can see both panels.
-   */
-  collapsed?: boolean
-  /**
-   * Absent when nothing can act on a collapse — a standalone rail, or a test. The rail then draws
-   * no minimise control and ignores `collapsed` outright, for the same reason it has never had an
-   * undo button: a control the app cannot honour must not exist, and a pill with no handler
-   * behind it would be a one-way door onto the record.
-   */
-  onCollapsedChange?: (collapsed: boolean) => void
-}) {
+export default function AgentActivityRail({ compact = false }: { compact?: boolean }) {
   const registry = useOptionalWebMcpRegistry()
   const [showEarlier, setShowEarlier] = useState(false)
-  /** The newest entry the user had already seen when the rail was put away. Null while open. */
-  const [seenThroughId, setSeenThroughId] = useState<number | null>(null)
   /**
-   * The newest entry the user has dismissed. Everything at or below it is gone from the rail.
+   * The newest entry the user has dismissed, and the in-flight ones spared from that dismissal.
    *
    * A WATERMARK, not a delete: the registry's list is append-only and stays that way. The record
    * is an audit surface, and an audit surface the audited thing can shorten is not one — a tool
@@ -157,10 +82,6 @@ export default function AgentActivityRail({
     throughId: 0,
     spared: [],
   })
-  const latestIdRef = useRef(0)
-
-  const collapsible = onCollapsedChange !== undefined
-  const isCollapsed = collapsible && collapsed
 
   /**
    * What the rail is showing: everything since the last clear, plus anything still in flight.
@@ -178,40 +99,11 @@ export default function AgentActivityRail({
    * it. Between two polls of a live run there is no running entry at all, so a clear landing in
    * that window empties the rail until the next poll writes to it.
    */
-  const activity = registry?.activity
-  const visible = activity?.filter((e) => e.id > cleared.throughId || cleared.spared.includes(e.id))
-  const latestVisibleId = visible?.length ? visible[visible.length - 1].id : 0
+  const visible = registry?.activity.filter(
+    (e) => e.id > cleared.throughId || cleared.spared.includes(e.id),
+  )
 
-  useEffect(() => {
-    latestIdRef.current = latestVisibleId
-  }, [latestVisibleId])
-
-  useEffect(() => {
-    // Read through the ref and depend on the COLLAPSE alone. Depending on `activity` would re-arm
-    // the marker every time an entry arrived, which is indistinguishable from never counting one.
-    setSeenThroughId(isCollapsed ? latestIdRef.current : null)
-  }, [isCollapsed])
-
-  if (!registry || !visible?.length) return null
-
-  if (isCollapsed) {
-    // Ids come from a monotonic counter in the registry, so "arrived since" is exact rather than
-    // a timestamp comparison that a clock change could get wrong.
-    const unread = seenThroughId === null ? [] : visible.filter((e) => e.id > seenThroughId)
-    return (
-      <div
-        aria-live="polite"
-        aria-label="Agent activity"
-        className="pointer-events-none flex w-[min(22rem,100%)] justify-end"
-      >
-        <CollapsedPill
-          unread={unread.length}
-          hasChange={unread.some((e) => e.changes)}
-          onExpand={() => onCollapsedChange?.(false)}
-        />
-      </div>
-    )
-  }
+  if (!visible?.length) return null
 
   const latest = visible[visible.length - 1]
   const earlier = visible.slice(0, -1)
@@ -249,50 +141,34 @@ export default function AgentActivityRail({
       {/* Last, so it keeps its place: the dock is bottom-anchored and grows upward, which makes
           the bottom-most control the only one that never moves under the user's finger. Both
           controls share the row for that reason — a second row would move the first. */}
-      {(earlier.length > 0 || collapsible) && (
-        <div className="flex items-center justify-end gap-1.5">
-          {earlier.length > 0 && (
-            <button
-              type="button"
-              onClick={() => setShowEarlier((open) => !open)}
-              aria-expanded={showEarlier}
-              aria-label={showEarlier ? 'Hide earlier agent activity' : 'Show earlier agent activity'}
-              className="pointer-events-auto rounded-full border border-[#C9974E]/40 bg-black/60 px-3 py-1
-                         text-[10px] uppercase tracking-wider text-[#E8D5B0] backdrop-blur transition hover:border-[#C9974E]"
-            >
-              {showEarlier ? 'Hide earlier' : `${earlier.length} earlier`}
-            </button>
-          )}
-          {collapsible && (
-            <button
-              type="button"
-              onClick={() =>
-                setCleared({
-                  throughId: latest.id,
-                  spared: visible.filter((e) => e.status === 'running').map((e) => e.id),
-                })
-              }
-              aria-label="Clear agent activity"
-              className="pointer-events-auto rounded-full border border-white/20 bg-black/60 px-3 py-1
-                         text-[10px] uppercase tracking-wider text-white/70 backdrop-blur transition hover:border-white/50"
-            >
-              Clear
-            </button>
-          )}
-          {collapsible && (
-            <button
-              type="button"
-              onClick={() => onCollapsedChange?.(true)}
-              aria-expanded
-              aria-label="Minimise agent activity"
-              className="pointer-events-auto rounded-full border border-[#C9974E]/40 bg-black/60 px-3 py-1
-                         text-[10px] uppercase tracking-wider text-[#E8D5B0] backdrop-blur transition hover:border-[#C9974E]"
-            >
-              Minimise
-            </button>
-          )}
-        </div>
-      )}
+      <div className="flex items-center justify-end gap-1.5">
+        {earlier.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setShowEarlier((open) => !open)}
+            aria-expanded={showEarlier}
+            aria-label={showEarlier ? 'Hide earlier agent activity' : 'Show earlier agent activity'}
+            className="pointer-events-auto rounded-full border border-[#C9974E]/40 bg-black/60 px-3 py-1
+                       text-[10px] uppercase tracking-wider text-[#E8D5B0] backdrop-blur transition hover:border-[#C9974E]"
+          >
+            {showEarlier ? 'Hide earlier' : `${earlier.length} earlier`}
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() =>
+            setCleared({
+              throughId: latest.id,
+              spared: visible.filter((e) => e.status === 'running').map((e) => e.id),
+            })
+          }
+          aria-label="Clear agent activity"
+          className="pointer-events-auto rounded-full border border-white/20 bg-black/60 px-3 py-1
+                     text-[10px] uppercase tracking-wider text-white/70 backdrop-blur transition hover:border-white/50"
+        >
+          Clear
+        </button>
+      </div>
     </div>
   )
 }

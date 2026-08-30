@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 import AgentActivityRail from '../AgentActivityRail'
 import { RegisterTools } from '../RegisterTools'
 import { WebMcpRegistryProvider, useWebMcpRegistry } from '../WebMcpRegistry'
@@ -197,118 +197,6 @@ describe('the rail is a record, not a toast', () => {
   })
 })
 
-/**
- * Putting the record away.
- *
- * Over a full-bleed map the rail is peripheral chrome right up until there is a session's worth of
- * it. An agent following a generation calls `get_trip_progress` about every twenty seconds for the
- * length of a 60-180s run, and nothing here expires — these are receipts, not toasts — so the
- * column grows until it owns the corner of the map it was supposed to sit beside.
- *
- * The answer is a control that puts it away, never a timer that deletes it. Collapsing hides the
- * rail and keeps every entry, so expanding is not a recovery — it is the same record, whole.
- */
-describe('the rail can be put away', () => {
-  let api: ReturnType<typeof useWebMcpRegistry> | null = null
-  const Capture = () => { api = useWebMcpRegistry(); return null }
-
-  /** Mirrors the dock's wiring: the PARENT owns `collapsed`, the rail only asks to change it. */
-  function Collapsible({ run }: { run: (r: ReturnType<typeof useWebMcpRegistry>) => void }) {
-    const [collapsed, setCollapsed] = useState(false)
-    return (
-      <WebMcpRegistryProvider>
-        <Capture />
-        <Runner run={run} />
-        <AgentActivityRail collapsed={collapsed} onCollapsedChange={setCollapsed} />
-      </WebMcpRegistryProvider>
-    )
-  }
-
-  const collapsible = (run: (r: ReturnType<typeof useWebMcpRegistry>) => void) =>
-    render(<Collapsible run={run} />)
-
-  beforeEach(() => { api = null })
-
-  it('collapses to one pill that still says an agent is attached to this page', async () => {
-    collapsible((r) => {
-      const id = r.beginActivity('move_place')
-      r.endActivity(id, 'done', 'Moved "Senso-ji" to day 3.')
-    })
-    expect(await screen.findByText('MOVED')).toBeInTheDocument()
-    await userEvent.click(screen.getByRole('button', { name: /minimise/i }))
-
-    expect(screen.queryByText('MOVED')).not.toBeInTheDocument()
-    expect(screen.queryByText(/Senso-ji/)).not.toBeInTheDocument()
-    // Never to nothing. A judge who collapses the agent surface and cannot find it again has
-    // lost the one affordance this whole integration exists to show.
-    expect(screen.getByRole('button', { name: /show agent activity/i })).toBeInTheDocument()
-  })
-
-  it('gives the record back whole, not a fresh one', async () => {
-    collapsible((r) => { for (let i = 0; i < 4; i++) r.beginActivity('get_itinerary') })
-    expect(await screen.findAllByText('READING')).toHaveLength(1)
-    await userEvent.click(screen.getByRole('button', { name: /minimise/i }))
-    await userEvent.click(screen.getByRole('button', { name: /show agent activity/i }))
-
-    expect(screen.getAllByText('READING')).toHaveLength(1)
-    await userEvent.click(screen.getByRole('button', { name: /earlier/i }))
-    expect(screen.getAllByText('READING')).toHaveLength(4)   // all four survived the collapse
-  })
-
-  it('counts what arrived while it was away instead of opening itself over the map', async () => {
-    collapsible((r) => { r.beginActivity('get_itinerary') })
-    await screen.findByText('READING')
-    await userEvent.click(screen.getByRole('button', { name: /minimise/i }))
-
-    await act(async () => { api!.beginActivity('get_itinerary'); api!.beginActivity('get_map_view') })
-
-    // Auto-expanding would undo the collapse every twenty seconds for the length of a run.
-    expect(screen.queryByText('READING')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /show agent activity, 2 new/i })).toBeInTheDocument()
-  })
-
-  it('says when one of those was a change, because a count flattens the difference', async () => {
-    collapsible((r) => { r.beginActivity('get_itinerary') })
-    await screen.findByText('READING')
-    await userEvent.click(screen.getByRole('button', { name: /minimise/i }))
-
-    await act(async () => { api!.beginActivity('get_map_view'); api!.beginActivity('save_reels') })
-
-    // The distinction is in the ACCESSIBLE NAME, not only in the colour of the dot: a screen
-    // reader user is exactly the user who cannot see that something was written.
-    expect(
-      screen.getByRole('button', { name: /show agent activity, 2 new, including a change/i }),
-    ).toBeInTheDocument()
-  })
-
-  it('counts nothing when nothing has happened since the collapse', async () => {
-    collapsible((r) => { r.beginActivity('get_itinerary') })
-    await screen.findByText('READING')
-    await userEvent.click(screen.getByRole('button', { name: /minimise/i }))
-
-    const pill = screen.getByRole('button', { name: /show agent activity/i })
-    expect(pill).toHaveAccessibleName('Show agent activity')
-    expect(pill.textContent).not.toMatch(/\d/)
-  })
-
-  it('draws no minimise control where the parent cannot honour one', async () => {
-    withRail((r) => { r.beginActivity('get_itinerary') })
-    await screen.findByText('READING')
-    // Same reason the rail has no undo button: a control the app cannot act on must not exist.
-    expect(screen.queryByRole('button', { name: /minimise/i })).toBeNull()
-  })
-
-  it('ignores a collapsed flag it was given no way to reverse', async () => {
-    render(
-      <WebMcpRegistryProvider>
-        <Runner run={(r) => { r.beginActivity('get_itinerary') }} />
-        <AgentActivityRail collapsed />
-      </WebMcpRegistryProvider>,
-    )
-    // A pill with no handler behind it would be a one-way door onto the record.
-    expect(await screen.findByText('READING')).toBeInTheDocument()
-  })
-})
 
 /**
  * Clearing, the way you clear a notification tray.
@@ -327,18 +215,14 @@ describe('the rail can be cleared', () => {
   let api: ReturnType<typeof useWebMcpRegistry> | null = null
   const Capture = () => { api = useWebMcpRegistry(); return null }
 
-  function Clearable({ run }: { run: (r: ReturnType<typeof useWebMcpRegistry>) => void }) {
-    const [collapsed, setCollapsed] = useState(false)
-    return (
+  const clearable = (run: (r: ReturnType<typeof useWebMcpRegistry>) => void) =>
+    render(
       <WebMcpRegistryProvider>
         <Capture />
         <Runner run={run} />
-        <AgentActivityRail collapsed={collapsed} onCollapsedChange={setCollapsed} />
-      </WebMcpRegistryProvider>
+        <AgentActivityRail />
+      </WebMcpRegistryProvider>,
     )
-  }
-  const clearable = (run: (r: ReturnType<typeof useWebMcpRegistry>) => void) =>
-    render(<Clearable run={run} />)
 
   beforeEach(() => { api = null })
 
@@ -401,26 +285,4 @@ describe('the rail can be cleared', () => {
     expect(await screen.findByText('SAVING')).toBeInTheDocument()
   })
 
-  it('counts a post-clear action as unread while minimised', async () => {
-    clearable((r) => {
-      r.endActivity(r.beginActivity('get_itinerary'), 'done', 'read the page')
-      r.beginActivity('get_trip_progress')
-    })
-    await screen.findByText('WATCHING')
-    await userEvent.click(screen.getByRole('button', { name: /clear agent activity/i }))
-    await userEvent.click(screen.getByRole('button', { name: /minimise/i }))
-
-    await act(async () => { api!.beginActivity('save_reels') })
-    // The cleared read must not be counted; the new write must.
-    expect(
-      screen.getByRole('button', { name: /show agent activity, 1 new, including a change/i }),
-    ).toBeInTheDocument()
-  })
-
-  it('offers no clear where the rail is only a passenger', async () => {
-    withRail((r) => { r.beginActivity('get_itinerary') })
-    await screen.findByText('READING')
-    // Same rule as minimise: the standalone rail draws no control its parent never wired up.
-    expect(screen.queryByRole('button', { name: /clear agent activity/i })).toBeNull()
-  })
 })

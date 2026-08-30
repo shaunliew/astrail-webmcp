@@ -1,11 +1,12 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { usePathname } from 'next/navigation'
 
 import AgentActivityRail from './AgentActivityRail'
 import ExamplePrompts from './ExamplePrompts'
 import WebMcpStatus from './WebMcpStatus'
+import { useOptionalWebMcpRegistry, type ActivityEntry } from './WebMcpRegistry'
 
 /**
  * One dock, not three floating boxes.
@@ -56,6 +57,69 @@ export function isCanvasRoute(pathname: string): boolean {
  */
 const COLLAPSED_KEY = 'astrail:webmcp:dock-collapsed'
 
+/** Stable identity, so an absent registry does not re-run the effects below every render. */
+const NO_ACTIVITY: readonly ActivityEntry[] = []
+
+/**
+ * The dock folded away: one line, and never nothing.
+ *
+ * This is the DOCK's control, not the rail's. It lived on the rail, which renders nothing until a
+ * tool has actually run — so the state a judge arrives in, a first visit with no agent activity,
+ * had the prompts panel over the map and no fold anywhere to be found. The only escape was that
+ * panel's own ✕, which dismisses the examples for good. "Not right now" is a far better thing to
+ * offer someone than "never show me this again", and it has to exist before the agent acts.
+ *
+ * Folded is never nothing. The dock is the only place this app says out loud that an agent is
+ * attached to the page, so a control that could hide it completely would let someone lose the
+ * affordance the whole integration exists to show. Every showcase app keeps a small persistent
+ * indicator (docs/webmcp/SHOWCASE-PATTERNS.md), and this is ours.
+ *
+ * The count is deliberately quiet rather than self-opening. An agent following a generation calls
+ * `get_trip_progress` about every twenty seconds, so expanding on each arriving entry would
+ * re-cover the map three times a minute — it would undo the fold the user just asked for, which
+ * is not a control, it is a control that argues back.
+ *
+ * It does carry the one distinction the rail already draws: a write is not a read. And it carries
+ * it in the ACCESSIBLE NAME, not only in the colour of the dot, because the person who cannot see
+ * the dot is exactly the person who otherwise has no way to tell the two apart.
+ */
+function FoldedPill({
+  unread,
+  hasChange,
+  onExpand,
+}: {
+  unread: number
+  hasChange: boolean
+  onExpand: () => void
+}) {
+  const label =
+    unread === 0
+      ? 'Show agent activity'
+      : hasChange
+        ? `Show agent activity, ${unread} new, including a change`
+        : `Show agent activity, ${unread} new`
+
+  return (
+    <button
+      type="button"
+      onClick={onExpand}
+      aria-expanded={false}
+      aria-label={label}
+      className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-[#C9974E]/40 bg-black/70 px-3 py-1
+                 text-[10px] uppercase tracking-wider text-[#E8D5B0] backdrop-blur transition hover:border-[#C9974E]"
+    >
+      <span
+        aria-hidden
+        className={[
+          'inline-block h-1.5 w-1.5 shrink-0 rounded-full',
+          hasChange ? 'bg-[#C9974E]' : unread > 0 ? 'bg-white/50' : 'bg-[#C9974E]/40',
+        ].join(' ')}
+      />
+      Agent{unread > 0 ? ` · ${unread}` : ''}
+    </button>
+  )
+}
+
 export default function WebMcpDock() {
   // Lifted here because the two panels are alternatives, not companions: on a 375px screen they
   // together fill the entire viewport and bury the map the agent is supposed to be driving.
@@ -71,7 +135,40 @@ export default function WebMcpDock() {
    * mount, so this effect has always landed before there is anything for it to hide.
    */
   const [collapsed, setCollapsed] = useState(false)
+  /** The newest entry the user had already seen when the dock was folded. Null while open. */
+  const [seenThroughId, setSeenThroughId] = useState<number | null>(null)
+  const latestIdRef = useRef(0)
   const overCanvas = isCanvasRoute(usePathname() ?? '/app')
+
+  const registry = useOptionalWebMcpRegistry()
+  const activity = registry?.activity ?? NO_ACTIVITY
+  const latestId = activity.length ? activity[activity.length - 1].id : 0
+
+  /**
+   * Whether there is anything under the fold worth folding.
+   *
+   * Over a canvas the prompts panel is the thing, and it is there from the first paint — which is
+   * the whole reason this moved off the rail. On a document route 99c1384 already dropped that
+   * panel, so the rail is all there is, and a fold control over a scrolling content column that
+   * folds away nothing is exactly the noise that fix existed to remove. Without an agent in the
+   * browser neither panel renders at all.
+   *
+   * Imprecise in one direction, deliberately: a user who has permanently dismissed the prompts
+   * panel still sees the control over a canvas with no activity. Pressing it then is not a dead
+   * control — it pre-commits the dock to folded, so the first thing the agent does arrives as a
+   * count rather than as a panel over the map.
+   */
+  const foldable = (registry?.supported ?? false) && (overCanvas || activity.length > 0)
+
+  useEffect(() => {
+    latestIdRef.current = latestId
+  }, [latestId])
+
+  useEffect(() => {
+    // Read through the ref and depend on the FOLD alone. Depending on `activity` would re-arm the
+    // marker every time an entry arrived, which is indistinguishable from never counting one.
+    setSeenThroughId(collapsed ? latestIdRef.current : null)
+  }, [collapsed])
 
   useEffect(() => {
     // Private windows throw on the read. Remembering a preference is not worth a blank corner,
@@ -92,6 +189,11 @@ export default function WebMcpDock() {
     } catch { /* the collapse still holds for this session, it just will not outlive it */ }
   }, [])
 
+  // Ids are monotonic in the registry, so "arrived since the fold" is exact rather than a
+  // timestamp comparison a clock change could get wrong. Cleared entries need no special case:
+  // a clear is only reachable while unfolded, and the marker is taken at or above its watermark.
+  const unread = seenThroughId === null ? NO_ACTIVITY : activity.filter((e) => e.id > seenThroughId)
+
   return (
     <div
       className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex flex-col items-end gap-2 p-4
@@ -110,7 +212,30 @@ export default function WebMcpDock() {
           route split above, and expanding on a document route brings back exactly what was
           there: the rail, capped, and no prompts panel. */}
       {overCanvas && !toolsOpen && !collapsed && <ExamplePrompts />}
-      <AgentActivityRail compact={!overCanvas} collapsed={collapsed} onCollapsedChange={changeCollapsed} />
+      {!collapsed && <AgentActivityRail compact={!overCanvas} />}
+      {foldable &&
+        (collapsed ? (
+          /* Folded, the rail is unmounted and the live region it carries goes with it, so the
+             count is the only thing left that can tell a screen reader an agent just acted. */
+          <div aria-live="polite" aria-label="Agent activity" className="pointer-events-none">
+            <FoldedPill
+              unread={unread.length}
+              hasChange={unread.some((e) => e.changes)}
+              onExpand={() => changeCollapsed(false)}
+            />
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => changeCollapsed(true)}
+            aria-expanded
+            aria-label="Minimise agent activity"
+            className="pointer-events-auto rounded-full border border-[#C9974E]/40 bg-black/60 px-3 py-1
+                       text-[10px] uppercase tracking-wider text-[#E8D5B0] backdrop-blur transition hover:border-[#C9974E]"
+          >
+            Minimise
+          </button>
+        ))}
       <WebMcpStatus open={toolsOpen} onOpenChange={setToolsOpen} />
     </div>
   )

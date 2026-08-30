@@ -933,3 +933,63 @@ one wording overreach in my own ARCHITECTURE.md, fixed in `d2f23fe`). **Frontend
 2 MEDIUM, 1 LOW.** The LOW was mine and is closed (`2ee4e0c` — the same dead hover utility was
 still on `HotelPanel`, missed because I fixed the itinerary and never grepped for the pattern).
 
+### Task 1–3 · `auto-replan` · round-5 fixes → `1976cce` · PASS
+
+All three landed in one commit (7 files). Verified independently rather than on the report:
+
+**The bound.** `clearTimeout` now sits in a `finally` wrapping the fetch AND both body reads.
+I re-injected the original bug (clear the timer the moment the fetch resolves) and ran
+`lib/trip/__tests__/api-errors.test.ts`:
+
+```
+× replanTrip is bounded > gives up when the headers arrive and the body stalls   5016ms → timed out
+× replanTrip is bounded > gives up when it is the ERROR body that stalls         5093ms → timed out
+Tests  2 failed | 10 passed (12)
+```
+
+Both distinguishing tests redden under the old code, which the previous never-returns-headers
+test could not do. Restored by **inverse edit, not `git checkout`** — `git status` byte-identical
+after.
+
+**The message.** Confirmed `_refresh_trip_routes` runs before `persist_narration`
+(`backend/main.py:865`), so "the trip itself is unchanged" was false and the routes are already
+written on timeout. New text says the rewrite may still be finishing server-side and to re-read
+rather than start another — because an immediate retry can finish first and let the older
+narration land last.
+
+**The marker.** `ActivityEntry` gained an optional `subject`; `runReplan` names the trip,
+`RegisterTools` deliberately does not (its entry opens before `execute` and spans the approval
+card), `TripWorkspace` matches `subject === tripId`. One predicate answers both false-positive
+cases: nothing during an unanswered card, nothing for another trip's rewrite.
+
+**Two overclaims corrected, not fixed** (per instruction — server-owned versioning is out of
+scope): `covers` now says "as far as THIS TAB can know", and "exactly one run per trip" is now
+"at most one FROM THIS TAB", naming both escapes.
+
+Their 9 injections all red, including one they caught as decorative on the exact point the fix
+turns on and strengthened before reporting.
+
+### Task 4 · gates · PASS
+
+```
+frontend  npx vitest run     → 122 files / 1645 tests passed        exit 0
+frontend  npx tsc --noEmit   → clean                                 exit 0
+backend   uv run pytest -q   → 2047 passed, 13 skipped               exit 0
+```
+
+Tree clean. `feat/webmcp` at `1976cce`. Still nothing pushed.
+
+### Task 5 · Codex round 6 · dispatched, both panes in parallel
+
+`reviewer` — narrow pass on `1976cce` only: is the bound now complete (anything still outside
+the `finally`), is `signal.aborted` the right abort test given `editErrorMessage` swallows its
+own read failures, does the `subject` reach the queued follow-up (losing it there would clear
+the marker while a rewrite is genuinely running — the inverse bug, and worse because it
+under-reports), and which `beginActivity` call sites now pass `undefined`.
+
+`checker` — **submission-claims audit**, not code. The rules let judges score from the repo
+alone and explicitly penalise overstating what runs, so a false sentence in `README.md` is a
+scored defect. Auditing README, `WHATS-NEW.md` (an eligibility item), landing/demo copy, and
+any doc implying every agent action is approved — `move_place` applies with **no card**, so
+that claim would be exactly the overstatement the rules punish.
+

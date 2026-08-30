@@ -532,9 +532,18 @@ export default function GlobalTools() {
       },
       confirm: requestConfirm,
       readLibrary: loadSavedReels,
+      /* `saveReel` — the CAPTURE half only, deliberately not `analyzeReels`.
+         Planning from raw links used to read this library and never write to it, so the reels
+         a trip was built from never appeared in the collection. Capture is a plain upsert that
+         also links the reel's `reel_cache` row by normalized_url, which is what puts the caption
+         and cover back on the card for a reel Astrail has already read.
+         Extraction stays out: an organize job racing the generation would miss the shared cache
+         on both sides and buy the same Apify scrape twice. Run after the trip lands — which is
+         what plan_trip_from_reels tells the agent to do — the same job is a cache hit. */
+      saveToLibrary: saveReel,
       readAllowance,
     }),
-    [requestConfirm, loadSavedReels, readAllowance, shell, showView],
+    [requestConfirm, loadSavedReels, saveReel, readAllowance, shell, showView],
   )
 
   const edit = useMemo(

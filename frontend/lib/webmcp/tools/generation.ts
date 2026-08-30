@@ -60,6 +60,30 @@ export type GenerationDeps = {
    */
   readLibrary?: () => Promise<{ url: string; hasCurrentCache: boolean }[]>
   /**
+   * Puts one already-validated reel URL in the user's library — the same capture the app's save
+   * button performs, and ONLY that half of it: it never queues extraction.
+   *
+   * Reading the library without ever writing to it was the reported defect. A trip planned from
+   * pasted links left the collection empty and the cards thumbnail-less, because the pipeline's
+   * work lands in `reel_cache` and the library reaches that table only through a `saved_reels`
+   * row — which nothing on this path created. The capture RPC links the two by normalized_url
+   * (`capture_saved_reel`, 20260718120000_saved_reels_foundation.sql), so a reel Astrail has
+   * already read arrives with its caption and cover attached.
+   *
+   * Extraction is left out ON PURPOSE, and that is the whole design. The organize job and the
+   * generation pipeline both scrape through Apify on a cache miss (backend/organizer.py
+   * `_process_item`, backend/pipeline/runner.py) and share one write-through cache keyed on
+   * normalized_url + EXTRACTOR_VERSION. Queuing extraction here would race the run this tool is
+   * about to start and pay Apify twice for the same reel. Left out, the pipeline's own scrape
+   * fills that cache and organizing these reels afterwards reuses it — no scrape, and no daily
+   * analysis slot either (the quota is reserved only on a cache MISS).
+   *
+   * Optional, and a failure is REPORTED rather than raised: the run is already under way by the
+   * time this is attempted, and a library write must never cost the user the trip they approved
+   * (guardrail #3).
+   */
+  saveToLibrary?: (url: string) => Promise<unknown>
+  /**
    * Whether this account can still spend a generation, checked BEFORE the approval card.
    *
    * The manual flow gates on the same fact and renders TrialExhaustedCard before anything is
@@ -119,6 +143,66 @@ function describeReuse(alreadyRead: number, total: number): string {
   }
   const verb = alreadyRead === 1 ? 'has' : 'have'
   return `${alreadyRead} of ${total} reels ${verb} already been read; the rest will be read now.`
+}
+
+/**
+ * What the card says about the library write, before the user agrees to it.
+ *
+ * Two facts, because leaving either out is a way of being wrong. That the reels are saved —
+ * approving "plan a trip" must not quietly also mean "and file these in my collection". And that
+ * their places are not saved with them: the card view only shows places for a Reel whose
+ * `analysis_status` is `organized`, which nothing on this path sets, so a user promised a full
+ * card would open the library and find the same emptiness this change exists to fix.
+ */
+function describeLibrarySave(total: number): string {
+  return total === 1
+    ? 'Saves this reel to your library — its places fill in when you organize it.'
+    : 'Saves these reels to your library — their places fill in when you organize them.'
+}
+
+/**
+ * Save every reel, and count what landed.
+ *
+ * `allSettled`, so one refused save neither hides the others nor escapes: the run this sits
+ * beside is already going, and there is nothing left to abort. The COUNT is what the caller
+ * reports — an agent told "saved" for a batch that half-failed sends the user to a library that
+ * does not match what they were told.
+ */
+async function saveReelsToLibrary(
+  save: NonNullable<GenerationDeps['saveToLibrary']>, urls: string[],
+): Promise<number> {
+  const settled = await Promise.allSettled(urls.map((u) => save(u)))
+  return settled.filter((r) => r.status === 'fulfilled').length
+}
+
+/**
+ * What the agent is told about the write, and — the expensive half — WHEN it may organize.
+ *
+ * The ordering clause is load-bearing, not politeness. `save_reels` starts an organize job, and
+ * an organize that overlaps this run misses the shared cache on both sides and buys the same
+ * Apify scrape twice. Run after the trip lands, the same job is a cache hit: no scrape, and no
+ * daily analysis slot (the quota is reserved only on a miss). So the note names the ordering
+ * rather than leaving the agent to pick one.
+ */
+function describeLibraryOutcome(saved: number, total: number): string {
+  const noun = total === 1 ? 'reel' : 'reels'
+  const ordering = `The places are not filled in yet. Organize the ${noun} AFTER the trip has ` +
+    'finished — save_reels on the same links then reuses what this run read, so it costs ' +
+    'nothing extra. Do not do it while the trip is still building: that reads them again.'
+  if (saved === 0) {
+    return total === 1
+      ? 'The reel could not be added to the library. The trip is unaffected — tell the user the ' +
+        'link was not saved and they can add it themselves.'
+      : 'None of the reels could be added to the library. The trip is unaffected — tell the user ' +
+        'the links were not saved and they can add them themselves.'
+  }
+  if (saved < total) {
+    return `Added ${saved} of ${total} reels to the library; the rest were refused, so tell the ` +
+      `user which links to add themselves. ${ordering}`
+  }
+  return total === 1
+    ? `The reel is now in the user's library. ${ordering}`
+    : `All ${total} reels are now in the user's library. ${ordering}`
 }
 
 /**
@@ -203,7 +287,7 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
   return {
     name: 'plan_trip_from_reels',
     description:
-      'Starts building a new trip from 1-5 Instagram Reel links — saving them first is optional, raw pasted links work. The user must approve it on the page first, because it spends their free trip allowance. Returns in about a second with a trip_id — the trip is NOT ready yet. Generation takes 60-180 seconds; then call get_trip_progress about every 20 seconds until status is complete or failed, and narrate each stage to the user. Never call this twice for the same request.',
+      'Starts building a new trip from 1-5 Instagram Reel links — saving them first is optional, raw pasted links work and are added to the library. The user must approve it on the page first, because it spends their free trip allowance. Returns in about a second with a trip_id — the trip is NOT ready yet. Generation takes 60-180s; then call get_trip_progress about every 20 seconds until status is complete or failed, and narrate each stage to the user. Never call this twice for the same request.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -222,6 +306,10 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
     execute: async (args) => {
       const rawUrls = Array.isArray(args.reel_urls) ? args.reel_urls : []
       const urls = rawUrls.map((u) => (typeof u === 'string' ? normalizeReelUrl(u) : null)).filter((u): u is string => !!u)
+      // The library is keyed on (user_id, normalized_url), so a link the agent mentioned twice is
+      // ONE row. Deduped only for the save — `urls` still goes to the pipeline as given, which is
+      // pre-existing behaviour this change has no business altering.
+      const distinctUrls = [...new Set(urls)]
       if (urls.length === 0) return 'No valid Instagram Reel URLs. Call list_saved_reels or ask the user for links.'
       if (urls.length > MAX_REELS) return `Too many reels — ${MAX_REELS} is the limit, got ${urls.length}.`
 
@@ -251,6 +339,7 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
         args.destination_hint ? `Destination: ${args.destination_hint}` : null,
         preferences ? `Preferences: "${preferences}"` : null,
         alreadyRead === null ? null : describeReuse(alreadyRead, urls.length),
+        deps.saveToLibrary ? describeLibrarySave(urls.length) : null,
         'This uses your trip allowance.',
       ].filter(Boolean).join('\n')
 
@@ -283,6 +372,16 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
       // See GenerationDeps.openStream — the tool must not report a run the page has not reached.
       await deps.openStream(tripId)
 
+      /* The library write, and it is LAST for two reasons.
+         After `create`, so every refusal above keeps saying "nothing was spent" about a library
+         that was genuinely not touched — a save is not a spend, but a user told nothing happened
+         should not find three new rows in their collection.
+         After `openStream`, so a slow capture delays nothing the user is waiting on: the wait
+         screen is already up, and these are plain DB inserts behind it. */
+      const savedCount = deps.saveToLibrary
+        ? await saveReelsToLibrary(deps.saveToLibrary, distinctUrls)
+        : null
+
       // `next_tool` + `poll_after_seconds` as STRUCTURED fields: agents follow those far more
       // reliably than the same instruction buried in prose.
       return JSON.stringify({
@@ -291,6 +390,10 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
         eta_seconds: 90,
         poll_after_seconds: 20,
         next_tool: 'get_trip_progress',
+        ...(savedCount === null ? {} : {
+          saved_to_library: savedCount,
+          library: describeLibraryOutcome(savedCount, distinctUrls.length),
+        }),
         note: 'Tell the user it has started and roughly how long it takes, then poll.',
       })
     },

@@ -4,6 +4,7 @@ import { ERROR_CODE_RATE_LIMITED, ERROR_CODE_TRIAL_EXHAUSTED } from '@/lib/trip/
 import { ApiError } from '@/lib/trip/api'
 import { createGenerationStore, readResultVerdict } from '../generation'
 import { getTripProgressTool, planTripFromReelsTool } from '../tools/generation'
+import { fitsBudget } from '../fit'
 
 /** A stream we drive by hand, so no EventSource and no real time is involved. */
 function harness() {
@@ -797,5 +798,136 @@ describe('plan_trip_from_reels — refused by the backend after the user approve
   it('still throws when the in-page run lock is already held', async () => {
     const d = deps({ create: vi.fn().mockRejectedValue(new Error('A trip is already being built.')) })
     await expect(run(d)).rejects.toThrow('already being built')
+  })
+})
+
+describe('plan_trip_from_reels — putting the reels in the user\'s library', () => {
+  const url = (code: string) => `https://www.instagram.com/reel/${code}/`
+
+  const deps = (over = {}) => ({
+    store: createGenerationStore(),
+    create: vi.fn().mockResolvedValue('trip-123'),
+    openStream: vi.fn(),
+    confirm: vi.fn().mockResolvedValue(true),
+    saveToLibrary: vi.fn().mockResolvedValue({ id: 'sr-1' }),
+    ...over,
+  })
+
+  const run = (d: ReturnType<typeof deps>, urls: string[] = [url('AAA')]) =>
+    planTripFromReelsTool(d).execute({
+      reel_urls: urls, start_date: '2026-03-03', end_date: '2026-03-07',
+    })
+
+  it('puts every reel it plans from into the library', async () => {
+    /* The reported defect: planning from raw links read the library (to price the card) and
+       never wrote to it, so a trip built from three reels left the user with an empty
+       collection and no thumbnails — the reels were in the pipeline's `reel_cache`, which the
+       library only reaches through a `saved_reels` row that nothing created. */
+    const d = deps()
+    await run(d, [url('AAA'), url('BBB')])
+    expect(d.saveToLibrary.mock.calls.map((c) => c[0])).toEqual([url('AAA'), url('BBB')])
+  })
+
+  it('saves the NORMALIZED url, so the library row joins the cache the run will fill', async () => {
+    // `reel_cache` and `saved_reels` are both keyed on normalized_url; a share link saved raw
+    // would sit beside its own cache row instead of linking to it.
+    const d = deps()
+    await run(d, ['https://instagram.com/reel/AAA/?igshid=xyz'])
+    expect(d.saveToLibrary).toHaveBeenCalledWith(url('AAA'))
+  })
+
+  it('saves a repeated link once, not once per mention', async () => {
+    const d = deps()
+    await run(d, [url('AAA'), 'instagram.com/reel/AAA'])
+    expect(d.saveToLibrary).toHaveBeenCalledTimes(1)
+  })
+
+  it('writes NOTHING before the user approves', async () => {
+    const d = deps({ confirm: vi.fn().mockResolvedValue(false) })
+    await run(d)
+    expect(d.saveToLibrary).not.toHaveBeenCalled()
+  })
+
+  it('writes nothing when the trial gate refuses before the card', async () => {
+    const d = deps({ readAllowance: vi.fn().mockResolvedValue('trial_exhausted') })
+    await run(d)
+    expect(d.saveToLibrary).not.toHaveBeenCalled()
+  })
+
+  it('writes nothing when the backend refuses the run the user approved', async () => {
+    // "No trip was created and nothing was spent" has to stay literally true, so the library
+    // write lives after `create` succeeds — a refused run leaves the library untouched.
+    const d = deps({
+      create: vi.fn().mockRejectedValue(new ApiError(
+        403, ERROR_CODE_TRIAL_EXHAUSTED, 'Your free trip is planned.',
+      )),
+    })
+    await run(d)
+    expect(d.saveToLibrary).not.toHaveBeenCalled()
+  })
+
+  it('does not cost the user their trip when the library write fails', async () => {
+    /* Guardrail #3. The generation is already running by the time this is attempted; a rejected
+       save must be reported, never raised. */
+    const d = deps({ saveToLibrary: vi.fn().mockRejectedValue(new Error('offline')) })
+    const out = String(await run(d, [url('AAA'), url('BBB')]))
+    const parsed = JSON.parse(out)
+    expect(parsed.trip_id).toBe('trip-123')
+    expect(d.openStream).toHaveBeenCalledWith('trip-123')
+    expect(parsed.saved_to_library).toBe(0)
+    expect(String(parsed.library)).toMatch(/not.*(saved|added)/i)
+  })
+
+  it('reports a partial save as partial, not as success', async () => {
+    const saveToLibrary = vi.fn()
+      .mockResolvedValueOnce({ id: 'sr-1' })
+      .mockRejectedValueOnce(new Error('rate limited'))
+    const d = deps({ saveToLibrary })
+    const parsed = JSON.parse(String(await run(d, [url('AAA'), url('BBB')])))
+    expect(parsed.saved_to_library).toBe(1)
+    expect(String(parsed.library)).toContain('1 of 2')
+  })
+
+  it('never starts extraction itself, and says when it is safe to', async () => {
+    /* The trap this design exists to avoid: the organize job and the generation pipeline BOTH
+       scrape through Apify on a cache miss (backend/organizer.py `_process_item`,
+       backend/pipeline/runner.py), and they share one write-through cache keyed on
+       normalized_url + EXTRACTOR_VERSION. Extracting here would race the run this call just
+       started and pay Apify twice for the same reel. Organizing AFTER it lands is a cache hit —
+       free — so that is the only ordering the agent is told to use. */
+    const d = deps()
+    const parsed = JSON.parse(String(await run(d)))
+    expect(String(parsed.library)).toMatch(/after/i)
+    expect(String(parsed.library)).toMatch(/not.*while|while.*building/i)
+  })
+
+  it('tells the user on the approval card that this writes to their library', async () => {
+    // Approving "plan a trip" must not quietly also mean "and file these in my collection".
+    const d = deps()
+    await run(d, [url('AAA'), url('BBB')])
+    expect(d.confirm.mock.calls[0][0]).toMatch(/librar/i)
+  })
+
+  it('does not promise the places will be there — they arrive with organizing', async () => {
+    const d = deps()
+    await run(d)
+    expect(d.confirm.mock.calls[0][0]).toMatch(/organi[sz]e/i)
+  })
+
+  it('stays inside the tool-output budget with the library line attached', async () => {
+    // The library sentence is the longest thing this tool has ever returned, and the
+    // spec-contract budget sweep cannot see it: `saveToLibrary` is optional, so the specs that
+    // sweep builds never carry one. Guarded here instead, at the full five reels.
+    const d = deps()
+    const out = String(await run(d, ['AAA', 'BBB', 'CCC', 'DDD', 'EEE'].map(url)))
+    expect(fitsBudget(out)).toBe(true)
+  })
+
+  it('says nothing about a library it cannot write to', async () => {
+    const d = deps({ saveToLibrary: undefined })
+    const parsed = JSON.parse(String(await run(d)))
+    expect(d.confirm.mock.calls[0][0]).not.toMatch(/librar/i)
+    expect(parsed).not.toHaveProperty('saved_to_library')
+    expect(parsed.trip_id).toBe('trip-123')
   })
 })

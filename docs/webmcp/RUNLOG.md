@@ -993,3 +993,66 @@ scored defect. Auditing README, `WHATS-NEW.md` (an eligibility item), landing/de
 any doc implying every agent action is approved — `move_place` applies with **no card**, so
 that claim would be exactly the overstatement the rules punish.
 
+### Task 5 · Codex round 6 · findings, dispatched not auto-fixed
+
+**`reviewer` on `1976cce`.** The bound is genuinely closed and the `subject` survives the
+follow-up handoff — the inverse bug I was most worried about (marker clearing while a rewrite
+is still running) does NOT exist: the follow-up recurses with the same `tripId` and `endActivity`
+preserves `subject` through the spread. The `beginActivity` seam is clean.
+
+**But we replaced one false message with another.** "The trip itself is unchanged" was removed
+for being false; "the routes were already refreshed" is false in the other direction — the
+network can stall before the request ever reaches FastAPI. Worse: on a **409** (the editability
+guard refusing BEFORE any route refresh) with a stalled error body, `editErrorMessage` correctly
+derives the 409 and the outer catch then throws that real refusal away for a guessed timeout.
+A named refusal is strictly more useful than an inferred one. The honest answer is uncertainty,
+not a different certainty.
+
+Also: the activity entry is created BEFORE `getAccessToken()`, not "at the moment the request
+goes out" as its comment says — a stalled Supabase auth lock shows "updating" forever with
+nothing in flight. Plus four unqualified trip-level claims the per-tab correction missed, one of
+them agent-facing in `replan_trip`'s description.
+
+All queued to `auto-replan` behind the `move_place` card work — same files, so one owner.
+
+### Task 6 · `move_place` gets an approval card · Shaun's decision, dispatched
+
+Shaun ruled while awake: since every change now triggers a replan, `move_place` can spend an LLM
+call with nothing on screen asking permission. The rule ("reversible gets undo, irreversible
+gets confirm") did not change — the tool's cost did. Gated the same way as the other four, with
+the exemption set still empty, its "applies straight away" description rewritten, and the
+anti-double-ask clause added.
+
+### Task 7 · Codex claims audit · 11 findings on the JUDGED SURFACE · dispatched to `claims-fix`
+
+The highest-value pass of the night, and not a code review. Judges may score from the repo alone
+and the rules penalise overstating what runs, so each of these is a scored defect:
+
+1. **"Evidence on every stop" is false** (README:5, :24, page.tsx:9, StoryStage:47, HowItWorks:41).
+   Three provenances exist; only reel-derived ones carry a caption quote. The honest version is
+   *stronger* — a provenance label on every stop is the thing no other entry has.
+2. **Landing promises live hotel search that is OFF** (landing-copy.ts:53, README:307, :312).
+   The app itself is honest here; the marketing copy is not.
+3. **"save_reels is the one paid action that does not ask"** — false twice: `add_place` can make
+   a paid Mapbox call after its card, and saved-but-unorganized reels ARE re-queued.
+4. SUBMISSION:97 "all five render a card" — may become true tonight via task 6; `replan_trip`
+   still skips the card when joining, and there is no undo control at all.
+5. SUBMISSION:142 + E2E:81 teach an obsolete "move then replan" flow a judge would follow into
+   looking like they broke it.
+6. SUBMISSION:21 claims tools know the selected day/stop. They do not.
+7. StoryStage:60 tells a visitor on `/` that "sixteen tools answer" — the root landing registers
+   NONE; `GlobalTools` mounts only under `/app`.
+8. README:82 omits `MAPBOX_SECRET_TOKEN` from real-generation credentials.
+9. SUBMISSION:118 "1222 tests" — stale (1645 / 2047). Replaced with the commands, not a new
+   number, so it cannot go stale again.
+10. **Judge-visible contradiction**: VIDEO-SCRIPT:13 and E2E:89 say generation was never run;
+    README:36 and SUBMISSION:153 claim live runs. Both half-right — generation HAS run live
+    locally (123.5 s measured) but never against a deployed judged URL, because none exists.
+11. **WHATS-NEW:97 stops at 29 Aug**, missing 30–31 Aug work. This is an ELIGIBILITY item.
+
+Confirmed accurate and left alone: the 13+3 tool counts, the six public demo tools, the demo
+route's read-only exact-path public access, and WHATS-NEW's hotel limitation.
+
+Left deliberately: README:86's deployment TODO and page.tsx:121's "Submission blocked" banner
+are HONEST — no deployment exists yet. Not inventing a URL.
+

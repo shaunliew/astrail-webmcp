@@ -196,19 +196,18 @@ export default function Sidebar() {
       {/* Account section */}
       <div className="flex flex-row gap-1 sm:flex-col sm:border-t sm:border-[color:var(--line-soft)] sm:pt-3">
         {/* Generations-left pill — advisory only (the atomic RPC is the enforcer). Desktop-only
-            like the recents; hidden entirely when the read fails rather than showing a guess. */}
-        {entitlement ? (
+            like the recents; hidden entirely when the read fails rather than showing a guess.
+            Trial plans only: a beta seat has no quota to report, so the whole <p> drops rather
+            than leaving an empty dashed box in the rail. */}
+        {entitlement?.plan === 'trial' ? (
           <p
             className={`hidden sm:block rounded-lg border border-dashed border-[color:var(--line-soft)] bg-[color:var(--surface-0)] px-2.5 py-1.5 text-[11px] sm:mb-1 ${
-              entitlement.plan === 'trial' &&
               TRIAL_LIFETIME_LIMIT - entitlement.lifetimeTripCount <= 0
                 ? 'text-[color:var(--brass-deep)]'
                 : 'text-[color:var(--text-muted)]'
             }`}
           >
-            {entitlement.plan === 'beta'
-              ? 'Beta · unlimited trips'
-              : `Free trial · ${Math.max(0, TRIAL_LIFETIME_LIMIT - entitlement.lifetimeTripCount)} of ${TRIAL_LIFETIME_LIMIT} trip generation${TRIAL_LIFETIME_LIMIT === 1 ? '' : 's'} left`}
+            {`Free trial · ${Math.max(0, TRIAL_LIFETIME_LIMIT - entitlement.lifetimeTripCount)} of ${TRIAL_LIFETIME_LIMIT} trip generation${TRIAL_LIFETIME_LIMIT === 1 ? '' : 's'} left`}
           </p>
         ) : null}
         {/* Beta feedback — opens the Tally feedback form (PdNreP) as a popup. Distinct

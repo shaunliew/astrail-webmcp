@@ -10,6 +10,7 @@ const envelope = (out: unknown) => JSON.parse(String(out)) as {
   result?: string
   outcome?: string
   summaries_stale?: boolean
+  summaries_rewriting?: boolean
   next_tool?: string
   note?: string
 }
@@ -19,12 +20,26 @@ const deps = (over: Partial<EditDeps> = {}): EditDeps => ({
   add: vi.fn().mockResolvedValue({}),
   setDates: vi.fn().mockResolvedValue({}),
   replan: vi.fn().mockResolvedValue({ days_narrated: 3, routes_refreshed: true }),
+  // The shell's answer when nothing is running — the state every test starts in unless it says
+  // otherwise. Never left undefined by default: `replanInFlight` is optional in the type, and an
+  // absent one means "ask", so a default of undefined would test the degraded path everywhere.
+  replanInFlight: vi.fn().mockReturnValue(false),
   move: vi.fn().mockResolvedValue({}),
   remove: vi.fn().mockResolvedValue({}),
   refresh: vi.fn().mockResolvedValue(TOKYO_TRIP),
   confirm: vi.fn().mockResolvedValue(true),
   ...over,
 })
+
+/**
+ * Let the background rewrite's continuations run before asserting on them.
+ *
+ * `startSummaryRewrite` deliberately does not await, so its `.then(refreshView)` lands in a
+ * microtask AFTER the tool has already resolved. A test that asserted straight off the tool's
+ * return value would be reading the world one tick too early — and would pass just as happily if
+ * the rewrite had never been started at all.
+ */
+const settle = () => new Promise((r) => setTimeout(r, 0))
 
 describe('move_place', () => {
   it('moves by pin number and reports where it came from', async () => {
@@ -253,11 +268,31 @@ describe('replan_trip', () => {
     expect(out).toContain('Routes recalculated')
   })
 
-  it('asks first, because rewriting spends the user credit', async () => {
+  it('asks first when it is the one starting the work', async () => {
     const d = deps()
     await replanTripTool(d).execute({})
     const summary = String((d.confirm as ReturnType<typeof vi.fn>).mock.calls[0][0])
-    expect(summary).toContain('uses your credit')
+    expect(summary).toContain('3 days will be re-described')
+  })
+
+  it('does not tell the user a rewrite costs them a trip', async () => {
+    /* `/trips/{id}/replan` (backend/main.py) carries @limiter.limit(BURST_LIMIT) and an
+       editable-trip check and nothing else — no quota reserve, no entitlement read, unlike
+       generate-trip. The card claimed "This uses your credit", and the agent repeated the
+       invented cost back at the user as a reason to decline the rewrite the trip needed. */
+    const d = deps()
+    await replanTripTool(d).execute({})
+    const summary = String((d.confirm as ReturnType<typeof vi.fn>).mock.calls[0][0])
+    expect(summary).not.toMatch(/uses your credit/i)
+    expect(summary).toContain('does not use a trip from your allowance')
+  })
+
+  it('does not describe itself to the agent as something to call after an edit', () => {
+    // Every edit starts one now. A description still saying "use this after adding, moving or
+    // removing stops" is an instruction to buy a second narration of the same trip.
+    const description = replanTripTool(deps()).description
+    expect(description).not.toMatch(/use this after adding/i)
+    expect(description).toMatch(/every edit already starts this/i)
   })
 
   it('rewrites NOTHING when the user declines', async () => {
@@ -288,32 +323,92 @@ describe('replan_trip', () => {
   })
 })
 
-describe('an edit leaves the summaries stale, and says so', () => {
-  // Reported from real use: the user asked the agent to add Osaka Castle, it was added, and the
-  // trip description and day plan still described the itinerary without it. `replan_trip` already
-  // did this job — nothing told the agent to call it at the moment it mattered. The narrator
-  // writes each day's prose FROM that day's ordered stop list (backend/genagents/narrator.py
-  // build_narrator_input), and no edit endpoint touches trip_days.summary, so any edit that
-  // changes which stops a day holds leaves prose describing a trip that no longer exists.
+/**
+ * Every change to a trip rewrites the prose that describes it, without being asked.
+ *
+ * Reported from real use, twice. First the incomplete version: a stop was added and the trip
+ * description still described the itinerary without it. That was answered by naming `replan_trip`
+ * in `next_tool` and leaving the call to the agent — which held up until the same thing happened
+ * after a REMOVE, and the reply was not incomplete but FALSE: Tokyo Tower was deleted and the day
+ * plan still read "the day continues with Harry Potter Cafe and ends at Tokyo Tower". The agent
+ * offered to fix it and then declined to, because the tool told it a rewrite "costs them credit".
+ *
+ * The prose is written FROM the stops and the dates — `persist_narration` builds the narrator's
+ * input from each day's ordered stop list plus its `day_date` (backend/genagents/narrator.py,
+ * build_narrator_input) — and no edit endpoint touches `trip_days.summary`. So the rule is now
+ * every mutation, not the three that move stops: correctness is not an opt-in the user has to
+ * know to ask for.
+ */
+describe('every edit rewrites the summaries itself', () => {
   const mutations: [string, (d: EditDeps) => Promise<unknown>][] = [
     ['add_place', (d) => Promise.resolve(addPlaceTool(d).execute({ name: 'Osaka Castle', day: 2 }))],
     ['move_place', (d) => Promise.resolve(movePlaceTool(d).execute({ place: '1', to_day: 3 }))],
     ['remove_place', (d) => Promise.resolve(removePlaceTool(d).execute({ place: '1' }))],
+    ['set_trip_dates', (d) => Promise.resolve(setTripDatesTool(d).execute({ start_date: '2026-09-14' }))],
   ]
 
-  it.each(mutations)('%s names replan_trip in a STRUCTURED field, not buried in prose', async (_name, run) => {
-    // `plan_trip_from_reels` established the pattern for exactly this reason: agents act on
-    // next_tool far more reliably than on the same instruction inside a sentence.
-    const out = envelope(await run(deps()))
-    expect(out.summaries_stale).toBe(true)
-    expect(out.next_tool).toBe('replan_trip')
-  })
-
-  it.each(mutations)('%s does NOT replan on its own — that spends the user credit', async (_name, run) => {
-    // replan_trip has its own approval card. Telling the agent is the fix; doing it is a bug.
+  it.each(mutations)('%s starts exactly one rewrite', async (_name, run) => {
     const d = deps()
     await run(d)
-    expect(d.replan).not.toHaveBeenCalled()
+    await settle()
+    expect(d.replan).toHaveBeenCalledTimes(1)
+    expect(d.replan).toHaveBeenCalledWith(TOKYO_TRIP.trip.id)
+  })
+
+  it.each(mutations)('%s says the rewrite is under way, in a STRUCTURED field', async (_name, run) => {
+    /* Both halves matter and they say different things. `summaries_stale` is what is true at the
+       instant the tool answers — the persisted prose does not match the trip — and dropping it
+       would be a nicer-sounding lie. `summaries_rewriting` is what stops the agent acting on it. */
+    const out = envelope(await run(deps()))
+    expect(out.summaries_stale).toBe(true)
+    expect(out.summaries_rewriting).toBe(true)
+  })
+
+  it.each(mutations)('%s never sends the agent to buy a second narration', async (_name, run) => {
+    // The agent spent this whole feature being told to call replan_trip after an edit, and
+    // follows `next_tool` far more reliably than the sentence telling it not to.
+    const out = envelope(await run(deps()))
+    expect(out.next_tool).toBeUndefined()
+    expect(String(out.note)).toContain('do not call replan_trip')
+  })
+
+  it.each(mutations)('%s does not wait for the rewrite before answering', async (_name, run) => {
+    /* The reason this is shape (b) and not (a). Narration is an LLM call — ~30s for two days in
+       the measured run — and an edit answers in about a second. A `replan` that never settles
+       must not hold the tool open; if it does, an agent making three edits in a row hangs for a
+       minute and a half. */
+    const d = deps({ replan: vi.fn().mockReturnValue(new Promise(() => {})) })
+    const out = envelope(await run(d))
+    expect(out.outcome).toBe('done')
+    expect(d.replan).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(mutations)('%s survives a rewrite that fails outright', async (_name, run) => {
+    /* Guardrail #3. The edit is already persisted; a failed narration must not turn a completed
+       removal into a failed one, and must not escape as an unhandled rejection either. The rail
+       is where the user is told (GlobalTools ends the entry FAILED before this rejects). */
+    const d = deps({ replan: vi.fn().mockRejectedValue(new Error('Itinerary narration could not be regenerated')) })
+    const out = envelope(await run(d))
+    await settle()
+    expect(out.outcome).toBe('done')
+    expect(out.result).not.toContain('could not be regenerated')
+  })
+
+  it.each(mutations)('%s puts the new wording on the page once the rewrite lands', async (_name, run) => {
+    /* The whole reason it is allowed to answer early: the map and stop list are already current
+       from the tool's own re-read, and the prose catches up on a second one. Held open on a
+       deferred so the two are actually separable — with an instantly-resolving replan both
+       re-reads land before the tool returns and the assertion proves nothing. */
+    let land: (v: { days_narrated: number; routes_refreshed: boolean }) => void = () => {}
+    const d = deps({ replan: vi.fn().mockReturnValue(new Promise((res) => { land = res })) })
+    const refresh = d.refresh as ReturnType<typeof vi.fn>
+
+    await run(d)
+    expect(refresh).toHaveBeenCalledTimes(1)   // the structural change, on screen, at once
+
+    land({ days_narrated: 3, routes_refreshed: true })
+    await settle()
+    expect(refresh).toHaveBeenCalledTimes(2)   // and the prose, when it exists
   })
 
   it.each(mutations)('%s stays inside the serialized output budget', async (_name, run) => {
@@ -322,7 +417,7 @@ describe('an edit leaves the summaries stale, and says so', () => {
   })
 
   it('keeps the renumbering warning the NEXT edit depends on', async () => {
-    // Stale pin numbers make the following edit hit the wrong stop. The replan hint is added
+    // Stale pin numbers make the following edit hit the wrong stop. The rewrite note is added
     // alongside this warning, never in place of it.
     const added = envelope(await addPlaceTool(deps()).execute({ name: 'Osaka Castle', day: 2 }))
     const removed = envelope(await removePlaceTool(deps()).execute({ place: '1' }))
@@ -331,38 +426,107 @@ describe('an edit leaves the summaries stale, and says so', () => {
   })
 })
 
-describe('set_trip_dates does not send the agent to replan_trip', () => {
+describe('set_trip_dates rewrites too, and still will not launder the forecast', () => {
   const NO_WEATHER = {
     ...TOKYO_TRIP,
     days: TOKYO_TRIP.days.map((d) => ({ ...d, weather_summary: null })),
   }
 
-  it('reports the summaries as intact, because the stops did not change', async () => {
-    // edit_trip_dates (backend/main.py) writes only trip_days.day_date and
-    // trips.start_date/end_date; it never touches a stop, a day_number, or a summary. The
-    // narrator writes each summary from that day's stop list, so the prose still holds and a
-    // replan here would spend the user credit rewriting text that was already correct.
+  it('rewrites, because the date is part of what the prose was written from', async () => {
+    /* edit_trip_dates (backend/main.py) writes only trip_days.day_date and
+       trips.start_date/end_date — it never touches a stop — which is why this tool used to report
+       the summaries as intact. But persist_narration feeds the narrator each day's DATE beside
+       its stops ("Day 2 (2026-08-28)"), so prose written for a late-August Saturday describes a
+       day the trip no longer has. Named explicitly in the request. */
     const d = deps({ refresh: vi.fn().mockResolvedValue(NO_WEATHER) })
     const out = envelope(await setTripDatesTool(d).execute({ start_date: '2026-09-14' }))
-    expect(out.summaries_stale).toBe(false)
-    expect(out.next_tool).toBeUndefined()
-    expect(d.replan).not.toHaveBeenCalled()
+    await settle()
+    expect(out.summaries_stale).toBe(true)
+    expect(out.summaries_rewriting).toBe(true)
+    expect(d.replan).toHaveBeenCalledTimes(1)
   })
 
   it('warns that the weather notes are the forecast for the OLD dates', async () => {
     // persist_weather runs only inside the generation pipeline (pipeline/runner.py), and
     // /trips/{id}/replan calls _refresh_trip_routes + persist_narration only. So nothing
-    // refreshes a forecast after the trip moves, and re-narrating would relaunder the stale
-    // one into fresh-looking prose. Say it instead.
+    // refreshes a forecast after the trip moves.
     const out = envelope(await setTripDatesTool(deps()).execute({ start_date: '2026-09-14' }))
     expect(String(out.note)).toContain('weather')
     expect(out.next_tool).toBeUndefined()
+  })
+
+  it('says the rewritten summaries were written from that stale forecast', async () => {
+    /* The cost of rewriting here, stated rather than hidden. persist_narration hands
+       `weather_summary` straight to the narrator, so the rewrite reads a forecast for the old
+       dates and can put it into freshly-written prose — where it no longer looks old. Nothing
+       reachable from this tool can refresh it, so the note is the only honest move left. */
+    const out = envelope(await setTripDatesTool(deps()).execute({ start_date: '2026-09-14' }))
+    expect(String(out.note)).toContain('the rewritten summaries are written from it')
   })
 
   it('says nothing about weather when the trip has none', async () => {
     const d = deps({ refresh: vi.fn().mockResolvedValue(NO_WEATHER) })
     const out = envelope(await setTripDatesTool(d).execute({ start_date: '2026-09-14' }))
     expect(String(out.note)).not.toContain('weather')
+  })
+})
+
+/**
+ * The agent calling `replan_trip` right after an edit must not buy a second narration.
+ *
+ * It will call it. It has been told to by `next_tool` for this tool's entire life, and a model
+ * does not unlearn that on the day a description changes — which is exactly why the defence is a
+ * property of the code rather than a sentence in a prompt. Coalescing lives in the shell
+ * (GlobalTools keys one in-flight rewrite per trip id); what this file owns is the two things the
+ * tool has to get right on top of it: joining rather than starting, and not asking for consent to
+ * work that is already running and cannot be called back.
+ */
+describe('replan_trip joins a rewrite an edit already started', () => {
+  const joining = (over: Partial<EditDeps> = {}) =>
+    deps({ replanInFlight: vi.fn().mockReturnValue(true), ...over })
+
+  it('does not raise an approval card for work already under way', async () => {
+    /* A card here offers a choice that does not exist: whatever the user answers, the rewrite is
+       running and the summaries change. Recording a "declined" over an outcome that happens
+       anyway is the same lie the outcome field exists to stop. */
+    const d = joining()
+    const out = envelope(await replanTripTool(d).execute({}))
+    expect(d.confirm).not.toHaveBeenCalled()
+    expect(out.outcome).toBe('done')
+  })
+
+  it('says it joined rather than claiming the user asked for it', async () => {
+    const out = envelope(await replanTripTool(joining()).execute({}))
+    expect(String(out.result)).toContain('already had running')
+    expect(String(out.result)).not.toContain('The user approved')
+  })
+
+  it('still calls replan exactly once — the shell hands back the running one', async () => {
+    const d = joining()
+    await replanTripTool(d).execute({})
+    expect(d.replan).toHaveBeenCalledTimes(1)
+  })
+
+  it('asks, as it always did, when nothing is running', async () => {
+    const d = deps()
+    const out = envelope(await replanTripTool(d).execute({}))
+    expect(d.confirm).toHaveBeenCalledTimes(1)
+    expect(String(out.result)).toContain('The user approved')
+  })
+
+  it('asks when the shell cannot say — an unknown must never skip consent', async () => {
+    // `replanInFlight` is optional on EditDeps. Absent means "no idea", and the safe reading of
+    // no idea is to ask; the alternative silently drops the card for every caller that has not
+    // wired it up yet.
+    const d = deps({ replanInFlight: undefined })
+    await replanTripTool(d).execute({})
+    expect(d.confirm).toHaveBeenCalledTimes(1)
+  })
+
+  it('reads the in-flight answer for the trip it is about to rewrite', async () => {
+    const d = joining()
+    await replanTripTool(d).execute({})
+    expect(d.replanInFlight).toHaveBeenCalledWith(TOKYO_TRIP.trip.id)
   })
 })
 

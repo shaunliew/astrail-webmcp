@@ -78,7 +78,12 @@ function movePlaceAgainstOpenTrip(mutators: Partial<EditDeps> = {}) {
       list: async () => [],
       load: async () => null,
     },
-    add: vi.fn(), setDates: vi.fn(), replan: vi.fn(), remove: vi.fn(),
+    add: vi.fn(), setDates: vi.fn(), remove: vi.fn(),
+    // Resolves rather than returning undefined: a completed move now starts the summary rewrite
+    // itself and chains off this promise, so a bare `vi.fn()` here is a stub that lies about the
+    // dep's own type. It is never asserted on in this file — TripTools' concern is the ref it
+    // publishes, not what the rewrite does with it.
+    replan: vi.fn(async () => ({ days_narrated: 0, routes_refreshed: true })),
     move: vi.fn(async () => ({})),
     refresh: async () => TOKYO_TRIP,
     confirm: vi.fn(async () => true),

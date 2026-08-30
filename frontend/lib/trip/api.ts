@@ -398,7 +398,15 @@ export async function editTripDates(
 
 export type ReplanTripResult = { days_narrated: number; routes_refreshed: boolean }
 
-/** Re-routes the trip and rewrites its day summaries. Costs an LLM call — never call it silently. */
+/**
+ * Re-routes the trip and rewrites its day summaries.
+ *
+ * Costs an LLM call and nothing from the user's trip allowance (`/trips/{id}/replan` has no quota
+ * reserve and no entitlement check, only the burst limiter). Every itinerary edit now starts one
+ * of these on its own, so it is no longer approval-gated on that path — but it must never be
+ * SILENT: go through `GlobalTools`, which coalesces one rewrite per trip and puts it on the
+ * activity rail, rather than calling this directly.
+ */
 export async function replanTrip(tripId: string, accessToken: string): Promise<ReplanTripResult> {
   const res = await fetch(`${BACKEND_URL}/trips/${tripId}/replan`, {
     method: 'POST',

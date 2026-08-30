@@ -781,3 +781,143 @@ describe('the trip route describes the trip it is actually showing', () => {
     expect(out).toMatch(/^Blocked: {4}nothing$/m)
   })
 })
+
+/**
+ * One rewrite per trip, and the user can see it happen.
+ *
+ * Every itinerary edit now starts a summary rewrite by itself (`startSummaryRewrite` in
+ * `lib/webmcp/tools/edit.ts`), which moves two obligations onto this component, both of them
+ * load-bearing rather than tidy:
+ *
+ *  - COALESCE. The agent has been told to call `replan_trip` after an edit for this feature's
+ *    whole life, and a model does not unlearn that on the day a tool description changes. Without
+ *    the in-flight map here, the obedient agent buys a second 30-second narration of the same
+ *    trip whose only effect is to overwrite the first one's prose.
+ *  - ANNOUNCE. It is an LLM call nobody approved. It costs nothing from the trip allowance
+ *    (`/trips/{id}/replan` has only the burst limiter), but work done on the user's behalf that
+ *    they cannot see is work they could not consent to — and the running rail entry is also the
+ *    "updating the plan" state that keeps a briefly-stale summary from being a silent one.
+ *
+ * These assertions drive the REAL specs GlobalTools builds, through the real registry, so the
+ * wiring is what is under test rather than a re-description of it.
+ */
+const { replanTrip: replanTripApi } = await import('@/lib/trip/api')
+const { getTrip: getTripApi } = await import('@/lib/trip/supabase-api')
+
+/** Whatever the rail is currently holding, captured from the real provider. */
+let railEntries: { tool: string; status: string; detail: string | null }[] = []
+
+function WatchRail() {
+  const { activity } = useWebMcpRegistry()
+  railEntries = activity
+  return null
+}
+
+/** A real trip page with a real open bundle, and the tools the agent would find on it. */
+async function editableTripPage(): Promise<Record<string, ToolSpec>> {
+  h.pathname = TRIP_PATH
+  h.listTrips.mockResolvedValue([tripRow('complete')])
+  h.listSavedReelCards.mockResolvedValue([])
+  render(
+    <WebMcpRegistryProvider>
+      <GlobalTools />
+      <PublishOpenTrip bundle={bundleFor(TRIP_ID, 'complete')} />
+      <AutoDecline />
+      <WatchRail />
+    </WebMcpRegistryProvider>,
+  )
+  await waitFor(() => { expect(h.specs.find((s) => s.name === 'move_place')).toBeTruthy() })
+  return Object.fromEntries(h.specs.map((s) => [s.name, s]))
+}
+
+describe('the summary rewrite an edit starts', () => {
+  beforeEach(() => {
+    railEntries = []
+    vi.mocked(getTripApi).mockResolvedValue(bundleFor(TRIP_ID, 'complete'))
+    vi.mocked(editTripPlace).mockResolvedValue(undefined as never)
+    vi.mocked(replanTripApi).mockReset()
+  })
+
+  it('runs once for two edits in a row, not once each', async () => {
+    /* The narration is the expensive half of an edit and it rewrites the WHOLE trip, so a second
+       one started while the first is still running is pure waste: it re-describes the same stops
+       and overwrites prose that was about to be correct. */
+    vi.mocked(replanTripApi).mockReturnValue(new Promise(() => {}))
+    const tools = await editableTripPage()
+
+    await act(async () => { await tools.move_place.execute({ place: '1', to_day: 3 }) })
+    await act(async () => { await tools.move_place.execute({ place: '2', to_day: 3 }) })
+
+    expect(replanTripApi).toHaveBeenCalledTimes(1)
+    expect(replanTripApi).toHaveBeenCalledWith(TRIP_ID, 'test-token')
+  })
+
+  it('is joined, not duplicated, when the agent calls replan_trip anyway', async () => {
+    // The agent has been trained by `next_tool` to do exactly this. It must cost nothing.
+    vi.mocked(replanTripApi).mockReturnValue(new Promise(() => {}))
+    const tools = await editableTripPage()
+
+    await act(async () => { await tools.move_place.execute({ place: '1', to_day: 3 }) })
+    await act(async () => { void tools.replan_trip.execute({}) })
+
+    await waitFor(() => { expect(railEntries.filter((e) => e.tool === 'replan_trip')).toHaveLength(1) })
+    expect(replanTripApi).toHaveBeenCalledTimes(1)
+    // And no card: the work is already running, so there is nothing left to approve or refuse.
+    expect(cardsShown).toHaveLength(0)
+  })
+
+  it('shows on the rail while it runs, so a stale summary is never a silent one', async () => {
+    vi.mocked(replanTripApi).mockReturnValue(new Promise(() => {}))
+    const tools = await editableTripPage()
+
+    await act(async () => { await tools.move_place.execute({ place: '1', to_day: 3 }) })
+
+    await waitFor(() => {
+      expect(railEntries.find((e) => e.tool === 'replan_trip')?.status).toBe('running')
+    })
+  })
+
+  it('records what it rewrote once it lands', async () => {
+    vi.mocked(replanTripApi).mockResolvedValue({ days_narrated: 3, routes_refreshed: true })
+    const tools = await editableTripPage()
+
+    await act(async () => { await tools.move_place.execute({ place: '1', to_day: 3 }) })
+
+    await waitFor(() => {
+      const entry = railEntries.find((e) => e.tool === 'replan_trip')
+      expect(entry?.status).toBe('done')
+      expect(entry?.detail).toContain('Rewrote 3 day summaries')
+    })
+  })
+
+  it('says the edit survived when the rewrite did not', async () => {
+    /* Guardrail #3. The move is already persisted; a rail entry reading only "REWRITE FAILED"
+       invites the user to believe their edit was rolled back with it. */
+    vi.mocked(replanTripApi).mockRejectedValue(new Error('Itinerary narration could not be regenerated'))
+    const tools = await editableTripPage()
+
+    let out: { outcome?: string } = {}
+    await act(async () => {
+      out = JSON.parse(String(await tools.move_place.execute({ place: '1', to_day: 3 })))
+    })
+    expect(out.outcome).toBe('done')
+
+    await waitFor(() => {
+      const entry = railEntries.find((e) => e.tool === 'replan_trip')
+      expect(entry?.status).toBe('failed')
+      expect(entry?.detail).toContain('The edit was saved')
+    })
+  })
+
+  it('lets the next edit start a fresh rewrite once the last one has settled', async () => {
+    // Coalescing must not become a permanent lock: a trip whose rewrite has finished is a trip
+    // whose next edit needs its own.
+    vi.mocked(replanTripApi).mockResolvedValue({ days_narrated: 3, routes_refreshed: true })
+    const tools = await editableTripPage()
+
+    await act(async () => { await tools.move_place.execute({ place: '1', to_day: 3 }) })
+    await waitFor(() => { expect(replanTripApi).toHaveBeenCalledTimes(1) })
+    await act(async () => { await tools.move_place.execute({ place: '2', to_day: 3 }) })
+    await waitFor(() => { expect(replanTripApi).toHaveBeenCalledTimes(2) })
+  })
+})

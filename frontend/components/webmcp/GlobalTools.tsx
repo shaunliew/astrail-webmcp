@@ -4,7 +4,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import type { Trip, TripBundle, TripStatus } from '@/lib/trip/backend-types'
 import { getTrip, listTrips } from '@/lib/trip/supabase-api'
-import { addTripPlace, deleteTripPlace, editTripDates, editTripPlace, generateTrip, replanTrip } from '@/lib/trip/api'
+import {
+  addTripPlace, deleteTripPlace, editTripDates, editTripPlace, generateTrip, replanTrip,
+  type ReplanTripResult,
+} from '@/lib/trip/api'
 import { ActiveOrganizeConflictError, captureSavedReel, listSavedReelCards, startOrganize } from '@/lib/reels/api'
 import {
   ORGANIZE_CONFLICT_MESSAGE, ORGANIZE_FAILED_MESSAGE, clearOrganizeFailureFor,
@@ -277,7 +280,8 @@ export default function GlobalTools() {
   const pathname = usePathname() ?? '/app'
   const router = useRouter()
   const hasSession = useHasSession(pathname)
-  const { requestConfirm, openTrip, refreshOpenTrip, refreshSavedReels } = useWebMcpRegistry()
+  const { requestConfirm, openTrip, refreshOpenTrip, refreshSavedReels, beginActivity, endActivity } =
+    useWebMcpRegistry()
   // The run belongs to the shell, not to this component. It must outlive any single tool call
   // (the stream runs 60-180s while `plan_trip_from_reels` returns in about a second) AND outlive
   // whichever page happens to be mounted, so the page can render the same run the agent narrates.
@@ -834,13 +838,82 @@ export default function GlobalTools() {
     [requestConfirm, loadSavedReels, saveReelForRun, readAllowance, shell, showView],
   )
 
+  /**
+   * The one summary rewrite a trip may have running, whoever asked for it.
+   *
+   * A ref rather than state: nothing renders from it, and a re-render must not drop it — the
+   * whole point is that a rewrite started by `remove_place` is still findable by the
+   * `replan_trip` the agent calls a beat later. Keyed by trip id, so two different trips are
+   * never confused for each other, and the entry is dropped the moment the call settles.
+   */
+  const rewrites = useRef<Map<string, Promise<ReplanTripResult>>>(new Map())
+
+  /**
+   * Rewrite the summaries once, and say so where the user can see it.
+   *
+   * Every itinerary edit now starts one of these (see `startSummaryRewrite` in
+   * `lib/webmcp/tools/edit.ts`), which makes both of these jobs load-bearing rather than tidy:
+   *
+   *  - COALESCE. The agent has spent this whole feature being told to call `replan_trip` after an
+   *    edit, and models do not unlearn that the day the tool description changes. Without this,
+   *    the obedient agent buys a second narration of the same trip — a second 30-second LLM call
+   *    whose only effect is to overwrite the first one's prose with more of its own.
+   *  - ANNOUNCE. This is an LLM call nobody approved. It costs no trip allowance, but work done
+   *    on the user's behalf that they cannot see is work they could not have consented to, and
+   *    the activity rail is this app's answer to that everywhere else. It also does double duty
+   *    as the "updating the plan" state: the entry sits at `REWRITE`, pulsing, for as long as the
+   *    narration runs, which is what stops a briefly-stale summary from being a silent one.
+   *
+   * It rejects on failure, and that is deliberate too: `replan_trip` reports what went wrong from
+   * the rejection, and guardrail #3 lives on the other side of it — the caller that started this
+   * in the background swallows the rejection so a failed rewrite can never fail the edit that
+   * already landed.
+   */
+  const runReplan = useCallback(async (tripId: string): Promise<ReplanTripResult> => {
+    const running = rewrites.current.get(tripId)
+    if (running) return running
+
+    const entry = beginActivity('replan_trip')
+    const run = (async () => {
+      try {
+        const result = await replanTrip(tripId, await getAccessToken())
+        const days = result.days_narrated
+        endActivity(
+          entry,
+          'done',
+          `Rewrote ${days} day summar${days === 1 ? 'y' : 'ies'} to match the current stops.` +
+            (result.routes_refreshed ? ' Routes recalculated.' : ' Routes could not be recalculated this time.'),
+        )
+        return result
+      } catch (e) {
+        /* Named as the thing that failed AND as the thing that did not: the edit is already
+           persisted, so a bare "failed" here reads as the edit having been rolled back. */
+        endActivity(
+          entry,
+          'failed',
+          `The edit was saved, but the day summaries could not be rewritten${
+            e instanceof Error ? ` — ${e.message}` : '.'
+          }`,
+        )
+        throw e
+      } finally {
+        rewrites.current.delete(tripId)
+      }
+    })()
+    /* Registered after the call is under way but before control leaves this function, so a
+       second caller in the same turn can only ever find it — never miss it and start its own. */
+    rewrites.current.set(tripId, run)
+    return run
+  }, [beginActivity, endActivity])
+
   const edit = useMemo(
     () => ({
       add: async (tripId: string, body: Parameters<typeof addTripPlace>[1]) =>
         addTripPlace(tripId, body, await getAccessToken()),
       setDates: async (tripId: string, body: Parameters<typeof editTripDates>[1]) =>
         editTripDates(tripId, body, await getAccessToken()),
-      replan: async (tripId: string) => replanTrip(tripId, await getAccessToken()),
+      replan: runReplan,
+      replanInFlight: (tripId: string) => rewrites.current.has(tripId),
       move: async (tripId: string, tpId: string, patch: { day_number?: number; sort_order?: number }) =>
         editTripPlace(tripId, tpId, patch, await getAccessToken()),
       remove: async (tripId: string, tpId: string) =>
@@ -857,7 +930,7 @@ export default function GlobalTools() {
       },
       confirm: requestConfirm,
     }),
-    [requestConfirm],
+    [requestConfirm, runReplan],
   )
 
   /* The saved-reel library, put on screen once a save has actually landed. `save_reels` decides

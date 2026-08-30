@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import type { StreamEvent, GenerationStage } from '@/lib/trip/backend-types'
+import { readResultVerdict } from '@/lib/webmcp/generation'
 import Astronaut from '@/components/mascot/Astronaut'
 
 // The canonical stage->English map (DESIGN.md §8) — AgentDecisionRail reuses it.
@@ -73,10 +74,29 @@ function useElapsedSeconds(running: boolean): number {
 }
 
 export default function GenerationProgress({ events }: { events: StreamEvent[] }) {
-  // Waiting is the only live state: once the result event lands, the trail stops flowing —
-  // a pulse on a finished run is motion telling a lie (DESIGN.md §5).
-  const done = events.some((e) => e.type === 'result')
-  const elapsed = useElapsedSeconds(!done)
+  /**
+   * Settled and SUCCEEDED are two different questions, and this screen used to ask only the first.
+   *
+   * A leased failure terminates the stream with a `result` frame like any other run — the payload
+   * carries `{error: …}` instead of `{itinerary: …}` (pipeline/runner.py → api/streaming.py). So
+   * `events.some(type === 'result')` was true on a failure too, and this screen printed "Your trip
+   * is ready" over it. Not hypothetically: the page's failure-recovery effect only returns the
+   * user to the brief AFTER paint, so a failed run flashed a success headline first — the worst
+   * frame this product can draw, on the one screen whose entire pitch is not inventing things.
+   *
+   * `readResultVerdict` is the single rule for this, deliberately reused rather than re-derived:
+   * it keys on the PRESENCE of the `error` key, so `{"error": null}` — a failure that lost its
+   * message — is still a failure, and a payload it cannot read is reported as neither.
+   */
+  const verdict = (() => {
+    const result = events.find((e): e is Extract<StreamEvent, { type: 'result' }> => e.type === 'result')
+    return result ? readResultVerdict(result.content) : null
+  })()
+  // The run is over whichever way it went, so the clock stops and the trail stops flowing. A
+  // pulse on a finished run is motion telling a lie (DESIGN.md §5) — and so is one on a dead run.
+  const settled = verdict !== null
+  const succeeded = verdict === 'success'
+  const elapsed = useElapsedSeconds(!settled)
 
   // The newest DISPATCHED stage — not the newest event, which is often a warning or a decision
   // about work that has already finished. `STAGE_LABEL` can miss for a stage a newer backend
@@ -84,7 +104,21 @@ export default function GenerationProgress({ events }: { events: StreamEvent[] }
   const currentStage = events.reduce<GenerationStage | null>(
     (latest, e) => (e.type === 'stage' ? e.stage : latest), null,
   )
-  const nowLine = done ? 'Trip ready — opening your trip…'
+  /**
+   * Three endings, three sentences. The middle one is the one that was missing.
+   *
+   * `unreadable` gets its own wording rather than being folded into failure, for the reason
+   * `readResultVerdict` keeps it separate: a payload we could not parse is not evidence the trip
+   * died, and telling someone their trip failed is how they end up paying to generate a trip they
+   * already have.
+   */
+  const heading = succeeded ? 'Your trip is ready'
+    : verdict === 'failed' ? 'Your trip didn’t finish'
+    : verdict === 'unreadable' ? 'This run has stopped'
+    : 'Building your trip'
+  const nowLine = succeeded ? 'Trip ready — opening your trip…'
+    : verdict === 'failed' ? 'Something went wrong — taking you back.'
+    : verdict === 'unreadable' ? 'Astrail could not read the final result — check your trips.'
     : currentStage ? STAGE_LABEL[currentStage] ?? 'Working on your trip'
     : 'Starting…'
 
@@ -100,11 +134,11 @@ export default function GenerationProgress({ events }: { events: StreamEvent[] }
         className="sticky top-0 z-10 flex flex-col gap-4 bg-[color:var(--surface-1)] pb-3"
       >
         <div className="flex items-center gap-3">
-          <Astronaut size={40} variant={done ? 'idle' : 'waiting'} />
+          <Astronaut size={40} variant={settled ? 'idle' : 'waiting'} />
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-wide text-[color:var(--text-muted)]">Building your trail</p>
             <h1 className="font-display text-[22px] font-medium leading-[1.18] tracking-[-0.015em]" style={{ fontVariationSettings: "'SOFT' 28, 'WONK' 1, 'opsz' 22" }}>
-              {done ? 'Your trip is ready' : 'Building your trip'}
+              {heading}
             </h1>
           </div>
         </div>
@@ -123,7 +157,7 @@ export default function GenerationProgress({ events }: { events: StreamEvent[] }
           <span
             aria-hidden
             data-testid="generation-live-dot"
-            className={`pulse-dot ${done ? 'pulse-dot--ok' : 'pulse-dot--live'}`}
+            className={`pulse-dot ${succeeded ? 'pulse-dot--ok' : verdict === 'failed' ? 'pulse-dot--fail' : verdict === 'unreadable' ? 'pulse-dot--warn' : 'pulse-dot--live'}`}
           />
           <span role="status" aria-live="polite" className="min-w-0 flex-1 truncate text-[13px] font-medium">
             {nowLine}
@@ -165,7 +199,7 @@ export default function GenerationProgress({ events }: { events: StreamEvent[] }
               <li key={i} className="flex items-start gap-2.5 py-1.5">
                 <span
                   aria-hidden
-                  className={`mt-1.5 h-2 w-2 flex-none rounded-full ${current && !done ? 'pulse-dot pulse-dot--live bg-[color:var(--brass-deep)]' : current ? 'pulse-dot bg-[color:var(--brass-deep)]' : 'bg-[color:var(--ink-900)]'}`}
+                  className={`mt-1.5 h-2 w-2 flex-none rounded-full ${current && !settled ? 'pulse-dot pulse-dot--live bg-[color:var(--brass-deep)]' : current ? 'pulse-dot bg-[color:var(--brass-deep)]' : 'bg-[color:var(--ink-900)]'}`}
                 />
                 <span className="min-w-0 flex-1">
                   <span className={`block text-[11px] font-semibold uppercase tracking-wide ${current ? 'text-[color:var(--brass-deep)]' : 'text-[color:var(--text-muted)]'}`}>

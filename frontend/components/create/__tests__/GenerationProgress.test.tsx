@@ -111,3 +111,70 @@ describe('the always-visible working state', () => {
     expect(screen.getByTestId('generation-now')).toHaveTextContent(/opening your trip/i)
   })
 })
+
+/**
+ * A failed run must never flash "Your trip is ready".
+ *
+ * A leased failure terminates the stream with a `result` frame like any other run — the payload
+ * carries `{error: …}` where a success carries `{itinerary: …}`. This screen asked only whether a
+ * `result` had arrived, so it drew the success headline on a dead run. The page does recover, but
+ * only after paint: the user sees the arrival first and the failure second.
+ *
+ * Keyed on `readResultVerdict`, which is deliberately the app's ONE rule for this — it tests for
+ * the PRESENCE of an `error` key, so a failure that lost its message is still a failure.
+ */
+describe('the ending it announces is the ending that happened', () => {
+  const withResult = (payload: unknown): StreamEvent[] => [
+    { type: 'stage', stage: 'narrate', msg: 'Writing your days…' },
+    { type: 'result', content: JSON.stringify(payload) },
+  ]
+
+  it('does not call a failed run ready', () => {
+    render(<GenerationProgress events={withResult({ error: 'lease lost' })} />)
+    expect(screen.queryByText(/your trip is ready/i)).toBeNull()
+    expect(screen.queryByText(/opening your trip/i)).toBeNull()
+    expect(screen.getByText(/didn.t finish/i)).toBeInTheDocument()
+  })
+
+  it('does not call a failure ready just because it lost its message', () => {
+    // `{"error": null}` is the frame a truthiness test read as a finished trip.
+    render(<GenerationProgress events={withResult({ error: null })} />)
+    expect(screen.queryByText(/your trip is ready/i)).toBeNull()
+    expect(screen.getByText(/didn.t finish/i)).toBeInTheDocument()
+  })
+
+  it('does not assert either outcome for a payload it could not read', () => {
+    // Telling someone their trip failed when it may not have is how they pay to generate a trip
+    // they already have. It says the run stopped, and points at the page.
+    render(<GenerationProgress events={[{ type: 'result', content: 'not json at all' }]} />)
+    expect(screen.queryByText(/your trip is ready/i)).toBeNull()
+    expect(screen.queryByText(/didn.t finish/i)).toBeNull()
+    expect(screen.getByText(/check your trips/i)).toBeInTheDocument()
+  })
+
+  it('still calls a real success ready', () => {
+    render(<GenerationProgress events={withResult({ itinerary: { days: [] } })} />)
+    expect(screen.getByText(/your trip is ready/i)).toBeInTheDocument()
+  })
+
+  it('stops the clock on a failure, not only on a success', () => {
+    // A run that is over is over whichever way it went. A clock still counting on a dead run is
+    // the same lie as a pulse on a finished one.
+    vi.useFakeTimers()
+    try {
+      render(<GenerationProgress events={withResult({ error: 'lease lost' })} />)
+      const before = screen.getByTestId('generation-elapsed').textContent
+      act(() => { vi.advanceTimersByTime(5_000) })
+      expect(screen.getByTestId('generation-elapsed').textContent).toBe(before)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not paint the finished dot on a failed run', () => {
+    render(<GenerationProgress events={withResult({ error: 'lease lost' })} />)
+    const dot = screen.getByTestId('generation-live-dot')
+    expect(dot.className).not.toContain('pulse-dot--ok')
+    expect(dot.className).not.toContain('pulse-dot--live')
+  })
+})

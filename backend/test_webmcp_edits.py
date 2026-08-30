@@ -5,6 +5,7 @@ constructs a live Supabase client or makes a network request.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import date
 from fnmatch import fnmatchcase
@@ -17,6 +18,7 @@ os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "service-role-key")
 
 import main  # noqa: E402
+from models.geocode import GeocodeResult  # noqa: E402
 from rate_limit import get_current_user_id_stashed, limiter  # noqa: E402
 
 
@@ -270,10 +272,80 @@ def _reset_app(monkeypatch):
     # Every route test stays keyless even after structural edits start refreshing routes.
     monkeypatch.setattr(main, "persist_transport", _transport_stub, raising=False)
     monkeypatch.setattr(main, "persist_narration", _narration_must_be_explicit, raising=False)
+    # add_place now geocodes an unknown name. Drop the token unconditionally so a developer's
+    # exported MAPBOX_SECRET_TOKEN can never turn an offline route test into a paid live call;
+    # the tests that exercise the lookup put a fake one back via `_stub_geocoder`.
+    monkeypatch.delenv("MAPBOX_SECRET_TOKEN", raising=False)
     limiter.reset()
     yield
     main.app.dependency_overrides.clear()
     limiter.reset()
+
+
+class _GeocodeSpy:
+    """Stands in for `geocode.mapbox_forward.strict_forward_geocode` — the ONLY paid call on the
+    add path. Records every invocation so a test can assert one happened with the trip's bias, or
+    that none happened at all (the local-reuse path must never cost money).
+
+    It RECORDS rather than raises on an unwanted call, deliberately. An `AssertionError` raised in
+    here is swallowed by `geocode_requested_place`'s catch-all (which exists so a provider blip
+    cannot fail the add), so a spy that policed itself by raising would report a clean pass while
+    the route spent money. The assertion has to live in the test body, against `spy.calls`.
+    """
+
+    def __init__(self, *, result=None, raises=None, sleep=None):
+        self.result = result
+        self.raises = raises
+        self.sleep = sleep
+        self.calls: list[dict] = []
+
+    async def __call__(self, query, **kwargs):
+        self.calls.append({"query": query, **kwargs})
+        if self.sleep is not None:
+            await asyncio.sleep(self.sleep)
+        if self.raises is not None:
+            raise self.raises
+        return self.result
+
+
+def _stub_geocoder(monkeypatch, **kwargs) -> _GeocodeSpy:
+    """Install the spy AND a fake token, so a test that asserts "no paid call" is asserting the
+    route's own gating rather than a missing credential."""
+    import geocode.mapbox_forward as mapbox_forward
+
+    spy = _GeocodeSpy(**kwargs)
+    monkeypatch.setattr(mapbox_forward, "strict_forward_geocode", spy)
+    monkeypatch.setenv("MAPBOX_SECRET_TOKEN", "sk.fake-test-token")
+    return spy
+
+
+def _geo(lat, lng, *, country_code="JP", country_name="Japan") -> GeocodeResult:
+    return GeocodeResult(lat=lat, lng=lng, country_code=country_code, country_name=country_name)
+
+
+def _seed_context_place(db, *, name, lat, lng, city, country, country_code) -> str:
+    """One stop already on the trip — the geographic context every geocode is biased by."""
+    place_id = "00000000-0000-0000-0000-000000000001"
+    db["places"] = [{
+        "id": place_id,
+        "name": name,
+        "aliases": [],
+        "lat": lat,
+        "lng": lng,
+        "city": city,
+        "country": country,
+        "country_code": country_code,
+    }]
+    db["trip_places"] = [_trip_place(_TARGET_ID, _TRIP_ID, 1, 0)]
+    db["trip_places"][0]["place_id"] = place_id
+    return place_id
+
+
+def _seed_osaka_places(db) -> str:
+    return _seed_context_place(
+        db, name="Osaka Castle", lat=34.6873, lng=135.5262,
+        city="Osaka", country="Japan", country_code="JP",
+    )
 
 
 @pytest.mark.parametrize("method", ["patch", "delete"])
@@ -596,6 +668,201 @@ async def test_add_place_reuses_trip_location_and_resequences_dense(monkeypatch)
     }
     assert [row["sort_order"] for row in sorted(db["trip_places"], key=lambda row: row["sort_order"])] == [0, 1, 2]
     assert next(row for row in db["trip_places"] if row["place_id"] == usj_place_id)["sort_order"] == 0
+
+
+
+async def test_add_place_geocodes_a_name_the_trip_does_not_yet_know(monkeypatch):
+    """The Tokyo Tower case: Astrail resolves the name itself instead of asking the agent."""
+    db: dict = {}
+    _seed_owned_trip(db)
+    _seed_osaka_places(db)
+    spy = _stub_geocoder(monkeypatch, result=_geo(34.6687, 135.5013))
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={"name": "Dotonbori", "day_number": 1},
+        )
+
+    assert response.status_code == 201
+    assert len(spy.calls) == 1
+    added = next(row for row in db["places"] if row["name"] == "Dotonbori")
+    assert (added["lat"], added["lng"]) == (34.6687, 135.5013)
+    # The provider's country is persisted, which is what lets the NEXT add of this name reuse
+    # the row for free instead of paying Mapbox again.
+    assert added["country_code"] == "JP"
+    assert added["country"] == "Japan"
+    assert added["country_name"] == "Japan"
+    assert db["trip_places"][-1]["place_id"] == added["id"]
+
+
+async def test_add_place_biases_the_geocode_with_the_trip_context(monkeypatch):
+    db: dict = {}
+    _seed_owned_trip(db)
+    _seed_osaka_places(db)
+    spy = _stub_geocoder(monkeypatch, result=_geo(34.6687, 135.5013))
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={"name": "Chinatown", "day_number": 1},
+        )
+
+    assert response.status_code == 201
+    call = spy.calls[0]
+    assert call["query"] == "Chinatown"
+    assert call["token"] == "sk.fake-test-token"
+    assert call["country"] == "jp"                        # the trip's only country
+    assert call["proximity_lng_lat"] == (135.5262, 34.6873)   # (lng, lat) — Osaka Castle
+    assert call["language"] == "en"
+
+
+async def test_add_place_local_match_never_makes_a_paid_geocode(monkeypatch):
+    """The money regression: a name the trip already knows must cost nothing."""
+    db: dict = {}
+    _seed_owned_trip(db)
+    _seed_osaka_places(db)
+    usj_place_id = "00000000-0000-0000-0000-000000000002"
+    db["places"].append({
+        "id": usj_place_id,
+        "name": "Universal Studios Japan",
+        "aliases": ["USJ"],
+        "lat": 34.6654,
+        "lng": 135.4323,
+        "city": "Osaka",
+        "country": "Japan",
+        "country_code": "JP",
+    })
+    spy = _stub_geocoder(monkeypatch, result=_geo(0.0, 0.0))
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={"name": "universal studios japan", "day_number": 1},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["trip_place"]["place_id"] == usj_place_id
+    assert spy.calls == []          # $0.005 that must never be spent on a name we already have
+
+
+async def test_add_place_explicit_coordinates_never_make_a_paid_geocode(monkeypatch):
+    """The escape hatch stays open, and stays free."""
+    db: dict = {}
+    _seed_owned_trip(db)
+    _seed_osaka_places(db)
+    spy = _stub_geocoder(monkeypatch, result=_geo(0.0, 0.0))
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={"name": "A place Mapbox has never heard of", "day_number": 1,
+                  "lat": 34.6654, "lng": 135.4323},
+        )
+
+    assert response.status_code == 201
+    added = next(row for row in db["places"] if row["name"] == "A place Mapbox has never heard of")
+    assert (added["lat"], added["lng"]) == (34.6654, 135.4323)
+    assert spy.calls == []
+    # Not even the trip's geographic context was read: the whole resolution path was skipped.
+    assert not any(call["table"] == "trip_places" and call["select"] == "place_id"
+                   for call in client.fake_supabase.calls)
+
+
+async def test_add_place_still_asks_when_the_geocoder_misses(monkeypatch):
+    db: dict = {}
+    _seed_owned_trip(db)
+    _seed_osaka_places(db)
+    spy = _stub_geocoder(monkeypatch, result=None)
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={"name": "Zzzzz Unfindable", "day_number": 1},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+    assert "supply both lat and lng" in response.json()["error"]["message"].lower()
+    assert len(spy.calls) == 1
+    assert len(db["trip_places"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("case", "result"),
+    [
+        # Right name, wrong country: Universal Studios Singapore on an Osaka trip.
+        ("another_country", _geo(1.2540, 103.8238, country_code="SG", country_name="Singapore")),
+        # Right country, ~1,000 km from every stop the trip has.
+        ("far_from_the_trip", _geo(43.0621, 141.3544)),
+    ],
+)
+async def test_add_place_refuses_to_pin_a_low_confidence_geocode(monkeypatch, case, result):
+    db: dict = {}
+    _seed_owned_trip(db)
+    _seed_osaka_places(db)
+    _stub_geocoder(monkeypatch, result=result)
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={"name": "Universal Studios", "day_number": 1},
+        )
+
+    assert response.status_code == 422, case
+    assert response.json()["error"]["code"] == "validation_error"
+    assert [row["name"] for row in db["places"]] == ["Osaka Castle"]
+    assert len(db["trip_places"]) == 1
+
+
+async def test_add_place_refuses_a_cross_border_geocode_the_distance_gate_would_allow(monkeypatch):
+    """Proves the country gate carries its own weight at the route level.
+
+    Singapore trip, a Johor Bahru hit ~25 km away: comfortably inside the distance bound, so the
+    only thing that can stop it being pinned in the wrong country is the country check.
+    """
+    db: dict = {}
+    _seed_owned_trip(db)
+    _seed_context_place(
+        db, name="Gardens by the Bay", lat=1.2897, lng=103.8501,
+        city="Singapore", country="Singapore", country_code="SG",
+    )
+    _stub_geocoder(
+        monkeypatch,
+        result=_geo(1.4927, 103.7414, country_code="MY", country_name="Malaysia"),
+    )
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={"name": "City Square Mall", "day_number": 1},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+    assert [row["name"] for row in db["places"]] == ["Gardens by the Bay"]
+    assert len(db["trip_places"]) == 1
+
+
+async def test_add_place_falls_back_to_asking_when_the_geocoder_hangs(monkeypatch):
+    import geocode.requested_place as requested_place
+
+    monkeypatch.setattr(requested_place, "GEOCODE_TIMEOUT_S", 0.02)
+    monkeypatch.setattr(requested_place, "GEOCODE_DEADLINE_SLACK_S", 0.03)
+    db: dict = {}
+    _seed_owned_trip(db)
+    _seed_osaka_places(db)
+    _stub_geocoder(monkeypatch, result=_geo(34.6687, 135.5013), sleep=30)
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={"name": "Dotonbori", "day_number": 1},
+        )
+
+    assert response.status_code == 422
+    assert "supply both lat and lng" in response.json()["error"]["message"].lower()
+    assert len(db["trip_places"]) == 1
 
 
 async def test_change_dates_is_404_when_feature_flag_is_off(monkeypatch):

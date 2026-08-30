@@ -65,6 +65,13 @@ from auth import get_current_user_id, get_user_id_from_query_or_header
 # underscore preserves the in-module name the existing tests reference.
 from deletion import account_is_pending_deletion as _account_is_pending_deletion
 from config_validation import validate_required_secrets
+# Keyless + httpx-free at import: `geocode.mapbox_forward` is imported inside the call.
+from geocode.requested_place import (
+    EMPTY_TRIP_GEO_CONTEXT,
+    TripGeoContext,
+    build_trip_geo_context,
+    geocode_requested_place,
+)
 from jobs import compute_idempotency_key, enqueue_job, reclaim_expired_jobs
 from log_redaction import install as _install_log_redaction
 from observability import capture_exception as _sentry_capture, init_sentry as _init_sentry
@@ -688,8 +695,14 @@ async def _refresh_trip_routes(client, trip_id: str) -> bool:
     return True
 
 
-async def _find_requested_place_coordinates(client, *, trip_id: str, name: str) -> dict | None:
-    """Reuse exact-name coordinates only when the row shares this trip's city or country."""
+async def _load_trip_geo_context(client, trip_id: str) -> TripGeoContext:
+    """Read what this trip's existing places say about where the trip is — ONE round trip.
+
+    Serves both halves of `add_place`'s coordinate resolution: the free exact-name reuse below
+    gates on `cities`/`countries`, and the paid geocode is biased and then verified against
+    `country_codes`/`coordinates`. A trip with no places yet yields the empty context, which
+    makes `geocode_requested_place` decline to spend anything it could not check.
+    """
     links = (
         await client.table("trip_places")
         .select("place_id")
@@ -698,25 +711,28 @@ async def _find_requested_place_coordinates(client, *, trip_id: str, name: str) 
     )
     place_ids = [row["place_id"] for row in (links.data or []) if row.get("place_id")]
     if not place_ids:
-        return None
+        return EMPTY_TRIP_GEO_CONTEXT
 
     context_result = (
         await client.table("places")
-        .select("id,city,country")
+        .select("id,city,country,country_code,lat,lng")
         .in_("id", place_ids)
         .execute()
     )
-    cities = {
-        str(row["city"]).strip().casefold()
-        for row in (context_result.data or [])
-        if row.get("city")
-    }
-    countries = {
-        str(row["country"]).strip().casefold()
-        for row in (context_result.data or [])
-        if row.get("country")
-    }
-    if not cities and not countries:
+    return build_trip_geo_context(context_result.data or [])
+
+
+async def _find_requested_place_coordinates(
+    client, *, name: str, context: TripGeoContext
+) -> dict | None:
+    """Reuse exact-name coordinates only when the row shares this trip's city or country.
+
+    The FREE first answer, and the read half of this path's write-through cache: a coordinate
+    another trip already paid Mapbox for is served from `places` at no cost. Deliberately narrow
+    — an exact name plus a shared city or country — because a loose match here would pin the
+    wrong "Chinatown" for free, which is worse than paying for the right one.
+    """
+    if not context.cities and not context.countries:
         return None
 
     candidates = (
@@ -734,9 +750,28 @@ async def _find_requested_place_coordinates(client, *, trip_id: str, name: str) 
             continue
         city = str(row.get("city") or "").strip().casefold()
         country = str(row.get("country") or "").strip().casefold()
-        if (city and city in cities) or (country and country in countries):
+        if (city and city in context.cities) or (country and country in context.countries):
             return dict(row)
     return None
+
+
+def _geocoded_country(geocoded) -> dict | None:
+    """The provider's country as `_find_or_create_place`'s `grounded` receipt, or None.
+
+    Load-bearing for cost, not cosmetics: `places.country`/`country_code` are what
+    `_find_requested_place_coordinates` matches on, so a row inserted without them could never
+    be reused and every add of the same name would re-pay Mapbox. Uppercased and paired because
+    `places_country_code_shape_check` requires `^[A-Z]{2}$` and
+    `places_country_fields_pair_check` requires code and name set together — a half-populated
+    receipt is dropped rather than written.
+    """
+    if geocoded is None:
+        return None
+    code = (geocoded.country_code or "").strip().upper()
+    country_name = (geocoded.country_name or "").strip()
+    if len(code) != 2 or not code.isalpha() or not country_name:
+        return None
+    return {"country_code": code, "country_name": country_name}
 
 
 @app.post("/trips/{trip_id}/feedback", response_model=TripFeedbackResponse, status_code=201)
@@ -859,27 +894,39 @@ async def add_trip_place(
     client = await get_supabase_client()
     await _require_editable_trip(client, trip_id=trip_key, user_id=user_id)
 
+    # Coordinate provenance, cheapest and most trustworthy first (guardrail #1). The agent's own
+    # lat/lng is the LAST resort, not the first: a model reciting a landmark's coordinates from
+    # memory is exactly the hallucinated place the guardrail exists to stop, so Astrail resolves
+    # the name itself — from the trip, then from Mapbox — before it ever asks.
     resolved = None
+    geocoded = None
     if req.lat is None and req.lng is None:
-        resolved = await _find_requested_place_coordinates(
-            client,
-            trip_id=trip_key,
-            name=req.name,
-        )
+        context = await _load_trip_geo_context(client, trip_key)
+        resolved = await _find_requested_place_coordinates(client, name=req.name, context=context)
         if resolved is None:
+            geocoded = await geocode_requested_place(
+                req.name,
+                context,
+                token=os.environ.get("MAPBOX_SECRET_TOKEN"),
+            )
+        if resolved is None and geocoded is None:
             raise HTTPException(
                 status_code=422,
                 detail={
                     "code": "validation_error",
                     "message": (
                         f"Could not resolve coordinates for '{req.name}' from this trip's "
-                        "city or country; supply both lat and lng"
+                        "places or from a map lookup; supply both lat and lng"
                     ),
                 },
             )
 
-    lat = req.lat if req.lat is not None else resolved["lat"]
-    lng = req.lng if req.lng is not None else resolved["lng"]
+    if req.lat is not None:
+        lat, lng = req.lat, req.lng
+    elif resolved is not None:
+        lat, lng = resolved["lat"], resolved["lng"]
+    else:
+        lat, lng = geocoded.lat, geocoded.lng
     canonical = CanonicalPlace(
         name=req.name,
         category="other",
@@ -891,7 +938,7 @@ async def add_trip_place(
         source_url=None,
         city_or_region_guess=resolved.get("city") if resolved else None,
     )
-    place_id = await _find_or_create_place(client, canonical, grounded=None)
+    place_id = await _find_or_create_place(client, canonical, grounded=_geocoded_country(geocoded))
 
     existing_link = (
         await client.table("trip_places")

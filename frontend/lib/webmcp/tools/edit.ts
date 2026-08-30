@@ -26,7 +26,23 @@ export type EditDeps = {
   trips: TripReader
   add: (tripId: string, body: { name: string; day_number: number; position?: number | null; lat?: number | null; lng?: number | null }) => Promise<unknown>
   setDates: (tripId: string, body: { start_date?: string | null; end_date?: string | null }) => Promise<unknown>
+  /**
+   * Rewrites the summaries so they describe the stops the trip actually has.
+   *
+   * ONE per trip, wherever it was started from: the shell coalesces on trip id, so a second
+   * caller joins the rewrite already running instead of buying a second narration. It announces
+   * itself on the activity rail — the only surface on which a rewrite nobody approved becomes
+   * visible — and it still REJECTS on failure, so `replan_trip` can report that.
+   */
   replan: (tripId: string) => Promise<{ days_narrated: number; routes_refreshed: boolean }>
+  /**
+   * Whether a rewrite is already running for this trip.
+   *
+   * Optional, and its absence reads as "no idea", which degrades to asking — the behaviour
+   * before any of this existed. Never the other way round: a missing answer must not be able to
+   * skip an approval card.
+   */
+  replanInFlight?: (tripId: string) => boolean
   move: (tripId: string, tripPlaceId: string, patch: { day_number?: number; sort_order?: number }) => Promise<unknown>
   remove: (tripId: string, tripPlaceId: string) => Promise<unknown>
   /** Re-reads the trip so the page reflects the change before the tool reports success. */
@@ -71,6 +87,8 @@ type EditOutcome = {
   verdict?: EditVerdict
   /** True when the persisted summaries now describe stops the trip no longer has. */
   summariesStale: boolean
+  /** True when this call has already started the rewrite that fixes them. */
+  summariesRewriting?: boolean
   /** Anything the agent must act on before its next call — renumbering, a stale forecast. */
   notes?: string[]
 }
@@ -78,24 +96,33 @@ type EditOutcome = {
 /**
  * The answer to a completed edit, as fields rather than a sentence.
  *
- * Reported from real use: a stop was added and the trip description and day plan still described
- * the itinerary without it. `replan_trip` already did that job; nothing told the agent to call it
- * at the moment it mattered. It goes stale because the prose is written FROM the stops — the
- * narrator's input is each day's ordered stop list (`backend/genagents/narrator.py`,
- * `build_narrator_input`) — while every edit endpoint refreshes routes and leaves
- * `trip_days.summary` alone. Nothing else in the system notices.
+ * The prose goes stale because it is written FROM the stops — the narrator's input is each day's
+ * ordered stop list and date (`backend/genagents/narrator.py`, `build_narrator_input`, fed by
+ * `persist_narration`) — while every edit endpoint refreshes routes and leaves `trip_days.summary`
+ * alone. Nothing else in the system notices.
  *
- * Structured, not prose: `plan_trip_from_reels` returns `next_tool` for exactly this reason —
- * agents follow a named field far more reliably than the same instruction inside a sentence.
+ * This file used to only TELL the agent, naming `replan_trip` in `next_tool` and leaving the call
+ * to it. That was survivable after an ADD, where the summary is merely incomplete. After a REMOVE
+ * it is FALSE: a user removed Tokyo Tower and was left reading "the day ... ends at Tokyo Tower"
+ * about a stop that no longer exists. A product whose entire argument is that nothing on screen
+ * claims more than it can support cannot ship self-contradiction as the default and correctness as
+ * an opt-in the user has to know to ask for. So the edit starts the rewrite itself.
  *
- * It TELLS and never does. `replan_trip` spends the user credit and raises its own approval
- * card, so triggering it here would spend on the agent's initiative.
+ * Which changes what the agent has to be told. `summaries_stale` still says what is TRUE right
+ * now — the persisted prose does not match the stops — and `summaries_rewriting` says the fix is
+ * already running, so the agent describes the state instead of acting on it. `next_tool` survives
+ * for the one case where the agent must still act: stale, with nothing running.
  */
 function editResult(outcome: EditOutcome): string {
+  const rewriting = outcome.summariesRewriting === true
   const notes = [
     ...(outcome.notes ?? []),
     ...(outcome.summariesStale
-      ? ['The day and trip summaries still describe the itinerary before this edit.']
+      ? [
+          rewriting
+            ? 'Astrail is already rewriting the day and trip summaries; until that lands they still describe the trip before this edit, so do not quote them and do not call replan_trip.'
+            : 'The day and trip summaries still describe the itinerary before this edit.',
+        ]
       : []),
   ]
   return JSON.stringify({
@@ -107,7 +134,11 @@ function editResult(outcome: EditOutcome): string {
     // call, which is the fault being fixed rather than a fix for it.
     outcome: outcome.verdict ?? 'done',
     summaries_stale: outcome.summariesStale,
-    ...(outcome.summariesStale ? { next_tool: 'replan_trip' } : {}),
+    ...(rewriting ? { summaries_rewriting: true } : {}),
+    // Only when the agent is the one who has to act. Naming `replan_trip` beside a rewrite that
+    // is already running is an instruction to buy a second narration, and the agent follows
+    // `next_tool` far more reliably than it follows the sentence telling it not to.
+    ...(outcome.summariesStale && !rewriting ? { next_tool: 'replan_trip' } : {}),
     ...(notes.length > 0 ? { note: notes.join(' ') } : {}),
   })
 }
@@ -161,6 +192,40 @@ async function refreshView(deps: EditDeps, tripId: string): Promise<{ fresh: Tri
 }
 
 /**
+ * Start the rewrite this edit just made necessary, and get out of the way.
+ *
+ * Deliberately NOT awaited, and that is the whole shape of the fix. Narration is an LLM call —
+ * roughly 30 seconds for a two-day trip in the measured run — while an edit resolves in about a
+ * second. Awaiting it inside the mutation would make every `remove_place` a thirty-second tool
+ * call on a tool an agent calls several times in a row, trading a visible wrong summary for an
+ * agent that looks hung. Folding it into the mutation's own approval card costs the same thirty
+ * seconds; the card is not what is slow.
+ *
+ * So the mutation resolves when the STRUCTURAL change is on screen — `refreshView` has already
+ * re-read the trip, so the map, the stop list and the pin numbers are current — and the prose
+ * catches up behind it. That is the honest reading of this file's own rule that a mutation
+ * resolves only once the UI reflects it: what the user changed is reflected, and the one part
+ * that is not is announced as in progress rather than left to be discovered. The activity rail
+ * carries that announcement (`REWRITE`, pulsing, then `REWROTE`), which is also the receipt for
+ * an LLM call nobody approved — it costs no trip allowance (`/trips/{id}/replan` has no quota
+ * reserve and no entitlement check, only the burst limiter) but it is still real work done on the
+ * user's behalf, and unseen work is work they could not consent to.
+ *
+ * The `catch` swallows nothing that is not already recorded: the shell's `replan` ends the rail
+ * entry as FAILED before it rejects. Guardrail #3 — the edit LANDED, and a failed rewrite must
+ * not turn a completed removal into a failed one, so the rejection dies here rather than
+ * escaping into the tool's own outcome.
+ */
+function startSummaryRewrite(deps: EditDeps, tripId: string): void {
+  void deps
+    .replan(tripId)
+    // The page shows the new prose only once it re-reads. Same downgrade as everywhere else in
+    // this file: a failed re-read is a stale VIEW, never a failed rewrite.
+    .then(() => refreshView(deps, tripId))
+    .catch(() => {})
+}
+
+/**
  * Read a tool's reply the way the activity rail has to: outcome first, prose second.
  *
  * Lives beside the writer so the vocabulary cannot drift between the two ends of it. Two rules
@@ -204,7 +269,7 @@ export function movePlaceTool(deps: EditDeps): ToolSpec {
   return {
     name: 'move_place',
     description:
-      'Moves a stop to a different day, and optionally to a position within that day. Applies straight away and the map redraws. Identify the stop by its map-pin number (preferred) or its name. The reply records the day and position it came from, and names the tool that brings the day summaries back in line with the new order.',
+      'Moves a stop to a different day, and optionally to a position within that day. Applies straight away and the map redraws. Identify the stop by its map-pin number (preferred) or its name. The reply records the day and position it came from. Astrail then rewrites the day summaries itself so they match the new order — do not call replan_trip afterwards.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -243,6 +308,9 @@ export function movePlaceTool(deps: EditDeps): ToolSpec {
         return noChange('failed', e instanceof Error ? e.message : 'The move failed.')
       }
 
+      // Started the instant the prose became wrong, and before the re-read below, so the two
+      // round-trips overlap rather than queue.
+      startSummaryRewrite(deps, r.bundle.trip.id)
       const { fresh, stale } = await refreshView(deps, r.bundle.trip.id)
       const where = toDay !== undefined ? `day ${toDay}` : `position ${toPos}`
       // A record of the origin, not a promise about it: a null `sort_order` is a legal row and
@@ -258,6 +326,7 @@ export function movePlaceTool(deps: EditDeps): ToolSpec {
       return editResult({
         result: `Moved "${tp.place.name}" to ${where}.${pinsLine(fresh, tp.place.name)} ${origin} ${stale ? STALE_VIEW : 'The map has redrawn.'}`,
         summariesStale: true,
+        summariesRewriting: true,
       })
     },
   }
@@ -298,10 +367,14 @@ export function removePlaceTool(deps: EditDeps): ToolSpec {
         return noChange('failed', e instanceof Error ? e.message : 'The removal failed.')
       }
 
+      // The case that forced this whole change: a removed stop leaves prose that is not merely
+      // incomplete but FALSE — "the day ... ends at Tokyo Tower", about a stop that is gone.
+      startSummaryRewrite(deps, r.bundle.trip.id)
       const { stale } = await refreshView(deps, r.bundle.trip.id)
       return editResult({
         result: `The user approved. Removed "${tp.place.name}".${stale ? ` ${STALE_VIEW}` : ''}`,
         summariesStale: true,
+        summariesRewriting: true,
         notes: ['The remaining stops have been renumbered — call get_itinerary before using pin numbers again.'],
       })
     },
@@ -314,7 +387,7 @@ export function addPlaceTool(deps: EditDeps): ToolSpec {
   return {
     name: 'add_place',
     description:
-      'Adds a new stop to a day of the trip. The user approves it on the page first. Astrail marks it as one they asked for, with no Reel evidence behind it. If the name cannot be matched to a location Astrail already knows, it will ask you for coordinates rather than guess — pass lat and lng together in that case.',
+      'Adds a new stop to a day of the trip. The user approves it on the page first. Astrail marks it as one they asked for, with no Reel evidence behind it. Astrail looks the place up itself — first among the trip\'s own stops, then with its map provider — so send the name alone and do not supply coordinates. Only if it replies that it could not resolve the name, retry with lat and lng together.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -362,10 +435,12 @@ export function addPlaceTool(deps: EditDeps): ToolSpec {
         return noChange('failed', e instanceof Error ? e.message : 'Adding the place failed.')
       }
 
+      startSummaryRewrite(deps, r.bundle.trip.id)
       const { fresh, stale } = await refreshView(deps, r.bundle.trip.id)
       return editResult({
         result: `The user approved. Added "${name}" to day ${day}.${pinsLine(fresh, name)}${stale ? ` ${STALE_VIEW}` : ''}`,
         summariesStale: true,
+        summariesRewriting: true,
         notes: ['Pin numbers have shifted — call get_itinerary before using them again.'],
       })
     },
@@ -410,30 +485,34 @@ export function setTripDatesTool(deps: EditDeps): ToolSpec {
         return noChange('failed', e instanceof Error ? e.message : 'Changing the dates failed.')
       }
 
-      const { fresh, stale } = await refreshView(deps, r.bundle.trip.id)
-      // The ONE mutation here that does not stale the summaries, and it is a code fact, not an
-      // assumption: `edit_trip_dates` writes only `trip_days.day_date` and
-      // `trips.start_date`/`end_date` — no stop, no day_number, no summary. The narrator writes
-      // each summary from that day's ordered stop list, so prose about the stops still holds and
-      // a replan here would spend the user credit rewriting text that was already right.
+      // Moving the dates does not touch a stop — `edit_trip_dates` writes only
+      // `trip_days.day_date` and `trips.start_date`/`end_date` — which is why this tool used to
+      // report the summaries as intact. But the stops are not the only thing the prose is written
+      // FROM: `persist_narration` hands the narrator each day's DATE alongside its stops
+      // (`build_narrator_input`: "Day 2 (2026-08-28)"), so a summary written for a late-August
+      // Saturday is prose about a day this trip no longer has. Every change gets its rewrite;
+      // this one was named explicitly.
       //
-      // The weather line is the exception, and `replan_trip` cannot fix it either:
-      // `persist_weather` runs only inside the generation pipeline, and `/trips/{id}/replan` calls
-      // `_refresh_trip_routes` + `persist_narration` only. Re-narrating would relaunder a forecast
-      // for the old dates into freshly-written prose — worse than leaving it visibly old. So say it.
+      // The weather line is the exception, and the rewrite makes it worse rather than better.
+      // `persist_weather` runs only inside the generation pipeline; `/trips/{id}/replan` calls
+      // `_refresh_trip_routes` + `persist_narration` only, and `persist_narration` feeds
+      // `weather_summary` straight to the narrator. So the rewrite reads a forecast for the OLD
+      // dates and can launder it into freshly-written prose. Nothing reachable from here fixes
+      // that — refreshing the forecast means calling the weather agent inside the replan endpoint
+      // — so the note is what keeps it visible, and it now says the summaries were written from it.
       // Falls back to the PRE-edit bundle when the re-read failed: changing the dates does not
       // write a weather row, so the old bundle answers "does this trip carry a forecast" just as
       // well — and dropping the warning because a GET failed would lose it silently.
+      startSummaryRewrite(deps, r.bundle.trip.id)
+      const { fresh, stale } = await refreshView(deps, r.bundle.trip.id)
       const hasWeather = (fresh ?? r.bundle).days.some((d) => d.weather_summary)
       return editResult({
         result: `The user approved. The trip now runs ${to}. Every day kept its stops and its number.${stale ? ` ${STALE_VIEW}` : ''}`,
-        summariesStale: false,
-        notes: [
-          'The summaries describe the stops, which did not change, so replan_trip is not needed.',
-          ...(hasWeather
-            ? ['The weather note on each day is still the forecast for the old dates, and nothing refreshes it.']
-            : []),
-        ],
+        summariesStale: true,
+        summariesRewriting: true,
+        notes: hasWeather
+          ? ['The weather note on each day is still the forecast for the old dates, nothing refreshes it, and the rewritten summaries are written from it.']
+          : [],
       })
     },
   }
@@ -443,7 +522,7 @@ export function replanTripTool(deps: EditDeps): ToolSpec {
   return {
     name: 'replan_trip',
     description:
-      'Rewrites the trip description and the day-by-day summaries so they match the stops the trip actually has now, and recalculates the routes. Use this after adding, moving or removing stops, because the existing summaries still describe the old itinerary. The user approves it first, since rewriting costs them credit. Routes alone already refresh on every edit; this is only needed for the wording.',
+      'Rewrites the trip description and the day-by-day summaries so they match the stops the trip actually has now, and recalculates the routes. Every edit already starts this by itself, so do NOT call it after one — call it only when the user asks for the wording to be refreshed, or when a rewrite failed. It costs nothing from the trip allowance. If a rewrite is already running, this waits for that one instead of starting a second.',
     inputSchema: {
       type: 'object',
       properties: { trip_id: { type: 'string', description: 'Trip id from list_trips. Omit for the open trip.' } },
@@ -455,12 +534,30 @@ export function replanTripTool(deps: EditDeps): ToolSpec {
       if (!r.ok) return noChange('failed', r.message)
 
       const dayCount = r.bundle.days.length
-      // Approval is not optional: this rewrites prose the user may have read, and it spends
-      // model credit. An agent must not be able to trigger it on its own initiative.
-      const approved = await deps.confirm(
-        `Rewrite the day summaries for this trip so they match its current stops.\n${dayCount} day${dayCount === 1 ? '' : 's'} will be re-described. This uses your credit.`,
-      )
-      if (!approved) return noChange('declined', 'The user declined. The summaries are unchanged.')
+      /* Whether this call would START work, or merely wait for work already under way.
+         No `await` between this read and the `deps.replan` below, deliberately: the in-flight set
+         is only ever mutated in a promise continuation, so with nothing yielding in between a
+         rewrite cannot finish in the gap and quietly turn a join into a fresh, unapproved
+         narration. */
+      const joining = deps.replanInFlight?.(r.bundle.trip.id) === true
+
+      // Approval, for the one shape of this call that is still a decision. An agent asking to
+      // rewrite prose the user may have read, off its own initiative, is a decision. Joining a
+      // rewrite that an edit already started is not: the work is running and cannot be called
+      // back, so a card there offers a choice that does not exist — and answering "no" to it
+      // would be followed by the summaries changing anyway, which is the exact class of lie the
+      // outcome field exists to stop.
+      //
+      // The cost sentence used to read "This uses your credit". It never did: `/trips/{id}/replan`
+      // (backend/main.py) carries the burst limiter and an editable-trip check and nothing else —
+      // no quota reserve, no entitlement read, unlike `generate-trip`. The agent repeated that
+      // invented cost back at the user as a reason to decline the rewrite the trip needed.
+      if (!joining) {
+        const approved = await deps.confirm(
+          `Rewrite the day summaries for this trip so they match its current stops.\n${dayCount} day${dayCount === 1 ? '' : 's'} will be re-described. This does not use a trip from your allowance.`,
+        )
+        if (!approved) return noChange('declined', 'The user declined. The summaries are unchanged.')
+      }
 
       let result: { days_narrated: number; routes_refreshed: boolean }
       try {
@@ -475,7 +572,9 @@ export function replanTripTool(deps: EditDeps): ToolSpec {
       // answer in the envelope, and a reply whose SHAPE depends on how it went is a second thing
       // the reader has to know before it can read the first.
       return editResult({
-        result: `The user approved. Rewrote ${result.days_narrated} day summar${result.days_narrated === 1 ? 'y' : 'ies'} to match the current stops. ${routes}${stale ? ` ${STALE_VIEW}` : ''}`,
+        // Who asked for it is part of the record, and on the join path it was not the user: an
+        // edit started this rewrite and this call only waited for it.
+        result: `${joining ? 'Joined the rewrite this trip already had running.' : 'The user approved.'} Rewrote ${result.days_narrated} day summar${result.days_narrated === 1 ? 'y' : 'ies'} to match the current stops. ${routes}${stale ? ` ${STALE_VIEW}` : ''}`,
         // This is the tool that un-stales them. Saying so is the whole point of the field.
         summariesStale: false,
       })

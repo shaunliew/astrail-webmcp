@@ -1,0 +1,235 @@
+"""Keyless unit tests for the user-requested-place geocode policy.
+
+No network, no Mapbox token, no Supabase: every test injects a fake `geocode` callable or
+exercises a pure function. The gates here are the difference between a provider-verified
+coordinate and a model-recited one (Guardrail #1), so each is asserted from BOTH sides.
+"""
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+from geocode import requested_place as rp
+from geocode.errors import ResolveError
+from models.geocode import GeocodeResult
+
+# Osaka Castle / Universal Studios Japan — the same fixtures the route tests seed.
+_OSAKA_ROWS = [
+    {"city": "Osaka", "country": "Japan", "country_code": "JP", "lat": 34.6873, "lng": 135.5262},
+    {"city": "Osaka", "country": "Japan", "country_code": "jp", "lat": 34.6654, "lng": 135.4323},
+]
+
+
+def _context(rows=None) -> rp.TripGeoContext:
+    return rp.build_trip_geo_context(_OSAKA_ROWS if rows is None else rows)
+
+
+def _found(lat: float, lng: float, *, country_code="JP", country_name="Japan") -> GeocodeResult:
+    return GeocodeResult(lat=lat, lng=lng, country_code=country_code, country_name=country_name)
+
+
+# --------------------------------------------------------------------------- context
+
+
+def test_build_trip_geo_context_normalizes_every_axis():
+    context = _context()
+    assert context.cities == frozenset({"osaka"})
+    assert context.countries == frozenset({"japan"})
+    assert context.country_codes == frozenset({"JP"})          # lowercase row folded up
+    assert context.coordinates == ((34.6654, 135.4323), (34.6873, 135.5262))  # sorted: deterministic
+    assert context.has_bias is True
+
+
+def test_build_trip_geo_context_drops_unusable_values():
+    context = _context([
+        {"city": "  ", "country": None, "country_code": "JPN", "lat": None, "lng": 1.0},
+        {"city": None, "country": "", "country_code": "", "lat": True, "lng": False},
+        {},
+    ])
+    assert context.cities == frozenset()
+    assert context.countries == frozenset()
+    assert context.country_codes == frozenset()   # "JPN" is not alpha-2
+    assert context.coordinates == ()              # bools are not coordinates
+    assert context.has_bias is False
+
+
+# --------------------------------------------------------------------------- bias
+
+
+def test_country_filter_is_the_single_trip_country_lowercased():
+    assert rp.country_filter(_context()) == "jp"
+
+
+def test_country_filter_is_none_for_a_multi_country_trip():
+    context = _context(_OSAKA_ROWS + [
+        {"city": "Seoul", "country": "South Korea", "country_code": "KR", "lat": 37.5, "lng": 127.0},
+    ])
+    # A comma-joined filter would be backfilled verbatim into country_code by
+    # strict_forward_geocode, producing a value that fails the ^[A-Z]{2}$ shape everywhere.
+    assert rp.country_filter(context) is None
+
+
+def test_country_filter_is_none_without_a_known_country():
+    assert rp.country_filter(_context([{"lat": 1.0, "lng": 2.0}])) is None
+
+
+def test_proximity_bias_is_the_centroid_in_mapbox_lng_lat_order():
+    lng, lat = rp.proximity_bias(_context())
+    assert lat == pytest.approx((34.6873 + 34.6654) / 2)
+    assert lng == pytest.approx((135.5262 + 135.4323) / 2)
+
+
+def test_proximity_bias_is_none_without_coordinates():
+    assert rp.proximity_bias(_context([{"country_code": "JP"}])) is None
+
+
+# --------------------------------------------------------------------------- accept gate
+
+
+def test_accept_geocode_accepts_a_result_inside_the_trip():
+    assert rp.accept_geocode(_found(34.6544, 135.5064), _context()) is True
+
+
+def test_accept_geocode_rejects_another_country():
+    # Correct name, wrong country: Universal Studios Singapore.
+    assert rp.accept_geocode(_found(1.2540, 103.8238, country_code="SG"), _context()) is False
+
+
+def test_accept_geocode_rejects_a_cross_border_result_the_distance_gate_would_allow():
+    """The country gate has to be load-bearing ON ITS OWN.
+
+    Singapore trip, a Johor Bahru result ~25 km away: well inside MAX_TRIP_DISTANCE_M, so only
+    the country check can reject it. The same coordinate labelled SG is accepted, which proves
+    the rejection is the border and not the distance.
+    """
+    singapore = _context([
+        {"city": "Singapore", "country": "Singapore", "country_code": "SG",
+         "lat": 1.2897, "lng": 103.8501},
+    ])
+    assert rp.accept_geocode(_found(1.4927, 103.7414, country_code="MY"), singapore) is False
+    assert rp.accept_geocode(_found(1.4927, 103.7414, country_code="SG"), singapore) is True
+
+
+def test_accept_geocode_rejects_a_result_far_from_every_trip_stop():
+    # Same country, ~1,000 km away (Sapporo) — beyond MAX_TRIP_DISTANCE_M.
+    assert rp.accept_geocode(_found(43.0621, 141.3544), _context()) is False
+
+
+def test_accept_geocode_accepts_a_far_but_in_range_second_city():
+    # Tokyo from an Osaka trip is ~400 km — a real multi-city add, inside the bound.
+    assert rp.accept_geocode(_found(35.6586, 139.7454), _context()) is True
+
+
+def test_accept_geocode_rejects_a_result_nothing_can_check():
+    # No trip coordinates and no country on either side: nothing was verified, so nothing is trusted.
+    context = _context([{"city": "Osaka"}])
+    assert rp.accept_geocode(_found(34.65, 135.50, country_code=None), context) is False
+
+
+def test_accept_geocode_uses_distance_when_the_result_has_no_country():
+    context = _context()
+    assert rp.accept_geocode(_found(34.6544, 135.5064, country_code=None), context) is True
+    assert rp.accept_geocode(_found(43.0621, 141.3544, country_code=None), context) is False
+
+
+# --------------------------------------------------------------------------- resolver
+
+
+class _Spy:
+    def __init__(self, result=None, raises=None, sleep=None):
+        self.result = result
+        self.raises = raises
+        self.sleep = sleep
+        self.calls: list[dict] = []
+
+    async def __call__(self, query, **kwargs):
+        self.calls.append({"query": query, **kwargs})
+        if self.sleep is not None:
+            await asyncio.sleep(self.sleep)
+        if self.raises is not None:
+            raise self.raises
+        return self.result
+
+
+async def test_geocode_requested_place_returns_a_verified_hit():
+    spy = _Spy(result=_found(34.6544, 135.5064))
+    result = await rp.geocode_requested_place(
+        "Dotonbori", _context(), token="sk.test", geocode=spy,
+    )
+    assert result is not None and (result.lat, result.lng) == (34.6544, 135.5064)
+
+
+async def test_geocode_requested_place_biases_the_query_with_trip_context():
+    spy = _Spy(result=_found(34.6544, 135.5064))
+    await rp.geocode_requested_place("Dotonbori", _context(), token="sk.test", geocode=spy)
+
+    call = spy.calls[0]
+    assert call["query"] == "Dotonbori"
+    assert call["token"] == "sk.test"
+    assert call["country"] == "jp"
+    assert call["language"] == "en"
+    assert call["types"] == rp.GEOCODE_TYPES
+    assert call["proximity_lng_lat"] == rp.proximity_bias(_context())
+
+
+async def test_geocode_requested_place_sends_japanese_script_as_ja():
+    spy = _Spy(result=_found(34.6544, 135.5064))
+    await rp.geocode_requested_place("道頓堀", _context(), token="sk.test", geocode=spy)
+    assert spy.calls[0]["language"] == "ja"
+
+
+async def test_geocode_requested_place_never_calls_the_provider_without_a_token():
+    spy = _Spy(result=_found(34.6544, 135.5064))
+    assert await rp.geocode_requested_place("Dotonbori", _context(), token=None, geocode=spy) is None
+    assert await rp.geocode_requested_place("Dotonbori", _context(), token="", geocode=spy) is None
+    assert spy.calls == []
+
+
+async def test_geocode_requested_place_never_calls_the_provider_without_trip_bias():
+    spy = _Spy(result=_found(34.6544, 135.5064))
+    unbiased = _context([{"city": "Osaka"}])   # a name, but nothing to geocode NEAR
+    assert await rp.geocode_requested_place("Chinatown", unbiased, token="sk.test", geocode=spy) is None
+    assert spy.calls == []
+
+
+async def test_geocode_requested_place_never_calls_the_provider_for_a_blank_name():
+    spy = _Spy(result=_found(34.6544, 135.5064))
+    assert await rp.geocode_requested_place("   ", _context(), token="sk.test", geocode=spy) is None
+    assert spy.calls == []
+
+
+async def test_geocode_requested_place_drops_a_result_the_gate_rejects():
+    spy = _Spy(result=_found(1.2540, 103.8238, country_code="SG"))
+    assert await rp.geocode_requested_place("Chinatown", _context(), token="sk.test", geocode=spy) is None
+
+
+async def test_geocode_requested_place_returns_none_on_a_provider_miss():
+    spy = _Spy(result=None)
+    assert await rp.geocode_requested_place("Nowhere", _context(), token="sk.test", geocode=spy) is None
+
+
+@pytest.mark.parametrize("error", [ResolveError("mapbox down"), RuntimeError("boom")])
+async def test_geocode_requested_place_swallows_a_provider_fault(error):
+    spy = _Spy(raises=error)
+    assert await rp.geocode_requested_place("Dotonbori", _context(), token="sk.test", geocode=spy) is None
+
+
+async def test_geocode_requested_place_bounds_a_hanging_provider(monkeypatch):
+    monkeypatch.setattr(rp, "GEOCODE_TIMEOUT_S", 0.02)
+    monkeypatch.setattr(rp, "GEOCODE_DEADLINE_SLACK_S", 0.03)
+    spy = _Spy(result=_found(34.6544, 135.5064), sleep=30)
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    result = await rp.geocode_requested_place("Dotonbori", _context(), token="sk.test", geocode=spy)
+
+    assert result is None
+    assert loop.time() - started < 5          # the add is never held open by the provider
+
+
+async def test_geocode_requested_place_never_logs_the_token(caplog):
+    spy = _Spy(raises=ResolveError("Mapbox forward failed (HTTP 401)"))
+    with caplog.at_level("DEBUG"):
+        await rp.geocode_requested_place("Dotonbori", _context(), token="sk.secret", geocode=spy)
+    assert "sk.secret" not in caplog.text

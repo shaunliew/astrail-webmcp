@@ -285,6 +285,47 @@ async def test_geocode_requested_place_bounds_a_hanging_provider(monkeypatch):
     assert loop.time() - started < 5          # the add is never held open by the provider
 
 
+async def test_a_single_country_trip_survives_a_country_less_mapbox_response():
+    """The demo path, wired through the REAL geocoder rather than a stand-in.
+
+    `accept_geocode` now REJECTS a result that declares no country, which raises an obvious
+    worry: Mapbox omits the country from `context` on some Search Box responses, so does
+    "add Tokyo Tower to a Japan trip" degrade to asking? No — and the reason is worth pinning.
+    A single-country trip DOES send a `country` filter, and `strict_forward_geocode` backfills
+    a missing country_code from it, truthfully, because every returned feature is in that
+    country by construction. Only a MULTI-country trip sends no filter, and that is exactly the
+    case the tightened gate exists to refuse.
+
+    This runs the real `strict_forward_geocode` over an httpx MockTransport, so it fails if that
+    backfill is ever removed — a unit-level stand-in for the geocoder could not see it at all.
+    """
+    import httpx
+
+    from geocode.mapbox_forward import strict_forward_geocode
+
+    seen: dict = {}
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        seen["country"] = request.url.params.get("country")
+        return httpx.Response(200, json={"features": [{
+            "geometry": {"coordinates": [139.7454, 35.6586]},
+            "properties": {"feature_type": "poi", "name": "Tokyo Tower"},   # no `context`, no country
+        }]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(_handler)) as http:
+        async def _real(query, **kwargs):
+            return await strict_forward_geocode(query, client=http, **kwargs)
+
+        result = await rp.geocode_requested_place(
+            "Tokyo Tower", _context(), token="sk.test", geocode=_real,
+        )
+
+    assert seen["country"] == "jp"                 # the filter the backfill is derived from
+    assert result is not None                      # NOT a degradation to "ask for coordinates"
+    assert result.country_code == "JP"
+    assert (result.lat, result.lng) == (35.6586, 139.7454)
+
+
 async def test_geocode_requested_place_never_logs_the_token(caplog):
     spy = _Spy(raises=ResolveError("Mapbox forward failed (HTTP 401)"))
     with caplog.at_level("DEBUG"):

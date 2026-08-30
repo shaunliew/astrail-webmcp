@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -93,5 +96,69 @@ describe('WebMCP Challenge landing', () => {
 
   it('marks the whole challenge deployment noindex and nofollow', () => {
     expect(metadata.robots).toMatchObject({ index: false, follow: false })
+  })
+})
+
+/*
+ * The no-account route in. `/app/trip/demo` is the only /app path a signed-out judge can open,
+ * and until now the landing page never said so — it offered a sign-in and a waitlist and nothing
+ * else. These pin the three things that make the link worth having: that it is there, that it
+ * points at the exact string middleware allowlists, and that it promises only what a judge in
+ * Safari actually gets.
+ */
+describe('the no-account sample trail', () => {
+  const demoLink = () =>
+    screen.getByRole('link', { name: /see a finished trip .* no account needed/i })
+
+  it('offers the sample trail from the sticky challenge notice, above everything else', () => {
+    render(<LandingPage />)
+
+    // Inside the notice, not buried in a card: the notice is sticky and first, so it is the one
+    // surface a judge is guaranteed to see on a phone, where the two-column grid stacks.
+    expect(within(screen.getByRole('status')).getByRole('link', { name: /no account needed/i }))
+      .toBe(demoLink())
+  })
+
+  it('points at exactly the path middleware allowlists', () => {
+    render(<LandingPage />)
+
+    // EXACT match, never a prefix or a suffix: middleware.ts allowlists the literal string
+    // '/app/trip/demo'. A suffix or a query string is a different string to that guard and would
+    // bounce a signed-out judge to /sign-in.
+    expect(demoLink()).toHaveAttribute('href', '/app/trip/demo')
+  })
+
+  it('uses the same literal middleware allowlists, character for character', () => {
+    /* The DOM cannot see the one mutation most likely to happen here: next/link normalises a
+       trailing slash away, so a source `'/app/trip/demo/'` still RENDERS as `/app/trip/demo` and
+       the assertion above stays green. Relying on that normalisation is exactly what we were told
+       not to do, so pin the thing the middleware guard actually compares — the literal itself —
+       and pin it against middleware's own literal, so moving either side reddens this. */
+    const read = (p: string) => readFileSync(join(__dirname, '..', '..', p), 'utf8')
+    const linked = read('components/landing/ChallengeBanner.tsx')
+      .match(/const SAMPLE_TRAIL_PATH = '([^']*)'/)?.[1]
+    const allowlisted = read('middleware.ts').match(/nextUrl\.pathname === '([^']*)'/)?.[1]
+
+    expect(linked).toBe('/app/trip/demo')
+    expect(allowlisted).toBe(linked)
+  })
+
+  it('says in the link itself that it costs no account, and nothing to open', () => {
+    render(<LandingPage />)
+
+    expect(demoLink()).toHaveAccessibleName(/no account needed/i)
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'A real generated trail, free to open, in any browser.',
+    )
+  })
+
+  it('never promises the agent here — the tools need a WebMCP-capable browser', () => {
+    render(<LandingPage />)
+
+    // A judge opening this in Safari gets the map and the evidence and NO tools. Promising an
+    // agent and delivering a static page is worse than promising nothing; the browser
+    // requirement is stated once, in the "For judges" card that is about setup.
+    const name = demoLink().textContent ?? ''
+    expect(name).not.toMatch(/agent|webmcp|tool/i)
   })
 })

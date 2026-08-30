@@ -126,7 +126,7 @@ describe('replanTrip is bounded', () => {
     vi.useRealTimers()
   })
 
-  /** A fetch that hangs until its caller aborts it, which is what a wedged backend looks like. */
+  /** A fetch that never returns headers at all — a connection that hangs on the round-trip. */
   function hangingFetch() {
     const mock = vi.fn(
       (_url: string, init: RequestInit) =>
@@ -140,27 +140,86 @@ describe('replanTrip is bounded', () => {
     return mock
   }
 
-  it('gives up rather than hanging forever', async () => {
-    vi.useFakeTimers()
-    hangingFetch()
+  /**
+   * Headers arrive; the BODY never does — a proxy or an origin that flushes a status line and
+   * stalls. `fetch` RESOLVES here, so anything that disarms the timer on the fetch alone has
+   * already disarmed it before the part that hangs.
+   */
+  function stalledBodyFetch(ok = true) {
+    const mock = vi.fn((_url: string, init: RequestInit) =>
+      Promise.resolve({
+        ok,
+        status: ok ? 200 : 500,
+        statusText: ok ? 'OK' : 'Internal Server Error',
+        json: () =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () =>
+              reject(new DOMException('The operation was aborted', 'AbortError')),
+            )
+          }),
+      } as unknown as Response),
+    )
+    vi.stubGlobal('fetch', mock)
+    return mock
+  }
+
+  /** Runs the call out to its timeout and hands back whatever it threw. */
+  async function timeOut(): Promise<Error> {
     const { replanTrip } = await import('@/lib/trip/api')
     const call = catchErr(replanTrip('trip-1', 'token'))
     await vi.advanceTimersByTimeAsync(120_000)
-    expect((await call as Error).message).toMatch(/took too long/i)
+    return (await call) as Error
+  }
+
+  it('gives up when the connection never answers', async () => {
+    vi.useFakeTimers()
+    hangingFetch()
+    expect((await timeOut()).message).toMatch(/stopped waiting/i)
   })
 
-  it('says the trip itself is unchanged, because it is', async () => {
-    /* The abort's own message is "The operation was aborted", which tells the user nothing about
-       what was attempted or whether their edit survived. The edit is already persisted — only
-       the narration timed out. */
+  it('gives up when the headers arrive and the body stalls', async () => {
+    /* The half the first bound missed. `clearTimeout` sat in a `finally` attached to the fetch,
+       so it fired the moment headers landed and `res.json()` ran unbounded — and an unsettled
+       call is not one lost rewrite, it wedges the per-trip map in GlobalTools: the entry is never
+       cleared, the follow-up a later edit queued never starts, and the prose is frozen for the
+       session while the UI insists it is updating. Which is verbatim what the timeout exists to
+       prevent, reached past a timer that had already disarmed itself. */
+    vi.useFakeTimers()
+    stalledBodyFetch()
+    expect((await timeOut()).message).toMatch(/stopped waiting/i)
+  })
+
+  it('gives up when it is the ERROR body that stalls', async () => {
+    /* `editErrorMessage` reads the body too, and swallows its own failures — so an aborted read
+       there arrives back as an ordinary refusal message rather than as an abort. That is why the
+       timeout is detected on the SIGNAL and not on the error that surfaced. */
+    vi.useFakeTimers()
+    stalledBodyFetch(false)
+    expect((await timeOut()).message).toMatch(/stopped waiting/i)
+  })
+
+  it('does not claim the trip is unchanged, because it is not', async () => {
+    /* `/trips/{id}/replan` refreshes the routes BEFORE narrating (backend/main.py), those are
+       durable writes, and aborting a browser fetch neither rolls them back nor stops the server
+       task. Telling the user nothing happened is false in both directions at once. */
     vi.useFakeTimers()
     hangingFetch()
-    const { replanTrip } = await import('@/lib/trip/api')
-    const call = catchErr(replanTrip('trip-1', 'token'))
-    await vi.advanceTimersByTimeAsync(120_000)
-    const message = (await call as Error).message
-    expect(message).toContain('The trip itself is unchanged')
+    const message = (await timeOut()).message
+    expect(message).not.toMatch(/unchanged/i)
+    expect(message).toContain('may still be finishing on the server')
+    expect(message).toContain('routes were already refreshed')
     expect(message).not.toContain('operation was aborted')
+  })
+
+  it('does not invite a retry that could overwrite newer prose with older', async () => {
+    /* A rewrite started now can finish before the one the server is still working on, landing the
+       OLDER snapshot's summaries last — the stale-write the per-trip queue prevents, arriving
+       from the one direction the client cannot see. */
+    vi.useFakeTimers()
+    hangingFetch()
+    const message = (await timeOut()).message
+    expect(message).not.toMatch(/try again/i)
+    expect(message).toContain('rather than starting another')
   })
 
   it('does not wait the full timeout before failing on an ordinary refusal', async () => {
@@ -172,7 +231,7 @@ describe('replanTrip is bounded', () => {
     const { replanTrip } = await import('@/lib/trip/api')
     const err = await catchErr(replanTrip('trip-1', 'token')) as Error
     expect(err.message).toContain('cannot be edited')
-    expect(err.message).not.toMatch(/took too long/i)
+    expect(err.message).not.toMatch(/stopped waiting/i)
   })
 
   it('cancels its own timer when the call lands, so nothing is left ticking', async () => {

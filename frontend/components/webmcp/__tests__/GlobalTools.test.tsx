@@ -815,7 +815,7 @@ const { replanTrip: replanTripApi } = await import('@/lib/trip/api')
 const { getTrip: getTripApi } = await import('@/lib/trip/supabase-api')
 
 /** Whatever the rail is currently holding, captured from the real provider. */
-let railEntries: { tool: string; status: string; detail: string | null }[] = []
+let railEntries: { tool: string; status: string; detail: string | null; subject: string | null }[] = []
 
 function WatchRail() {
   const { activity } = useWebMcpRegistry()
@@ -962,7 +962,10 @@ describe('the summary rewrite an edit starts', () => {
     await act(async () => { await tools.move_place.execute({ place: '1', to_day: 3 }) })
 
     await waitFor(() => {
-      expect(railEntries.find((e) => e.tool === 'replan_trip')?.status).toBe('running')
+      /* Matched on the SUBJECT too, because that is what the trip page keys its "updating"
+         marker off: an entry with no subject is one RegisterTools opened before execute ran, and
+         it covers the approval card's whole life. */
+      expect(railEntries.find((e) => e.tool === 'replan_trip' && e.subject === TRIP_ID)?.status).toBe('running')
     })
   })
 

@@ -116,6 +116,23 @@ export type ActivityStatus = 'done' | 'declined' | 'failed'
 export type ActivityEntry = ToolFacts & {
   id: number
   tool: string
+  /**
+   * What this entry is about, when the caller knows and it matters — a trip id, today.
+   *
+   * Null for every entry `RegisterTools` opens, and that is the useful half of it rather than a
+   * gap. Those are opened by NAME, before `execute` runs, so they cover the approval card's whole
+   * life: a `replan_trip` waiting on an unanswered card is `running` for as long as the user
+   * reads it, and reading a bare `tool === 'replan_trip' && status === 'running'` as "this trip's
+   * summaries are being rewritten" therefore said so while nothing was happening — and went on
+   * saying it right up until the user DECLINED, which proves no rewrite ever started.
+   *
+   * A subject is written only where the work is genuinely under way and its target is known
+   * (`GlobalTools::runReplan`, at the moment the request goes out). So a consumer that matches on
+   * `subject === myTripId` gets both answers at once: not during the card, and not for somebody
+   * else's trip. It stays on the rail's own entries rather than becoming a second signal beside
+   * them, because two sources can disagree about one rewrite.
+   */
+  subject: string | null
   detail: string | null
   status: 'running' | ActivityStatus
   at: number
@@ -170,7 +187,8 @@ type RegistryValue = {
   adoptOrganizeJob: React.MutableRefObject<((jobId: string) => void) | null>
   /** Visible log of what the agent did. Reads included — a silent read cannot be consented to. */
   activity: ActivityEntry[]
-  beginActivity: (tool: string) => number
+  /** `subject` names what the work is about (a trip id) — see `ActivityEntry.subject`. */
+  beginActivity: (tool: string, subject?: string) => number
   endActivity: (id: number, status: ActivityStatus, detail?: string) => void
   /** Whether `document.modelContext` exists at all — false in an ordinary browser. */
   supported: boolean
@@ -210,10 +228,13 @@ export function WebMcpRegistryProvider({ children }: { children: React.ReactNode
   // tail of five: the fifth read silently deleted the edit the user was about to question, and
   // an audit log that discards its own oldest entries is the one thing an audit log may not do.
   // The rail, not the store, is what stays compact — it collapses to the newest entry.
-  const beginActivity = useCallback((tool: string) => {
+  const beginActivity = useCallback((tool: string, subject?: string) => {
     const id = ++activitySeq.current
     const facts = TOOLS[tool] ?? UNKNOWN_TOOL
-    setActivity((prev) => [...prev, { id, tool, ...facts, detail: null, status: 'running', at: Date.now() }])
+    setActivity((prev) => [
+      ...prev,
+      { id, tool, ...facts, subject: subject ?? null, detail: null, status: 'running', at: Date.now() },
+    ])
     return id
   }, [])
 

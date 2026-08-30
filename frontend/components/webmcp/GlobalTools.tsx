@@ -859,7 +859,16 @@ export default function GlobalTools() {
   type TripRewrites = {
     /** Mutations that have landed for this trip, counted here because only this app knows. */
     edits: number
-    /** The run in flight, with the `edits` value its backend snapshot is guaranteed to include. */
+    /**
+     * The run in flight, with the `edits` value its backend snapshot includes.
+     *
+     * "Includes" as far as THIS TAB can know. `edits` is an in-memory counter, so the guarantee
+     * is session-local by construction: two tabs open on one trip count independently, both can
+     * start a rewrite, and if the newer one finishes first the older snapshot's prose lands last
+     * and wins. Closing that needs a version the SERVER owns, which is a bigger change than this
+     * one and deliberately not made here — the counter still removes the common case, which is
+     * one tab making several edits in a row.
+     */
     running: { promise: Promise<ReplanTripResult>; covers: number } | null
     /** The single follow-up owed to everyone waiting for a run newer than the one in flight. */
     follow: {
@@ -896,8 +905,13 @@ export default function GlobalTools() {
    *    narration runs, which is what stops a briefly-stale summary from being a silent one. A
    *    follow-up is a second real narration and gets its own entry, because it is one.
    *
-   * Exactly one run per trip is ever in flight, which is also what stops an older snapshot's
-   * prose from landing on top of a newer one's.
+   * At most one run per trip is in flight FROM THIS TAB, which is what stops an older snapshot's
+   * prose landing on top of a newer one's. Two things fall outside that, and neither is fixable
+   * from here: a second tab counts its own edits and can have a rewrite of its own running, and a
+   * client timeout stops this tab waiting without stopping the server task it started — so the
+   * next run can begin while the abandoned one is still narrating. `replanTrip`'s timeout message
+   * says so and steers away from an immediate retry for exactly that reason. The real fix for
+   * both is a version the server owns.
    *
    * It rejects on failure, and that is deliberate too: `replan_trip` reports what went wrong from
    * the rejection, and guardrail #3 lives on the other side of it — the caller that started this
@@ -907,7 +921,10 @@ export default function GlobalTools() {
   const startReplanRun = useCallback(
     (tripId: string, state: TripRewrites, afterEdit: boolean): Promise<ReplanTripResult> => {
       const covers = state.edits
-      const entry = beginActivity('replan_trip')
+      /* Subject-tagged, which is what lets the trip page mark ONLY its own panel and only while
+         the request is genuinely out. The entry `RegisterTools` opens for the tool call carries
+         no subject on purpose: it starts before `execute` and spans the approval card. */
+      const entry = beginActivity('replan_trip', tripId)
       const run = (async () => {
         try {
           const result = await replanTrip(tripId, await getAccessToken())

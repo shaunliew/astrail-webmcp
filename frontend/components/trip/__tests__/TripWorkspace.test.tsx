@@ -640,7 +640,7 @@ describe('TripWorkspace summary rewrite marker', () => {
     expect(screen.queryByTestId('summary-rewriting')).toBeNull()
 
     let id = 0
-    act(() => { id = reg.current!.beginActivity('replan_trip') })
+    act(() => { id = reg.current!.beginActivity('replan_trip', TOKYO_TRIP.trip.id) })
     expect(screen.getByTestId('summary-rewriting')).toBeInTheDocument()
 
     act(() => { reg.current!.endActivity(id, 'done', 'Rewrote 3 day summaries.') })
@@ -655,7 +655,7 @@ describe('TripWorkspace summary rewrite marker', () => {
     await waitFor(() => expect(document.querySelector('[data-place-id]')).not.toBeNull())
 
     let id = 0
-    act(() => { id = reg.current!.beginActivity('replan_trip') })
+    act(() => { id = reg.current!.beginActivity('replan_trip', TOKYO_TRIP.trip.id) })
     expect(screen.getByTestId('summary-rewriting')).toBeInTheDocument()
     act(() => { reg.current!.endActivity(id, 'failed', 'Could not rewrite.') })
     expect(screen.queryByTestId('summary-rewriting')).toBeNull()
@@ -668,10 +668,35 @@ describe('TripWorkspace summary rewrite marker', () => {
     const { reg } = renderWorkspaceWithRegistry(TOKYO_TRIP.trip.id)
     await waitFor(() => expect(document.querySelector('[data-place-id]')).not.toBeNull())
 
-    act(() => { reg.current!.beginActivity('replan_trip') })
+    act(() => { reg.current!.beginActivity('replan_trip', TOKYO_TRIP.trip.id) })
     const marker = screen.getByTestId('summary-rewriting')
     expect(marker.closest('ol')).toBeNull()
     expect(document.querySelector('[data-place-id]')!.closest('li')!).not.toContainElement(marker)
+  })
+
+  /* An entry with no subject is one `RegisterTools` opened before `execute` ran, which for an
+     explicit `replan_trip` covers the whole life of its approval card. The marker used to appear
+     the moment the agent CALLED the tool and stay up while the card waited — then the user
+     declined, proving no rewrite had ever started, and the panel had been saying otherwise for as
+     long as they took to read it. */
+  it('does not mark the prose while an approval card is still unanswered', async () => {
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    const { reg } = renderWorkspaceWithRegistry(TOKYO_TRIP.trip.id)
+    await waitFor(() => expect(document.querySelector('[data-place-id]')).not.toBeNull())
+
+    act(() => { reg.current!.beginActivity('replan_trip') })
+    expect(screen.queryByTestId('summary-rewriting')).toBeNull()
+  })
+
+  /* Activity is global — the agent can drive a trip the user is not looking at. Without the
+     subject on the entry, rewriting trip B dimmed and marked trip A's prose. */
+  it('does not mark this trip for a rewrite running on a different one', async () => {
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    const { reg } = renderWorkspaceWithRegistry(TOKYO_TRIP.trip.id)
+    await waitFor(() => expect(document.querySelector('[data-place-id]')).not.toBeNull())
+
+    act(() => { reg.current!.beginActivity('replan_trip', 'some-other-trip') })
+    expect(screen.queryByTestId('summary-rewriting')).toBeNull()
   })
 
   /* Any other tool running is not a summary rewrite. A marker that lit up for `get_itinerary`

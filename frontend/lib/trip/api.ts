@@ -399,6 +399,42 @@ export async function editTripDates(
 export type ReplanTripResult = { days_narrated: number; routes_refreshed: boolean }
 
 /**
+ * How long a rewrite may run before the browser stops waiting for it.
+ *
+ * Generous on purpose — the endpoint refreshes routes and then narrates the whole trip, which
+ * measured around 30 seconds for two days, so a long trip on a slow model must not be cut off
+ * mid-narration. The bound exists for the case where the answer never fully arrives: this is the
+ * one call in the app whose promise is HELD, in `GlobalTools`\' per-trip map, to stop a second
+ * rewrite starting. A call that never settles therefore does not merely lose one rewrite — the
+ * map entry is never cleared, so the follow-up that a later edit queued behind it never starts,
+ * and the trip\'s prose is frozen for the rest of the session while the UI insists it is being
+ * updated. A timeout turns that into an honest failure.
+ *
+ * Which is why the bound has to cover the WHOLE call and not the header round-trip. The first
+ * version cleared the timer in a `finally` attached to the fetch alone, so `res.json()` — and
+ * `editErrorMessage`\'s read of the error body — ran with no bound at all. A server or proxy that
+ * returns headers and then stalls the body reaches exactly the wedge described above, past a
+ * timeout that has already disarmed itself.
+ */
+const REPLAN_TIMEOUT_MS = 120_000
+
+/**
+ * What the user is told when it runs out, and every clause is load-bearing.
+ *
+ * "The trip itself is unchanged" was the first version and it is false: `/trips/{id}/replan`
+ * refreshes the routes BEFORE it narrates (backend/main.py), those are durable writes, and
+ * aborting a fetch in the browser neither rolls them back nor stops the server task. So the trip
+ * HAS changed and the narration may still be running and about to write more.
+ *
+ * That is also why it does not say "try again". A second rewrite started now can finish before
+ * the first one the server is still working on, which lets the OLDER snapshot\'s prose land last
+ * and overwrite the newer — the same stale-write hazard the per-trip queue exists to prevent,
+ * arriving from the one direction the client cannot see.
+ */
+const REPLAN_TIMED_OUT =
+  'Astrail stopped waiting for the summaries to be rewritten. The rewrite may still be finishing on the server, and the routes were already refreshed, so re-read the trip in a moment rather than starting another.'
+
+/**
  * Re-routes the trip and rewrites its day summaries.
  *
  * Costs an LLM call and nothing from the user's trip allowance (`/trips/{id}/replan` has no quota
@@ -407,42 +443,29 @@ export type ReplanTripResult = { days_narrated: number; routes_refreshed: boolea
  * SILENT: go through `GlobalTools`, which coalesces one rewrite per trip and puts it on the
  * activity rail, rather than calling this directly.
  */
-/**
- * How long a rewrite may run before the browser stops waiting for it.
- *
- * Generous on purpose — the endpoint refreshes routes and then narrates the whole trip, which
- * measured around 30 seconds for two days, so a long trip on a slow model must not be cut off
- * mid-narration. The bound exists for the case where the response never arrives at all: this is
- * the one call in the app whose promise is held in a per-trip map to stop a second rewrite
- * starting, so a fetch that never settles does not merely lose one rewrite — it wedges the map,
- * and every later edit joins a dead promise, is told the summaries are being rewritten, and
- * never triggers another. The trip's prose would be frozen for the session with the UI insisting
- * it is being updated. A timeout turns that into an honest failure.
- */
-const REPLAN_TIMEOUT_MS = 120_000
-
 export async function replanTrip(tripId: string, accessToken: string): Promise<ReplanTripResult> {
   // AbortController rather than AbortSignal.timeout: the latter is absent in some of the
   // environments this runs under, and a silently-undefined signal is exactly no bound at all.
   const controller = new AbortController()
   const bell = setTimeout(() => controller.abort(), REPLAN_TIMEOUT_MS)
-  let res: Response
   try {
-    res = await fetch(`${BACKEND_URL}/trips/${tripId}/replan`, {
+    const res = await fetch(`${BACKEND_URL}/trips/${tripId}/replan`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${accessToken}` },
       signal: controller.signal,
     })
+    // Both reads are inside the bound, deliberately: each consumes the response BODY, which is
+    // the half a stalled proxy holds open.
+    if (!res.ok) throw new Error(await editErrorMessage(res))
+    return (await res.json()) as ReplanTripResult
   } catch (e) {
-    // An abort reads as a DOMException named AbortError, whose own message ("The operation was
-    // aborted") tells a user nothing about what was being attempted or what to do next.
-    if (controller.signal.aborted) {
-      throw new Error('The summaries took too long to rewrite. The trip itself is unchanged — try again.')
-    }
+    // An abort surfaces as a DOMException named AbortError, whose own message ("The operation was
+    // aborted") tells a user nothing about what was attempted or what it left behind. Checked on
+    // the SIGNAL rather than on the error, because an aborted body read inside `editErrorMessage`
+    // is swallowed by that function and arrives here as an ordinary refusal message.
+    if (controller.signal.aborted) throw new Error(REPLAN_TIMED_OUT)
     throw e
   } finally {
     clearTimeout(bell)
   }
-  if (!res.ok) throw new Error(await editErrorMessage(res))
-  return (await res.json()) as ReplanTripResult
 }

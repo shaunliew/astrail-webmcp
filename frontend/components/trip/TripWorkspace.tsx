@@ -116,11 +116,21 @@ export default function TripWorkspace({
    * exactly as on `done`, because a rewrite that died leaves the prose stale forever with nothing
    * coming to replace it, and "updating" would then be a standing lie.
    *
+   * `subject` is what makes that reading safe, and matching on it is not defensive tidying — the
+   * name and status alone were wrong in two separate ways. `RegisterTools` opens an entry BEFORE
+   * `execute` runs, so an explicit `replan_trip` is `running` for the entire time its approval
+   * card sits unanswered: the panel claimed this day's summary was being rewritten while nothing
+   * was happening, and kept claiming it right up until the user DECLINED, which proves no rewrite
+   * ever started. And with no target on the entry, a rewrite the agent ran for a DIFFERENT trip
+   * dimmed and marked this one. Entries carrying a subject are written only by
+   * `GlobalTools::runReplan`, at the moment the request actually goes out, and they name the trip
+   * it is for — so one predicate answers both.
+   *
    * Optional registry: this component renders outside the /app shell too, and null means no agent
    * can have started anything.
    */
   const summaryRewriting = (useOptionalWebMcpRegistry()?.activity ?? []).some(
-    (e) => e.tool === 'replan_trip' && e.status === 'running',
+    (e) => e.tool === 'replan_trip' && e.status === 'running' && e.subject === tripId,
   )
   const [bundle, setBundle] = useState<TripBundle | null>(seeded ?? null)
   const [status, setStatus] = useState<'loading' | 'ready' | 'not_found'>(seeded ? 'ready' : 'loading')

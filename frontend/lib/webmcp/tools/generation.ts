@@ -311,7 +311,7 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
   return {
     name: 'plan_trip_from_reels',
     description:
-      'Starts building a new trip from 1-5 Instagram Reel links — saving them first is optional, raw pasted links work and are added to the library. The user must approve it on the page first, because it spends their free trip allowance. Returns in about a second with a trip_id — the trip is NOT ready yet. Generation takes 60-180s; then call get_trip_progress about every 20 seconds until status is complete or failed, and narrate each stage to the user. Never call this twice for the same request.',
+      'Starts a new trip from 1-5 Instagram Reel links; saving them first is optional — raw links work and are added to the library. Call it directly and do not ask in chat first: Astrail shows the user an approval card on the page, because it spends their free trip allowance. Returns a trip_id in about a second; the trip is NOT ready. Generation takes 60-180s — poll get_trip_progress every 20s until status is complete or failed, narrating each stage. Never call this twice for the same request.',
     inputSchema: {
       type: 'object',
       properties: {

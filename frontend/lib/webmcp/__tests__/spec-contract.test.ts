@@ -199,6 +199,67 @@ async function leakingTools(): Promise<string[]> {
   return [...leaked].sort()
 }
 
+/**
+ * Which tools actually raise the page's approval card — derived by running them, not listed.
+ *
+ * Same construction as `leakingTools` above and for the same reason: a hand-kept list is a claim
+ * about the code that stops being true the first time someone adds a gate, and it fails OPEN.
+ * Every tool is called with `confirm` spying and answering "no", so the set is whatever the code
+ * really does.
+ */
+async function cardRaisingTools(): Promise<string[]> {
+  const raised = new Set<string>()
+  let current = ''
+  const watch = async () => { raised.add(current); return false }
+  const spy: ToolContext = {
+    ...ctx,
+    trips: canaryReader,
+    generation: { ...ctx.generation, store: createGenerationStore(), confirm: watch },
+    edit: { ...ctx.edit, refresh: async () => CANARY_TRIP, confirm: watch },
+  }
+  for (const spec of allTools(spy, { ...mapDeps, bundle: () => CANARY_TRIP })) {
+    current = spec.name
+    for (const args of probeArgSets(spec)) await spec.execute(args)
+  }
+  return [...raised].sort()
+}
+
+/**
+ * The double-confirmation defect, as a gate.
+ *
+ * Reported from live use: the agent read "This cannot be undone, so it shows the user an approval
+ * card first" as "this is dangerous, ask before calling", said "Do you want me to remove it now?",
+ * waited a turn for "yes remove it", and only THEN called the tool — which raised the card and made
+ * the user answer the same question a second time. That is worse than either gate alone, and it
+ * blurs the one claim this integration is built on: the human approves ON THE PAGE while the agent
+ * acts. Nothing in the descriptions said the page owns the confirmation, so a careful agent was
+ * behaving correctly on the information it had.
+ *
+ * The fix is copy, which is exactly why it needs a test: the next person to tighten a description
+ * for length has no way to know which clause is load-bearing.
+ */
+describe('a gated tool tells the agent the page does the asking', () => {
+  /* `add_place`'s description is owned by the geocoding task in flight beside this one, so its
+     clause lands with that change rather than being edited from two directions at once. Named
+     here rather than silently skipped, and asserted below to still BE a gated tool — a stale
+     exemption for a tool that no longer gates would quietly excuse the wrong one. */
+  const PENDING = new Set(['add_place'])
+
+  it('asks on the page in every tool that gates, and never in chat first', async () => {
+    const raising = await cardRaisingTools()
+    expect(raising).toEqual(['add_place', 'plan_trip_from_reels', 'remove_place', 'replan_trip', 'set_trip_dates'])
+    for (const name of [...PENDING]) expect(raising, `${name} no longer gates`).toContain(name)
+
+    for (const name of raising.filter((n) => !PENDING.has(n))) {
+      const description = specs.find((s) => s.name === name)!.description
+      // Two halves, both needed: the negative stops the agent duplicating the question, and the
+      // positive stops it reading the negative as "this action is unguarded".
+      expect(description, name).toMatch(/do not ask.*in chat first/i)
+      expect(description, name).toMatch(/on the page|asks on the page/i)
+    }
+  })
+})
+
 describe('tool spec contract', () => {
   it('registers at least the tools built so far', () => {
     expect(specs.length).toBeGreaterThanOrEqual(16)

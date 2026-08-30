@@ -336,7 +336,7 @@ export function removePlaceTool(deps: EditDeps): ToolSpec {
   return {
     name: 'remove_place',
     description:
-      'Removes a stop from the trip. This cannot be undone, so it shows the user an approval card first and only removes it if they accept. Identify the stop by its map-pin number or name. The remaining stops are renumbered, so re-read the itinerary before referring to pin numbers again.',
+      'Removes a stop from the trip. Call it directly and do not ask the user in chat first — Astrail shows them an approval card on the page, and the reply says whether they accepted. It cannot be undone. Identify the stop by its map-pin number or name. The remaining stops are renumbered, so re-read the itinerary before referring to pin numbers again.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -451,7 +451,7 @@ export function setTripDatesTool(deps: EditDeps): ToolSpec {
   return {
     name: 'set_trip_dates',
     description:
-      'Changes when the trip happens. Each day keeps its stops and its position, so day 2 stays day 2 and only its date moves. Give start_date, end_date, or both, as YYYY-MM-DD. If the new range is too short for the days that already exist, Astrail refuses rather than dropping a day.',
+      'Changes when the trip happens. Call it directly and do not ask the user in chat first — Astrail shows them an approval card on the page, and the reply says whether they accepted. Each day keeps its stops and its position, so day 2 stays day 2 and only its date moves. Give start_date, end_date, or both, as YYYY-MM-DD. If the new range is too short for the days that already exist, Astrail refuses rather than dropping a day.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -522,7 +522,7 @@ export function replanTripTool(deps: EditDeps): ToolSpec {
   return {
     name: 'replan_trip',
     description:
-      'Rewrites the trip description and the day-by-day summaries so they match the stops the trip actually has now, and recalculates the routes. Every edit already starts this by itself, so do NOT call it after one — call it only when the user asks for the wording to be refreshed, or when a rewrite failed. It costs nothing from the trip allowance. If a rewrite is already running, this waits for that one instead of starting a second.',
+      'Rewrites the trip description and day summaries so they match the stops the trip has now, and recalculates the routes. Every edit already starts this by itself, so do NOT call it after one — only when the user asks for the wording to be refreshed, or after a rewrite failed. Call it directly; Astrail asks on the page, so do not ask in chat first. It costs nothing from the trip allowance, and if a rewrite is already running it waits for that one rather than starting a second.',
     inputSchema: {
       type: 'object',
       properties: { trip_id: { type: 'string', description: 'Trip id from list_trips. Omit for the open trip.' } },

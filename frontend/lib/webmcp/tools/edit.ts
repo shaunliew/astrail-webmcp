@@ -29,12 +29,22 @@ export type EditDeps = {
   /**
    * Rewrites the summaries so they describe the stops the trip actually has.
    *
-   * ONE per trip, wherever it was started from: the shell coalesces on trip id, so a second
-   * caller joins the rewrite already running instead of buying a second narration. It announces
-   * itself on the activity rail — the only surface on which a rewrite nobody approved becomes
-   * visible — and it still REJECTS on failure, so `replan_trip` can report that.
+   * ONE run per trip at a time, wherever it was started from: the shell coalesces on trip id, so
+   * a caller that only wants current prose joins the run already going instead of buying a second
+   * narration. It announces itself on the activity rail — the only surface on which a rewrite
+   * nobody approved becomes visible — and it still REJECTS on failure, so `replan_trip` can
+   * report that.
+   *
+   * `afterEdit` is not optional in spirit, only in type. The backend reads the trip's stops and
+   * THEN awaits the narrator for ~30 seconds (`persist_narration`), so a run that started before
+   * an edit writes prose that cannot know about it. Passing `afterEdit` raises the version the
+   * prose owes, which is what stops the shell joining such a run and reporting the summaries as
+   * current. Every call that follows a mutation must set it; nothing else may.
    */
-  replan: (tripId: string) => Promise<{ days_narrated: number; routes_refreshed: boolean }>
+  replan: (
+    tripId: string,
+    opts?: { afterEdit?: boolean },
+  ) => Promise<{ days_narrated: number; routes_refreshed: boolean }>
   /**
    * Whether a rewrite is already running for this trip.
    *
@@ -218,7 +228,9 @@ async function refreshView(deps: EditDeps, tripId: string): Promise<{ fresh: Tri
  */
 function startSummaryRewrite(deps: EditDeps, tripId: string): void {
   void deps
-    .replan(tripId)
+    // `afterEdit` because the stops just changed: the shell must not satisfy this with a run that
+    // started before the change, whose prose is already being written from the older trip.
+    .replan(tripId, { afterEdit: true })
     // The page shows the new prose only once it re-reads. Same downgrade as everywhere else in
     // this file: a failed re-read is a stale VIEW, never a failed rewrite.
     .then(() => refreshView(deps, tripId))
@@ -418,8 +430,16 @@ export function addPlaceTool(deps: EditDeps): ToolSpec {
       const hasLng = typeof args.lng === 'number'
       if (hasLat !== hasLng) return noChange('failed', 'Give both lat and lng, or neither.')
 
+      // Coordinates the AGENT supplied are shown, because they are the one thing on this card the
+      // user cannot otherwise check. Astrail looks a name up itself and verifies what comes back;
+      // a lat/lng passed straight in is model-asserted, and the backend can only confirm it is
+      // somewhere near this trip — not that it is the place named. Approving a pin you were never
+      // shown is how a wrong landmark gets into an itinerary silently. Four decimals is ~11 m.
+      const pin = hasLat && hasLng
+        ? `\nIt will be pinned at ${(args.lat as number).toFixed(4)}, ${(args.lng as number).toFixed(4)} — coordinates I supplied rather than ones Astrail looked up. Check them before accepting.`
+        : ''
       const approved = await deps.confirm(
-        `Add "${name}" to day ${day} of this trip.\nIt will be marked as a place you asked for, with no Reel evidence behind it.`,
+        `Add "${name}" to day ${day} of this trip.\nIt will be marked as a place you asked for, with no Reel evidence behind it.${pin}`,
       )
       if (!approved) return noChange('declined', `The user declined. "${name}" was not added.`)
 
@@ -569,15 +589,25 @@ export function replanTripTool(deps: EditDeps): ToolSpec {
 
       const { stale } = await refreshView(deps, r.bundle.trip.id)
       const routes = result.routes_refreshed ? 'Routes recalculated.' : 'Routes could not be recalculated this time.'
+      /* An edit that landed WHILE this rewrite ran leaves the prose behind again the moment it
+         finishes, and the shell has already started the follow-up that fixes it. Saying
+         `summaries_stale: false` here because a rewrite completed would be the stale-join lie one
+         level up: what makes the summaries current is that no newer edit exists, not that a
+         narration returned. This is the only reading of it that the tool can make after the fact,
+         and it is exact — the shell clears `running` before this continuation resumes, so a
+         rewrite in flight NOW is by construction one that a later edit asked for. */
+      const overtaken = deps.replanInFlight?.(r.bundle.trip.id) === true
       // The one success path here that used to answer in bare prose. Its three other endings now
       // answer in the envelope, and a reply whose SHAPE depends on how it went is a second thing
       // the reader has to know before it can read the first.
       return editResult({
         // Who asked for it is part of the record, and on the join path it was not the user: an
         // edit started this rewrite and this call only waited for it.
-        result: `${joining ? 'Joined the rewrite this trip already had running.' : 'The user approved.'} Rewrote ${result.days_narrated} day summar${result.days_narrated === 1 ? 'y' : 'ies'} to match the current stops. ${routes}${stale ? ` ${STALE_VIEW}` : ''}`,
-        // This is the tool that un-stales them. Saying so is the whole point of the field.
-        summariesStale: false,
+        result: `${joining ? 'Joined the rewrite this trip already had running.' : 'The user approved.'} Rewrote ${result.days_narrated} day summar${result.days_narrated === 1 ? 'y' : 'ies'} to match the current stops.${overtaken ? ' The trip changed again while it ran, so another rewrite is already under way.' : ''} ${routes}${stale ? ` ${STALE_VIEW}` : ''}`,
+        // This is the tool that un-stales them — unless an edit overtook it, in which case the
+        // prose it just wrote is already one edit behind and saying otherwise is the lie.
+        summariesStale: overtaken,
+        summariesRewriting: overtaken,
       })
     },
   }

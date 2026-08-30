@@ -9,10 +9,18 @@ of record for that path; asking the agent survives only as the LAST resort.
 COST — a paid call is the third thing tried, never the first. Mapbox forward geocoding bills the
 permanent (storable-results) tier at $5/1,000 with no free tier, so `main.add_trip_place` runs the
 FREE local reuse first (`_find_requested_place_coordinates`: an exact-name `places` row that shares
-this trip's city or country) and only geocodes on a miss. The write-through half closes the loop:
-`_find_or_create_place` persists the resolved coordinate — and the country this module recovered —
-into `places` BEFORE the 201 returns (Guardrail #7), so the next add of the same name on any trip in
-that country reads it back for free. `places` IS the cache for this path.
+this trip's city or country) and only geocodes on a miss. The write-through half is
+`_find_or_create_place`, which persists the resolved coordinate — and the country this module
+recovered — BEFORE the 201 returns (Guardrail #7).
+
+That makes the reuse likely, NOT guaranteed, and the difference is worth stating because the
+docstring used to overclaim it. `_find_or_create_place` INSERTS a new row with our country, but if
+it instead DEDUPS onto an existing same-name row within 500 m, that row keeps whatever country it
+had — and `_repair_null_country` only fills a NULL one when the stored coordinate is binary-identical
+to ours (`pipeline/persist.py`, the deliberately-deferred R3). A null-country neighbour 100 m away is
+therefore returned, stays invisible to the free lookup, and the next add of that name re-bills — quite
+possibly only to hit the duplicate-place 409. Closing that needs a change in `persist.py`, which is
+not this module's to make.
 
 The hotel identity cache (`geocode.cache.resolve_cached`) is deliberately NOT reused: its key is a
 Travala hotel id (`identity_key` RAISES without one), its table is hotel-shaped down to the
@@ -20,10 +28,27 @@ Travala hotel id (`identity_key` RAISES without one), its table is hotel-shaped 
 has no such identity, and giving it one would mean writing non-hotel rows into a hotel table.
 
 WRONG > MISSING. A coordinate in the wrong country is worse than no coordinate, so a result is
-trusted only after `accept_geocode` can positively verify it against the trip: same country, and
-within `MAX_TRIP_DISTANCE_M` of one of the trip's existing stops. A result nothing can check is
-rejected. A rejection, a provider miss, a timeout and a provider fault all end identically — the
-caller falls back to asking the agent, which still works.
+trusted only after `accept_geocode` positively verifies it against the trip, and the precise rule is
+EVERY CHECK THE TRIP CAN RUN MUST RUN AND PASS:
+
+  * the trip knows its countries -> the result must DECLARE one and it must be one of them. Not
+    "match if present": a result with no country is rejected outright. Mapbox omits the country from
+    `context` on some responses and `strict_forward_geocode` can only backfill it when a SINGLE
+    country filter was pinned — which a multi-country trip deliberately does not pin (see
+    `country_filter`). Accepting on distance alone there would let a same-name venue 25 km across a
+    border the traveller never visits become a stop, while this file claimed the country was checked.
+  * the trip has coordinates -> the result must be within `MAX_TRIP_DISTANCE_M` of one of them.
+  * neither -> nothing was verified, so nothing is trusted.
+
+A rejection, a provider miss, a timeout and a provider fault all end identically — the caller falls
+back to asking the agent, which still works.
+
+`accept_agent_coordinates` is the deliberately WEAKER gate for the coordinates the agent supplies
+itself. It cannot ask the trip about a country it has no name for, so only the distance check runs,
+and it stays OPEN when the trip has no coordinates at all — a trip with nothing placed yet has
+nothing to check against, and refusing there would leave no way to add anything. What it stops is
+the gross failure: a pin in another country or another hemisphere. What it does NOT do is establish
+that the coordinate is the place the agent named. That escape hatch remains model-asserted.
 
 `strict_forward_geocode` (not the lenient `forward_geocode`) is the entry point: the lenient one
 returns None for BOTH "no such place" and "malformed 2xx body", so a broken provider is
@@ -154,29 +179,65 @@ def proximity_bias(context: TripGeoContext) -> tuple[float, float] | None:
     return (lng, lat)
 
 
-def accept_geocode(result: GeocodeResult, context: TripGeoContext) -> bool:
-    """True only when the trip can POSITIVELY verify this coordinate. Pure.
+def _alpha2(value: str | None) -> str | None:
+    """`value` as an uppercase ISO alpha-2 code, or None if it is not one.
 
-    Two gates, and at least one of them must actually have run: a result in a country the trip
-    does not visit is rejected, and so is one farther than `MAX_TRIP_DISTANCE_M` from every stop
-    the trip already has. A result neither gate could evaluate is rejected too — an unverifiable
-    coordinate is exactly the model-asserted pin this whole path exists to stop, and falling back
-    to asking the agent still works.
+    A joined filter echo ("JP,KR") and a 3-letter code are both None here rather than something
+    to compare: a value that is not a country code cannot verify a country.
+    """
+    code = (value or "").strip().upper()
+    return code if len(code) == 2 and code.isalpha() else None
+
+
+def _nearest_stop_m(lat: float, lng: float, context: TripGeoContext) -> float | None:
+    """Great-circle metres to the closest stop the trip already has, or None if it has none."""
+    if not context.coordinates:
+        return None
+    return min(haversine_m(lat, lng, plat, plng) for plat, plng in context.coordinates)
+
+
+def accept_geocode(result: GeocodeResult, context: TripGeoContext) -> bool:
+    """True only when EVERY check this trip is capable of running has run and passed. Pure.
+
+    Not "match if present". A trip that knows its countries requires the result to DECLARE one
+    that is among them — a country-less result is rejected even at point-blank range. Mapbox omits
+    the country from `context` on some responses, and `strict_forward_geocode` can only backfill it
+    when a single-country filter was pinned, which `country_filter` deliberately withholds from a
+    multi-country trip. Treating a missing country as "nothing to check" is what let a same-name
+    venue 25 km across an unvisited border through while this module advertised a country gate.
+
+    A trip with NO country of its own is a different case, not a loophole: a large share of
+    `places` rows carry a null country, and for those the distance check is the real and only
+    verification available. A result no check could evaluate at all is rejected.
     """
     checked = False
-    code = (result.country_code or "").strip().upper()
-    if context.country_codes and code:
-        checked = True
-        if code not in context.country_codes:
+    if context.country_codes:
+        code = _alpha2(result.country_code)
+        if code is None or code not in context.country_codes:
             return False
-    if context.coordinates:
         checked = True
-        nearest = min(
-            haversine_m(result.lat, result.lng, lat, lng) for lat, lng in context.coordinates
-        )
+    nearest = _nearest_stop_m(result.lat, result.lng, context)
+    if nearest is not None:
+        checked = True
         if nearest > MAX_TRIP_DISTANCE_M:
             return False
     return checked
+
+
+def accept_agent_coordinates(lat: float, lng: float, context: TripGeoContext) -> bool:
+    """The deliberately WEAKER gate for a coordinate the AGENT supplied. Pure.
+
+    A model-recited pin arrives with no country and no provenance, so the country half of
+    `accept_geocode` has nothing to read and only the distance check can run. This catches the
+    gross failure — a stop pinned in another country or another hemisphere, which the user
+    approving the card would have had no way to see — and it establishes NOTHING about whether the
+    coordinate is the place the agent named. That remains model-asserted; see the module docstring.
+
+    OPEN when the trip has no coordinates: the escape hatch is the only way to place the first stop
+    on a trip that has none, so a trip with nothing to check against must not be able to refuse it.
+    """
+    nearest = _nearest_stop_m(lat, lng, context)
+    return nearest is None or nearest <= MAX_TRIP_DISTANCE_M
 
 
 async def geocode_requested_place(

@@ -69,6 +69,7 @@ from config_validation import validate_required_secrets
 from geocode.requested_place import (
     EMPTY_TRIP_GEO_CONTEXT,
     TripGeoContext,
+    accept_agent_coordinates,
     build_trip_geo_context,
     geocode_requested_place,
 )
@@ -722,6 +723,18 @@ async def _load_trip_geo_context(client, trip_id: str) -> TripGeoContext:
     return build_trip_geo_context(context_result.data or [])
 
 
+def _like_literal(value: str) -> str:
+    """Escape LIKE wildcards so an exact name is looked up as an exact name.
+
+    `%` and `_` are wildcards to `ilike`, and the candidate window below is an UNORDERED 25 rows,
+    so an unescaped "Cafe 100% Chocolate" or "Bar_Tokyo" matches broadly and can push the one
+    exactly-matching row out of the window. The exact comparison afterwards means this was never a
+    correctness bug — the wrong row could not be returned — but the free answer is missed and a
+    $0.005 geocode is bought for nothing. Backslash is Postgres LIKE's default escape character.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 async def _find_requested_place_coordinates(
     client, *, name: str, context: TripGeoContext
 ) -> dict | None:
@@ -738,7 +751,7 @@ async def _find_requested_place_coordinates(
     candidates = (
         await client.table("places")
         .select("id,name,aliases,lat,lng,city,country,country_code")
-        .ilike("name", name)
+        .ilike("name", _like_literal(name))
         .limit(25)
         .execute()
     )
@@ -900,8 +913,23 @@ async def add_trip_place(
     # the name itself — from the trip, then from Mapbox — before it ever asks.
     resolved = None
     geocoded = None
-    if req.lat is None and req.lng is None:
-        context = await _load_trip_geo_context(client, trip_key)
+    context = await _load_trip_geo_context(client, trip_key)
+    if req.lat is not None and req.lng is not None:
+        # The escape hatch is checked, not trusted. It arrives with no country and no provenance,
+        # so only geography can be asked of it — but a pin in another hemisphere is exactly the
+        # failure the approving user cannot see on the card, and it is cheap to refuse.
+        if not accept_agent_coordinates(req.lat, req.lng, context):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "validation_error",
+                    "message": (
+                        f"The coordinates given for '{req.name}' are not near this trip; "
+                        "check them, or omit them and let Astrail look the place up"
+                    ),
+                },
+            )
+    else:
         resolved = await _find_requested_place_coordinates(client, name=req.name, context=context)
         if resolved is None:
             geocoded = await geocode_requested_place(

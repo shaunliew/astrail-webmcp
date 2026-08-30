@@ -35,6 +35,39 @@ class _Result:
 
 _DEFAULT_OWNER_RESULT = object()
 
+# The column list `_find_requested_place_coordinates` selects — the fingerprint of the FREE
+# exact-name lookup, distinct from the geographic-context read that shares most of its columns.
+_NAME_LOOKUP_SELECT = "id,name,aliases,lat,lng,city,country,country_code"
+
+
+def _like_to_fnmatch(pattern: str) -> str:
+    """Translate a Postgres LIKE pattern to an fnmatch one, honouring backslash escapes.
+
+    The fake used to do a blind `%`->`*` / `_`->`?` swap, which cannot tell a wildcard from an
+    escaped literal — so it would have passed a name-lookup test whether or not the caller escaped
+    the name at all. `\%` and `\_` are literals here, and `*`/`?`/`[` coming from a place name are
+    wrapped in a character class so fnmatch does not re-read them as wildcards of its own.
+    """
+    out: list[str] = []
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char == "\\" and index + 1 < len(pattern):
+            nxt = pattern[index + 1]
+            out.append(f"[{nxt}]" if nxt in "*?[" else nxt)
+            index += 2
+            continue
+        if char == "%":
+            out.append("*")
+        elif char == "_":
+            out.append("?")
+        elif char in "*?[":
+            out.append(f"[{char}]")
+        else:
+            out.append(char)
+        index += 1
+    return "".join(out).casefold()
+
 
 class _Table:
     """Small stateful subset of the async Supabase/PostgREST builder."""
@@ -110,8 +143,7 @@ class _Table:
         if not all(row.get(key) in values for key, values in self._in_filters.items()):
             return False
         for column, pattern in self._ilike_filters.items():
-            wildcard = pattern.replace("%", "*").replace("_", "?").casefold()
-            if not fnmatchcase(str(row.get(column, "")).casefold(), wildcard):
+            if not fnmatchcase(str(row.get(column, "")).casefold(), _like_to_fnmatch(pattern)):
                 return False
         for column, op, value in self._ranges:
             candidate = row.get(column)
@@ -764,9 +796,98 @@ async def test_add_place_explicit_coordinates_never_make_a_paid_geocode(monkeypa
     added = next(row for row in db["places"] if row["name"] == "A place Mapbox has never heard of")
     assert (added["lat"], added["lng"]) == (34.6654, 135.4323)
     assert spy.calls == []
-    # Not even the trip's geographic context was read: the whole resolution path was skipped.
-    assert not any(call["table"] == "trip_places" and call["select"] == "place_id"
-                   for call in client.fake_supabase.calls)
+    # The free name lookup is skipped too — only the geographic context is read, and only so the
+    # agent's own pair can be checked against the trip.
+    assert not any(call["select"] == _NAME_LOOKUP_SELECT for call in client.fake_supabase.calls)
+
+
+async def test_add_place_refuses_agent_coordinates_nowhere_near_the_trip(monkeypatch):
+    """The escape hatch is checked, not trusted.
+
+    A model reciting the wrong landmark's coordinates used to be stored verbatim, and the approval
+    card never showed the numbers, so nobody could have caught it. This is the Eiffel Tower on an
+    Osaka trip.
+    """
+    db: dict = {}
+    _seed_owned_trip(db)
+    _seed_osaka_places(db)
+    spy = _stub_geocoder(monkeypatch, result=_geo(0.0, 0.0))
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={"name": "Osaka Castle Annex", "day_number": 1, "lat": 48.8584, "lng": 2.2945},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+    assert "not near this trip" in response.json()["error"]["message"]
+    assert [row["name"] for row in db["places"]] == ["Osaka Castle"]
+    assert len(db["trip_places"]) == 1
+    assert spy.calls == []          # refusing is free; it never falls through to a paid lookup
+
+
+async def test_add_place_accepts_agent_coordinates_on_an_empty_trip(monkeypatch):
+    """A trip with nothing placed has nothing to check against, and the escape hatch is the only
+    way to place its first stop — so the gate must stay open there."""
+    db: dict = {}
+    _seed_owned_trip(db)
+    db["places"] = []
+    db["trip_places"] = []
+    _stub_geocoder(monkeypatch, result=_geo(0.0, 0.0))
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={"name": "Somewhere Far", "day_number": 1, "lat": 48.8584, "lng": 2.2945},
+        )
+
+    assert response.status_code == 201
+
+
+async def test_add_place_reuses_a_name_containing_a_like_wildcard_for_free(monkeypatch):
+    """`%` and `_` are LIKE wildcards. Unescaped, they widen the candidate window past its
+    unordered 25-row cap and the exact row can fall outside it — a free answer missed and a paid
+    geocode bought for nothing."""
+    db: dict = {}
+    _seed_owned_trip(db)
+    _seed_osaka_places(db)
+    wildcard_place_id = "00000000-0000-0000-0000-000000000002"
+    # Decoys FIRST. Each one matches the UNESCAPED pattern (`%` = anything, `_` = any character)
+    # but not the escaped one, and there are more of them than the query's 25-row cap — so with the
+    # escaping removed the exact row below is cut from the window and never compared. Ordering is
+    # the whole point of the fixture: seeded after the decoys, it is row 31 of the loose match.
+    db["places"].extend({
+        "id": f"00000000-0000-0000-0000-0000000001{index:02d}",
+        "name": f"Cafe 100 filler {index} Chocolate-Bar",
+        "aliases": [],
+        "lat": 34.60 + index / 1000,
+        "lng": 135.50,
+        "city": "Osaka",
+        "country": "Japan",
+        "country_code": "JP",
+    } for index in range(30))
+    db["places"].append({
+        "id": wildcard_place_id,
+        "name": "Cafe 100% Chocolate_Bar",
+        "aliases": [],
+        "lat": 34.6700,
+        "lng": 135.5000,
+        "city": "Osaka",
+        "country": "Japan",
+        "country_code": "JP",
+    })
+    spy = _stub_geocoder(monkeypatch, result=_geo(0.0, 0.0))
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={"name": "Cafe 100% Chocolate_Bar", "day_number": 1},
+        )
+
+    assert response.status_code == 201
+    assert response.json()["trip_place"]["place_id"] == wildcard_place_id
+    assert spy.calls == []
 
 
 async def test_add_place_still_asks_when_the_geocoder_misses(monkeypatch):

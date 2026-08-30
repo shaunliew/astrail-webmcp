@@ -127,10 +127,67 @@ def test_accept_geocode_rejects_a_result_nothing_can_check():
     assert rp.accept_geocode(_found(34.65, 135.50, country_code=None), context) is False
 
 
-def test_accept_geocode_uses_distance_when_the_result_has_no_country():
-    context = _context()
-    assert rp.accept_geocode(_found(34.6544, 135.5064, country_code=None), context) is True
-    assert rp.accept_geocode(_found(43.0621, 141.3544, country_code=None), context) is False
+def test_accept_geocode_rejects_a_country_less_result_when_the_trip_knows_its_countries():
+    """The check the trip CAN run must actually run — even at point-blank range.
+
+    Mapbox omits the country on some responses, and on a multi-country trip nothing backfills it.
+    Accepting on distance alone there is how a cross-border venue the traveller never visits gets
+    in: this coordinate is 5 km from Osaka Castle, so distance would wave it straight through.
+    """
+    assert rp.accept_geocode(_found(34.6544, 135.5064, country_code=None), _context()) is False
+    assert rp.accept_geocode(_found(34.6544, 135.5064, country_code=""), _context()) is False
+    assert rp.accept_geocode(_found(34.6544, 135.5064, country_code="JP"), _context()) is True
+
+
+def test_accept_geocode_rejects_a_country_less_result_on_a_multi_country_trip():
+    """The end-to-end shape of the hole: a two-country trip pins no filter, so a country-less
+    response is exactly what Mapbox returns — and Johor Bahru is 25 km from the Singapore stop."""
+    multi = _context([
+        {"city": "Singapore", "country": "Singapore", "country_code": "SG",
+         "lat": 1.2897, "lng": 103.8501},
+        {"city": "Osaka", "country": "Japan", "country_code": "JP",
+         "lat": 34.6873, "lng": 135.5262},
+    ])
+    assert rp.country_filter(multi) is None                      # nothing to backfill from
+    assert rp.accept_geocode(_found(1.4927, 103.7414, country_code=None), multi) is False
+    # A declared, visited country at the same distance is still fine.
+    assert rp.accept_geocode(_found(1.3100, 103.8600, country_code="SG"), multi) is True
+
+
+def test_accept_geocode_rejects_a_malformed_country_code():
+    # A joined or otherwise non-alpha-2 value is not a country the trip can be checked against.
+    assert rp.accept_geocode(_found(34.6544, 135.5064, country_code="JP,KR"), _context()) is False
+    assert rp.accept_geocode(_found(34.6544, 135.5064, country_code="JPN"), _context()) is False
+
+
+def test_accept_geocode_uses_distance_when_the_trip_has_no_country_of_its_own():
+    """A trip whose places carry no country (a large share of `places` rows) can still be checked
+    geographically, and that check stays load-bearing on its own."""
+    country_less_trip = _context([
+        {"city": "Osaka", "lat": 34.6873, "lng": 135.5262},
+        {"city": "Osaka", "lat": 34.6654, "lng": 135.4323},
+    ])
+    assert country_less_trip.country_codes == frozenset()
+    assert rp.accept_geocode(_found(34.6544, 135.5064, country_code=None), country_less_trip) is True
+    assert rp.accept_geocode(_found(43.0621, 141.3544, country_code=None), country_less_trip) is False
+
+
+# ------------------------------------------------------- the agent's own coordinates
+
+
+def test_accept_agent_coordinates_rejects_a_pin_nowhere_near_the_trip():
+    assert rp.accept_agent_coordinates(48.8584, 2.2945, _context()) is False   # Eiffel Tower
+
+
+def test_accept_agent_coordinates_accepts_a_pin_on_the_trip():
+    assert rp.accept_agent_coordinates(34.6544, 135.5064, _context()) is True
+
+
+def test_accept_agent_coordinates_stays_open_when_the_trip_has_nothing_to_check():
+    """The escape hatch is the ONLY way to place the first stop on an empty trip, so a trip with
+    no coordinates cannot be allowed to refuse it."""
+    assert rp.accept_agent_coordinates(48.8584, 2.2945, rp.EMPTY_TRIP_GEO_CONTEXT) is True
+    assert rp.accept_agent_coordinates(48.8584, 2.2945, _context([{"country_code": "JP"}])) is True
 
 
 # --------------------------------------------------------------------------- resolver

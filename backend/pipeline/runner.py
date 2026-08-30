@@ -28,6 +28,7 @@ from pipeline.geo import centroid
 from pipeline.offline_harness import _date_range, assemble_itinerary
 from pipeline.persist import persist_hotels, persist_itinerary, persist_narration, persist_restaurants, persist_tradeoffs, persist_transport, persist_weather
 from pipeline.tradeoffs import build_hotel_comparisons, warnings_to_notes
+from scrape.reel_url import normalize_reel_url  # leaf module — pure stdlib, import-keyless, no cycle
 from jobs import _heartbeat, mark_job_running
 from observability import capture_exception as _sentry_capture
 from organizer import LeaseLost, authorize_place_ids
@@ -39,6 +40,29 @@ from supabase_client import get_supabase_client
 _UNSET = object()
 
 logger = logging.getLogger(__name__)
+
+
+def _canonical_reel_url(url: str) -> str:
+    """The form every OTHER writer of `source_reel_url` stores, so the column holds one string
+    per Reel regardless of which branch created the trip.
+
+    The Library branch resolves the column from `saved_reels.normalized_url`
+    (`organizer.authorize_place_ids`), written through this same `normalize_reel_url` by
+    `capture_saved_reel` — and `saved_reel_cards.places[].source_reel_url` serves that stored
+    form to the map popup, which joins the Reel cover on it by strict equality. Stamping the
+    RAW pasted URL here put `.../reel/X/` and `.../reel/X` in one column and silently dropped
+    every cover to a placeholder. Reuse, never a second `rstrip('/')`: the canonical rule also
+    strips query strings, rebuilds the canonical host, folds `/reels/` and `/tv/`, and
+    rejects lookalikes like `instagram.com.evil.com` — a re-spelling drifts from all four.
+
+    An unsupported URL keeps the raw string. Those are uncacheable and unjoinable either way
+    (`pipeline.cache` skips them on the same ValueError), and raising here would fail a whole
+    generation over provenance — guardrail #3.
+    """
+    try:
+        return normalize_reel_url(url)
+    except ValueError:
+        return url
 
 
 def _n(count: int, noun: str) -> str:
@@ -322,7 +346,7 @@ async def run_generation(trip_id, user_id, reel_urls, start_date, end_date,
             # is where that provenance was being thrown away, which is why every reel-extracted
             # place carried a research URL under a `reel_quote` label. Capture it here.
             places = [
-                p.model_copy(update={"source_reel_url": reel_urls[i]})
+                p.model_copy(update={"source_reel_url": _canonical_reel_url(reel_urls[i])})
                 for i, r in enumerate(results) if r
                 for p in r
             ]

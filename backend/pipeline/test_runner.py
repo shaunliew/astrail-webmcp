@@ -11,6 +11,8 @@ from models.enrichment import WeatherReport
 from models.place import PlaceResult
 from models.reel import ReelData
 from pipeline import runner
+from saved_reels import capture_saved_reel
+from scrape.reel_url import is_supported_ig_url
 # Reuse the organize fake's PostgREST filter evaluator rather than growing a second one: its
 # Postgres-faithful `NULL < value` semantics and its refusal to evaluate an unimplemented
 # operator are pinned by fidelity tests in `test_organizer_lease.py`. A second, subtly
@@ -569,6 +571,70 @@ async def test_each_place_records_the_reel_it_was_extracted_from():
     for tp in c.db["trip_places"]:
         assert tp["evidence_json"]["source_url"] == "https://example.org/a"
         assert tp["evidence_json"]["evidence_kind"] == "reel_quote"
+
+
+class _RpcRecorder:
+    """The Saved-Reel save path's client, reduced to the one thing this test observes: the
+    params `capture_saved_reel` sends to the RPC that writes `saved_reels.normalized_url`."""
+
+    def __init__(self):
+        self.params = None
+
+    def rpc(self, _name, params):
+        self.params = params
+        return self
+
+    async def execute(self):
+        return _Result([{"id": "saved-1"}])
+
+
+@pytest.mark.parametrize("raw", [
+    "https://www.instagram.com/reel/DYGH3jFBZHz/",              # trailing slash — the live defect
+    "https://www.instagram.com/reel/DYGH3jFBZHz/?igsh=MXY5eg==",  # Instagram's own "Copy link" shape
+])
+@pytest.mark.asyncio
+async def test_stamped_reel_url_matches_the_form_the_library_path_stores(raw):
+    """The two producers of `source_reel_url` must write the SAME string for the same Reel.
+
+    They did not. This branch stamped the RAW pasted URL, while the Library branch
+    (`organizer.authorize_place_ids`) resolves the column from `saved_reels.normalized_url` —
+    the canonicalized form. A user pasting `.../reel/X/` and a user picking the same Reel out
+    of their Library therefore produced `.../reel/X/` and `.../reel/X` in one column, and the
+    map popup joins the Reel cover on that string: strict equality, no match, placeholder.
+
+    Asserted against the OTHER PRODUCER RUN FOR REAL, not against a literal. A hardcoded
+    expected string would pin today's spelling of the rule; what actually has to hold is that
+    the two paths agree, whatever the rule is.
+
+    The share-link case is what stops that from degrading into "any rule, as long as it is the
+    same one". A hand-rolled `rstrip('/')` agrees with the canonical rule on the first URL and
+    disagrees on the second — the canonical rule also drops the query string, folds `/reels/`
+    and `/tv/`, and rejects lookalike hosts. Reuse is the requirement, not slash-stripping.
+    """
+    c = _Client(jobs=[{"id": "job-1", "trip_id": "trip-1", "status": "pending"}])
+
+    async def scrape(url):
+        return _reel(url)
+
+    async def extract(reel):
+        return [_place("Tokyo Tower")]
+
+    await runner.run_generation("trip-1", "user-1", [raw], "2026-08-01", "2026-08-02",
+                                job_id="job-1", client=c, scrape=scrape, extract=extract,
+                                mem0=None, weather=_no_weather, transport=_no_transport,
+                                restaurant=_no_restaurant, narrator=_no_narrator, hotel=_no_hotel)
+    stamped = {tp["evidence_json"].get("source_reel_url") for tp in c.db["trip_places"]}
+
+    # The other producer, on the same raw URL. `capture_saved_reel` writes
+    # `saved_reels.normalized_url`, which organizer.py:207 reads straight into
+    # `source_reel_url` and `saved_reel_cards.places[].source_reel_url` serves to the popup.
+    recorder = _RpcRecorder()
+    await capture_saved_reel(recorder, "user-1", raw)
+    library_form = recorder.params["p_normalized_url"]
+
+    assert stamped == {library_form}
+    # And what we store is still a real Instagram link — the popup renders it as an href.
+    assert is_supported_ig_url(library_form)
 
 
 @pytest.mark.asyncio

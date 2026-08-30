@@ -30,6 +30,7 @@ functions, so importing this module loads nothing heavy, needs no key, and makes
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 
@@ -42,6 +43,17 @@ FALLBACK_MODEL = "gpt-4o"
 # table, which does not belong in a 300px card and is usually a sign the model summarised a page
 # rather than the venue.
 MAX_HOURS_CHARS = 120
+
+# Ceiling on ONE day's search. `weather.py` and `transport.py` both bound their outbound call and
+# this one did not, so a hosted web search that never returned held its day open indefinitely —
+# and, before the days ran concurrently, the whole trip behind it.
+#
+# Deliberately GENEROUS: this is a runaway bound, not a latency lever. A real multi-turn search
+# over a day's few venues is expected to take tens of seconds, and cutting it short would drop the
+# verified hours this agent exists to produce — trading the evidence for speed is the deal this
+# feature was created to refuse. Now that `persist_restaurants` fetches the days concurrently, this
+# caps the SLOWEST day rather than accumulating once per day. Revisit it against real percentiles.
+DETAIL_TIMEOUT_S = 90.0
 
 DETAIL_INSTRUCTIONS = """\
 You are given a numbered list of real restaurants, each with its name as published locally, its \
@@ -161,6 +173,13 @@ async def _default_runner(agent, user_input: str):
     return await Runner.run(agent, user_input, max_turns=8)
 
 
+async def _run_bounded(run, agent, user_input: str):
+    """`run`, under DETAIL_TIMEOUT_S. Wraps the INJECTED runner rather than living inside
+    `_default_runner`, so the bound holds for every caller instead of only the live one."""
+    async with asyncio.timeout(DETAIL_TIMEOUT_S):
+        return await run(agent, user_input)
+
+
 def _model_errors() -> tuple[type[BaseException], ...]:
     try:
         from openai import APIStatusError, APITimeoutError, BadRequestError
@@ -183,10 +202,16 @@ async def fetch_restaurant_details(
     run = runner or _default_runner
     user_input = build_detail_input(pois, city=city)
     try:
-        result = await run(build_detail_agent(model), user_input)
+        result = await _run_bounded(run, build_detail_agent(model), user_input)
+    except TimeoutError:
+        # NOT retried on the fallback model: the budget is already spent, and a retry would double
+        # exactly the wait this bound exists to cap. The typed fallback below answers a model being
+        # unavailable, which a timeout is no evidence of.
+        print("  [restaurant-details] skipped (timed out)", file=sys.stderr)
+        return {}
     except _model_errors():
         try:
-            result = await run(build_detail_agent(FALLBACK_MODEL), user_input)
+            result = await _run_bounded(run, build_detail_agent(FALLBACK_MODEL), user_input)
         except Exception:
             print("  [restaurant-details] skipped (model unavailable)", file=sys.stderr)
             return {}

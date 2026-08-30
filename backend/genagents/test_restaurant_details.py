@@ -7,8 +7,11 @@ this agent a tool at all (see the module docstring).
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
+import genagents.restaurant_details as rd
 from genagents.restaurant_details import (
     MAX_HOURS_CHARS,
     build_detail_input,
@@ -160,3 +163,42 @@ async def test_an_empty_result_is_a_normal_outcome():
         return Result()
 
     assert await fetch_restaurant_details(POIS, runner=runner) == {}
+
+
+# --- bounded: a stuck search cannot hold a day open ------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_hung_search_is_bounded_rather_than_stalling_the_day(monkeypatch):
+    """weather.py and transport.py both bound their outbound call; this one had NO ceiling, so a
+    hosted web search that never returned held its day open indefinitely — and the trip with it,
+    back when the days ran in series.
+
+    Fault-injected with a runner that never completes. The outer wait_for is what makes the
+    missing-bound case FAIL rather than hang the suite."""
+    monkeypatch.setattr(rd, "DETAIL_TIMEOUT_S", 0.01)
+    started = asyncio.Event()
+
+    async def runner(*_a, **_k):
+        started.set()
+        await asyncio.sleep(3600)
+
+    kept = await asyncio.wait_for(fetch_restaurant_details(POIS, runner=runner), timeout=5)
+    assert kept == {}                 # guardrail #3: garnish is best-effort, never a trip failure
+    assert started.is_set()           # the search really was attempted, not short-circuited
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_search_is_not_retried_on_the_fallback_model(monkeypatch):
+    """The budget is already spent when the bound fires, so falling back to gpt-4o here would
+    double exactly the wait the bound exists to cap. The typed-model fallback answers a model
+    being unavailable, which a timeout is not evidence of."""
+    monkeypatch.setattr(rd, "DETAIL_TIMEOUT_S", 0.01)
+    runs = 0
+
+    async def runner(*_a, **_k):
+        nonlocal runs
+        runs += 1
+        await asyncio.sleep(3600)
+
+    assert await asyncio.wait_for(fetch_restaurant_details(POIS, runner=runner), timeout=5) == {}
+    assert runs == 1

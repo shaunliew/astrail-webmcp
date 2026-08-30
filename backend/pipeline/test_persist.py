@@ -2039,9 +2039,9 @@ async def test_persist_transport_transit_hint_keeps_geometry():
 from models.enrichment import RestaurantCandidate
 
 
-def _rcand(name, lat, lng, *, name_local="ラーメン", summary="tasty"):
+def _rcand(name, lat, lng, *, name_local="ラーメン", summary="tasty", mapbox_id="poi.1"):
     return RestaurantCandidate(name=name, name_local=name_local, cuisine="ramen", summary=summary,
-                               lat=lat, lng=lng, address="Tokyo", mapbox_id="poi.1",
+                               lat=lat, lng=lng, address="Tokyo", mapbox_id=mapbox_id,
                                categories=["レストラン"], distance_m=25)
 
 
@@ -2254,6 +2254,192 @@ async def test_persist_restaurants_forwards_preference_block():
     await persist.persist_restaurants(c, "trip-1", suggest=suggest,
                                       preference_block="Stated preferences: ramen")
     assert seen["preference_block"] == "Stated preferences: ramen"
+
+
+# --- persist_restaurants: the per-day fetch fan-out -------------------------
+async def _seed_one_place_per_day(c, days):
+    """`days` places over `days` dates — group_places_by_day gives each day exactly one stop, so
+    every restaurant row's day is unambiguous and a mis-assignment cannot hide behind a shared day."""
+    canonical = [_cp(f"Stop {i}", 35.60 + i * 0.02, 139.70 + i * 0.02) for i in range(days)]
+    dates = [f"2026-08-{i + 1:02d}" for i in range(days)]
+    await persist.persist_itinerary(c, "trip-1", canonical, dates, job_id=None, lease_token=None)
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_fetches_the_days_concurrently():
+    """Nothing about one day's suggestions depends on another day's, so the stage must cost the
+    SLOWEST day rather than the sum of all of them — the difference between a 2-day trip and a
+    6-day one being the same wait, and it being three times longer.
+
+    Fault-injected as a rendezvous: no day's fetch returns until a second day's has STARTED. Under
+    a sequential loop the second never starts, so this fails on the wait rather than passing
+    quietly — the failure mode a timing-based assertion would not have."""
+    c = _Client()
+    await _seed_one_place_per_day(c, 2)
+    both_started = asyncio.Event()
+    started = 0
+
+    async def suggest(places, *, city=None, preference_block=None):
+        nonlocal started
+        started += 1
+        if started >= 2:
+            both_started.set()
+        await asyncio.wait_for(both_started.wait(), timeout=5)
+        return [_rcand(f"R{started}", 35.6587, 139.7455, mapbox_id=f"poi.{started}")]
+
+    assert await persist.persist_restaurants(c, "trip-1", suggest=suggest) == 2
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_bounds_how_many_days_fetch_at_once():
+    """A 10-day trip must not fire ten concurrent hosted web searches — that is a cost and
+    rate-limit problem, not a speedup. Peak in-flight is watched directly, and asserted EQUAL to
+    the bound so the test also fails if the fan-out silently goes back to one-at-a-time."""
+    c = _Client()
+    await _seed_one_place_per_day(c, persist._RESTAURANT_DAY_CONCURRENCY + 2)
+    in_flight = peak = 0
+
+    async def suggest(places, *, city=None, preference_block=None):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        for _ in range(10):        # yield generously: any sibling free to start, starts
+            await asyncio.sleep(0)
+        in_flight -= 1
+        return []
+
+    await persist.persist_restaurants(c, "trip-1", suggest=suggest)
+    assert peak == persist._RESTAURANT_DAY_CONCURRENCY
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_keeps_each_day_on_its_own_day_when_they_finish_out_of_order():
+    """THE regression that would actually hurt. Gathering the days is only safe if reassembly
+    follows `by_day` order and never completion order — a fast day's restaurants landing on a slow
+    day's date silently scrambles the itinerary, which is far worse than being slow.
+
+    Fault-injected so completion order is the exact REVERSE of day order, and that reversal is
+    asserted, so the test cannot pass by the days happening to finish in order anyway."""
+    days = persist._RESTAURANT_DAY_CONCURRENCY
+    c = _Client()
+    await _seed_one_place_per_day(c, days)
+    all_started = asyncio.Event()
+    calls: list[str] = []
+    finished: list[str] = []
+
+    async def suggest(places, *, city=None, preference_block=None):
+        stop = places[0][0]                      # this day's only stop
+        calls.append(stop)
+        if len(calls) == days:
+            all_started.set()
+        await asyncio.wait_for(all_started.wait(), timeout=5)
+        for _ in range(days - calls.index(stop)):   # earlier days yield more -> finish last
+            await asyncio.sleep(0)
+        finished.append(stop)
+        return [_rcand(f"near-{stop}", 35.6587, 139.7455, mapbox_id=f"poi-{stop}")]
+
+    written = await persist.persist_restaurants(c, "trip-1", suggest=suggest)
+
+    assert written == days
+    assert finished == list(reversed(calls))     # the fault injection actually took effect
+    day_of_trip_day_id = {d["id"]: d["day_number"] for d in c.db["trip_days"]}
+    name_of_place_id = {p["id"]: p["name"] for p in c.db["places"]}
+    stop_on_day = {tp["day_number"]: name_of_place_id[tp["place_id"]]
+                   for tp in c.db["trip_places"]}
+    rows = c.db["restaurant_suggestions"]
+    for row in rows:
+        day = day_of_trip_day_id[row["trip_day_id"]]
+        # The suggestion asked for THIS day's stop is the one written against this day...
+        assert name_of_place_id[row["restaurant_place_id"]] == f"near-{stop_on_day[day]}"
+        # ...and it is anchored to that day's own stop, not another day's.
+        assert name_of_place_id[row["near_place_id"]] == stop_on_day[day]
+    # Rows are written in day order, not in the order the fetches came back.
+    assert [day_of_trip_day_id[r["trip_day_id"]] for r in rows] == list(range(1, days + 1))
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_details_are_fetched_per_day_and_stay_with_their_day():
+    """The details fetch rides inside the same per-day unit as the suggestions it annotates, so
+    concurrency must not let day A's opening hours attach to day B's restaurant."""
+    c = _Client()
+    await _seed_one_place_per_day(c, 2)
+
+    async def suggest(places, *, city=None, preference_block=None):
+        stop = places[0][0]
+        return [_rcand(f"near-{stop}", 35.6587, 139.7455,
+                       name_local=f"local-{stop}", mapbox_id=f"poi-{stop}")]
+
+    async def details(pois, *, city=None):
+        stop = pois[0]["name"].removeprefix("local-")
+        return {0: {"opening_hours": f"hours-{stop}", "source_url": f"https://x.example/{stop}"}}
+
+    await persist.persist_restaurants(c, "trip-1", suggest=suggest, details_fetcher=details)
+    name_of_place_id = {p["id"]: p["name"] for p in c.db["places"]}
+    for row in c.db["restaurant_suggestions"]:
+        stop = name_of_place_id[row["restaurant_place_id"]].removeprefix("near-")
+        assert row["evidence_json"]["details"]["opening_hours"] == f"hours-{stop}"
+        assert row["source_url"] == f"https://x.example/{stop}"
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_still_propagates_a_failed_day_after_writing_the_others():
+    """`suggest` has no per-day failure isolation by design (restaurant_suggestions has no column
+    to record a failed day), so the failure must still reach the runner as one best-effort warning.
+    Gathering must not swallow it — and must not lose the days that DID succeed."""
+    c = _Client()
+    await _seed_one_place_per_day(c, 2)
+
+    async def suggest(places, *, city=None, preference_block=None):
+        if places[0][0] == "Stop 1":
+            raise RuntimeError("mapbox down")
+        return [_rcand("ok", 35.6587, 139.7455, mapbox_id="poi-ok")]
+
+    with pytest.raises(RuntimeError, match="mapbox down"):
+        await persist.persist_restaurants(c, "trip-1", suggest=suggest)
+    assert len(c.db["restaurant_suggestions"]) == 1     # the healthy day survived
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_writes_nothing_when_a_day_is_cancelled():
+    """`return_exceptions=True` captures CancelledError too, and downgrading that to "one day
+    failed" would be the worst outcome of the fan-out: a cancelled worker is a superseded or
+    shutting-down one, and it has no business persisting rows on its way out. The sequential loop
+    propagated cancellation immediately; gathering must not quietly start writing instead."""
+    c = _Client()
+    await _seed_one_place_per_day(c, 2)
+
+    async def suggest(places, *, city=None, preference_block=None):
+        if places[0][0] == "Stop 1":
+            raise asyncio.CancelledError()
+        return [_rcand("ok", 35.6587, 139.7455, mapbox_id="poi-ok")]
+
+    with pytest.raises(asyncio.CancelledError):
+        await persist.persist_restaurants(c, "trip-1", suggest=suggest)
+    assert c.db.get("restaurant_suggestions", []) == []   # not even the healthy day landed
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_stamps_each_restaurant_place_with_its_own_days_city():
+    """A multi-city trip is the case that catches a day's value leaking across the fan-out: the
+    city is resolved per day, so the `places` row a day's restaurant creates must carry THAT day's
+    city. Reading it from whichever day happened to be resolved last is silently wrong everywhere
+    except a single-city trip, which is what most tests are."""
+    c = _Client()
+    await _seed_one_place_per_day(c, 2)
+    # Give the two days different cities, keyed to the stop that sits on each.
+    stop_city = {}
+    for i, place in enumerate(c.db["places"]):
+        place["city"] = f"City{i}"
+        stop_city[place["name"]] = f"City{i}"
+
+    async def suggest(places, *, city=None, preference_block=None):
+        stop = places[0][0]
+        assert city == stop_city[stop]                 # the fetch already got the right city
+        return [_rcand(f"near-{stop}", 35.6587, 139.7455, mapbox_id=f"poi-{stop}")]
+
+    await persist.persist_restaurants(c, "trip-1", suggest=suggest)
+    created = {p["name"]: p.get("city") for p in c.db["places"] if p["place_type"] == "restaurant"}
+    assert created == {f"near-{stop}": city for stop, city in stop_city.items()}
 
 
 # --- persist_narration ------------------------------------------------------

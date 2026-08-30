@@ -690,6 +690,14 @@ async def _find_or_create_restaurant_place(client, cand, city) -> str:
     return inserted[0]["id"]
 
 
+# How many of a trip's days may be fetching restaurants at once. Each day costs TWO hosted OpenAI
+# calls in series — the labeller, then the details agent's web search — so this is a fan-out over
+# metered, rate-limited work, not over cheap I/O. Unbounded, a 10-day trip would fire ten
+# concurrent hosted web searches: a cost and rate-limit problem, not a speedup. Three keeps the
+# common 2-6 day trip to one or two waves while leaving the worst case bounded.
+_RESTAURANT_DAY_CONCURRENCY = 3
+
+
 async def persist_restaurants(client, trip_id: str, *, suggest=None, details_fetcher=None,
                               preference_block: str | None = None) -> int:
     """Additive: for each day, get grounded restaurant suggestions (Mapbox + LLM) near the day's
@@ -703,6 +711,13 @@ async def persist_restaurants(client, trip_id: str, *, suggest=None, details_fet
     mis-merge dense chain branches whose LLM English label collides), so restaurant_place_id is
     populated (name + map pin). near_place_id is the day's place nearest the suggestion;
     preference_match_json stays {} until prefs are wired (Step 9).
+
+    The days are FETCHED CONCURRENTLY (bounded by `_RESTAURANT_DAY_CONCURRENCY`) and WRITTEN
+    SEQUENTIALLY in day order. Nothing about one day's suggestions depends on another day's, so
+    fetching them in series made the stage cost the SUM of the days when it need only cost the
+    slowest — and each day is two hosted OpenAI calls, which is why this stage, not scraping,
+    was the tail of a generation. The write phase deliberately stays serial: see the comment
+    there for the two reasons (positional day reassembly, and the `places` read-then-insert race).
 
     No per-day failure isolation: restaurant_suggestions has no status column to record a failed day,
     so a `suggest` failure PROPAGATES and the runner turns it into one clean best-effort warning
@@ -729,38 +744,88 @@ async def persist_restaurants(client, trip_id: str, *, suggest=None, details_fet
     for tp in tps:
         by_day[tp["day_number"]].append(tp)
 
-    written = 0
+    # Each day's inputs, resolved in `by_day` order and kept in a LIST. The list index is the
+    # day's identity from here on — it is what reunites a fetch with its own day below.
+    day_inputs: list[tuple[int, list, list, str | None]] = []
     for day_number, rows in by_day.items():
         entries = [by_id[r["place_id"]] for r in rows if r["place_id"] in by_id]
         entries = [p for p in entries if p.get("lat") is not None and p.get("lng") is not None]
         if not entries:
             continue
-        trip_day_id = day_to_id.get(day_number)
         day_places = [(p["name"], p["lat"], p["lng"]) for p in entries]
         anchors = [(p["id"], p["lat"], p["lng"]) for p in entries]
         city = next((p.get("city") for p in entries if p.get("city")), None)
-        candidates = await suggest(day_places, city=city, preference_block=preference_block)   # a failure here propagates -> runner warns
+        day_inputs.append((day_number, day_places, anchors, city))
 
-        # Opening hours + official website, one batched web search for THIS DAY's few restaurants.
-        # Best-effort by construction: fetch_restaurant_details never raises, and an empty result
-        # is the expected outcome for small venues that publish nothing (guardrail #3).
-        #
-        # The Mapbox name is passed, NOT cand.name — the latter can be the LLM's English label,
-        # and genagents/restaurant_details.py is only safe to give a tool BECAUSE its input stays
-        # Mapbox-sourced. Sending model-written text back into a tool-holding agent would quietly
-        # undo that (see that module's docstring).
-        details: dict[int, dict] = {}
-        fetch_details = details_fetcher
-        if fetch_details is None and _restaurant_details_enabled():
-            from genagents.restaurant_details import fetch_restaurant_details
+    # Resolved ONCE rather than per day: it only reads the environment, and the days now run
+    # concurrently, so re-deciding inside each would be re-answering the same question N times.
+    fetch_details = details_fetcher
+    if fetch_details is None and _restaurant_details_enabled():
+        from genagents.restaurant_details import fetch_restaurant_details
 
-            fetch_details = fetch_restaurant_details
-        if fetch_details is not None:
+        fetch_details = fetch_restaurant_details
+
+    sem = asyncio.Semaphore(_RESTAURANT_DAY_CONCURRENCY)
+
+    async def _fetch_day(day_places, city) -> tuple[list, dict[int, dict]]:
+        """One day's READ-ONLY fetch: suggestions, then their details. Writes nothing."""
+        async with sem:
+            candidates = await suggest(day_places, city=city, preference_block=preference_block)
+
+            # Opening hours + official website, one batched web search for THIS DAY's few
+            # restaurants. Best-effort by construction: fetch_restaurant_details never raises, and
+            # an empty result is the expected outcome for small venues that publish nothing
+            # (guardrail #3).
+            #
+            # The Mapbox name is passed, NOT cand.name — the latter can be the LLM's English label,
+            # and genagents/restaurant_details.py is only safe to give a tool BECAUSE its input
+            # stays Mapbox-sourced. Sending model-written text back into a tool-holding agent would
+            # quietly undo that (see that module's docstring).
+            if fetch_details is None:
+                return candidates, {}
             details = await fetch_details(
                 [{"name": c.name_local or c.name, "address": c.address} for c in candidates],
                 city=city,
             )
+            return candidates, details
 
+    # The whole point: a day's suggestions depend on nothing another day produces, so the stage
+    # costs the SLOWEST day instead of the sum. `return_exceptions=True` is what makes that safe —
+    # it lets every day finish before we look, so a failure cannot leave a sibling's hosted web
+    # search running unattended after we have already walked away from it.
+    fetched = await asyncio.gather(
+        *(_fetch_day(day_places, city) for _, day_places, _anchors, city in day_inputs),
+        return_exceptions=True,
+    )
+
+    # CancelledError is an outcome `return_exceptions=True` also captures, and it must NEVER be
+    # downgraded to "one day failed": a cancelled worker is a superseded or shutting-down one, and
+    # it has no business persisting rows on its way out. Re-raised BEFORE the write phase, so
+    # cancellation still means nothing lands — which is what the sequential loop gave for free.
+    for outcome in fetched:
+        if isinstance(outcome, asyncio.CancelledError):
+            raise outcome
+
+    # WRITE PHASE — `day_inputs` order, never gather-completion order. Two separate reasons, and
+    # both are load-bearing:
+    #   * a result is reunited with its day POSITIONALLY (asyncio.gather returns results in the
+    #     order the awaitables were passed, not the order they finished), so a fast day's
+    #     restaurants can never land on a slow day's date;
+    #   * the writes stay SEQUENTIAL because _find_or_create_restaurant_place is a read-then-insert
+    #     on the shared global `places` table — running those concurrently would race two days onto
+    #     one mapbox_id and insert the duplicate row that function exists to prevent.
+    written = 0
+    first_error: BaseException | None = None
+    for (day_number, _day_places, anchors, city), outcome in zip(day_inputs, fetched):
+        if isinstance(outcome, BaseException):
+            # No per-day failure isolation (see the docstring): the first failing day — in DAY
+            # order, so which error surfaces stays deterministic — is re-raised once every healthy
+            # day has been written, exactly as the sequential loop left earlier days persisted.
+            if first_error is None:
+                first_error = outcome
+            continue
+        candidates, details = outcome
+        trip_day_id = day_to_id.get(day_number)
         for i, cand in enumerate(candidates):
             restaurant_place_id = await _find_or_create_restaurant_place(client, cand, city)
             detail = details.get(i) or {}
@@ -783,6 +848,8 @@ async def persist_restaurants(client, trip_id: str, *, suggest=None, details_fet
                 "preference_match_json": {},
             }).execute()
             written += 1
+    if first_error is not None:
+        raise first_error
     return written
 
 

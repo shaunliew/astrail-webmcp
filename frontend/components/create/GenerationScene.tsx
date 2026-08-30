@@ -23,12 +23,27 @@ const PLACES_READY_STAGES = new Set([
   'dedup', 'enrich', 'weather', 'restaurants', 'hotels', 'transport', 'narrate', 'summarize',
 ])
 
-// Pipeline order → a rough progress signal for the genbar. Progress is indeterminate
-// (DESIGN.md) — this is a gesture of forward motion by stage, not a real percentage.
+// Pipeline order → a real position for the genbar, but ONLY for the sequential half of the run
+// (see CONCURRENT_TAIL below). This is the furthest stage STARTED, never percent-complete.
 const STAGE_ORDER: GenerationStage[] = [
   'create_trip', 'scrape', 'cache_hit', 'extract', 'resolve', 'preferences', 'dedup',
   'enrich', 'weather', 'restaurants', 'hotels', 'transport', 'narrate', 'summarize', 'save',
 ]
+
+// Where an honest percentage stops existing. runner.py runs the pipeline sequentially as far as
+// `save` (:386) and then gathers save+transport+restaurants+hotels+summarize, each recording its
+// `stage` event as its first statement — so all five dispatch within milliseconds and then take
+// ~140s, the bulk of the whole run. Advancing on the furthest dispatch therefore reached
+// summarize (index 13 of 15) in the first seconds and pinned at 93% for the rest, which a real
+// user read as a hung page. A number nobody can back is worse than no number: once any of these
+// has dispatched the bar stops claiming a percentage and goes indeterminate.
+//
+// Membership is by DISPATCH (`stage`), never by completion (`decision`): a decision reports
+// finished work, and one arriving early for a tail stage would flip the bar off a position the
+// sequential pipeline can still legitimately advance.
+const CONCURRENT_TAIL = new Set<GenerationStage>([
+  'save', 'transport', 'restaurants', 'hotels', 'summarize',
+])
 
 export default function GenerationScene({
   tripId, events,
@@ -64,14 +79,15 @@ export default function GenerationScene({
   //
   // Completions are `decision` events and are filtered out here on purpose: they report finished
   // work, not a new pipeline position.
-  //
-  // KNOWN LIMITATION: because summarize (index 13 of 15) dispatches in the first seconds along
-  // with its siblings, this pins at 93% for the ~140s the concurrent work actually takes. It is
-  // the furthest stage STARTED, never percent-complete — do not present it as the latter.
   const furthestStage = events.reduce(
     (max, e) => (e.type === 'stage' ? Math.max(max, STAGE_ORDER.indexOf(e.stage)) : max),
     -1,
   )
+  // A latch on the events themselves, not on `furthestStage`: the max index can be a SEQUENTIAL
+  // stage (narrate, 12) that outranks a tail stage already dispatched (restaurants, 9), so asking
+  // whether the furthest position is in the tail would miss the tail entirely.
+  const inConcurrentTail = events.some((e) => e.type === 'stage' && CONCURRENT_TAIL.has(e.stage))
+  const indeterminate = !done && inConcurrentTail
   const progress = done ? 100
     : furthestStage >= 0 ? Math.round(((furthestStage + 1) / STAGE_ORDER.length) * 100)
     : 5
@@ -138,13 +154,32 @@ export default function GenerationScene({
           dawn globe fades in and covers the no-token / still-loading moment — main itself
           stays transparent so the globe shows through (see comment below). */}
       <div aria-hidden className="fixed inset-0 -z-10 bg-[color:var(--night-900)]" />
-      {/* Top progress genbar — striped brass, advancing by stage. */}
-      <div className="absolute inset-x-0 top-0 z-30 h-1 bg-[color:var(--night-800)]">
-        <div
-          data-testid="genbar-fill"
-          className="h-full bg-[repeating-linear-gradient(-45deg,var(--brass-deep)_0_8px,transparent_8px_16px)] transition-[width] duration-500"
-          style={{ width: `${progress}%` }}
-        />
+      {/* Top progress genbar. Solid brass, never diagonal stripes: the stripes read as
+          construction tape to the first user who waited out a real run. It shows a percentage
+          only while that percentage is real, and announces itself as a progressbar so what it
+          means does not depend on recognising the shape — an indeterminate progressbar is
+          precisely one with no aria-valuenow, so the omission below is the semantic, not a gap. */}
+      <div
+        data-testid="genbar"
+        role="progressbar"
+        aria-label="Building your trip"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        {...(indeterminate
+          ? { 'aria-valuetext': 'Working — this part takes a couple of minutes', 'data-indeterminate': 'true' }
+          : { 'aria-valuenow': progress })}
+        className="absolute inset-x-0 top-0 z-30 h-[3px] overflow-hidden bg-[color:var(--night-800)]"
+      >
+        {indeterminate ? (
+          <div data-testid="genbar-sweep" aria-hidden className="genbar-sweep h-full" />
+        ) : (
+          <div
+            data-testid="genbar-fill"
+            aria-hidden
+            className={`genbar-fill h-full ${done ? '' : 'genbar-fill--live'}`}
+            style={{ width: `${progress}%` }}
+          />
+        )}
       </div>
 
       {/* The map is the shell's fixed layer behind this route; only the no-token

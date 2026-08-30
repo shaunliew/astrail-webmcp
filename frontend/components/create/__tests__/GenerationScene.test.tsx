@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act, render, screen } from '@testing-library/react'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures'
@@ -130,52 +132,131 @@ describe('GenerationScene', () => {
   })
 })
 
-describe('the progress genbar under concurrent stages', () => {
-  /* runner.py gathers transport/restaurants/hotels/narration and each records its `stage` event
-     as its first statement, so the dispatch events themselves arrive out of STAGE_ORDER:
-     transport is index 11, restaurants 9. Reading the LAST stage event verbatim rewinds the bar,
-     which reads to a waiting user as the run losing ground. Completions are `decision` events and
-     must not move the bar at all — they report finished work, not a new pipeline position. */
-  const fill = () => screen.getByTestId('genbar-fill').style.width
+describe('the progress genbar', () => {
+  /* Two defects lived in this bar, and a real user hit both in one 3-minute run.
 
-  it('does not rewind on the real dispatch order the gather produces', () => {
-    renderScene([
-      { type: 'stage', stage: 'transport', msg: 'Working out how to get between stops' },
-      { type: 'stage', stage: 'restaurants', msg: 'Looking for places to eat' },
-    ])
-    // transport (index 11) → 80%; restaurants (index 9) would drag it back to 67%.
-    expect(fill()).toBe('80%')
+     1. It was painted as brass diagonal stripes on a dark track, and he read it as
+        CONSTRUCTION TAPE — "there is a construction line on the top, I'm not sure what it
+        means". The one element whose whole job is saying "working" said "roadworks".
+     2. It advanced by FURTHEST STAGE DISPATCHED, and runner.py dispatches the whole
+        concurrent tail (save/transport/restaurants/hotels/summarize) within milliseconds of
+        each other — so it reached summarize (index 13 of 15) in the first seconds and then
+        sat at 93% for the ~140s the tail actually takes. A frozen determinate bar is a lie:
+        it claims a number it cannot back.
+
+     The fix keeps the honest half. While the pipeline is genuinely sequential the bar shows a
+     real position; the moment the concurrent tail dispatches it stops claiming a percentage at
+     all and becomes an indeterminate sweep — which is what "we cannot know how far along this
+     is" actually looks like. */
+  const fill = () => screen.getByTestId('genbar-fill')
+  const bar = () => screen.getByTestId('genbar')
+
+  it('shows a real position while the pipeline is still sequential', () => {
+    renderScene([{ type: 'stage', stage: 'dedup', msg: 'Checking 9 places for duplicates' }])
+    // dedup is index 6 of 15 → 47%, and it is a genuinely ordered position: nothing after it
+    // has started.
+    expect(fill().style.width).toBe('47%')
+    expect(bar()).toHaveAttribute('aria-valuenow', '47')
   })
 
-  it('advances for a genuinely later stage but never regresses afterwards', () => {
+  it('does not rewind when a sequential stage arrives out of STAGE_ORDER', () => {
+    // Real order from runner.py: narrate (:337) is emitted BEFORE weather (:354), but narrate
+    // is index 12 and weather is index 10. Reading the last event verbatim drags the bar from
+    // 87% back to 73%, and a bar going backwards reads as ground lost.
+    renderScene([
+      { type: 'stage', stage: 'narrate', msg: 'Putting your days in order' },
+      { type: 'stage', stage: 'weather', msg: 'Checking the forecast' },
+    ])
+    expect(fill().style.width).toBe('87%')
+  })
+
+  it('stops claiming a percentage once the concurrent tail dispatches', () => {
+    renderScene([
+      { type: 'stage', stage: 'narrate', msg: 'Putting your days in order' },
+      { type: 'stage', stage: 'save', msg: 'Saving your trip' },
+    ])
+    expect(screen.queryByTestId('genbar-fill')).toBeNull()
+    expect(screen.getByTestId('genbar-sweep')).toBeInTheDocument()
+    // ARIA's own definition of indeterminate: a progressbar with no aria-valuenow.
+    expect(bar()).not.toHaveAttribute('aria-valuenow')
+    expect(bar()).toHaveAttribute('data-indeterminate', 'true')
+  })
+
+  it('never pins at 93% on the summarize dispatch — the exact defect reported', () => {
+    // The observed arrival order: summarize dispatches with its siblings in the first seconds.
     renderScene([
       { type: 'stage', stage: 'summarize', msg: 'Writing your day summaries' },
       { type: 'stage', stage: 'restaurants', msg: 'Looking for places to eat' },
       { type: 'stage', stage: 'hotels', msg: 'Looking for somewhere to stay' },
     ])
-    expect(fill()).toBe('93%')
+    expect(screen.queryByTestId('genbar-fill')).toBeNull()
+    expect(bar()).not.toHaveAttribute('aria-valuenow')
   })
 
-  it('is not moved by a completion — a decision reports finished work, not position', () => {
+  it('is not tipped into the tail by a completion — a decision reports work, not position', () => {
     renderScene([
-      { type: 'stage', stage: 'restaurants', msg: 'Looking for places to eat' },
+      { type: 'stage', stage: 'dedup', msg: 'Checking 9 places for duplicates' },
       { type: 'decision', stage: 'summarize', msg: 'Wrote summaries for 3 days' },
     ])
-    // summarize is index 13, but it arrived as a decision: the bar stays at restaurants.
-    expect(fill()).toBe('67%')
+    // summarize is a tail stage, but it arrived as a decision: no tail stage has DISPATCHED,
+    // so the bar keeps the real position it has.
+    expect(fill().style.width).toBe('47%')
   })
 
   it('holds the 5% floor when no stage in this build is recognised', () => {
     renderScene([{ type: 'stage', stage: 'not_a_real_stage' as never, msg: 'from a newer backend' }])
-    expect(fill()).toBe('5%')
+    expect(fill().style.width).toBe('5%')
   })
 
-  it('a result wins over every stage position', () => {
+  it('ends the sweep and fills the bar on the result', () => {
     renderScene([
-      { type: 'stage', stage: 'scrape', msg: 'Reading Reels' },
+      { type: 'stage', stage: 'summarize', msg: 'Writing your day summaries' },
       { type: 'result', content: '{}' },
     ])
-    expect(fill()).toBe('100%')
+    expect(screen.queryByTestId('genbar-sweep')).toBeNull()
+    expect(fill().style.width).toBe('100%')
+    expect(bar()).toHaveAttribute('aria-valuenow', '100')
+  })
+
+  it('does not shimmer once the run is terminal — motion on a finished run is a lie', () => {
+    const { rerender } = renderScene([{ type: 'stage', stage: 'dedup', msg: 'deduping' }])
+    expect(fill().className).toContain('genbar-fill--live')
+
+    rerender(
+      <MapProvider>
+        <GenerationScene tripId="trip_tokyo_demo" events={[
+          { type: 'stage', stage: 'dedup', msg: 'deduping' }, { type: 'result', content: '{}' },
+        ]} />
+      </MapProvider>,
+    )
+    expect(fill().className).not.toContain('genbar-fill--live')
+  })
+})
+
+describe('the genbar under prefers-reduced-motion', () => {
+  /* Every animated class this scene paints has to be switched off for a reader who asked for
+     no motion — the repo already honours that for pins, the mascot and the organize loader,
+     and a new looping animation that skips it is a regression in the accessibility contract.
+     Read from the stylesheet on disk because that is where the guarantee actually lives:
+     jsdom applies no stylesheet, so an assertion on the rendered node would prove nothing. */
+  const css = readFileSync(join(process.cwd(), 'app/globals.css'), 'utf8')
+  const reduceBlocks = css.split('@media (prefers-reduced-motion: reduce)').slice(1)
+
+  it('the shimmer and the sweep are both switched off under reduced motion', () => {
+    // Asserts the DECLARATION, not just that the selector is mentioned somewhere in the block:
+    // a rule that names .genbar-sweep under reduced motion to tweak its width proves nothing
+    // about whether it still animates, and an earlier version of this test passed on exactly
+    // that.
+    const declaresNoAnimation = (selector: string) =>
+      reduceBlocks.some((block) => block
+        .slice(0, block.indexOf('\n}'))
+        .split('}')
+        .some((rule) => rule.includes(selector) && rule.includes('animation: none')))
+
+    expect(css).toContain('@keyframes genbar-shimmer')
+    expect(css).toContain('@keyframes genbar-sweep')
+    expect(declaresNoAnimation('.genbar-fill--live::after')).toBe(true)
+    expect(declaresNoAnimation('.genbar-sweep')).toBe(true)
   })
 })
 

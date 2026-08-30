@@ -976,6 +976,80 @@ button:focus-visible {
     Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
+/* --- Generation progress bar (GenerationScene) -----------------------------------------------
+   This was brass diagonal stripes on a dark track, and the first user to sit through a real
+   3-minute run read it as CONSTRUCTION TAPE, not progress — "there's a construction line at the
+   top, I'm not sure what it means". Hazard tape is exactly what a repeating diagonal says
+   everywhere else, so the stripes are gone: a solid brass fill with a lit leading edge, on a
+   track thick enough to read as a bar rather than a hairline at the edge of the screen. */
+.genbar-fill {
+  background: linear-gradient(90deg, var(--brass-deep), var(--brass-bright));
+  border-radius: 0 999px 999px 0;
+  box-shadow: 0 0 10px var(--brass-glow);
+  transition: width 500ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Liveness, NOT progress. The bar only moves when a stage event lands and the early stages are
+   tens of seconds apart, so a still bar and static text are indistinguishable from a hung page.
+   This says "alive" without claiming a position — the position is the width, and the width does
+   not move for this. Only while the run is alive: a shimmer on a finished trip is motion telling
+   a lie (the same rule the mascot and the status dots follow). */
+.genbar-fill--live {
+  overflow: hidden;
+  position: relative;
+}
+
+.genbar-fill--live::after {
+  animation: genbar-shimmer 1.9s ease-in-out infinite;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.5), transparent);
+  content: "";
+  inset: 0;
+  position: absolute;
+}
+
+@keyframes genbar-shimmer {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(100%); }
+}
+
+/* The concurrent tail: runner.py dispatches save/transport/restaurants/hotels/summarize within
+   milliseconds of each other and they then take ~140s to finish, so there is no honest percentage
+   to draw. A travelling sweep is what "still working, position unknowable" looks like — and it is
+   the one representation that cannot freeze, which is the whole complaint it answers. */
+.genbar-sweep {
+  animation: genbar-sweep 1.7s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  background: linear-gradient(90deg, transparent, var(--brass-bright), transparent);
+  border-radius: 999px;
+  box-shadow: 0 0 12px var(--brass-glow);
+  width: 34%;
+}
+
+@keyframes genbar-sweep {
+  from { transform: translateX(-110%); }
+  to   { transform: translateX(400%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .genbar-fill {
+    transition: none;
+  }
+
+  .genbar-fill--live::after,
+  .genbar-sweep {
+    animation: none;
+  }
+
+  /* Frozen mid-sweep is a bar stuck a third of the way across, which reads as stalled progress —
+     the exact misreading this whole change exists to remove. A dim full-width band says "working,
+     no position known" while standing still, and the rail's elapsed clock carries the liveness
+     that motion would otherwise have to. */
+  .genbar-sweep {
+    background: var(--brass-deep);
+    opacity: 0.55;
+    width: 100%;
+  }
+}
+
 /* Generation pins: verified places landing on the night map (GenerationScene). */
 .pin-land {
   animation: pin-land 480ms cubic-bezier(0.16, 1, 0.3, 1) backwards;

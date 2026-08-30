@@ -183,6 +183,48 @@ describe('an entry says how the call ended', () => {
     expect(screen.queryByText(/summaries_stale/)).toBeNull()
   })
 
+  it('records a landed move as a move even when the page could not be re-read', async () => {
+    // The inverse lie. The mutation is inside a try; the re-read was outside every one of them,
+    // so a refresh that threw escaped `execute` and the wrapper's catch recorded the whole call
+    // as failed — the stop had moved, the trip was different, and the record said it had not.
+    const move = vi.fn().mockResolvedValue({})
+    await callThroughBrowser(
+      movePlaceTool(deps({ move, refresh: vi.fn().mockRejectedValue(new Error('Could not re-read the trip.')) })),
+      { place: '1', to_day: 3 },
+    )
+
+    expect(move).toHaveBeenCalled()
+    expect(screen.getByText('MOVED')).toBeInTheDocument()
+    expect(screen.queryByText('MOVE FAILED')).toBeNull()
+    // The change is not reversible, so the entry still owes that line.
+    expect(screen.getByText("Astrail can't undo this")).toBeInTheDocument()
+    // And the reader is told why the screen still looks the same.
+    expect(screen.getByText(/may still show the old version/)).toBeInTheDocument()
+  })
+
+  it('shows a pending approval as pending, not as done', async () => {
+    // `remove_place` waits here for as long as the user takes to read the card and decide, and
+    // the rail said REMOVED for that whole window.
+    let answer: ((ok: boolean) => void) | null = null
+    const spec = removePlaceTool(deps({ confirm: () => new Promise<boolean>((r) => { answer = r }) }))
+    render(
+      <WebMcpRegistryProvider>
+        <RegisterTools specs={[spec]} />
+        <Rail />
+      </WebMcpRegistryProvider>,
+    )
+    await waitFor(() => { expect(registered.map((t) => t.name)).toContain(spec.name) })
+    let call: Promise<unknown> | null = null
+    await act(async () => { call = registered.find((t) => t.name === spec.name)!.execute({ place: '1' }) })
+
+    expect(screen.getByText('REMOVE')).toBeInTheDocument()
+    expect(screen.queryByText('REMOVED')).toBeNull()
+    expect(screen.queryByText(/can't undo this/)).toBeNull()
+
+    await act(async () => { answer!(true); await call })
+    expect(screen.getByText('REMOVED')).toBeInTheDocument()
+  })
+
   it('records a tool that says nothing about its outcome exactly as it always did', async () => {
     // Most tools answer in prose and declare no outcome. Absence is not evidence of failure, and
     // treating it as one would put a red FAILED on every read in the app.

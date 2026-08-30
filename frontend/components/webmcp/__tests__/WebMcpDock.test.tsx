@@ -436,7 +436,7 @@ describe('WebMcpDock — clearing outlives the fold', () => {
     await userEvent.click(screen.getByRole('button', { name: /show agent activity/i }))
 
     await act(async () => { api!.beginActivity('move_place') })
-    expect(screen.getByText('MOVED')).toBeInTheDocument()
+    expect(screen.getByText('MOVE')).toBeInTheDocument()
     // And the two cleared reads did not come back UNDER it either. The rail collapses to the
     // newest entry, so `queryByText` alone would pass while three entries sat in the read-back.
     expect(screen.queryByRole('button', { name: /earlier/i })).toBeNull()

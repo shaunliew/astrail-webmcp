@@ -44,9 +44,27 @@ describe('AgentActivityRail', () => {
 
   it('announces an action in the app vocabulary, not the tool name', async () => {
     // A user should read "MOVED", never `move_place({place_ref:"7"})`.
-    withRail((r) => { r.beginActivity('move_place') })
+    withRail((r) => { r.endActivity(r.beginActivity('move_place'), 'done') })
     expect(await screen.findByText('MOVED')).toBeInTheDocument()
     expect(screen.queryByText(/move_place/)).not.toBeInTheDocument()
+  })
+
+  it('does not claim the action happened while it is still happening', async () => {
+    // `remove_place` spends its whole in-flight life with an approval card on screen, so the
+    // past-tense label was the record saying the stop was gone for as long as the user took to
+    // read the card and decide — the longest and most visible of the three windows.
+    withRail((r) => { r.beginActivity('remove_place') })
+    expect(await screen.findByText('REMOVE')).toBeInTheDocument()
+    expect(screen.queryByText('REMOVED')).toBeNull()
+  })
+
+  it('leaves a read in flight reading exactly as it did', async () => {
+    // A read in flight genuinely IS reading; only a write has a completed form to mis-claim.
+    // Forcing a bare stem here would trade a correct word for a worse one to fix nothing.
+    withRail((r) => { r.beginActivity('get_itinerary'); r.beginActivity('save_reels') })
+    expect(await screen.findByText('SAVING')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /earlier/i }))
+    expect(screen.getByText('READING')).toBeInTheDocument()
   })
 
   it('announces READS too — a silent read cannot be consented to', async () => {
@@ -178,7 +196,9 @@ describe('the rail is a record, not a toast', () => {
 
   it('names the three tools that used to fall back to a generic WORKING', async () => {
     withRail((r) => {
-      r.beginActivity('add_place'); r.beginActivity('set_trip_dates'); r.beginActivity('replan_trip')
+      r.endActivity(r.beginActivity('add_place'), 'done')
+      r.endActivity(r.beginActivity('set_trip_dates'), 'done')
+      r.endActivity(r.beginActivity('replan_trip'), 'done')
     })
     expect(await screen.findByText('REWROTE')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: /earlier/i }))
@@ -255,7 +275,7 @@ describe('the rail can be cleared', () => {
     await screen.findByText('READING')
     await userEvent.click(screen.getByRole('button', { name: /clear agent activity/i }))
     api!.beginActivity('move_place')
-    expect(await screen.findByText('MOVED')).toBeInTheDocument()
+    expect(await screen.findByText('MOVE')).toBeInTheDocument()
     // One entry now, and nothing behind it: the four reads did not become "4 earlier".
     expect(screen.queryByRole('button', { name: /earlier/i })).toBeNull()
   })

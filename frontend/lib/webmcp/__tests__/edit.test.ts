@@ -8,6 +8,7 @@ const reader = { current: () => TOKYO_TRIP, list: async () => [TOKYO_TRIP.trip],
 /** Every successful mutation answers with the structured envelope, so read it as one. */
 const envelope = (out: unknown) => JSON.parse(String(out)) as {
   result?: string
+  outcome?: string
   summaries_stale?: boolean
   next_tool?: string
   note?: string
@@ -509,5 +510,82 @@ describe('readToolOutcome — what the rail is allowed to believe', () => {
     const out = await removePlaceTool(d).execute({ place: '1' })
     expect(readToolOutcome(out).outcome).toBe('declined')
     expect(String(out)).toContain('declined')
+  })
+})
+
+/**
+ * A landed edit stays a landed edit when the re-read fails.
+ *
+ * Every mutation is awaited inside its own try; `deps.refresh` sat OUTSIDE all five of them. So a
+ * refresh that threw escaped `execute` entirely, and the wrapper's catch recorded the call as
+ * `failed` — the exact inverse of the bug this file fixed, and no better: the stop had moved, the
+ * trip was different, and the permanent record said it never happened. The agent was told the
+ * same, which invites it to retry a mutation that already landed.
+ *
+ * The outcome follows the DATA. The refresh failure is downgraded, never dropped: it is said in
+ * `result`, which is the line the rail shows, because the person staring at an unchanged screen is
+ * the one who most needs to know the change went through.
+ */
+describe('a failed refresh does not unmake the edit', () => {
+  const broken = () => vi.fn().mockRejectedValue(new Error('Could not re-read the trip.'))
+
+  const landed: [string, keyof EditDeps, (d: EditDeps) => Promise<unknown>][] = [
+    ['move_place',     'move',     (d) => Promise.resolve(movePlaceTool(d).execute({ place: '1', to_day: 3 }))],
+    ['remove_place',   'remove',   (d) => Promise.resolve(removePlaceTool(d).execute({ place: '1' }))],
+    ['add_place',      'add',      (d) => Promise.resolve(addPlaceTool(d).execute({ name: 'USJ', day: 1 }))],
+    ['set_trip_dates', 'setDates', (d) => Promise.resolve(setTripDatesTool(d).execute({ start_date: '2026-09-14' }))],
+    ['replan_trip',    'replan',   (d) => Promise.resolve(replanTripTool(d).execute({}))],
+  ]
+
+  it.each(landed)('%s still reports the change it made', async (_name, mutation, run) => {
+    const d = deps({ refresh: broken() })
+    const out = envelope(await run(d)) as { result?: string; outcome?: string }
+    // The write went through, so the record must say so.
+    expect(d[mutation]).toHaveBeenCalled()
+    expect(out.outcome).toBe('done')
+  })
+
+  it.each(landed)('%s says the page is behind rather than swallowing it', async (_name, _mutation, run) => {
+    // Not dropped. The user is looking at a stale view of a trip that DID change, and this is the
+    // line the activity rail renders.
+    const out = envelope(await run(deps({ refresh: broken() })))
+    expect(String(out.result)).toContain('may still show the old version')
+  })
+
+  it.each(landed)('%s does not throw, so the agent is not invited to retry it', async (_name, _mutation, run) => {
+    await expect(run(deps({ refresh: broken() }))).resolves.toBeTruthy()
+  })
+
+  it.each(landed)('%s stays inside the serialized output budget with the warning on it', async (_name, _mutation, run) => {
+    expect(envelopeLength(String(await run(deps({ refresh: broken() }))))).toBeLessThanOrEqual(OUTPUT_LIMIT)
+  })
+
+  it('move_place stops claiming the map redrew when it could not re-read it', async () => {
+    // The one tool that asserts something about the SCREEN. Keeping that sentence on a failed
+    // re-read would be a second lie stacked on the first.
+    const out = envelope(await movePlaceTool(deps({ refresh: broken() })).execute({ place: '1', to_day: 3 }))
+    expect(String(out.result)).toContain('Moved')
+    expect(String(out.result)).not.toContain('The map has redrawn')
+  })
+
+  it('keeps the stale-weather warning even though the re-read failed', async () => {
+    // It asks the FRESH bundle whether the trip carries a forecast. With no fresh bundle it falls
+    // back to the pre-edit one — changing dates writes no weather row, so the old bundle answers
+    // just as well, and losing the warning because a GET failed would lose it silently.
+    const out = envelope(await setTripDatesTool(deps({ refresh: broken() })).execute({ start_date: '2026-09-14' }))
+    expect(String(out.note)).toContain('weather')
+  })
+
+  it('says nothing about the page when the re-read worked', async () => {
+    const out = envelope(await movePlaceTool(deps()).execute({ place: '1', to_day: 3 }))
+    expect(String(out.result)).toContain('The map has redrawn')
+    expect(String(out.result)).not.toContain('may still show the old version')
+  })
+
+  it('still fails the ones that really failed — the refresh is not a way to launder an error', async () => {
+    // The mutation itself throwing is a different thing entirely and must still read as failed.
+    const d = deps({ move: vi.fn().mockRejectedValue(new Error('nope')), refresh: broken() })
+    expect(envelope(await movePlaceTool(d).execute({ place: '1', to_day: 3 })).outcome).toBe('failed')
+    expect(d.refresh).not.toHaveBeenCalled()
   })
 })

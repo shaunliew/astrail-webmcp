@@ -125,6 +125,34 @@ function noChange(verdict: 'declined' | 'failed', result: string): string {
   return editResult({ result, verdict, summariesStale: false })
 }
 
+/** Said on the one path where the edit is real and the screen is not. */
+const STALE_VIEW = 'Astrail could not re-read the trip, so the page may still show the old version — reload it.'
+
+/**
+ * Re-read the trip, treating a failed re-read as a stale VIEW rather than a failed edit.
+ *
+ * The mutation is awaited inside its own try; this call sat outside every one of them, so a
+ * refresh that threw escaped `execute` — and the wrapper's catch recorded the whole call as
+ * `failed`. That is the inverse of the bug this file just fixed and it is no better: the stop had
+ * moved, the trip was different, and the permanent record said it never happened. Worse, the
+ * agent was told the same thing, which invites it to retry a mutation that already landed.
+ *
+ * The outcome has to follow the DATA. So the failure is downgraded, never dropped: the reply says
+ * the page is behind, in `result` rather than in a note, because `result` is the line the activity
+ * rail shows — the reader looking at an unchanged screen is the person who most needs to know the
+ * change did happen. Both readers get one account of it, which is the rule this file already
+ * follows for the outcome itself.
+ */
+async function refreshView(deps: EditDeps, tripId: string): Promise<{ fresh: TripBundle | null; stale: boolean }> {
+  try {
+    return { fresh: await deps.refresh(tripId), stale: false }
+  } catch {
+    // Deliberately not surfaced verbatim: this is a GET failing, not the edit, and its message
+    // would read as the edit's own error on a call that succeeded.
+    return { fresh: null, stale: true }
+  }
+}
+
 /**
  * Read a tool's reply the way the activity rail has to: outcome first, prose second.
  *
@@ -208,7 +236,7 @@ export function movePlaceTool(deps: EditDeps): ToolSpec {
         return noChange('failed', e instanceof Error ? e.message : 'The move failed.')
       }
 
-      const fresh = await deps.refresh(r.bundle.trip.id)
+      const { fresh, stale } = await refreshView(deps, r.bundle.trip.id)
       const where = toDay !== undefined ? `day ${toDay}` : `position ${toPos}`
       // A record of the origin, not a promise about it: a null `sort_order` is a legal row and
       // `to_position` cannot express one, so say the position is missing rather than imply the
@@ -221,7 +249,7 @@ export function movePlaceTool(deps: EditDeps): ToolSpec {
           ? `It was on ${from} at position ${tp.sort_order + 1}.`
           : `It was on ${from}; its position within that day was not recorded.`
       return editResult({
-        result: `Moved "${tp.place.name}" to ${where}.${pinsLine(fresh, tp.place.name)} ${origin} The map has redrawn.`,
+        result: `Moved "${tp.place.name}" to ${where}.${pinsLine(fresh, tp.place.name)} ${origin} ${stale ? STALE_VIEW : 'The map has redrawn.'}`,
         summariesStale: true,
       })
     },
@@ -263,9 +291,9 @@ export function removePlaceTool(deps: EditDeps): ToolSpec {
         return noChange('failed', e instanceof Error ? e.message : 'The removal failed.')
       }
 
-      await deps.refresh(r.bundle.trip.id)
+      const { stale } = await refreshView(deps, r.bundle.trip.id)
       return editResult({
-        result: `The user approved. Removed "${tp.place.name}".`,
+        result: `The user approved. Removed "${tp.place.name}".${stale ? ` ${STALE_VIEW}` : ''}`,
         summariesStale: true,
         notes: ['The remaining stops have been renumbered — call get_itinerary before using pin numbers again.'],
       })
@@ -327,9 +355,9 @@ export function addPlaceTool(deps: EditDeps): ToolSpec {
         return noChange('failed', e instanceof Error ? e.message : 'Adding the place failed.')
       }
 
-      const fresh = await deps.refresh(r.bundle.trip.id)
+      const { fresh, stale } = await refreshView(deps, r.bundle.trip.id)
       return editResult({
-        result: `The user approved. Added "${name}" to day ${day}.${pinsLine(fresh, name)}`,
+        result: `The user approved. Added "${name}" to day ${day}.${pinsLine(fresh, name)}${stale ? ` ${STALE_VIEW}` : ''}`,
         summariesStale: true,
         notes: ['Pin numbers have shifted — call get_itinerary before using them again.'],
       })
@@ -375,7 +403,7 @@ export function setTripDatesTool(deps: EditDeps): ToolSpec {
         return noChange('failed', e instanceof Error ? e.message : 'Changing the dates failed.')
       }
 
-      const fresh = await deps.refresh(r.bundle.trip.id)
+      const { fresh, stale } = await refreshView(deps, r.bundle.trip.id)
       // The ONE mutation here that does not stale the summaries, and it is a code fact, not an
       // assumption: `edit_trip_dates` writes only `trip_days.day_date` and
       // `trips.start_date`/`end_date` — no stop, no day_number, no summary. The narrator writes
@@ -386,9 +414,12 @@ export function setTripDatesTool(deps: EditDeps): ToolSpec {
       // `persist_weather` runs only inside the generation pipeline, and `/trips/{id}/replan` calls
       // `_refresh_trip_routes` + `persist_narration` only. Re-narrating would relaunder a forecast
       // for the old dates into freshly-written prose — worse than leaving it visibly old. So say it.
-      const hasWeather = fresh?.days.some((d) => d.weather_summary) ?? false
+      // Falls back to the PRE-edit bundle when the re-read failed: changing the dates does not
+      // write a weather row, so the old bundle answers "does this trip carry a forecast" just as
+      // well — and dropping the warning because a GET failed would lose it silently.
+      const hasWeather = (fresh ?? r.bundle).days.some((d) => d.weather_summary)
       return editResult({
-        result: `The user approved. The trip now runs ${to}. Every day kept its stops and its number.`,
+        result: `The user approved. The trip now runs ${to}. Every day kept its stops and its number.${stale ? ` ${STALE_VIEW}` : ''}`,
         summariesStale: false,
         notes: [
           'The summaries describe the stops, which did not change, so replan_trip is not needed.',
@@ -431,13 +462,13 @@ export function replanTripTool(deps: EditDeps): ToolSpec {
         return noChange('failed', e instanceof Error ? e.message : 'Replanning failed.')
       }
 
-      await deps.refresh(r.bundle.trip.id)
+      const { stale } = await refreshView(deps, r.bundle.trip.id)
       const routes = result.routes_refreshed ? 'Routes recalculated.' : 'Routes could not be recalculated this time.'
       // The one success path here that used to answer in bare prose. Its three other endings now
       // answer in the envelope, and a reply whose SHAPE depends on how it went is a second thing
       // the reader has to know before it can read the first.
       return editResult({
-        result: `The user approved. Rewrote ${result.days_narrated} day summar${result.days_narrated === 1 ? 'y' : 'ies'} to match the current stops. ${routes}`,
+        result: `The user approved. Rewrote ${result.days_narrated} day summar${result.days_narrated === 1 ? 'y' : 'ies'} to match the current stops. ${routes}${stale ? ` ${STALE_VIEW}` : ''}`,
         // This is the tool that un-stales them. Saying so is the whole point of the field.
         summariesStale: false,
       })

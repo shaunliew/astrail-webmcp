@@ -22,17 +22,23 @@ type ToolFacts = {
    */
   label: string
   /**
-   * The same action named in a form that claims nothing — used the moment a call ends in
-   * anything but a change.
+   * The same action named in a form that claims nothing — used for EVERY state that is not a
+   * completed change: still running, declined, failed.
    *
-   * `label` is past tense for every write, and past tense is an assertion: `REMOVED` says the
-   * stop is gone. On a declined approval card, or a backend refusal, it was gone from the record
-   * and still on the map. There is no way to negate a past-tense word in place, so the entry
-   * switches to the attempt plus what became of it — `REMOVE DECLINED`, `MOVE FAILED`.
+   * `label` is past tense for the five writes that have a distinct completed form, and past tense
+   * is an assertion: `REMOVED` says the stop is gone. It was rendered on a declined card, on a
+   * backend refusal, and — the case that lasts longest and is most visible — while the approval
+   * card is still on screen waiting for an answer. A judge reading the card is looking at a record
+   * that already says the removal happened.
    *
-   * A running entry deliberately keeps `label`. For the reads, which are most calls, `label` is
-   * already the present participle a live call wants (`READING`), and the pulsing dot marks the
-   * few seconds a write spends there.
+   * There is no way to negate a past-tense word in place, so a non-completed entry uses this one
+   * instead: bare while the call is in flight, and with what became of it once it ends —
+   * `REMOVE DECLINED`, `MOVE FAILED`.
+   *
+   * For every OTHER tool the two are the same string, deliberately. `READING`, `SAVING`,
+   * `PLANNING` are present participles that assert nothing and already read correctly in flight,
+   * so the rule "a non-completed entry shows `attempt`" costs them nothing — where forcing a bare
+   * stem on them would turn a correct `SAVING` into a worse `SAVE` to fix a lie they never told.
    */
   attempt: string
   /**
@@ -56,20 +62,20 @@ type ToolFacts = {
 }
 
 const TOOLS: Record<string, ToolFacts> = {
-  get_app_state:        { label: 'READING',     attempt: 'READ',       actor: 'Astrail', changes: false },
-  list_trips:           { label: 'READING',     attempt: 'READ',       actor: 'Astrail', changes: false },
-  get_itinerary:        { label: 'READING',     attempt: 'READ',       actor: 'Astrail', changes: false },
-  list_saved_reels:     { label: 'READING',     attempt: 'READ',       actor: 'Astrail', changes: false },
-  get_place_evidence:   { label: 'CHECKING',    attempt: 'CHECK',      actor: 'Astrail', changes: false },
-  get_map_view:         { label: 'LOOKING',     attempt: 'LOOK',       actor: 'Astrail', changes: false },
-  get_trip_progress:    { label: 'WATCHING',    attempt: 'WATCH',      actor: 'Astrail', changes: false },
-  show_on_map:          { label: 'SHOWING',     attempt: 'SHOW',       actor: 'Astrail', changes: false },
-  set_map_mode:         { label: 'SWITCHING',   attempt: 'SWITCH',     actor: 'Astrail', changes: false },
-  save_reels:           { label: 'SAVING',      attempt: 'SAVE',       actor: 'Astrail', changes: true },
+  get_app_state:        { label: 'READING',     attempt: 'READING',    actor: 'Astrail', changes: false },
+  list_trips:           { label: 'READING',     attempt: 'READING',    actor: 'Astrail', changes: false },
+  get_itinerary:        { label: 'READING',     attempt: 'READING',    actor: 'Astrail', changes: false },
+  list_saved_reels:     { label: 'READING',     attempt: 'READING',    actor: 'Astrail', changes: false },
+  get_place_evidence:   { label: 'CHECKING',    attempt: 'CHECKING',   actor: 'Astrail', changes: false },
+  get_map_view:         { label: 'LOOKING',     attempt: 'LOOKING',    actor: 'Astrail', changes: false },
+  get_trip_progress:    { label: 'WATCHING',    attempt: 'WATCHING',   actor: 'Astrail', changes: false },
+  show_on_map:          { label: 'SHOWING',     attempt: 'SHOWING',    actor: 'Astrail', changes: false },
+  set_map_mode:         { label: 'SWITCHING',   attempt: 'SWITCHING',  actor: 'Astrail', changes: false },
+  save_reels:           { label: 'SAVING',      attempt: 'SAVING',     actor: 'Astrail', changes: true },
   // The one durable edit that reaches the database without an approval card, which is exactly
   // why the rail has to name it: unasked, unannounced anywhere else, and not reversible.
   move_place:           { label: 'MOVED',       attempt: 'MOVE',       actor: 'Astrail', changes: true },
-  plan_trip_from_reels: { label: 'PLANNING',    attempt: 'PLAN',       actor: 'You',     changes: true },
+  plan_trip_from_reels: { label: 'PLANNING',    attempt: 'PLANNING',   actor: 'You',     changes: true },
   add_place:            { label: 'ADDED',       attempt: 'ADD',        actor: 'You',     changes: true },
   remove_place:         { label: 'REMOVED',     attempt: 'REMOVE',     actor: 'You',     changes: true },
   set_trip_dates:       { label: 'RESCHEDULED', attempt: 'RESCHEDULE', actor: 'You',     changes: true },
@@ -80,7 +86,7 @@ const TOOLS: Record<string, ToolFacts> = {
  * A tool the table has not met. `changes: true` is the fail-safe direction: it costs an extra
  * "can't undo" line on something harmless, where guessing `false` would hide a real write.
  */
-const UNKNOWN_TOOL: ToolFacts = { label: 'WORKING', attempt: 'WORK', actor: 'Astrail', changes: true }
+const UNKNOWN_TOOL: ToolFacts = { label: 'WORKING', attempt: 'WORKING', actor: 'Astrail', changes: true }
 
 /**
  * A view of what is currently registered, so the UI can SHOW the user what the agent can do.

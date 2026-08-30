@@ -57,14 +57,21 @@ export function ageLabel(at: number, now: number): string | null {
 }
 
 /**
- * What the card announces, given how the call ended.
+ * What the card announces, given where the call has got to.
  *
- * Past tense only for a change that landed. The other two endings are the same action named
- * without the claim, plus what became of it — `REMOVE DECLINED`, `MOVE FAILED` — because a
- * past-tense word cannot be negated in place and `REMOVED` on a refused removal is the record
- * asserting the opposite of what happened.
+ * `done` is the ONLY state allowed the past tense, because past tense is a claim that the thing
+ * happened. Everything else shows `attempt`, the same action named without that claim: bare while
+ * the call is in flight, and with its ending once it has one.
+ *
+ * The running case is not a nicety. `remove_place` spends its whole in-flight life with an
+ * approval card on screen waiting for an answer, so `REMOVED` was on the record for exactly as
+ * long as the user took to read the card and decide — the longest and most visible window of the
+ * three, and the one a judge is most likely to be looking at. For the reads and the two writes
+ * whose label is already a present participle, `attempt` is the same word, so nothing about a
+ * correct `READING` or `SAVING` changes.
  */
 function headline(entry: ActivityEntry): string {
+  if (entry.status === 'running') return entry.attempt
   if (entry.status === 'declined') return `${entry.attempt} DECLINED`
   if (entry.status === 'failed') return `${entry.attempt} FAILED`
   return entry.label

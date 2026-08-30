@@ -2,7 +2,10 @@ import type { TransportLeg, TransportStatus, Place } from '@/lib/trip/backend-ty
 
 const OK_STATUSES: TransportStatus[] = ['ok']
 
-function fmtDuration(seconds: number | null): string {
+/* Exported so the folded route links in ItineraryCards read a leg the same way this strip does.
+   While both surfaces are on the page, two copies of this could drift and print two different
+   durations for the same leg. */
+export function fmtDuration(seconds: number | null): string {
   if (seconds == null) return ''
   const m = Math.round(seconds / 60)
   return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m} min`

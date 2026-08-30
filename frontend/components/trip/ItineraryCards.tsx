@@ -103,9 +103,15 @@ function RouteLinkRow({ link }: { link: RouteLink }) {
 }
 
 export default function ItineraryCards({
-  places, selectedPlaceId, onSelectPlace, legs = [], placeIndex,
+  places, trailNumbers, selectedPlaceId, onSelectPlace, legs = [], placeIndex,
 }: {
   places: TripPlace[]
+  /* `buildTrailNumbers` — the SAME map the pins are painted from and `resolvePlaceRef` answers
+     to. Required, and with no per-day fallback, on purpose: the day's stops cannot tell you
+     their trail number, and a panel that counts 01, 02 per day while the map and the tools
+     count 1..N across the trip puts two different stops behind one name. "Move stop 1" then
+     moves something the user was not looking at, and the agent reports success. */
+  trailNumbers: Map<string, number>
   selectedPlaceId: string | null
   onSelectPlace: (placeId: string) => void
   legs?: TransportLeg[]
@@ -138,6 +144,10 @@ export default function ItineraryCards({
       {places.map((tp, i) => {
         const selected = tp.place_id === selectedPlaceId
         const link = above[i]
+        // Absent for a stop the map cannot pin (unresolved coordinates — `orderedTripPlaces`
+        // drops it). It gets a marker with no number: the agent cannot address it either, and
+        // printing one here would hand the user a handle that resolves to a different stop.
+        const pin = trailNumbers.get(tp.id)
         return (
           <li key={tp.id}>
             {/* The hop reads BEFORE the stop it delivers you to: "Akasaka Station → 3 min walk →
@@ -156,14 +166,23 @@ export default function ItineraryCards({
             >
               {/* The step marker sits ON the rail — the number becomes the anchor of the sequence
                   instead of a caption above the name, which also buys back the line it used to
-                  occupy. It reads "01" to the eye; screen readers get the sentence below. */}
+                  occupy. It reads "03" to the eye; screen readers get the sentence below, and
+                  both say the number the map paints and the agent answers to. */}
               <span
                 aria-hidden
-                className="type-label mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[var(--brass)] bg-[var(--brass-soft)] text-[10px] tabular-nums text-[var(--brass-bright)]"
+                className={[
+                  'type-label mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full',
+                  'text-[10px] tabular-nums',
+                  pin != null
+                    ? 'border border-[var(--brass)] bg-[var(--brass-soft)] text-[var(--brass-bright)]'
+                    : 'border border-dashed border-[var(--line)]',
+                ].join(' ')}
               >
-                {String(i + 1).padStart(2, '0')}
+                {pin != null ? String(pin).padStart(2, '0') : ''}
               </span>
-              <span className="sr-only">Stop {i + 1} of {places.length}</span>
+              <span className="sr-only">
+                {pin != null ? `Stop ${pin} of ${trailNumbers.size}` : 'Unnumbered stop'}
+              </span>
               <div className="min-w-0 flex-1">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">

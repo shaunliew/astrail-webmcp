@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useRef } from 'react'
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures'
 import { placesForDay } from '@/lib/trip/selectors'
+import { resolvePlaceRef } from '@/lib/webmcp/resolve'
 import type { StreamEvent, TripBundle } from '@/lib/trip/backend-types'
 
 const { getTrip, MapCtor, mapInstance, mapProps } = vi.hoisted(() => {
@@ -100,6 +101,45 @@ describe('TripWorkspace', () => {
     expect(card(day3.place_id)).not.toBeNull()
     expect(card(day3.place_id)).toHaveAttribute('aria-current', 'true')
     expect(card(day1.place_id)).toBeNull()          // the day switched, not merely appended
+  })
+
+  /* The panel, the map and the WebMCP tools must say ONE number per stop. The panel used to
+     count 01, 02 within the open day while the map and `resolvePlaceRef` count 1..N across the
+     whole trip — so on any day after the first, a user reading "01" and saying "move stop 1"
+     moved a stop they were not looking at, and the agent confirmed it did what was asked.
+     Asserted through the real workspace, because the wiring is where the two schemes came
+     apart, and asserted by feeding the PAINTED number back through the agent's own resolver,
+     so this cannot pass on two copies of one hard-coded constant. */
+  it('labels a stop with the number the map and the tools answer to, not a per-day count', async () => {
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    renderWorkspace(TOKYO_TRIP.trip.id)
+    const day2 = placesForDay(TOKYO_TRIP, 2)[0]
+
+    await waitFor(() => expect(document.querySelector('[data-place-id]')).not.toBeNull())
+    await act(async () => { mapProps.current!.onSelectPlace(day2.place_id) })
+
+    const card = document.querySelector<HTMLElement>(`[data-place-id="${day2.place_id}"]`)!
+    const painted = within(card).getByText(/^\d+$/).textContent!
+    const resolved = resolvePlaceRef(TOKYO_TRIP, painted)
+    expect(resolved.ok && resolved.tripPlace.id).toBe(day2.id)
+    expect(Number(painted)).not.toBe(1)   // day 2 continues the trail; it does not restart it
+  })
+
+  /* With the separate "Getting around" section gone, the folded links are the ONLY place the
+     day's routing appears — so dropping the `legs` prop would delete distances, durations and
+     the no-route warnings from the product while every ItineraryCards test stayed green. The
+     wiring is pinned here for that reason, and on the arriving stop so it cannot pass by
+     printing the leg just anywhere on the page. */
+  it('folds the day transport legs into the itinerary, now their only home', async () => {
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    renderWorkspace(TOKYO_TRIP.trip.id)
+
+    await waitFor(() => expect(document.querySelector('[data-place-id]')).not.toBeNull())
+    // leg_1 runs Akasaka Station -> Harry Potter Cafe on day 1: 150 s over 130 m.
+    const arrival = placesForDay(TOKYO_TRIP, 1)[1]
+    const step = document.querySelector(`[data-place-id="${arrival.place_id}"]`)!.closest('li')!
+    expect(step).toHaveTextContent('3 min')
+    expect(step).toHaveTextContent('0.1 km')
   })
 
   it('leaks no source comment into the rendered page', async () => {

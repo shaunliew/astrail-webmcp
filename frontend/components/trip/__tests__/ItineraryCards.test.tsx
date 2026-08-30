@@ -2,18 +2,22 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import ItineraryCards from '@/components/trip/ItineraryCards'
-import { placesForDay, legsForDay, buildPlaceIndex } from '@/lib/trip/selectors'
+import { placesForDay, legsForDay, buildPlaceIndex, buildTrailNumbers } from '@/lib/trip/selectors'
+import { resolvePlaceRef } from '@/lib/webmcp/resolve'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures'
 
 const day1 = placesForDay(TOKYO_TRIP, 1)
-const day1Legs = legsForDay(TOKYO_TRIP, 'day_1')
+const day2 = placesForDay(TOKYO_TRIP, 2)
 const day3 = placesForDay(TOKYO_TRIP, 3)
+const day1Legs = legsForDay(TOKYO_TRIP, 'day_1')
 const day3Legs = legsForDay(TOKYO_TRIP, 'day_3')
 const idx = buildPlaceIndex(TOKYO_TRIP)
+/* The SAME numbering the map paints and `resolvePlaceRef` answers to — not a copy of it. */
+const PINS = buildTrailNumbers(TOKYO_TRIP)
 
 describe('ItineraryCards', () => {
   it('renders a card per place with its name and source badge', () => {
-    render(<ItineraryCards places={day1} selectedPlaceId={null} onSelectPlace={() => {}} />)
+    render(<ItineraryCards places={day1} trailNumbers={PINS} selectedPlaceId={null} onSelectPlace={() => {}} />)
     for (const tp of day1) {
       expect(screen.getByText(tp.place.name)).toBeInTheDocument()
     }
@@ -23,27 +27,18 @@ describe('ItineraryCards', () => {
      answering "where do I go first". A screen reader (and any test) can hold this to account:
      each stop says its own position, attached to its own heading. A CSS rail proves nothing. */
   it('states each stop position in the markup, bound to that stop heading', () => {
-    render(<ItineraryCards places={day1} selectedPlaceId={null} onSelectPlace={() => {}} />)
+    render(<ItineraryCards places={day1} trailNumbers={PINS} selectedPlaceId={null} onSelectPlace={() => {}} />)
     expect(screen.getByRole('list').tagName).toBe('OL')
     const steps = screen.getAllByRole('listitem')
     expect(steps).toHaveLength(day1.length)
     steps.forEach((li, i) => {
-      expect(within(li).getByText(`Stop ${i + 1} of ${day1.length}`)).toBeInTheDocument()
+      expect(within(li).getByText(`Stop ${PINS.get(day1[i].id)} of ${PINS.size}`)).toBeInTheDocument()
       expect(within(li).getByRole('heading')).toHaveTextContent(day1[i].place.name)
     })
   })
 
-  // Pin numbers are the shared vocabulary of the map, the user and the WebMCP tools — the
-  // redesign moves where they sit, never what they say.
-  it('keeps the zero-padded pin number on every stop', () => {
-    render(<ItineraryCards places={day1} selectedPlaceId={null} onSelectPlace={() => {}} />)
-    day1.forEach((_, i) => {
-      expect(screen.getByText(String(i + 1).padStart(2, '0'))).toBeInTheDocument()
-    })
-  })
-
   it('shows an evidence chip on every stop, not merely somewhere on the page', () => {
-    render(<ItineraryCards places={day1} selectedPlaceId={null} onSelectPlace={() => {}} />)
+    render(<ItineraryCards places={day1} trailNumbers={PINS} selectedPlaceId={null} onSelectPlace={() => {}} />)
     screen.getAllByRole('listitem').forEach((li, i) => {
       const pct = `${Math.round(day1[i].evidence_json.confidence * 100)}%`
       expect(within(li).getByText(pct)).toBeInTheDocument()
@@ -52,7 +47,7 @@ describe('ItineraryCards', () => {
 
   it('calls onSelectPlace with the place_id when a card is clicked', () => {
     const onSelectPlace = vi.fn()
-    render(<ItineraryCards places={day1} selectedPlaceId={null} onSelectPlace={onSelectPlace} />)
+    render(<ItineraryCards places={day1} trailNumbers={PINS} selectedPlaceId={null} onSelectPlace={onSelectPlace} />)
     fireEvent.click(screen.getByText(day1[0].place.name))
     expect(onSelectPlace).toHaveBeenCalledWith(day1[0].place_id)
   })
@@ -65,13 +60,13 @@ describe('ItineraryCards', () => {
   it('brings a place selected from the map into view', () => {
     const spy = vi.spyOn(Element.prototype, 'scrollIntoView')
     const view = render(
-      <ItineraryCards places={day1} selectedPlaceId={null} onSelectPlace={() => {}} />,
+      <ItineraryCards places={day1} trailNumbers={PINS} selectedPlaceId={null} onSelectPlace={() => {}} />,
     )
     expect(spy).not.toHaveBeenCalled()   // nothing selected yet — no unprompted scrolling
 
     const target = day1[1] ?? day1[0]
     view.rerender(
-      <ItineraryCards places={day1} selectedPlaceId={target.place_id} onSelectPlace={() => {}} />,
+      <ItineraryCards places={day1} trailNumbers={PINS} selectedPlaceId={target.place_id} onSelectPlace={() => {}} />,
     )
     expect(spy).toHaveBeenCalledTimes(1)
     // The element scrolled must be the card for THAT place, not merely some card.
@@ -82,9 +77,59 @@ describe('ItineraryCards', () => {
   })
 
   it('marks the selected card', () => {
-    render(<ItineraryCards places={day1} selectedPlaceId={day1[0].place_id} onSelectPlace={() => {}} />)
+    render(<ItineraryCards places={day1} trailNumbers={PINS} selectedPlaceId={day1[0].place_id} onSelectPlace={() => {}} />)
     expect(screen.getByRole('button', { name: new RegExp(day1[0].place.name, 'i') }))
       .toHaveAttribute('aria-current', 'true')
+  })
+
+  /* Pin numbers are one shared vocabulary across the map, the panel, the user and the WebMCP
+     tools. Two schemes under one name is a silent wrong-stop bug, not a cosmetic mismatch: a
+     user reading "01" beside SANDO LAB and saying "move stop 1" moves Akasaka Station instead,
+     and the agent confirms it did what was asked. Day 2 is where a per-day count and the trail
+     numbering disagree, so every assertion here is made against day 2. */
+  describe('pin numbers', () => {
+    it('labels each stop with the trail number, not a count that restarts each day', () => {
+      // If the fixture ever stops disagreeing, these tests stop testing anything. Say so loudly.
+      expect(PINS.get(day2[0].id)).not.toBe(1)
+
+      render(<ItineraryCards places={day2} trailNumbers={PINS} selectedPlaceId={null} onSelectPlace={() => {}} />)
+      const steps = screen.getAllByRole('listitem')
+      day2.forEach((tp, i) => {
+        const pin = PINS.get(tp.id)!
+        expect(within(steps[i]).getByText(String(pin).padStart(2, '0'))).toBeInTheDocument()
+      })
+    })
+
+    /* The end-to-end contract, read in the direction the user meets it: take the number the
+       PANEL actually painted, hand it to the agent's own resolver, and require the same stop
+       back. Nothing here restates a number a human typed twice. */
+    it('labels a stop with the number resolvePlaceRef answers to', () => {
+      const { container } = render(
+        <ItineraryCards places={day2} trailNumbers={PINS} selectedPlaceId={null} onSelectPlace={() => {}} />,
+      )
+      for (const tp of day2) {
+        const card = container.querySelector<HTMLElement>(`[data-place-id="${tp.place_id}"]`)!
+        const painted = within(card).getByText(/^\d+$/).textContent!   // what the user reads
+        const resolved = resolvePlaceRef(TOKYO_TRIP, painted)          // what the agent moves
+        expect(resolved.ok).toBe(true)
+        expect(resolved.ok && resolved.tripPlace.id).toBe(tp.id)
+      }
+    })
+
+    /* A stop with unresolved coordinates gets no map pin and cannot be addressed by number
+       (`orderedTripPlaces` drops it). Printing a number beside it would be inventing a handle
+       that resolves to a different stop — the exact failure this whole block exists to stop. */
+    it('leaves a stop the map cannot pin unnumbered rather than inventing one', () => {
+      const unpinned = day2[1]
+      const partial = new Map([...PINS].filter(([id]) => id !== unpinned.id))
+      const { container } = render(
+        <ItineraryCards places={day2} trailNumbers={partial} selectedPlaceId={null} onSelectPlace={() => {}} />,
+      )
+      const card = container.querySelector<HTMLElement>(`[data-place-id="${unpinned.place_id}"]`)!
+      expect(within(card).queryByText(/^\d+$/)).toBeNull()
+      expect(card).toHaveTextContent(unpinned.place.name)      // still a stop, still readable
+      expect(card).toHaveTextContent(/unnumbered stop/i)       // and honest about why
+    })
   })
 
   describe('route links', () => {
@@ -94,7 +139,7 @@ describe('ItineraryCards', () => {
     it('folds the arriving leg in above the stop it delivers you to', () => {
       render(
         <ItineraryCards
-          places={day1} legs={day1Legs} placeIndex={idx}
+          places={day1} legs={day1Legs} placeIndex={idx} trailNumbers={PINS}
           selectedPlaceId={null} onSelectPlace={() => {}}
         />,
       )
@@ -117,7 +162,7 @@ describe('ItineraryCards', () => {
     it('shows a leg arriving from another day above the first stop, warning and all', () => {
       render(
         <ItineraryCards
-          places={day3} legs={day3Legs} placeIndex={idx}
+          places={day3} legs={day3Legs} placeIndex={idx} trailNumbers={PINS}
           selectedPlaceId={null} onSelectPlace={() => {}}
         />,
       )
@@ -133,11 +178,16 @@ describe('ItineraryCards', () => {
 
     // Most saved trips carry no legs at all. The route must still read as a route.
     it('still renders every stop, in sequence, when the day has no legs', () => {
-      render(<ItineraryCards places={day1} legs={[]} placeIndex={idx} selectedPlaceId={null} onSelectPlace={() => {}} />)
+      render(
+        <ItineraryCards
+          places={day1} legs={[]} placeIndex={idx} trailNumbers={PINS}
+          selectedPlaceId={null} onSelectPlace={() => {}}
+        />,
+      )
       const steps = screen.getAllByRole('listitem')
       expect(steps).toHaveLength(day1.length)
       steps.forEach((li, i) => {
-        expect(within(li).getByText(`Stop ${i + 1} of ${day1.length}`)).toBeInTheDocument()
+        expect(within(li).getByText(`Stop ${PINS.get(day1[i].id)} of ${PINS.size}`)).toBeInTheDocument()
       })
     })
   })

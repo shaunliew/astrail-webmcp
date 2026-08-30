@@ -8,7 +8,7 @@ import { getTrip } from '@/lib/trip/supabase-api'
 import TripTools from '@/components/webmcp/TripTools'
 import {
   orderedDays, placesForDay, legsForDay, restaurantsForDay,
-  tripHotels, buildPlaceIndex, findTripPlace, recommendedHotelId,
+  tripHotels, buildPlaceIndex, buildTrailNumbers, findTripPlace, recommendedHotelId,
 } from '@/lib/trip/selectors'
 import { useSharedMap } from '@/components/map/MapProvider'
 import { useOptionalGeneration } from '@/components/generation/GenerationProvider'
@@ -16,7 +16,6 @@ import Astronaut from '@/components/mascot/Astronaut'
 import DaySelector from './DaySelector'
 import DayOverview from './DayOverview'
 import ItineraryCards from './ItineraryCards'
-import TransportStrip from './TransportStrip'
 import RestaurantStrip from './RestaurantStrip'
 import HotelPanel from './HotelPanel'
 import PlaceIntelPanel from './PlaceIntelPanel'
@@ -147,6 +146,11 @@ export default function TripWorkspace({
 
   const days = useMemo(() => (bundle ? orderedDays(bundle) : []), [bundle])
   const placeIndex = useMemo(() => (bundle ? buildPlaceIndex(bundle) : new Map()), [bundle])
+  // ONE numbering for the whole surface: the map paints these, `resolvePlaceRef` answers to
+  // them, and the itinerary panel now labels its stops from the same map. The panel used to
+  // count 01, 02 per day, so "move stop 1" on any day after the first moved a stop the user
+  // was not looking at.
+  const trailNumbers = useMemo(() => (bundle ? buildTrailNumbers(bundle) : new Map()), [bundle])
   // No hotel got a coordinate ⇒ the hub layer has nothing to draw, so the Hotel toggle is
   // disabled rather than flipping to a silently blank map (C5). Same signal that seeds the
   // default selection above, so "toggle enabled" and "a hub is selected" never disagree.
@@ -456,12 +460,19 @@ export default function TripWorkspace({
           <Section title="Itinerary">
             <div className="flex flex-col gap-3">
               {activeDay ? <DayOverview day={activeDay} /> : null}
-              <ItineraryCards places={dayPlaces} selectedPlaceId={selectedPlaceId} onSelectPlace={setSelectedPlaceId} />
+              {/* The day's legs ride WITH the stops they join, so the panel reads as directions
+                  ("Akasaka Station → 3 min walk → Harry Potter Cafe") instead of a list of
+                  places plus a lookup table. There is deliberately no separate "Getting around"
+                  section any more: the same legs in two places is worse than either. */}
+              <ItineraryCards
+                places={dayPlaces}
+                legs={dayLegs}
+                placeIndex={placeIndex}
+                trailNumbers={trailNumbers}
+                selectedPlaceId={selectedPlaceId}
+                onSelectPlace={setSelectedPlaceId}
+              />
             </div>
-          </Section>
-
-          <Section title="Getting around">
-            <TransportStrip legs={dayLegs} placeIndex={placeIndex} />
           </Section>
 
           <Section title="Where to eat">

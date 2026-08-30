@@ -899,3 +899,37 @@ invariant, holding, around a false string.
 `feat/webmcp` 112 files / 1235 tests, tsc clean. Merged with both branches: 113 / 1256, tsc clean,
 production build clean. Merge shape re-verified after both branches gained commits: still four
 hunks.
+
+---
+
+## Night of 2026-08-30 → 31 — Codex round 5 fallout
+
+**Queue, in priority order.** If the night stops early, everything above the stop line landed.
+
+| # | Task | Gate |
+|---|---|---|
+| 1 | `auto-replan`: HIGH — `replanTrip`'s timer clears on response HEADERS, so `res.json()` is unbounded and the permanent wedge the timeout exists to prevent is still reachable. Plus the false "The trip itself is unchanged" message, and two comments that overclaim | header-stall fault injection (the existing never-returns-headers test cannot tell the fix from the bug) |
+| 2 | `auto-replan`: MEDIUM — rewrite marker has no trip id and lights before approval, so declining an edit proves it claimed work that never started; a `replan_trip` for trip B marks trip A | injections per case |
+| 3 | `auto-replan`: MEDIUM — `edits` is in-memory, so "exactly one run per trip" is session-local. **Document, do not fix** — server-side versioning is out of scope this week | comment correction only |
+| 4 | Me: verify 1–3 independently, then full `vitest run` + `uv run pytest -q` + `tsc --noEmit` | all green, or STOP |
+| 5 | Me: Codex round 6 on the round-5 fixes, both panes in parallel (`reviewer` frontend, `checker` backend) | findings triaged, not auto-fixed |
+
+**Hard limits held overnight, per the plan's unattended contract:** no `git push`, no merge,
+no deploy, no migration, no production config change, no real generation run (Apify + OpenAI
+cost real money), and no answering a Codex sandbox approval dialog — those get declined and the
+command run here instead. Commits are LOCAL only.
+
+**On any gate failure: STOP.** Write the failure and its output here, leave the tree clean, do
+not attempt the next task. A failing gate means an assumption was wrong, and that needs Shaun.
+
+### Entering the night
+
+`feat/webmcp` at `2ee4e0c`. Frontend 122 files / 1639 tests, backend 2047 passed / 13 skipped,
+tsc clean, working tree clean. Nothing pushed — last pushed commit is `d5561be`, so all 12
+commits from `5399d2e` onward are local.
+
+Codex round 5 verdicts: **backend clean** (three guard categories verified with concrete inputs;
+one wording overreach in my own ARCHITECTURE.md, fixed in `d2f23fe`). **Frontend: 1 HIGH,
+2 MEDIUM, 1 LOW.** The LOW was mine and is closed (`2ee4e0c` — the same dead hover utility was
+still on `HotelPanel`, missed because I fixed the itinerary and never grepped for the pattern).
+

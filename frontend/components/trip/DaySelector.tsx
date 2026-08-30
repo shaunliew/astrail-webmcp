@@ -2,10 +2,16 @@
 
 import type { TripDay } from '@/lib/trip/backend-types'
 
+/* The locale is PINNED, not defaulted. `undefined` means "the runtime's default", which is en-US
+   on the SSR server and the visitor's own locale in the browser — so an en-GB visitor got "18
+   Sept" over the server's "Sep 18" and React discarded the whole tree with a hydration error.
+   No `timeZone`, deliberately: the ISO string is date-only, so this is local midnight read back
+   in that same local zone and the calendar day survives every offset. Pinning UTC here would
+   break it (local midnight in UTC+8 is the previous day in UTC). */
 function shortDate(iso: string | null): string {
   if (!iso) return ''
   const d = new Date(`${iso}T00:00:00`)
-  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
 export default function DaySelector({

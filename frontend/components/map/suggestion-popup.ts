@@ -44,7 +44,9 @@ function money(currency: string | null, amount: number | null): string | null {
   // Whole units: a nightly rate to the cent is noise at a glance, and the exact figure is the
   // booking site's to state at the moment of booking, not ours to freeze in a map popup.
   const rounded = Math.round(amount)
-  return currency ? `${currency} ${rounded.toLocaleString()}` : String(rounded)
+  // Grouping is locale-dependent too — a de-DE runtime writes "1.234", which next to a USD
+  // symbol reads as one dollar twenty-three. Pinned for the same reason the dates above are.
+  return currency ? `${currency} ${rounded.toLocaleString('en-US')}` : String(rounded)
 }
 
 function appendLink(content: HTMLElement, url: string | null, label: string): void {
@@ -158,7 +160,12 @@ export function buildStayPopup(h: HotelSuggestion, now: number = Date.now()): HT
 function cancellationLine(h: HotelSuggestion, now: number): string | null {
   const until = h.free_cancellation_until ? Date.parse(h.free_cancellation_until) : NaN
   if (Number.isFinite(until) && until > now) {
-    const when = new Date(until).toLocaleDateString(undefined, {
+    // Locale pinned like every other date in the app (one spelling of "Sep", not two). The zone
+    // stays local on purpose: this is a real instant, not a date-only string, so the deadline is
+    // most useful stated in the reader's own day. This path is browser-only — TripMap is
+    // `dynamic(..., { ssr: false })` — so it cannot cause a hydration mismatch; it is pinned so
+    // there is one rule here, not two.
+    const when = new Date(until).toLocaleDateString('en-US', {
       day: 'numeric', month: 'short', year: 'numeric',
     })
     return `Free cancellation until ${when}`

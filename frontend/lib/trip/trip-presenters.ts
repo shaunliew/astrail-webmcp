@@ -4,8 +4,11 @@ export function tripTitle(trip: Trip): string {
   return trip.inferred_destination ?? trip.destination_hint ?? 'Untitled trip'
 }
 
+// Locale pinned so the SSR pass and the visitor's browser spell the month identically — an
+// unpinned `undefined` renders "Sep 18" on the server and "18 Sept" in an en-GB browser, which
+// React reports as a hydration mismatch. See DaySelector for why the zone is left local.
 function shortDate(iso: string): string {
-  return new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  return new Date(`${iso}T00:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
 
 export function tripDateRange(trip: Trip): string {

@@ -40,7 +40,11 @@ export function statusLabel(card: SavedReelCard, now: number = Date.now()): stri
   if (card.analysis_status === 'failed' && card.retry_after) {
     const resetsAt = Date.parse(card.retry_after)
     if (Number.isFinite(resetsAt) && resetsAt > now) {
-      const when = new Date(resetsAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+      // Locale pinned, zone left local: a reset deadline is an instant, best read in the user's
+      // own day. Its consumers are 'use client' components that Next still renders on the server,
+      // so an unpinned locale here is a latent hydration mismatch the moment a card arrives as a
+      // server prop rather than from the useEffect fetch it uses today.
+      const when = new Date(resetsAt).toLocaleDateString('en-US', { day: 'numeric', month: 'short' })
       return `Daily limit reached · try again ${when}`
     }
   }

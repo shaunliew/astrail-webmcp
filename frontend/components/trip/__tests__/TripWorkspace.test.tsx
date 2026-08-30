@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useRef } from 'react'
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures'
+import { thumbnailFor } from '@/components/map/popup-model'
 import { placesForDay } from '@/lib/trip/selectors'
 import { resolvePlaceRef } from '@/lib/webmcp/resolve'
 import type { StreamEvent, TripBundle } from '@/lib/trip/backend-types'
@@ -45,6 +46,9 @@ vi.mock('@/components/trip/TripFeedbackPanel', () => ({
 
 import MapProvider from '@/components/map/MapProvider'
 import GenerationProvider, { useGeneration } from '@/components/generation/GenerationProvider'
+import {
+  WebMcpRegistryProvider, useWebMcpRegistry,
+} from '@/components/webmcp/WebMcpRegistry'
 import TripWorkspace from '@/components/trip/TripWorkspace'
 
 function fireLoad() {
@@ -65,6 +69,23 @@ function renderWorkspace(tripId: string) {
   )
 }
 
+/* The real registry, not a mock of it: the marker's whole job is to reflect the SAME activity
+   entry the rail reflects, so a stubbed flag would prove the marker renders and prove nothing
+   about it being connected to a rewrite. */
+function renderWorkspaceWithRegistry(tripId: string) {
+  const reg = { current: null as null | ReturnType<typeof useWebMcpRegistry> }
+  function Probe() { reg.current = useWebMcpRegistry(); return null }
+  const view = render(
+    <WebMcpRegistryProvider>
+      <Probe />
+      <MapProvider>
+        <TripWorkspace tripId={tripId} />
+      </MapProvider>
+    </WebMcpRegistryProvider>,
+  )
+  return { ...view, reg }
+}
+
 describe('TripWorkspace', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -78,6 +99,23 @@ describe('TripWorkspace', () => {
     const firstDay1Place = placesForDay(TOKYO_TRIP, 1)[0].place.name
     expect(await screen.findByText(firstDay1Place)).toBeInTheDocument()
     expect(await screen.findByTestId('trip-map')).toBeInTheDocument()
+  })
+
+  /* The cover tile is the one thing on the timeline that needs data the LIST does not hold: the
+     Reel thumbnail hangs off the bundle, so `ItineraryCards` can only draw it if the workspace
+     hands the bundle down. It shipped without that prop and every stop fell back to the dashed
+     placeholder — a whole-panel regression that ItineraryCards' own tests could not see, because
+     they pass a bundle in directly. The seam is what needs asserting, so this test renders the
+     real workspace and demands a real thumbnail. */
+  it('hands the bundle down so Reel covers can render', async () => {
+    const withCover = placesForDay(TOKYO_TRIP, 1).find((tp) => thumbnailFor(TOKYO_TRIP, tp))
+    expect(withCover, 'day-1 fixture must have at least one Reel-derived cover').toBeTruthy()
+
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    renderWorkspace(TOKYO_TRIP.trip.id)
+
+    const card = (await screen.findByText(withCover!.place.name)).closest('[data-place-id]')
+    expect(card?.querySelector('img')).toHaveAttribute('src', thumbnailFor(TOKYO_TRIP, withCover!))
   })
 
   it('activates a pin\'s own day when it is selected from the map', async () => {
@@ -596,5 +634,95 @@ describe('arriving from a generation the shell just finished', () => {
     await act(async () => { settle(null); await Promise.resolve() })
     expect(screen.queryByTestId('trip-arrival')).toBeNull()
     expect(screen.getByText(/trip not found/i)).toBeInTheDocument()
+  })
+})
+
+/* Every itinerary edit now starts a ~30 s summary rewrite by itself (GlobalTools::runReplan).
+   For those 30 seconds the persisted day prose describes the trip BEFORE the edit — it is not
+   wrong text, it is true text about an itinerary that no longer exists. The activity rail was
+   the only surface saying so, and a reader of the itinerary panel had no way to know the
+   sentence under their eyes was about to be replaced. */
+describe('TripWorkspace summary rewrite marker', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN = 'pk.test'
+  })
+  afterEach(() => { delete process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN })
+
+  it('marks the day prose as updating while a rewrite runs, and clears it when it lands', async () => {
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    const { reg } = renderWorkspaceWithRegistry(TOKYO_TRIP.trip.id)
+    await waitFor(() => expect(document.querySelector('[data-place-id]')).not.toBeNull())
+
+    expect(screen.queryByTestId('summary-rewriting')).toBeNull()
+
+    let id = 0
+    act(() => { id = reg.current!.beginActivity('replan_trip') })
+    expect(screen.getByTestId('summary-rewriting')).toBeInTheDocument()
+
+    act(() => { reg.current!.endActivity(id, 'done', 'Rewrote 3 day summaries.') })
+    expect(screen.queryByTestId('summary-rewriting')).toBeNull()
+  })
+
+  /* A failed rewrite leaves the prose stale FOREVER, but nothing is coming to replace it — so
+     "updating" would be a standing lie. The marker follows the running entry, not staleness. */
+  it('clears the marker when the rewrite fails, not only when it succeeds', async () => {
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    const { reg } = renderWorkspaceWithRegistry(TOKYO_TRIP.trip.id)
+    await waitFor(() => expect(document.querySelector('[data-place-id]')).not.toBeNull())
+
+    let id = 0
+    act(() => { id = reg.current!.beginActivity('replan_trip') })
+    expect(screen.getByTestId('summary-rewriting')).toBeInTheDocument()
+    act(() => { reg.current!.endActivity(id, 'failed', 'Could not rewrite.') })
+    expect(screen.queryByTestId('summary-rewriting')).toBeNull()
+  })
+
+  /* The stops are NOT stale after an edit — they refresh with it. Marking the timeline would
+     say the opposite of what is true, so the marker is scoped to the prose. */
+  it('does not mark the stop list, only the prose', async () => {
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    const { reg } = renderWorkspaceWithRegistry(TOKYO_TRIP.trip.id)
+    await waitFor(() => expect(document.querySelector('[data-place-id]')).not.toBeNull())
+
+    act(() => { reg.current!.beginActivity('replan_trip') })
+    const marker = screen.getByTestId('summary-rewriting')
+    expect(marker.closest('ol')).toBeNull()
+    expect(document.querySelector('[data-place-id]')!.closest('li')!).not.toContainElement(marker)
+  })
+
+  /* Any other tool running is not a summary rewrite. A marker that lit up for `get_itinerary`
+     would tell the user their prose is changing every time the agent reads the page. */
+  it('ignores activity from other tools', async () => {
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    const { reg } = renderWorkspaceWithRegistry(TOKYO_TRIP.trip.id)
+    await waitFor(() => expect(document.querySelector('[data-place-id]')).not.toBeNull())
+
+    act(() => { reg.current!.beginActivity('get_itinerary') })
+    expect(screen.queryByTestId('summary-rewriting')).toBeNull()
+  })
+})
+
+/* The covers are the panel's, but the BUNDLE is the workspace's — `thumbnailFor` needs it and
+   ItineraryCards is only handed a day's stops. Without this wiring every stop draws the
+   no-cover placeholder and the omission is invisible in the panel's own suite. */
+describe('TripWorkspace itinerary covers', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN = 'pk.test'
+  })
+  afterEach(() => { delete process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN })
+
+  it('hands the bundle to the itinerary so reel covers can render', async () => {
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    renderWorkspace(TOKYO_TRIP.trip.id)
+    await waitFor(() => expect(document.querySelector('[data-place-id]')).not.toBeNull())
+
+    const covered = placesForDay(TOKYO_TRIP, 1).filter((tp) => thumbnailFor(TOKYO_TRIP, tp))
+    expect(covered.length, 'day 1 has no reel-covered stop — this test proves nothing').toBeGreaterThan(0)
+    for (const tp of covered) {
+      const card = document.querySelector<HTMLElement>(`[data-place-id="${tp.place_id}"]`)!
+      expect(card.querySelector('img')).toHaveAttribute('src', thumbnailFor(TOKYO_TRIP, tp))
+    }
   })
 })

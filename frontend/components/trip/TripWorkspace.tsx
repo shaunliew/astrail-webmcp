@@ -12,6 +12,7 @@ import {
 } from '@/lib/trip/selectors'
 import { useSharedMap } from '@/components/map/MapProvider'
 import { useOptionalGeneration } from '@/components/generation/GenerationProvider'
+import { useOptionalWebMcpRegistry } from '@/components/webmcp/WebMcpRegistry'
 import Astronaut from '@/components/mascot/Astronaut'
 import DaySelector from './DaySelector'
 import DayOverview from './DayOverview'
@@ -99,6 +100,28 @@ export default function TripWorkspace({
    */
   const shellRun = useOptionalGeneration()?.run ?? null
   const arrivingFromGeneration = shellRun?.status === 'complete' && shellRun.tripId === tripId
+  /*
+   * Whether a summary rewrite is running right now.
+   *
+   * Every itinerary edit now starts one by itself (`startSummaryRewrite` in
+   * `lib/webmcp/tools/edit.ts` -> `GlobalTools::runReplan`), and it takes ~30 s. For that whole
+   * window the persisted day prose describes the trip BEFORE the edit — not wrong text, true text
+   * about an itinerary that no longer exists. The activity rail was the only surface that said so,
+   * which left a reader of THIS panel with no way to know the sentence under their eyes was about
+   * to be replaced.
+   *
+   * Read off the rail's own entry rather than a second flag: `GlobalTools` deliberately keeps its
+   * in-flight map in a ref ("nothing renders from it"), and a parallel signal would let the marker
+   * and the rail disagree about the same rewrite. One fact, one source — and it clears on `failed`
+   * exactly as on `done`, because a rewrite that died leaves the prose stale forever with nothing
+   * coming to replace it, and "updating" would then be a standing lie.
+   *
+   * Optional registry: this component renders outside the /app shell too, and null means no agent
+   * can have started anything.
+   */
+  const summaryRewriting = (useOptionalWebMcpRegistry()?.activity ?? []).some(
+    (e) => e.tool === 'replan_trip' && e.status === 'running',
+  )
   const [bundle, setBundle] = useState<TripBundle | null>(seeded ?? null)
   const [status, setStatus] = useState<'loading' | 'ready' | 'not_found'>(seeded ? 'ready' : 'loading')
   const [activeDayNumber, setActiveDayNumber] = useState(() => (seeded ? orderedDays(seeded)[0]?.day_number ?? 1 : 1))
@@ -459,13 +482,34 @@ export default function TripWorkspace({
 
           <Section title="Itinerary">
             <div className="flex flex-col gap-3">
-              {activeDay ? <DayOverview day={activeDay} /> : null}
+              {activeDay ? (
+                /* Dimmed, not hidden: the prose is still the best account of the day we have, and
+                   blanking it would trade a stale sentence for no sentence at all. */
+                <div className={summaryRewriting ? 'opacity-70 transition-opacity' : 'transition-opacity'}>
+                  {summaryRewriting ? (
+                    /* role="status", not a bare label: inserted into the DOM it is announced once,
+                       which is the point — the reader is TOLD the words below are about to change,
+                       not merely shown a dot they may never look at. */
+                    <p
+                      role="status" data-testid="summary-rewriting"
+                      className="type-label mb-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wide text-[var(--brass-bright)]"
+                    >
+                      <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-[var(--brass)] motion-safe:animate-pulse" />
+                      Updating this day&apos;s summary
+                    </p>
+                  ) : null}
+                  <DayOverview day={activeDay} />
+                </div>
+              ) : null}
               {/* The day's legs ride WITH the stops they join, so the panel reads as directions
                   ("Akasaka Station → 3 min walk → Harry Potter Cafe") instead of a list of
                   places plus a lookup table. There is deliberately no separate "Getting around"
                   section any more: the same legs in two places is worse than either. */}
               <ItineraryCards
                 places={dayPlaces}
+                /* Covers only. `thumbnailFor` resolves a stop back to the Reel it came from
+                   through `bundle.inspiration`, which the day's stops cannot reach on their own. */
+                bundle={bundle}
                 legs={dayLegs}
                 placeIndex={placeIndex}
                 trailNumbers={trailNumbers}

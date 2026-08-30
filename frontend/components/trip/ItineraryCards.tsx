@@ -78,6 +78,12 @@ function buildRouteLinks(
 //
 // `dwellSeconds` therefore has no default and no fallback: no source is wired today, so nothing
 // renders today. That is the honest output, not a gap to be papered over.
+//
+// TO THE NEXT PERSON: this is finished, not missing. The day the backend persists a real
+// time-at-place — a `duration_seconds` on trip_places, or a `place_durations` on trip_days that
+// means DWELL rather than the hotel-hub travel time above — the whole feature is one wiring line:
+// pass that map as `dwellSeconds` from `TripWorkspace`'s <ItineraryCards> mount and the column
+// appears, already tested. Do not rebuild it, and do not feed it the hotel's `place_durations`.
 
 /** The one assumption on this surface, and it is stated in the UI rather than buried here. */
 const DAY_START_MINUTES = 9 * 60      // 09:00 local
@@ -335,7 +341,7 @@ export default function ItineraryCards({
                   onClick={() => onSelectPlace(tp.place_id)}
                   className={[
                     'surface flex min-w-0 flex-1 items-stretch gap-3 rounded-xl px-3 text-left transition-colors',
-                    selected ? 'border-[var(--brass)]' : 'hover:border-[var(--brass)]',
+                    selected ? 'surface--selected' : 'surface--hoverable',
                   ].join(' ')}
                 >
                   {/* The step marker sits ON the rail — the number becomes the anchor of the

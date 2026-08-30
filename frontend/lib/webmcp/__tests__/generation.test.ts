@@ -446,6 +446,23 @@ describe('plan_trip_from_reels', () => {
     expect(String(out)).toContain('declined')
   })
 
+  it('does not report a decline for a card that was never shown', async () => {
+    /* `requestConfirm` allows one approval at a time and turns a second request away on the spot.
+       It used to do that by resolving `false` — the same value a real "Not now" produces — so this
+       tool answered "The user declined" about someone who had been shown nothing, and the agent
+       repeats that to them as fact. This tool spends the one lifetime free trip, so the two cases
+       lead somewhere different: a decline is final, an unshown card is worth asking again. */
+    const d = deps({ confirm: vi.fn().mockResolvedValue('unavailable') })
+    const out = String(await planTripFromReelsTool(d).execute({
+      reel_urls: ['https://www.instagram.com/reel/Cabc123/'],
+      start_date: '2026-03-03', end_date: '2026-03-07',
+    }))
+    expect(d.create).not.toHaveBeenCalled()
+    expect(out).not.toMatch(/declined/i)
+    expect(out).toContain('another approval is already waiting')
+    expect(out).toContain('Ask again')
+  })
+
   it('shows the preferences text verbatim in the approval card', async () => {
     // A prompt-injected caption must not be able to steer a run the user never read.
     const d = deps()

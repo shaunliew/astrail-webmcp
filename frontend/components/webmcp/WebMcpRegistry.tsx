@@ -149,8 +149,11 @@ type RegistryValue = {
   tools: RegisteredToolView[]
   /** An approval the agent is waiting on. Rendered by <AgentConfirm/>. */
   pending: PendingConfirm | null
-  /** Called from inside a tool's execute; resolves when the user answers. */
-  requestConfirm: (summary: string) => Promise<boolean>
+  /**
+   * Called from inside a tool's execute; resolves when the user answers — or `'unavailable'`
+   * when no card could be shown, which is NOT an answer and must never be reported as one.
+   */
+  requestConfirm: (summary: string) => Promise<boolean | 'unavailable'>
   /**
    * The trip currently open on screen, if any.
    *
@@ -245,13 +248,25 @@ export function WebMcpRegistryProvider({ children }: { children: React.ReactNode
   }, [])
 
   /**
-   * One approval at a time. A queue would let an agent stack irreversible actions behind a
-   * dialog the user has not read yet, which is exactly what the gate exists to prevent.
+   * One approval at a time, and a THIRD answer for the case where nobody was asked.
+   *
+   * A queue would let an agent stack irreversible actions behind a dialog the user has not read
+   * yet, which is exactly what the gate exists to prevent — so a second request while one is
+   * pending is still refused on the spot. What changed is the channel it comes back through. It
+   * used to resolve `false`, which is the same value a real refusal produces, so the tool said
+   * "The user declined" and the rail wrote it down against "You" — to someone who had never been
+   * shown a card. That is a false statement handed to the AGENT, which repeats it to the user as
+   * fact, and it is the same family as the rail recording a declined removal as a completed one.
+   *
+   * `'unavailable'` is a value our own code writes and no user action can produce, so the two
+   * cases can never again be mistaken for each other. It is deliberately not a rejection: a busy
+   * registry is an ordinary, recoverable state, and throwing would make every caller wrap a
+   * try/catch around a question.
    */
   const requestConfirm = useCallback((summary: string) => {
-    return new Promise<boolean>((resolve) => {
+    return new Promise<boolean | 'unavailable'>((resolve) => {
       setPending((existing) => {
-        if (existing) { resolve(false); return existing }   // busy: decline rather than queue
+        if (existing) { resolve('unavailable'); return existing }   // busy: refuse, do not answer for them
         return {
           summary,
           resolve: (approved: boolean) => { setPending(null); resolve(approved) },

@@ -209,6 +209,27 @@ describe('the rail is a record, not a toast', () => {
     expect(screen.queryByText('Astrail')).toBeNull()
   })
 
+  it('attributes a failure to nobody, rather than to the person who was never asked', async () => {
+    /* `actor` is a static property of the tool, but a FAILURE is the one ending where the named
+       person may never have been involved: `move_place` handed a pin that does not exist fails
+       before any card is raised, and the chip read "You · You decided this" to someone who had
+       been shown nothing. A validation error is not a decision, so it is attributed to no one. */
+    withRail((r) => { r.endActivity(r.beginActivity('move_place'), 'failed', 'No stop matches "99".') })
+
+    expect(await screen.findByText('MOVE FAILED')).toBeInTheDocument()
+    expect(screen.queryByText('You')).toBeNull()
+    expect(screen.queryByText('Astrail')).toBeNull()
+  })
+
+  it('keeps the attribution on a decline, which IS a decision that happened', async () => {
+    // The other direction: withholding it everywhere would gut the accountability half of the
+    // rail. A refusal is exactly the decision the card exists to record.
+    withRail((r) => { r.endActivity(r.beginActivity('remove_place'), 'declined', 'The user declined.') })
+
+    expect(await screen.findByText('REMOVE DECLINED')).toBeInTheDocument()
+    expect(screen.getByText('You')).toBeInTheDocument()
+  })
+
   it('names the three tools that used to fall back to a generic WORKING', async () => {
     withRail((r) => {
       r.endActivity(r.beginActivity('add_place'), 'done')

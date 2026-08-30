@@ -706,6 +706,49 @@ describe('every reply says whether the trip changed', () => {
   })
 })
 
+/**
+ * A card that was never shown is not a card the user refused.
+ *
+ * `requestConfirm` allows one approval at a time and turns a second request away on the spot,
+ * which is right — a queue would let an agent stack irreversible actions behind a dialog nobody
+ * has read. It used to answer `false` to do it, which is the same value a real "Not now"
+ * produces, so every gated tool replied "The user declined" and the rail wrote that into a
+ * permanent record against "You". The agent then repeats it to the user as fact: "you declined
+ * that", to someone who was shown nothing. A wrong label is bad; this one TRAVELS.
+ */
+describe('a gated tool never reports a decline nobody made', () => {
+  const unaskable = () => deps({ confirm: vi.fn().mockResolvedValue('unavailable') })
+
+  const gated: [string, (d: EditDeps) => Promise<unknown>][] = [
+    ['move_place', (d) => Promise.resolve(movePlaceTool(d).execute({ place: '1', to_day: 3 }))],
+    ['remove_place', (d) => Promise.resolve(removePlaceTool(d).execute({ place: '1' }))],
+    ['add_place', (d) => Promise.resolve(addPlaceTool(d).execute({ name: 'USJ', day: 1 }))],
+    ['set_trip_dates', (d) => Promise.resolve(setTripDatesTool(d).execute({ start_date: '2026-09-14' }))],
+    ['replan_trip', (d) => Promise.resolve(replanTripTool(d).execute({}))],
+  ]
+
+  it.each(gated)('%s says Astrail could not ask, not that the user refused', async (_name, run) => {
+    const out = envelope(await run(unaskable()))
+    expect(String(out.result)).not.toMatch(/declined/i)
+    expect(String(out.result)).toContain('could not show the approval card')
+  })
+
+  it.each(gated)('%s calls it failed, because a retry is the right next move', async (_name, run) => {
+    /* `failed`, not `declined`: nothing was decided and the call is worth making again once the
+       card on screen has been answered — which is the opposite of what a decline means. */
+    expect(envelope(await run(unaskable())).outcome).toBe('failed')
+  })
+
+  it.each(gated)('%s changes nothing when it could not ask', async (_name, run) => {
+    const d = unaskable()
+    await run(d)
+    await settle()
+    for (const dep of [d.move, d.remove, d.add, d.setDates, d.replan]) {
+      expect(dep).not.toHaveBeenCalled()
+    }
+  })
+})
+
 describe('readToolOutcome — what the rail is allowed to believe', () => {
   it('takes the declared outcome when it is one of the three words', () => {
     expect(readToolOutcome(JSON.stringify({ result: 'no', outcome: 'declined' })).outcome).toBe('declined')

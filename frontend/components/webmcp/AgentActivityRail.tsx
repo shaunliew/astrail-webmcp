@@ -106,15 +106,27 @@ function Entry({ entry, now }: { entry: ActivityEntry; now: number }) {
             and would swallow it on a long caption-derived summary. Costs no height. */}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           {age && <span className="text-[10px] text-white/35">{age}</span>}
-          <span
-            title={`${entry.actor} decided this`}
-            className={[
-              'rounded px-1.5 py-0.5 text-[10px]',
-              entry.actor === 'You' ? 'bg-[#C9974E]/20 text-[#E8D5B0]' : 'bg-white/10 text-white/60',
-            ].join(' ')}
-          >
-            {entry.actor}
-          </span>
+          {/* Withheld on a FAILED call, because `actor` is a static property of the tool and a
+              failure is the one ending where the named person may never have been involved.
+              `move_place` handed a pin that does not exist, or no destination, fails before any
+              card is raised — and the chip read "You · You decided this" to someone who had been
+              shown nothing. Worse before the sibling fix in WebMcpRegistry: a second approval
+              requested while one was pending was auto-refused by the registry and reported as a
+              user decline, which put "You" on a refusal the user never made.
+              `done` and `declined` both keep it, because both are decisions that demonstrably
+              happened; a validation error is not a decision at all, so it gets attributed to
+              nobody rather than to the wrong one. */}
+          {entry.status !== 'failed' && (
+            <span
+              title={`${entry.actor} decided this`}
+              className={[
+                'rounded px-1.5 py-0.5 text-[10px]',
+                entry.actor === 'You' ? 'bg-[#C9974E]/20 text-[#E8D5B0]' : 'bg-white/10 text-white/60',
+              ].join(' ')}
+            >
+              {entry.actor}
+            </span>
+          )}
         </span>
       </div>
       {entry.detail && (

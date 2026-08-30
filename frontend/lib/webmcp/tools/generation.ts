@@ -48,7 +48,8 @@ export type GenerationDeps = {
    * Not optional: this call spends the user's ONE lifetime free trip plus real Apify/OpenAI
    * credit. An agent must never be able to do that on its own initiative.
    */
-  confirm: (summary: string) => Promise<boolean>
+  /** See `EditDeps.confirm`: `'unavailable'` means no card was shown, not that anyone refused. */
+  confirm: (summary: string) => Promise<boolean | 'unavailable'>
   /**
    * Reads the saved-reel library so the approval card can say how much of this plan Astrail has
    * already done. Only the two fields it needs — a wider type would invite the card to start
@@ -368,6 +369,9 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
       ].filter(Boolean).join('\n')
 
       const approved = await deps.confirm(summary)
+      // Never "the user declined" for a card the user was never shown — see EditDeps.confirm.
+      if (approved === 'unavailable')
+        return 'Astrail could not ask: another approval is already waiting on screen. Nothing was started. Ask again once it has been answered.'
       if (!approved) return 'The user declined. Nothing was started and nothing was spent.'
 
       // The gate above is advisory, so a stale client state or a generation started in another

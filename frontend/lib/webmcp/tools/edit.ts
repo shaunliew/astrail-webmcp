@@ -58,7 +58,16 @@ export type EditDeps = {
   remove: (tripId: string, tripPlaceId: string) => Promise<unknown>
   /** Re-reads the trip so the page reflects the change before the tool reports success. */
   refresh: (tripId: string) => Promise<TripBundle | null>
-  confirm: (summary: string) => Promise<boolean>
+  /**
+   * Shows the approval card and answers with what the user chose.
+   *
+   * `'unavailable'` means no card could be shown at all — another is already waiting — and is a
+   * third answer rather than a `false`, because "the registry refused to ask" and "the user said
+   * no" are different facts and the tool states one of them out loud. Kept as `boolean |
+   * 'unavailable'` rather than a three-word enum so that every existing caller and test that
+   * answers `true`/`false` still says exactly what it always did.
+   */
+  confirm: (summary: string) => Promise<boolean | 'unavailable'>
 }
 
 /** Renumbering after an edit is the point of pin numbers: they must describe what is on screen now. */
@@ -166,6 +175,20 @@ function editResult(outcome: EditOutcome): string {
 function noChange(verdict: 'declined' | 'failed', result: string): string {
   return editResult({ result, verdict, summariesStale: false })
 }
+
+/**
+ * Said when no card could be SHOWN, which is not the same as a card being refused.
+ *
+ * `requestConfirm` allows one approval at a time and turns a second request away on the spot.
+ * That refusal used to arrive as `false` — the same value a real "Not now" produces — so every
+ * gated tool answered "The user declined", the agent repeated it to the user as fact, and the
+ * rail wrote it into a permanent record against "You". Nobody had been asked anything.
+ *
+ * It is `failed`, not `declined`: nothing was decided, and the call is worth retrying once the
+ * card on screen has been answered, which is the opposite of what a decline means.
+ */
+const NO_CARD =
+  'Astrail could not show the approval card — another one is already waiting to be answered. Ask again once it has been.'
 
 /** Said on the one path where the edit is real and the screen is not. */
 const STALE_VIEW = 'Astrail could not re-read the trip, so the page may still show the old version — reload it.'
@@ -326,6 +349,7 @@ export function movePlaceTool(deps: EditDeps): ToolSpec {
       const approved = await deps.confirm(
         `Move "${tp.place.name}" to ${where} of this trip.\nAstrail will rewrite the day summaries to match, which takes a moment.`,
       )
+      if (approved === 'unavailable') return noChange('failed', NO_CARD)
       if (!approved) return noChange('declined', `The user declined. "${tp.place.name}" has not moved.`)
 
       try {
@@ -384,6 +408,7 @@ export function removePlaceTool(deps: EditDeps): ToolSpec {
         `Remove "${tp.place.name}"${tp.day_number ? ` from day ${tp.day_number}` : ''} from this trip.\nThis cannot be undone.`,
       )
       // Never report a success the user did not authorise.
+      if (approved === 'unavailable') return noChange('failed', NO_CARD)
       if (!approved) return noChange('declined', `The user declined. "${tp.place.name}" is still on the trip.`)
 
       try {
@@ -454,6 +479,7 @@ export function addPlaceTool(deps: EditDeps): ToolSpec {
       const approved = await deps.confirm(
         `Add "${name}" to day ${day} of this trip.\nIt will be marked as a place you asked for, with no Reel evidence behind it.${pin}`,
       )
+      if (approved === 'unavailable') return noChange('failed', NO_CARD)
       if (!approved) return noChange('declined', `The user declined. "${name}" was not added.`)
 
       try {
@@ -510,6 +536,7 @@ export function setTripDatesTool(deps: EditDeps): ToolSpec {
       const from = `${r.bundle.trip.start_date ?? '?'} to ${r.bundle.trip.end_date ?? '?'}`
       const to = `${start ?? r.bundle.trip.start_date ?? '?'} to ${end ?? r.bundle.trip.end_date ?? '?'}`
       const approved = await deps.confirm(`Move this trip from ${from} to ${to}.\nEvery day keeps its stops; only the dates change.`)
+      if (approved === 'unavailable') return noChange('failed', NO_CARD)
       if (!approved) return noChange('declined', 'The user declined. The dates are unchanged.')
 
       try {
@@ -590,6 +617,7 @@ export function replanTripTool(deps: EditDeps): ToolSpec {
         const approved = await deps.confirm(
           `Rewrite the day summaries for this trip so they match its current stops.\n${dayCount} day${dayCount === 1 ? '' : 's'} will be re-described. This does not use a trip from your allowance.`,
         )
+        if (approved === 'unavailable') return noChange('failed', NO_CARD)
         if (!approved) return noChange('declined', 'The user declined. The summaries are unchanged.')
       }
 

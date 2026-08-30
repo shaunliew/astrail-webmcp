@@ -5,7 +5,7 @@ import { useEffect, useRef } from 'react'
 import AgentConfirm from '../AgentConfirm'
 import { WebMcpRegistryProvider, useWebMcpRegistry } from '../WebMcpRegistry'
 
-function Asker({ summary, onAnswer }: { summary: string; onAnswer: (v: boolean) => void }) {
+function Asker({ summary, onAnswer }: { summary: string; onAnswer: (v: boolean | 'unavailable') => void }) {
   const { requestConfirm } = useWebMcpRegistry()
   const fired = useRef(false)
   useEffect(() => {
@@ -69,7 +69,7 @@ describe('AgentConfirm', () => {
     expect(dialog.textContent).toContain('<img src=x')
   })
 
-  it('declines a second request rather than queueing it behind an unread dialog', async () => {
+  it('refuses a second request rather than queueing it behind an unread dialog', async () => {
     const second = vi.fn()
     function Two() {
       const { requestConfirm } = useWebMcpRegistry()
@@ -89,7 +89,36 @@ describe('AgentConfirm', () => {
       </WebMcpRegistryProvider>,
     )
     await screen.findByRole('dialog')
-    await waitFor(() => expect(second).toHaveBeenCalledWith(false))
+    /* `'unavailable'`, never `false`. A `false` here is the same value a real "Not now" produces,
+       so every gated tool answered "The user declined" for a card that was never shown — the
+       agent repeated it to the user as fact and the rail wrote it into a permanent record against
+       "You". Nobody was asked. The refusal itself is right; answering on the user's behalf is not. */
+    await waitFor(() => expect(second).toHaveBeenCalledWith('unavailable'))
+    expect(second).not.toHaveBeenCalledWith(false)
     expect(screen.getByText('first')).toBeInTheDocument()
+  })
+
+  it('still shows the FIRST card, and still answers it normally', async () => {
+    // The gate's actual job. Turning the second request away must not disturb the one on screen.
+    const first = vi.fn()
+    function One() {
+      const { requestConfirm } = useWebMcpRegistry()
+      const fired = useRef(false)
+      useEffect(() => {
+        if (fired.current) return
+        fired.current = true
+        void requestConfirm('only').then(first)
+      }, [requestConfirm])
+      return null
+    }
+    render(
+      <WebMcpRegistryProvider>
+        <One />
+        <AgentConfirm />
+      </WebMcpRegistryProvider>,
+    )
+    await screen.findByRole('dialog')
+    await userEvent.click(screen.getByRole('button', { name: /approve/i }))
+    await waitFor(() => expect(first).toHaveBeenCalledWith(true))
   })
 })

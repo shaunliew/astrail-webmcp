@@ -443,8 +443,11 @@ const REPLAN_TIMED_OUT =
  * Costs an LLM call and nothing from the user's trip allowance (`/trips/{id}/replan` has no quota
  * reserve and no entitlement check, only the burst limiter). Every itinerary edit now starts one
  * of these on its own, so it is no longer approval-gated on that path — but it must never be
- * SILENT: go through `GlobalTools`, which coalesces this tab's rewrites for a trip into one and
- * puts them on the activity rail, rather than calling this directly. Another tab counts its own.
+ * SILENT: go through `GlobalTools`, rather than calling this directly. What it guarantees is
+ * narrower than "one per trip": at most one run in flight for a trip in THIS TAB, plus at most
+ * one queued follow-up — an edit that overtakes a running narration deliberately costs two
+ * sequential runs, because the first was written from the trip before that edit. Another tab
+ * counts its own. Every run lands on the activity rail.
  */
 export async function replanTrip(tripId: string, accessToken: string): Promise<ReplanTripResult> {
   // AbortController rather than AbortSignal.timeout: the latter is absent in some of the

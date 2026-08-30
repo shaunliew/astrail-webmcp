@@ -8,6 +8,8 @@ import AgentActivityRail, { NOTHING_CLEARED, type ClearedMark } from '../AgentAc
 import WebMcpStatus from '../WebMcpStatus'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures/tokyo-trip'
 import { movePlaceTool, removePlaceTool, type EditDeps } from '@/lib/webmcp/tools/edit'
+import { planTripFromReelsTool, type GenerationDeps } from '@/lib/webmcp/tools/generation'
+import { createGenerationStore } from '@/lib/webmcp/generation'
 import type { ToolSpec } from '@/lib/webmcp/types'
 
 const spec = (name: string): ToolSpec => ({
@@ -135,6 +137,97 @@ describe('an entry says how the call ended', () => {
   })
 
   afterEach(() => { Reflect.deleteProperty(document, 'modelContext') })
+
+  /**
+   * The tool that spends the user's one lifetime free trip, read the way the RAIL reads it.
+   *
+   * Its own unit tests assert the sentence it returns and that `create` was never called, and
+   * both were true while the record said the opposite — because the translation from reply to
+   * receipt happens HERE, in `RegisterTools`, and a test that stops at the prose never reaches it.
+   * `readToolOutcome` treats plain text as `done`, which every one of this tool's bail-outs was.
+   */
+  const planDeps = (over: Partial<GenerationDeps> = {}): GenerationDeps => ({
+    store: createGenerationStore(),
+    create: vi.fn().mockResolvedValue('trip-1'),
+    openStream: vi.fn(),
+    confirm: vi.fn().mockResolvedValue(true),
+    ...over,
+  })
+
+  const PLAN_ARGS = {
+    reel_urls: ['https://www.instagram.com/reel/Cabc123/'],
+    start_date: '2026-03-03',
+    end_date: '2026-03-07',
+  }
+
+  it('does not record a trip nobody was asked about as a trip they started', async () => {
+    /* A card was already pending, so `requestConfirm` refused this one without showing it. The
+       tool correctly spends nothing — and the rail rendered `PLANNING · You · Astrail can't undo
+       this`, a permanent record of a change that never happened, credited to someone who was
+       never asked. */
+    const d = planDeps({ confirm: vi.fn().mockResolvedValue('unavailable') })
+    await callThroughBrowser(planTripFromReelsTool(d), PLAN_ARGS)
+
+    expect(d.create).not.toHaveBeenCalled()
+    expect(screen.getByText('PLANNING FAILED')).toBeInTheDocument()
+    expect(screen.queryByText(/can't undo this/)).toBeNull()
+    expect(screen.queryByText('You')).toBeNull()
+  })
+
+  it('does not record a declined trip as a started one either', async () => {
+    // The same defect on the path that has always existed: a plain-text decline read as `done`.
+    const d = planDeps({ confirm: vi.fn().mockResolvedValue(false) })
+    await callThroughBrowser(planTripFromReelsTool(d), PLAN_ARGS)
+
+    expect(d.create).not.toHaveBeenCalled()
+    expect(screen.getByText('PLANNING DECLINED')).toBeInTheDocument()
+    expect(screen.queryByText(/can't undo this/)).toBeNull()
+    // Declining IS the user's decision, so this one keeps its attribution.
+    expect(screen.getByText('You')).toBeInTheDocument()
+  })
+
+  it('still records a run that DID start, warning included', async () => {
+    // The other direction: a rail that stopped claiming anything would be honest and useless.
+    const d = planDeps()
+    await callThroughBrowser(planTripFromReelsTool(d), PLAN_ARGS)
+
+    expect(d.create).toHaveBeenCalled()
+    expect(screen.getByText('PLANNING')).toBeInTheDocument()
+    expect(screen.getByText("Astrail can't undo this")).toBeInTheDocument()
+    expect(screen.getByText('You')).toBeInTheDocument()
+  })
+
+  it('does not record a validation bail-out as anyone\'s decision', async () => {
+    // Reached before any card exists, so nobody decided it.
+    const d = planDeps()
+    await callThroughBrowser(planTripFromReelsTool(d), { ...PLAN_ARGS, reel_urls: ['not-a-reel'] })
+
+    expect(d.confirm).not.toHaveBeenCalled()
+    expect(screen.getByText('PLANNING FAILED')).toBeInTheDocument()
+    expect(screen.queryByText('You')).toBeNull()
+    expect(screen.queryByText('Astrail')).toBeNull()
+  })
+
+  it('records the failure of an edit the user approved as still theirs', async () => {
+    /* The over-correction, end to end. They were shown the card and said yes; the backend then
+       refused. That decision happened, and a record that drops it is the accountability half of
+       this rail being gutted to fix a different case. The tool has to SAY 'user' here — keying
+       the chip on terminal status cannot distinguish this from a validation error. */
+    const boom = vi.fn().mockRejectedValue(new Error('This trip cannot be edited right now.'))
+    await callThroughBrowser(removePlaceTool(deps({ remove: boom })), { place: '1' })
+
+    expect(screen.getByText('REMOVE FAILED')).toBeInTheDocument()
+    expect(screen.getByText('You')).toBeInTheDocument()
+  })
+
+  it('does not record a bail-out that never reached the user as their decision', async () => {
+    // The other half of the same rule, at the same seam: no destination, so no card was raised.
+    await callThroughBrowser(movePlaceTool(deps()), { place: '1' })
+
+    expect(screen.getByText('MOVE FAILED')).toBeInTheDocument()
+    expect(screen.queryByText('You')).toBeNull()
+    expect(screen.queryByText('Astrail')).toBeNull()
+  })
 
   it('does not record a declined removal as a removal', async () => {
     const stop = TOKYO_TRIP.places[0].place.name

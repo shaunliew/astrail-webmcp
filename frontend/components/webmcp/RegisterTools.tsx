@@ -50,11 +50,16 @@ function ToolRegistration({ spec, enabled = true }: { spec: ToolSpec; enabled?: 
           // says which of the three it was; `readToolOutcome` believes it only when it is one
           // of the three words, so a tool that says nothing is still recorded as it was before.
           if (id !== undefined) {
-            const { outcome, detail } = readToolOutcome(result)
-            endActivity?.(id, outcome, detail)
+            // `decidedBy` travels with the outcome and by the same rule: a value the tool's own
+            // code wrote, believed only when it is one of the three words. Undefined leaves the
+            // rail on the tool's static answer, which is right for every tool without a card.
+            const { outcome, detail, decidedBy } = readToolOutcome(result)
+            endActivity?.(id, outcome, detail, decidedBy)
           }
           return result
         } catch (e) {
+          /* A THROW, not a returned refusal: the tool blew up rather than answering, so nothing
+             said who decided it and the static default is the only honest answer available. */
           if (id !== undefined) endActivity?.(id, 'failed', e instanceof Error ? e.message : undefined)
           throw e
         }

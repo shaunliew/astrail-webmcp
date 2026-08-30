@@ -100,11 +100,34 @@ export type EditVerdict = 'done' | 'declined' | 'failed'
 /** The vocabulary itself, so a reader can validate rather than trust. */
 export const EDIT_VERDICTS: readonly EditVerdict[] = ['done', 'declined', 'failed']
 
+/**
+ * WHO decided this call happens — the other half of the record, and it cannot be inferred.
+ *
+ * The rail used to read it off a static per-tool property, which is right only while every call
+ * to a tool is decided by the same party. It is not. `move_place` handed a pin that does not
+ * exist fails before any card, so nobody decided it; a `move_place` the user approved and the
+ * backend then refused WAS their decision and losing it guts the accountability half of the rail;
+ * a `replan_trip` that joins a rewrite an edit already started raises no card at all, so calling
+ * it the user's decision contradicts the code that skipped asking them.
+ *
+ * `done` and `failed` are both reachable with and without a human in the loop, so terminal status
+ * cannot answer this and neither can the tool's name. The call itself knows, so the call says.
+ *
+ * `nobody` is not a gap: it is the assertion that no one was asked, and the rail draws no
+ * attribution at all for it rather than picking the least wrong name.
+ */
+export type Decider = 'user' | 'agent' | 'nobody'
+
+/** Closed, for the same reason `EDIT_VERDICTS` is: a reader validates rather than trusts. */
+export const DECIDERS: readonly Decider[] = ['user', 'agent', 'nobody']
+
 type EditOutcome = {
   /** What happened, in the words the agent repeats to the user. */
   result: string
   /** Whether the trip actually changed. Omitted means it did — the only path that writes. */
   verdict?: EditVerdict
+  /** Who decided it. Omitted means the user did, which is true of every path that writes. */
+  decidedBy?: Decider
   /** True when the persisted summaries now describe stops the trip no longer has. */
   summariesStale: boolean
   /** True when this call has already started the rewrite that fixes them. */
@@ -153,6 +176,10 @@ function editResult(outcome: EditOutcome): string {
     // rail sees and the agent does not, would give the two of them different accounts of the same
     // call, which is the fault being fixed rather than a fix for it.
     outcome: outcome.verdict ?? 'done',
+    // Written for the rail, in the same envelope and by the same rule as `outcome`: a value our
+    // own code picks before any output is assembled, which a caption cannot reach and the model
+    // cannot choose. A side channel would give the two readers different accounts of one call.
+    decided_by: outcome.decidedBy ?? 'user',
     summaries_stale: outcome.summariesStale,
     ...(rewriting ? { summaries_rewriting: true } : {}),
     // Only when the agent is the one who has to act. Naming `replan_trip` beside a rewrite that
@@ -172,8 +199,8 @@ function editResult(outcome: EditOutcome): string {
  * `MOVED` too. The agent still reads the same sentence it always did; nothing about the wording
  * changed, only that the reply now says which of the three endings it is.
  */
-function noChange(verdict: 'declined' | 'failed', result: string): string {
-  return editResult({ result, verdict, summariesStale: false })
+function noChange(verdict: 'declined' | 'failed', result: string, decidedBy: Decider = 'nobody'): string {
+  return editResult({ result, verdict, decidedBy, summariesStale: false })
 }
 
 /**
@@ -278,7 +305,7 @@ function startSummaryRewrite(deps: EditDeps, tripId: string): void {
  * `JSON.stringify` escapes every string field, so caption text lands inside `result` as data; it
  * cannot introduce a sibling key, and a duplicate `outcome` cannot be produced at all.
  */
-export function readToolOutcome(value: unknown): { outcome: EditVerdict; detail?: string } {
+export function readToolOutcome(value: unknown): { outcome: EditVerdict; detail?: string; decidedBy?: Decider } {
   if (typeof value !== 'string') return { outcome: 'done' }
 
   const firstLine = (text: string) => text.split('\n')[0]
@@ -293,10 +320,14 @@ export function readToolOutcome(value: unknown): { outcome: EditVerdict; detail?
     return { outcome: 'done', detail: firstLine(value) }
   }
 
-  const envelope = parsed as { result?: unknown; outcome?: unknown }
+  const envelope = parsed as { result?: unknown; outcome?: unknown; decided_by?: unknown }
   const declared = envelope.outcome
+  const decided = envelope.decided_by
   return {
     outcome: EDIT_VERDICTS.includes(declared as EditVerdict) ? (declared as EditVerdict) : 'done',
+    // Absent is not `nobody`: a tool that says nothing about who decided leaves the rail on the
+    // static answer it has always used, which is right for every read and for `save_reels`.
+    ...(DECIDERS.includes(decided as Decider) ? { decidedBy: decided as Decider } : {}),
     detail: firstLine(typeof envelope.result === 'string' ? envelope.result : value),
   }
 }
@@ -350,12 +381,14 @@ export function movePlaceTool(deps: EditDeps): ToolSpec {
         `Move "${tp.place.name}" to ${where} of this trip.\nAstrail will rewrite the day summaries to match, which takes a moment.`,
       )
       if (approved === 'unavailable') return noChange('failed', NO_CARD)
-      if (!approved) return noChange('declined', `The user declined. "${tp.place.name}" has not moved.`)
+      if (!approved) return noChange('declined', `The user declined. "${tp.place.name}" has not moved.`, 'user')
 
       try {
         await deps.move(r.bundle.trip.id, tp.id, patch)
       } catch (e) {
-        return noChange('failed', e instanceof Error ? e.message : 'The move failed.')
+        // 'user': the card was answered YES before this ran, so the decision happened and the
+        // record must keep it. Withholding attribution on every failure loses exactly that.
+        return noChange('failed', e instanceof Error ? e.message : 'The move failed.', 'user')
       }
 
       // Started the instant the prose became wrong, and before the re-read below, so the two
@@ -409,12 +442,12 @@ export function removePlaceTool(deps: EditDeps): ToolSpec {
       )
       // Never report a success the user did not authorise.
       if (approved === 'unavailable') return noChange('failed', NO_CARD)
-      if (!approved) return noChange('declined', `The user declined. "${tp.place.name}" is still on the trip.`)
+      if (!approved) return noChange('declined', `The user declined. "${tp.place.name}" is still on the trip.`, 'user')
 
       try {
         await deps.remove(r.bundle.trip.id, tp.id)
       } catch (e) {
-        return noChange('failed', e instanceof Error ? e.message : 'The removal failed.')
+        return noChange('failed', e instanceof Error ? e.message : 'The removal failed.', 'user')
       }
 
       // The case that forced this whole change: a removed stop leaves prose that is not merely
@@ -480,7 +513,7 @@ export function addPlaceTool(deps: EditDeps): ToolSpec {
         `Add "${name}" to day ${day} of this trip.\nIt will be marked as a place you asked for, with no Reel evidence behind it.${pin}`,
       )
       if (approved === 'unavailable') return noChange('failed', NO_CARD)
-      if (!approved) return noChange('declined', `The user declined. "${name}" was not added.`)
+      if (!approved) return noChange('declined', `The user declined. "${name}" was not added.`, 'user')
 
       try {
         await deps.add(r.bundle.trip.id, {
@@ -491,7 +524,7 @@ export function addPlaceTool(deps: EditDeps): ToolSpec {
           lng: hasLng ? (args.lng as number) : null,
         })
       } catch (e) {
-        return noChange('failed', e instanceof Error ? e.message : 'Adding the place failed.')
+        return noChange('failed', e instanceof Error ? e.message : 'Adding the place failed.', 'user')
       }
 
       startSummaryRewrite(deps, r.bundle.trip.id)
@@ -537,12 +570,12 @@ export function setTripDatesTool(deps: EditDeps): ToolSpec {
       const to = `${start ?? r.bundle.trip.start_date ?? '?'} to ${end ?? r.bundle.trip.end_date ?? '?'}`
       const approved = await deps.confirm(`Move this trip from ${from} to ${to}.\nEvery day keeps its stops; only the dates change.`)
       if (approved === 'unavailable') return noChange('failed', NO_CARD)
-      if (!approved) return noChange('declined', 'The user declined. The dates are unchanged.')
+      if (!approved) return noChange('declined', 'The user declined. The dates are unchanged.', 'user')
 
       try {
         await deps.setDates(r.bundle.trip.id, { start_date: start, end_date: end })
       } catch (e) {
-        return noChange('failed', e instanceof Error ? e.message : 'Changing the dates failed.')
+        return noChange('failed', e instanceof Error ? e.message : 'Changing the dates failed.', 'user')
       }
 
       // Moving the dates does not touch a stop — `edit_trip_dates` writes only
@@ -618,14 +651,16 @@ export function replanTripTool(deps: EditDeps): ToolSpec {
           `Rewrite the day summaries for this trip so they match its current stops.\n${dayCount} day${dayCount === 1 ? '' : 's'} will be re-described. This does not use a trip from your allowance.`,
         )
         if (approved === 'unavailable') return noChange('failed', NO_CARD)
-        if (!approved) return noChange('declined', 'The user declined. The summaries are unchanged.')
+        if (!approved) return noChange('declined', 'The user declined. The summaries are unchanged.', 'user')
       }
 
       let result: { days_narrated: number; routes_refreshed: boolean }
       try {
         result = await deps.replan(r.bundle.trip.id)
       } catch (e) {
-        return noChange('failed', e instanceof Error ? e.message : 'Replanning failed.')
+        // Only the user's decision when a card was actually shown. On the join path nobody was
+        // asked, so the failure of work an edit had already started is not theirs to own.
+        return noChange('failed', e instanceof Error ? e.message : 'Replanning failed.', joining ? 'agent' : 'user')
       }
 
       const { stale } = await refreshView(deps, r.bundle.trip.id)
@@ -649,6 +684,9 @@ export function replanTripTool(deps: EditDeps): ToolSpec {
         // prose it just wrote is already one edit behind and saying otherwise is the lie.
         summariesStale: overtaken,
         summariesRewriting: overtaken,
+        // The join raised no card, so calling it the user's decision would contradict the code
+        // three lines up that deliberately did not ask them.
+        decidedBy: joining ? 'agent' : 'user',
       })
     },
   }

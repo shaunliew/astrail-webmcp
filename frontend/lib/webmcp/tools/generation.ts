@@ -3,6 +3,7 @@ import { ERROR_CODE_RATE_LIMITED, ERROR_CODE_TRIAL_EXHAUSTED } from '@/lib/trip/
 import { ApiError } from '@/lib/trip/api'
 import { STAGE_LABEL } from '@/components/create/GenerationProgress'
 import type { ToolSpec } from '../types'
+import type { Decider } from './edit'
 import type { GenerationStore } from '../generation'
 import { normalizeReelUrl } from '@/lib/trip/parse-inspiration'
 
@@ -257,6 +258,23 @@ const SEAT_PATH =
  * does not come back — a trial is spent once, and only a seat lifts it. An agent told merely
  * "rejected" guesses, and half its guesses are "try again tomorrow", which is false here.
  */
+/**
+ * A `plan_trip_from_reels` ending that did NOT start a run, said in the envelope the rail reads.
+ *
+ * Every one of these used to leave as a bare sentence. `readToolOutcome` treats plain text as
+ * `done` — it has to, because most tools answer in prose — so the rail rendered `PLANNING · You ·
+ * done` with "Astrail can't undo this" under it for a run that was never started, and credited
+ * the user for it. That includes the case where no approval card was ever SHOWN. It is the same
+ * defect the five edit tools fixed a week ago, still live in the one tool that spends the user's
+ * lifetime free trip, and the fix has to be here: the rail cannot tell prose apart from an answer.
+ *
+ * `decidedBy` defaults to `nobody`, which is the truth for every bail-out that happens before the
+ * card. The two endings downstream of a card pass their own.
+ */
+function notStarted(result: string, verdict: 'declined' | 'failed', decidedBy: Decider = 'nobody'): string {
+  return JSON.stringify({ result, outcome: verdict, decided_by: decidedBy })
+}
+
 const TRIAL_SPENT_BEFORE_ASKING =
   'Not started, and the user was not asked to approve — nothing was spent. Their free trial is ' +
   'one trip and it is already planned. A trial does not reset; only a beta seat lifts it. ' +
@@ -335,13 +353,13 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
       // ONE row. Deduped only for the save — `urls` still goes to the pipeline as given, which is
       // pre-existing behaviour this change has no business altering.
       const distinctUrls = [...new Set(urls)]
-      if (urls.length === 0) return 'No valid Instagram Reel URLs. Call list_saved_reels or ask the user for links.'
-      if (urls.length > MAX_REELS) return `Too many reels — ${MAX_REELS} is the limit, got ${urls.length}.`
+      if (urls.length === 0) return notStarted('No valid Instagram Reel URLs. Call list_saved_reels or ask the user for links.', 'failed')
+      if (urls.length > MAX_REELS) return notStarted(`Too many reels — ${MAX_REELS} is the limit, got ${urls.length}.`, 'failed')
 
       const start = String(args.start_date ?? '')
       const end = String(args.end_date ?? '')
-      if (!ISO_DATE.test(start) || !ISO_DATE.test(end)) return 'start_date and end_date are required, as YYYY-MM-DD.'
-      if (end < start) return 'end_date is before start_date.'
+      if (!ISO_DATE.test(start) || !ISO_DATE.test(end)) return notStarted('start_date and end_date are required, as YYYY-MM-DD.', 'failed')
+      if (end < start) return notStarted('end_date is before start_date.', 'failed')
 
       const preferences = typeof args.preferences === 'string' ? args.preferences.slice(0, MAX_PREFERENCES) : null
 
@@ -349,7 +367,7 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
       // Generate button, so nothing is spent and nothing is consented to; this path used to show
       // the card, take the approval, and only then be rejected by the backend. Courtesy gate
       // only — the reserving RPC still enforces it, and an `unknown` verdict proceeds.
-      if (await resolveAllowance(deps.readAllowance) === 'trial_exhausted') return TRIAL_SPENT_BEFORE_ASKING
+      if (await resolveAllowance(deps.readAllowance) === 'trial_exhausted') return notStarted(TRIAL_SPENT_BEFORE_ASKING, 'failed')
 
       // What approving actually involves, worked out before the card is shown. Awaited rather
       // than filled in afterwards: a card that appears saying one thing and then revises itself
@@ -371,8 +389,8 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
       const approved = await deps.confirm(summary)
       // Never "the user declined" for a card the user was never shown — see EditDeps.confirm.
       if (approved === 'unavailable')
-        return 'Astrail could not ask: another approval is already waiting on screen. Nothing was started. Ask again once it has been answered.'
-      if (!approved) return 'The user declined. Nothing was started and nothing was spent.'
+        return notStarted('Astrail could not ask: another approval is already waiting on screen. Nothing was started. Ask again once it has been answered.', 'failed')
+      if (!approved) return notStarted('The user declined. Nothing was started and nothing was spent.', 'declined', 'user')
 
       // The gate above is advisory, so a stale client state or a generation started in another
       // tab still lands here — with the user's consent already taken. What came back then was an
@@ -391,8 +409,10 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
           preferences,
         } as GenerateTripRequest)
       } catch (err) {
+        // 'user': consent was taken before this ran, so the backend's refusal is the ending of a
+        // decision they DID make, and the record keeps it.
         const refused = refusalReply(err)
-        if (refused) return refused
+        if (refused) return notStarted(refused, 'failed', 'user')
         throw err
       }
 
@@ -415,6 +435,7 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
       return JSON.stringify({
         trip_id: tripId,
         status: 'generating',
+        decided_by: 'user',
         eta_seconds: 90,
         poll_after_seconds: 20,
         next_tool: 'get_trip_progress',

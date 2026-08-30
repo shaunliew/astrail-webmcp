@@ -2,6 +2,7 @@
 
 import type { TripBundle } from '@/lib/trip/backend-types'
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react'
+import type { Decider } from '@/lib/webmcp/tools/edit'
 
 /**
  * What the rail can say about a call, knowing only which tool was named.
@@ -115,9 +116,22 @@ export type RegisteredToolView = {
  */
 export type ActivityStatus = 'done' | 'declined' | 'failed'
 
-export type ActivityEntry = ToolFacts & {
+export type ActivityEntry = Omit<ToolFacts, 'actor'> & {
   id: number
   tool: string
+  /**
+   * Who decided this particular call, which the TOOL is not enough to answer.
+   *
+   * `ToolFacts.actor` is the default and stays the answer for every read and for `save_reels` —
+   * tools whose every call is decided by the same party. It was wrong wherever that is not true:
+   * a `move_place` that failed validation before any card said "You decided this" to someone who
+   * was shown nothing, and a `replan_trip` joining a rewrite an edit started said the same about
+   * a card the code deliberately did not raise.
+   *
+   * `null` is the deliberate third state: nobody decided, so the rail draws no attribution rather
+   * than picking the least wrong name. It is not "unknown" — the call asserted it.
+   */
+  actor: ToolFacts['actor'] | null
   /**
    * What this entry is about, when the caller knows and it matters — a trip id, today.
    *
@@ -194,12 +208,25 @@ type RegistryValue = {
   activity: ActivityEntry[]
   /** `subject` names what the work is about (a trip id) — see `ActivityEntry.subject`. */
   beginActivity: (tool: string, subject?: string) => number
-  endActivity: (id: number, status: ActivityStatus, detail?: string) => void
+  /**
+   * Closes a call, and may correct WHO decided it — see `ActivityEntry.actor`.
+   *
+   * `decidedBy` omitted keeps the tool's static default, which is right for every tool that does
+   * not raise a card. Only a call that knows better overrides it.
+   */
+  endActivity: (id: number, status: ActivityStatus, detail?: string, decidedBy?: Decider) => void
   /** Whether `document.modelContext` exists at all — false in an ordinary browser. */
   supported: boolean
   report: (view: RegisteredToolView) => void
   withdraw: (name: string) => void
   setSupported: (v: boolean) => void
+}
+
+/** The one place the tools' vocabulary becomes the rail's. `nobody` draws nothing at all. */
+const DECIDED_BY: Record<Decider, ToolFacts['actor'] | null> = {
+  user: 'You',
+  agent: 'Astrail',
+  nobody: null,
 }
 
 const Ctx = createContext<RegistryValue | null>(null)
@@ -243,9 +270,24 @@ export function WebMcpRegistryProvider({ children }: { children: React.ReactNode
     return id
   }, [])
 
-  const endActivity = useCallback((id: number, status: ActivityStatus, detail?: string) => {
-    setActivity((prev) => prev.map((e) => (e.id === id ? { ...e, status, detail: detail ?? null } : e)))
-  }, [])
+  const endActivity = useCallback(
+    (id: number, status: ActivityStatus, detail?: string, decidedBy?: Decider) => {
+      setActivity((prev) =>
+        prev.map((e) =>
+          e.id === id
+            ? {
+                ...e,
+                status,
+                detail: detail ?? null,
+                // Undefined leaves the tool's own answer alone; 'nobody' erases it on purpose.
+                ...(decidedBy === undefined ? {} : { actor: DECIDED_BY[decidedBy] }),
+              }
+            : e,
+        ),
+      )
+    },
+    [],
+  )
 
   /**
    * One approval at a time, and a THIRD answer for the case where nobody was asked.

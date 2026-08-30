@@ -214,11 +214,35 @@ describe('the rail is a record, not a toast', () => {
        person may never have been involved: `move_place` handed a pin that does not exist fails
        before any card is raised, and the chip read "You · You decided this" to someone who had
        been shown nothing. A validation error is not a decision, so it is attributed to no one. */
-    withRail((r) => { r.endActivity(r.beginActivity('move_place'), 'failed', 'No stop matches "99".') })
+    withRail((r) => { r.endActivity(r.beginActivity('move_place'), 'failed', 'No stop matches "99".', 'nobody') })
 
     expect(await screen.findByText('MOVE FAILED')).toBeInTheDocument()
     expect(screen.queryByText('You')).toBeNull()
     expect(screen.queryByText('Astrail')).toBeNull()
+  })
+
+  it('keeps the attribution on a failure the user DID decide', async () => {
+    /* The over-correction, and it is as easy to ship as the bug. An edit the user approved and the
+       backend then refused is exactly the decision this rail exists to record — keying the chip on
+       `status !== 'failed'` hid it, gutting the accountability half to fix the validation case. */
+    withRail((r) => {
+      r.endActivity(r.beginActivity('remove_place'), 'failed', 'This trip cannot be edited right now.', 'user')
+    })
+
+    expect(await screen.findByText('REMOVE FAILED')).toBeInTheDocument()
+    expect(screen.getByText('You')).toBeInTheDocument()
+  })
+
+  it('credits the agent for a rewrite it joined without asking anyone', async () => {
+    // `replan_trip` joining a rewrite an edit already started raises no card, so "You decided
+    // this" would contradict the code that deliberately did not ask.
+    withRail((r) => {
+      r.endActivity(r.beginActivity('replan_trip'), 'done', 'Joined the rewrite this trip already had running.', 'agent')
+    })
+
+    expect(await screen.findByText('REWROTE')).toBeInTheDocument()
+    expect(screen.getByText('Astrail')).toBeInTheDocument()
+    expect(screen.queryByText('You')).toBeNull()
   })
 
   it('keeps the attribution on a decline, which IS a decision that happened', async () => {

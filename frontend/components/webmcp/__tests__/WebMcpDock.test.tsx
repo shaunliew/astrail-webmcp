@@ -31,6 +31,7 @@ const dock = (entries = 1) =>
 beforeEach(() => {
   mockPath.value = '/app'
   window.localStorage.clear()
+  vi.restoreAllMocks()
 })
 
 describe('WebMcpDock', () => {
@@ -84,5 +85,118 @@ describe('WebMcpDock', () => {
   it('keeps the status chip on every route — the honest disconnected state stays visible', () => {
     dock()
     expect(screen.getByText(/WebMCP/)).toBeInTheDocument()
+  })
+})
+
+/**
+ * Minimising the dock.
+ *
+ * Reported from live use on a trip: the rail's chip ("WATCHING · Astrail · generating 86s")
+ * cannot be closed and sits on the map. Both halves of that are working as designed — the record
+ * is deliberately not a toast, and an overlay dock is deliberately right over a canvas — which is
+ * why the missing piece is a control, not a timer and not a route rule.
+ *
+ * Collapse is only ever allowed to REMOVE chrome. That is what keeps it from re-opening the
+ * overlay collision 99c1384 closed: there is no state reachable through this control in which
+ * MORE is on screen than before.
+ */
+describe('WebMcpDock — minimising', () => {
+  const minimise = () => screen.getByRole('button', { name: /minimise/i })
+  const reopen = () => screen.getByRole('button', { name: /show agent activity/i })
+
+  it('opens expanded for a first visitor — discovery beats tidiness on a first visit', () => {
+    dock()
+    expect(screen.getByText('READING')).toBeInTheDocument()
+    expect(minimise()).toBeInTheDocument()
+  })
+
+  it('puts the prompts panel away with the record, over the map', async () => {
+    mockPath.value = '/app/trip/abc'
+    dock()
+    expect(screen.getByText(/move stop 7 to day 3/)).toBeInTheDocument()
+    await userEvent.click(minimise())
+    expect(screen.queryByText(/move stop 7 to day 3/)).not.toBeInTheDocument()
+    expect(screen.queryByText('READING')).not.toBeInTheDocument()
+  })
+
+  it('keeps the WebMCP chip while minimised — it is the proof the integration is real', async () => {
+    mockPath.value = '/app/trip/abc'
+    dock()
+    await userEvent.click(minimise())
+    expect(screen.getByText(/WebMCP/)).toBeInTheDocument()
+    expect(reopen()).toBeInTheDocument()
+  })
+
+  it('closes the tool list too, so minimised means the whole corner is quiet', async () => {
+    mockPath.value = '/app/trip/abc'
+    dock()
+    await userEvent.click(screen.getByRole('button', { name: /WebMCP/i }))
+    expect(screen.getByText(/Tools an agent can use here/)).toBeInTheDocument()
+    await userEvent.click(minimise())
+    expect(screen.queryByText(/Tools an agent can use here/)).not.toBeInTheDocument()
+  })
+
+  it('remembers the choice across a remount, so a demo does not undo it on every navigation', async () => {
+    const first = dock()
+    await userEvent.click(minimise())
+    first.unmount()
+
+    dock()
+    expect(screen.queryByText('READING')).not.toBeInTheDocument()
+    expect(reopen()).toBeInTheDocument()
+  })
+
+  it('forgets it again once expanded', async () => {
+    const first = dock()
+    await userEvent.click(minimise())
+    await userEvent.click(reopen())
+    first.unmount()
+
+    dock()
+    expect(screen.getByText('READING')).toBeInTheDocument()
+  })
+
+  it('opens expanded in a browser whose storage throws rather than not at all', () => {
+    // Private windows reject localStorage outright. A remembered preference is not worth a blank
+    // corner, and the safe direction is the discoverable one.
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked') })
+    dock()
+    expect(screen.getByText('READING')).toBeInTheDocument()
+  })
+
+  it('still minimises for this session when the write is refused', async () => {
+    // Safari's private mode throws on the WRITE, not on the read, and the collapse happens either
+    // way — `setCollapsed` is already queued before the throw. So the only thing that separates a
+    // guarded write from an unguarded one is whether the click leaves an uncaught error behind.
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota') })
+    const escaped: unknown[] = []
+    const onError = (e: ErrorEvent) => { escaped.push(e.error); e.preventDefault() }
+    window.addEventListener('error', onError)
+    try {
+      dock()
+      await userEvent.click(minimise())
+      expect(screen.queryByText('READING')).not.toBeInTheDocument()
+      expect(escaped).toEqual([])
+    } finally {
+      window.removeEventListener('error', onError)
+    }
+  })
+
+  it('does not let expanding bring the prompts panel onto a document route', async () => {
+    // The 99c1384 regression guard. /app is a paper document with a scrolling content column,
+    // and the panel measured covering its Save button. Collapse must not be a way back in.
+    dock()
+    await userEvent.click(minimise())
+    await userEvent.click(reopen())
+    expect(screen.getByText('READING')).toBeInTheDocument()
+    expect(screen.queryByText(/What can I do here\?/)).not.toBeInTheDocument()
+  })
+
+  it('keeps the document route read-back cap after a collapse and expand', async () => {
+    dock(4)
+    await userEvent.click(minimise())
+    await userEvent.click(reopen())
+    await userEvent.click(screen.getByLabelText('Show earlier agent activity'))
+    expect(screen.getByLabelText('Earlier agent activity').className).toContain('max-h-36')
   })
 })

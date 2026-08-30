@@ -34,6 +34,18 @@ export const ORGANIZE_FAILED_MESSAGE =
   'We could not organize the Reels from your last trip — they are saved, but their places are ' +
   'missing. Select them in your library and organize them again.'
 
+/**
+ * The same outcome, reached by a different route: another organize job already held one of these
+ * Reels, so the RPC started none of them.
+ *
+ * Worth its own sentence because the cause changes what the user should think. Nothing broke, and
+ * the reels the other job holds WILL be read — it is the rest of the batch that was never started.
+ * "Something went wrong" would send them looking for a fault that is not there.
+ */
+export const ORGANIZE_CONFLICT_MESSAGE =
+  'Some of those Reels were already being organized, so the rest were not started. Open your ' +
+  'library, select them, and organize them again.'
+
 export type OrganizeFailure = {
   /** The reels that were never organized, so whoever retries knows what to ask for. */
   savedReelIds: string[]
@@ -97,7 +109,23 @@ export function recordOrganizeFailure(failure: OrganizeFailure): void {
   publish({ ...snapshot, failure })
 }
 
-/** Drop the standing failure — the reels were organized after all, or the user has been told. */
+/**
+ * Drop the standing failure only if `savedReelIds` covers every reel it is about.
+ *
+ * The identity check is the point. Clearing on any successful organize erased the notice for one
+ * run's unorganized reels the moment an unrelated later run succeeded — the reels still had no
+ * places, and the one thing that said so was gone. Containment rather than equality: a batch that
+ * organizes these reels AND others has still organized these.
+ */
+export function clearOrganizeFailureFor(savedReelIds: Iterable<string>): void {
+  const { failure } = snapshot
+  if (!failure) return
+  const covered = new Set(savedReelIds)
+  if (!failure.savedReelIds.every((id) => covered.has(id))) return
+  publish({ ...snapshot, failure: null })
+}
+
+/** Drop the standing failure outright — for a caller that has established it no longer holds. */
 export function clearOrganizeFailure(): void {
   if (snapshot.failure === null) return
   publish({ ...snapshot, failure: null })

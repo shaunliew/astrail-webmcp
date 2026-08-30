@@ -3,8 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { captureSavedReel, getOrganizeStatus, listSavedReelCards, startOrganize, streamOrganize } from '@/lib/reels/api'
 import {
-  clearOrganizeFailure, organizeJobs, retireOrganizeJobs, subscribeOrganizeJobs, trackOrganizeJob,
-  type OrganizeJobsSnapshot,
+  clearOrganizeFailure, clearOrganizeFailureFor, organizeJobs, retireOrganizeJobs,
+  subscribeOrganizeJobs, trackOrganizeJob, type OrganizeJobsSnapshot,
 } from '@/lib/reels/organize-jobs'
 import type { OrganizeItemStatus, OrganizeJob, OrganizeStreamEvent, SavedReelCard, SavedReelPlaceProof } from '@/lib/reels/backend-types'
 import { groupPlacesByCountry, type CountryTray } from '@/lib/reels/organize'
@@ -221,6 +221,26 @@ export default function SavedReelsFlow() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobKey])
 
+  /* The standing failure, retired once its reels have places — by whatever route.
+     Without this the notice is permanent in the one case that produces it most: an overlap 409
+     means the batch was refused BECAUSE another job was already reading one of these reels, so
+     those reels get organized minutes later and a hand-cleared-only notice would still be sitting
+     over them. Keyed on the CARDS, which is the record that actually knows.
+
+     Every named reel must be found AND past `not_analyzed`. A missing card is not evidence of
+     anything, and neither is a library that failed to load — `every` over zero cards is vacuously
+     true, so the read must have succeeded before this can conclude anything at all. */
+  useEffect(() => {
+    const failure = organize.failure
+    if (!failure || cardsStatus !== 'ready') return
+    const status = new Map(cards.map((card) => [card.id, card.analysis_status]))
+    const organized = failure.savedReelIds.every((id) => {
+      const value = status.get(id)
+      return value !== undefined && value !== 'not_analyzed'
+    })
+    if (organized) clearOrganizeFailure()
+  }, [organize.failure, cards, cardsStatus])
+
   // Purely a view concern — nothing is written, so there is no state to strand and nothing to
   // reconcile. The rule itself lives in lib/reels/labels so it can be tested without a DOM.
   const liveCards = useMemo(() => overlayLiveStatus(cards, liveItems), [cards, liveItems])
@@ -247,8 +267,7 @@ export default function SavedReelsFlow() {
     /* The post-run organize that failed is now being done by hand — but only if THESE are the
        reels it was owed. A different batch is no evidence that those were ever read, and dropping
        the notice for it would hide the one place the failure is visible. */
-    const owed = organizeJobs().failure
-    if (owed && owed.savedReelIds.every((id) => submittedIds.includes(id))) clearOrganizeFailure()
+    clearOrganizeFailureFor(submittedIds)
     if (!activeRef.current) return
     submittedReelIdsRef.current = submittedIds
     setJobId(result.job_id)

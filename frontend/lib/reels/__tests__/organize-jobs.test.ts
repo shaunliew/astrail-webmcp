@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  MAX_TRACKED_ORGANIZE_JOBS, ORGANIZE_FAILED_MESSAGE, clearOrganizeFailure, organizeJobs,
-  recordOrganizeFailure, resetOrganizeJobs, retireOrganizeJobs, subscribeOrganizeJobs,
-  trackOrganizeJob,
+  MAX_TRACKED_ORGANIZE_JOBS, ORGANIZE_FAILED_MESSAGE, clearOrganizeFailure,
+  clearOrganizeFailureFor, organizeJobs, recordOrganizeFailure, resetOrganizeJobs,
+  retireOrganizeJobs, subscribeOrganizeJobs, trackOrganizeJob,
 } from '../organize-jobs'
 
 /**
@@ -115,6 +115,27 @@ describe('a failed organize, kept where someone can see it', () => {
   it('does not churn the snapshot when clearing a failure that is not there', () => {
     const before = organizeJobs()
     clearOrganizeFailure()
+    expect(organizeJobs()).toBe(before)
+  })
+
+  it('clears only for a batch that covers every reel it names', () => {
+    /* The identity check. `clearOrganizeFailure()` used to fire on ANY successful organize, so an
+       unrelated later run erased the notice for reels that still had no places. */
+    recordOrganizeFailure({ savedReelIds: ['reel-1', 'reel-2'], message: ORGANIZE_FAILED_MESSAGE })
+
+    clearOrganizeFailureFor(['reel-1'])                      // half of them is not all of them
+    expect(organizeJobs().failure).not.toBeNull()
+    clearOrganizeFailureFor(['reel-elsewhere'])              // none of them
+    expect(organizeJobs().failure).not.toBeNull()
+
+    clearOrganizeFailureFor(['reel-1', 'reel-2', 'reel-3'])  // covers them, plus others
+    expect(organizeJobs().failure).toBeNull()
+  })
+
+  it('does not churn the snapshot when the batch does not cover the failure', () => {
+    recordOrganizeFailure({ savedReelIds: ['reel-1'], message: ORGANIZE_FAILED_MESSAGE })
+    const before = organizeJobs()
+    clearOrganizeFailureFor(['reel-elsewhere'])
     expect(organizeJobs()).toBe(before)
   })
 

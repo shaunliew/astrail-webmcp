@@ -1116,6 +1116,46 @@ describe('an agent-started extraction shows progress without a reload', () => {
     await waitFor(() => expect(organizeJobs().failure).toBeNull())
   })
 
+  it('drops a notice whose reels have since been organized by something else', async () => {
+    /* The notice is about reels with no places, not about a request that failed once. An overlap
+       409 is the case that makes this load-bearing: the batch was refused BECAUSE another job was
+       reading one of these, so a notice that could only be cleared by hand would sit there for
+       ever over reels that were organized minutes ago. */
+    recordOrganizeFailure({ savedReelIds: ['saved-1'], message: ORGANIZE_FAILED_MESSAGE })
+    listSavedReelCards.mockResolvedValue([{ ...organizedCards[0], analysis_status: 'organized' }])
+
+    renderInRegistry()
+
+    await waitFor(() => expect(organizeJobs().failure).toBeNull())
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('keeps a notice up when a card it names could not be read', async () => {
+    // An unreadable library is not evidence the reels were organized, and clearing on a vacuous
+    // `every` over zero loaded cards would erase the notice precisely when it cannot be checked.
+    recordOrganizeFailure({ savedReelIds: ['saved-1'], message: ORGANIZE_FAILED_MESSAGE })
+    listSavedReelCards.mockRejectedValue(new Error('supabase down'))
+
+    renderInRegistry()
+
+    await screen.findByRole('alert')
+    expect(organizeJobs().failure?.savedReelIds).toEqual(['saved-1'])
+  })
+
+  it('keeps a notice up while only SOME of its reels have been organized', async () => {
+    // Half-done is not done: the other reel still has no places and nothing else would say so.
+    recordOrganizeFailure({ savedReelIds: ['saved-1', 'saved-2'], message: ORGANIZE_FAILED_MESSAGE })
+    listSavedReelCards.mockResolvedValue([
+      { ...cards[0], analysis_status: 'organized' },
+      { ...cards[1], analysis_status: 'not_analyzed' },
+    ])
+
+    renderInRegistry()
+
+    await screen.findByRole('alert')
+    expect(organizeJobs().failure?.savedReelIds).toEqual(['saved-1', 'saved-2'])
+  })
+
   it('keeps the notice up when the user organizes something else', async () => {
     // A different batch is no evidence that the reels which failed were ever read.
     listSavedReelCards.mockResolvedValue([{ ...cards[0], analysis_status: 'not_analyzed' }])

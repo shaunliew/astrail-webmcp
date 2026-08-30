@@ -84,7 +84,7 @@ vi.mock('../RegisterTools', () => ({
 
 const { createGenerationStore } = await import('@/lib/webmcp/generation')
 const { ActiveOrganizeConflictError } = await import('@/lib/reels/api')
-const { ORGANIZE_FAILED_MESSAGE, organizeJobs, resetOrganizeJobs } = await import('@/lib/reels/organize-jobs')
+const { ORGANIZE_CONFLICT_MESSAGE, ORGANIZE_FAILED_MESSAGE, organizeJobs, recordOrganizeFailure, resetOrganizeJobs } = await import('@/lib/reels/organize-jobs')
 const { WebMcpRegistryProvider, useWebMcpRegistry } = await import('../WebMcpRegistry')
 const { default: GlobalTools, ORGANIZE_RETRY_DELAYS_MS } = await import('../GlobalTools')
 
@@ -259,11 +259,14 @@ describe('organizing the reels a generation planned from', () => {
   })
 
   it('leaves the trip intact when organizing fails, and lets nothing escape', async () => {
-    /* Guardrail #3: the trip is already built and saved by the time this runs. A library write
-       must never surface as a trip failure — and the 409 a second tab earns is the server-side
-       fence working, not an error anyone needs to read. The unhandled-rejection assertion is the
-       half that has teeth: without the `.catch`, the rejection escapes the subscription callback
-       into the stream's own call stack, where nothing is waiting to receive it. */
+    /* Guardrail #3: the trip is already built and saved by the time this runs, so a library write
+       must never surface as a trip failure. The unhandled-rejection assertion is the half that has
+       teeth: without the catch, the rejection escapes the subscription callback into the stream's
+       own call stack, where nothing is waiting to receive it.
+
+       Awaited to the END of the retry ladder deliberately. A rejection that fires after the test
+       returns lands in the NEXT test's spy — which is exactly what happened once the 409 became
+       retryable, and it is the sort of leak that reads as a mystery somewhere else in the file. */
     const escaped: unknown[] = []
     const record = (reason: unknown) => { escaped.push(reason) }
     process.on('unhandledRejection', record)
@@ -271,7 +274,10 @@ describe('organizing the reels a generation planned from', () => {
       h.startOrganize.mockRejectedValue(new ActiveOrganizeConflictError())
       const { result } = await planTrip()
       land(SUCCESS)
-      await waitFor(() => { expect(h.startOrganize).toHaveBeenCalledTimes(1) })
+      await waitFor(
+        () => { expect(h.startOrganize).toHaveBeenCalledTimes(ORGANIZE_ATTEMPTS) },
+        { timeout: RETRY_WINDOW_MS },
+      )
       // Long enough for a rejection with no handler to be reported as one.
       await new Promise((r) => setTimeout(r, 50))
       expect(escaped).toEqual([])
@@ -438,23 +444,74 @@ describe('the organize outlives the page that started it', () => {
     await waitFor(() => { expect(organizeJobs().failure).toBeNull() })
   })
 
-  it('neither retries nor reports the 409 a second tab earns', async () => {
-    /* The server-side fence working, not a failure: those reels are being read right now by the
-       job that won the race. Retrying earns the same 409, and telling the user their reels were
-       not organized would be false. */
+  it('does not treat a 409 as the whole batch being handled', async () => {
+    /* The bug this replaces, and it was the ORIGINAL defect returning for a subset. The RPC
+       raises AS409 when ANY requested reel overlaps an active job — `items.saved_reel_id =
+       any(p_saved_reel_ids)` — and the insert never runs, so NO job exists for the batch
+       (20260720130000_organize_job_error_codes.sql). Reading it as "these are being read right
+       now" abandoned every non-overlapping reel in the batch: no job, no retry, no notice, "Not
+       analyzed" for ever.
+
+       It cannot even mean "these exact reels are already running": the idempotency key is the
+       sha256 of the sorted reel-id SET (organizer._request_key), so re-requesting the same batch
+       returns the existing job id instead. A 409 is always a DIFFERENT batch holding one of ours. */
     h.startOrganize.mockRejectedValue(new ActiveOrganizeConflictError())
     await planTrip()
     land(SUCCESS)
-    await waitFor(() => { expect(h.startOrganize).toHaveBeenCalledTimes(1) })
 
-    await new Promise((r) => setTimeout(r, RETRY_WINDOW_MS / 2))
-    expect(h.startOrganize).toHaveBeenCalledTimes(1)
-    expect(organizeJobs().failure).toBeNull()
+    await waitFor(
+      () => { expect(h.startOrganize).toHaveBeenCalledTimes(ORGANIZE_ATTEMPTS) },
+      { timeout: RETRY_WINDOW_MS },
+    )
+    // Not spent: the reels are still owed an organize, and the notice says which.
+    expect(organizeJobs().failure).toEqual({
+      savedReelIds: ['reel-1', 'reel-2'], message: ORGANIZE_CONFLICT_MESSAGE,
+    })
+    expect(organizeJobs().jobIds).toEqual([])
+  })
 
-    // ...and the record is spent, because the work IS happening.
+  it('says the overlap happened, not that something broke', async () => {
+    // Different cause, different next step: "some were already being organized" tells the user
+    // why the rest were not, which the generic failure line does not.
+    h.startOrganize.mockRejectedValue(new ActiveOrganizeConflictError())
+    await planTrip()
     land(SUCCESS)
-    await act(async () => { await Promise.resolve() })
-    expect(h.startOrganize).toHaveBeenCalledTimes(1)
+    await waitFor(() => { expect(organizeJobs().failure).not.toBeNull() }, { timeout: RETRY_WINDOW_MS })
+    expect(organizeJobs().failure?.message).toBe(ORGANIZE_CONFLICT_MESSAGE)
+    expect(ORGANIZE_CONFLICT_MESSAGE).not.toBe(ORGANIZE_FAILED_MESSAGE)
+  })
+
+  it('still organizes the batch once the overlapping job clears', async () => {
+    // The retry ladder is the cheap half of the fix: an overlap that ends in the meantime is
+    // simply organized, with no notice and nothing for the user to do.
+    h.startOrganize.mockRejectedValueOnce(new ActiveOrganizeConflictError())
+    h.startOrganize.mockResolvedValue({ job_id: 'job-1' })
+    await planTrip()
+    land(SUCCESS)
+
+    await waitFor(() => { expect(organizeJobs().jobIds).toEqual(['job-1']) }, { timeout: RETRY_WINDOW_MS })
+    expect(organizeJobs().failure).toBeNull()
+    expect(h.startOrganize).toHaveBeenLastCalledWith(['reel-1', 'reel-2'], 'test-token')
+  })
+
+  it('does not erase another run\'s failure notice when this one succeeds', async () => {
+    /* `clearOrganizeFailure()` fired on every successful automatic organize, without asking whose
+       failure it was: an unrelated later run wiped the notice for reels that are still unorganized
+       and still have no places. The manual path already compared ids; this one does now too. */
+    recordOrganizeFailure({ savedReelIds: ['reel-elsewhere'], message: ORGANIZE_FAILED_MESSAGE })
+    await planTrip()
+    land(SUCCESS)
+
+    await waitFor(() => { expect(organizeJobs().jobIds).toEqual(['job-1']) })
+    expect(organizeJobs().failure?.savedReelIds).toEqual(['reel-elsewhere'])
+  })
+
+  it('clears the notice for the reels it just organized', async () => {
+    recordOrganizeFailure({ savedReelIds: ['reel-1', 'reel-2'], message: ORGANIZE_FAILED_MESSAGE })
+    await planTrip()
+    land(SUCCESS)
+
+    await waitFor(() => { expect(organizeJobs().failure).toBeNull() })
   })
 
   it('does not start a second organize while the first request is still in flight', async () => {
@@ -534,5 +591,90 @@ describe('captured reels belong to the run that captured them', () => {
     land(SUCCESS)
     await waitFor(() => { expect(h.startOrganize).toHaveBeenCalledTimes(1) })
     expect(h.startOrganize).toHaveBeenCalledWith(['reel-B'], 'test-token')
+  })
+})
+
+describe('a run that lands before its captures do', () => {
+  /* The subscriber refuses an empty record and, before this, simply returned — and nothing else
+     ever scheduled the organize, because the terminal frame is the only thing that triggers it.
+     `plan_trip_from_reels` starts the captures AFTER opening the stream and awaits them
+     separately, so the ordering is not guaranteed by anything: a run that lands first left every
+     reel unorganized, and a run that landed mid-batch organized a subset and threw the rest away.
+     The captures are counted now, and the last one to settle is what fires. */
+
+  /** Plan without awaiting, so the captures can be held open across the terminal frame. */
+  function planInFlight(plan: ToolSpec): Promise<string> {
+    return runPlan(plan, PLAN_ARGS)
+  }
+
+  it('organizes once the last capture lands, when the run finished first', async () => {
+    const first = deferred<{ saved_reel: { id: string } }>()
+    const second = deferred<{ saved_reel: { id: string } }>()
+    const pending = [first, second]
+    h.captureSavedReel.mockImplementation(() => pending.shift()!.promise)
+
+    const { plan } = await mountTools()
+    const run = planInFlight(plan)
+    await waitFor(() => { expect(h.captureSavedReel).toHaveBeenCalledTimes(2) })
+
+    // The whole run completes while both captures are still in flight.
+    land(SUCCESS)
+    await act(async () => { await Promise.resolve() })
+    expect(h.startOrganize).not.toHaveBeenCalled()
+
+    first.resolve({ saved_reel: { id: 'reel-1' } })
+    await act(async () => { await Promise.resolve() })
+    // Not yet: organizing a subset here would throw the second reel away.
+    expect(h.startOrganize).not.toHaveBeenCalled()
+
+    second.resolve({ saved_reel: { id: 'reel-2' } })
+    await run
+
+    await waitFor(() => { expect(h.startOrganize).toHaveBeenCalledTimes(1) })
+    expect(h.startOrganize).toHaveBeenCalledWith(['reel-1', 'reel-2'], 'test-token')
+  })
+
+  it('organizes what did land when the rest of the captures failed', async () => {
+    // A refused capture has no row to organize, but it must not hold the others hostage either.
+    const first = deferred<{ saved_reel: { id: string } }>()
+    let rejectSecond!: (e: unknown) => void
+    const second = new Promise<{ saved_reel: { id: string } }>((_, rej) => { rejectSecond = rej })
+    const pending: Promise<{ saved_reel: { id: string } }>[] = [first.promise, second]
+    h.captureSavedReel.mockImplementation(() => pending.shift()!)
+
+    const { plan } = await mountTools()
+    const run = planInFlight(plan)
+    await waitFor(() => { expect(h.captureSavedReel).toHaveBeenCalledTimes(2) })
+
+    land(SUCCESS)
+    first.resolve({ saved_reel: { id: 'reel-1' } })
+    rejectSecond(new Error('rate limited'))
+    await run
+
+    await waitFor(() => { expect(h.startOrganize).toHaveBeenCalledTimes(1) })
+    expect(h.startOrganize).toHaveBeenCalledWith(['reel-1'], 'test-token')
+  })
+
+  it('organizes nothing when the run lands and every capture then fails', async () => {
+    let rejectFirst!: (e: unknown) => void
+    let rejectSecond!: (e: unknown) => void
+    const pending = [
+      new Promise<{ saved_reel: { id: string } }>((_, rej) => { rejectFirst = rej }),
+      new Promise<{ saved_reel: { id: string } }>((_, rej) => { rejectSecond = rej }),
+    ]
+    h.captureSavedReel.mockImplementation(() => pending.shift()!)
+
+    const { plan } = await mountTools()
+    const run = planInFlight(plan)
+    await waitFor(() => { expect(h.captureSavedReel).toHaveBeenCalledTimes(2) })
+
+    land(SUCCESS)
+    rejectFirst(new Error('rate limited'))
+    rejectSecond(new Error('rate limited'))
+    await run
+
+    await act(async () => { await Promise.resolve() })
+    // No rows means no ids, and a job over an empty set organizes nothing.
+    expect(h.startOrganize).not.toHaveBeenCalled()
   })
 })

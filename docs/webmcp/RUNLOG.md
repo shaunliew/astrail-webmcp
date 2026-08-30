@@ -1176,3 +1176,73 @@ promise; and the rail's clear operation spares running entries, so the receipt c
 dismissed. Same root cause, still deliberately unfixed — but it now touches approval and the
 permanent rail, not just the rewrite slot. **Still needs a card. Still not a demo risk.**
 
+### Task 8 · landing page · `b49c4e6` · PASS — and my brief's premise was wrong
+
+**`claims-fix` checked my premise against the code and it did not hold.** I claimed
+`howItWorksSteps` was the pre-WebMCP story a judge sees on `/`, and that the agent was invisible
+there. Verified myself after the pushback: `HowItWorksSection` — the only consumer of those
+steps — is mounted **solely by `app/classic/page.tsx`**, the archived landing. `/` renders
+`ChallengeBanner` + the what's-new card + the for-judges card + `StoryStage`, and already names
+16 tools and `get_app_state` outright.
+
+I read a copy file and asserted what renders from it without tracing the consumer. That is the
+third time tonight I have made a claim from a document instead of the render path, and it was in
+the brief for the task whose entire purpose is catching that.
+
+**It found two REAL instances of my own top findings that I never listed, both on `/`:**
+- `FinalCTA.tsx:42` said *"Open **this page** in ChatGPT's built-in browser and the agent can
+  read it"* — finding 7 verbatim, in a second place nobody had looked. It also closed with
+  "Sign in first", the account-is-the-only-way-in implication.
+- `LiveMapDemo.tsx:28` promised *"the reel and quote behind each stop"* — finding 1.
+
+**Nothing was pinning either**, which is exactly why they survived a whole night of auditing —
+the full suite passed unchanged after the fix. It added a guard that RENDERS FinalCTA and
+reddens if the copy readdresses the page the reader is standing on. Same lesson as the three
+green injections: green proves nothing when nothing is watching.
+
+**Allowlist**: it edited three files outside the list I gave, said so, and offered revert. Its
+reasoning is right and I am keeping them — the list existed to avoid colliding with
+`auto-replan`, none of the three was contested, and leaving a verified instance of the top
+finding on the root landing page because of a list drawn for a different reason would have been
+narrowing the task.
+
+**Both report-only questions: already done.** The what's-new block exists at `app/page.tsx:26-85`
+and is pinned; `noindex` is set for every route at `app/layout.tsx:41-52` and is pinned. Nothing
+added. **One item for Shaun:** `app/robots.ts:9-11` still emits `allow: "/"` plus a sitemap and
+host for SITE_URL, so robots.txt invites crawling and hands over the URL list while the meta tag
+forbids indexing. Meta wins, so the outcome is right, but it is a mixed signal. Deployment
+surface, untouched.
+
+### Task 5 (closed) · round-7 fix · `8f47a69` · PASS
+
+**It took the bigger option, and the reasoning is why.** Resolving the actor at settle time
+repairs the rail LABEL and nothing else — but the damage was the SENTENCE, "The user declined",
+which goes to the agent and gets repeated to the user as fact. So it fixed the channel:
+`requestConfirm` now answers `'unavailable'` when it turns a request away, a value our own code
+writes that no user action can produce. All six gated tools report it as **failed, not
+declined** — nothing was decided, and a retry is the right next move, which is the opposite of
+what a decline means. `plan_trip_from_reels` had the identical lie and spends the lifetime free
+trip, so the two endings now lead somewhere different.
+
+For (a), the actor chip is withheld on `failed`: a validation error is not a decision at all, so
+it is attributed to nobody rather than to the wrong person. `done` and `declined` keep it,
+because a refusal IS the decision the card exists to record — and both directions are pinned,
+since the over-correction ships as easily as the bug.
+
+Verified by injection: making the registry resolve `false` again reddens
+`AgentConfirm > refuses a second request rather than queueing it behind an unread dialog`.
+Restored byte-identical. (The agent reported two tests reddening for this injection; I saw one.
+The guard is load-bearing either way — noting the discrepancy rather than smoothing it.)
+
+**Honest gap it flagged itself:** the corrected `api.ts` JSDoc is a comment, so no injection can
+redden it. The only item tonight with no test behind it.
+
+### GATES — all green
+
+```
+frontend  npx vitest run     → 122 files / 1676 tests passed, 0 failed
+frontend  npx tsc --noEmit   → clean
+backend   uv run pytest -q   → 2047 passed, 13 skipped
+```
+Working tree clean. Nothing pushed.
+

@@ -33,6 +33,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 
 from models.enrichment import RestaurantDetail, RestaurantDetailSet
 
@@ -192,6 +193,34 @@ async def _run_bounded(run, agent, user_input: str, *, deadline: float):
         return await run(agent, user_input)
 
 
+def _run_shape(result) -> tuple[object, object]:
+    """(model turns, hosted searches) off a RunResult, for the diagnostic line ONLY — nothing here
+    feeds a return value, so it cannot make the enrichment less deterministic.
+
+    TURNS is the discriminator no fitted estimate could settle. `parallel_tool_calls=True` lets the
+    model issue every venue's search in ONE turn, so `turns` staying ~2 while `searches` tracks
+    `pois` means they ran concurrently, and `turns` growing with `pois` means they were serialized
+    one per turn. That decides whether searching two venues instead of one costs almost nothing or
+    costs roughly double — the open question behind _DETAIL_VENUES_PER_DAY.
+
+    Identifies the SDK's items by class NAME rather than importing them: `agents` is lazy-imported
+    throughout this module (guardrail #9), and a diagnostic must not be the thing that drags the
+    SDK into module scope. Never raises — an injected runner returns a bare object with only
+    `final_output`, and a shape we cannot read is reported as `?` rather than costing the day its
+    enrichment over a log field (guardrail #3)."""
+    try:
+        turns: object = len(result.raw_responses)
+    except Exception:
+        turns = "?"
+    try:
+        # This agent is built with exactly ONE tool (WebSearchTool), so every tool call is a search.
+        searches: object = sum(1 for it in result.new_items
+                               if type(it).__name__ == "ToolCallItem")
+    except Exception:
+        searches = "?"
+    return turns, searches
+
+
 def _model_errors() -> tuple[type[BaseException], ...]:
     try:
         from openai import APIStatusError, APITimeoutError, BadRequestError
@@ -223,13 +252,15 @@ async def fetch_restaurant_details(
     # LEFT rather than being handed a fresh budget computed at its own start. Agent construction
     # sits inside it too (a warm in-process import, microseconds after the first day).
     deadline = asyncio.get_running_loop().time() + DETAIL_TIMEOUT_S
+    started = time.perf_counter()   # diagnostic only; the bound itself runs off `deadline` above
     try:
         result = await _run_bounded(run, build_detail_agent(model), user_input, deadline=deadline)
     except TimeoutError:
         # NOT retried on the fallback model: the budget is already spent, and a retry would double
         # exactly the wait this bound exists to cap. The typed fallback below answers a model being
         # unavailable, which a timeout is no evidence of.
-        print("  [restaurant-details] skipped (timed out)", file=sys.stderr)
+        print(f"  [restaurant-details] pois={len(pois)} skipped=timeout "
+              f"elapsed={time.perf_counter() - started:.1f}s", file=sys.stderr)
         return {}
     except _model_errors():
         try:
@@ -240,7 +271,8 @@ async def fetch_restaurant_details(
             # not as "model unavailable": the primary's typed error said the model was the problem,
             # the bound firing says the budget was, and a log that conflates them sends the next
             # person debugging a slow generation looking at the wrong thing.
-            print("  [restaurant-details] skipped (timed out)", file=sys.stderr)
+            print(f"  [restaurant-details] pois={len(pois)} skipped=timeout "
+                  f"elapsed={time.perf_counter() - started:.1f}s", file=sys.stderr)
             return {}
         except Exception:
             print("  [restaurant-details] skipped (model unavailable)", file=sys.stderr)
@@ -249,6 +281,13 @@ async def fetch_restaurant_details(
         print("  [restaurant-details] skipped (run failed)", file=sys.stderr)
         return {}
 
+    elapsed = time.perf_counter() - started
     kept = keep_grounded_details(result.final_output.details, pois)
-    print(f"  [restaurant-details] pois={len(pois)} enriched={len(kept)}", file=sys.stderr)
+    turns, searches = _run_shape(result)
+    # COUNTS AND A DURATION ONLY — house style (`[restaurants] pois=15 labeled=3`), and
+    # deliberately so: this line ships, so a venue name, an address or a source URL in it would be
+    # third-party data written to a log for the life of the feature. Everything a reader needs to
+    # settle the cost of this call is a number.
+    print(f"  [restaurant-details] pois={len(pois)} enriched={len(kept)} "
+          f"elapsed={elapsed:.1f}s turns={turns} searches={searches}", file=sys.stderr)
     return kept

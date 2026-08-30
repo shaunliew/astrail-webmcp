@@ -8,6 +8,7 @@ this agent a tool at all (see the module docstring).
 from __future__ import annotations
 
 import asyncio
+import re
 
 import pytest
 
@@ -247,3 +248,102 @@ async def test_the_fallback_shares_the_primary_budget_instead_of_getting_a_fresh
     # ONE budget, measured from the first attempt's own start so the agent construction ahead of
     # it cannot inflate the window. Two budgets would be ~0.7s here.
     assert end - attempts[0] < 0.6, f"the fallback bought a second budget: {end - attempts[0]:.2f}s"
+
+
+# --- the diagnostic line: what a live run has to be able to answer afterwards ---------------------
+
+# `_run_shape` identifies the SDK's items by class NAME so that reading them never drags the Agents
+# SDK into module scope (guardrail #9), so these stand in by name alone.
+_ToolCallItem = type("ToolCallItem", (), {})
+_MessageOutputItem = type("MessageOutputItem", (), {})
+
+
+def _result(*, turns: int, searches: int):
+    class Result:
+        final_output = RestaurantDetailSet(details=[detail()])
+        raw_responses = [object()] * turns
+        new_items = [_ToolCallItem() for _ in range(searches)] + [_MessageOutputItem()]
+    return Result()
+
+
+@pytest.mark.asyncio
+async def test_the_diagnostic_line_reports_elapsed_turns_and_searches(capsys):
+    """The three things a run has to settle, none of which a fitted estimate could: how long THIS
+    call takes on its own (`suggest` is not inside it), and — via turns against searches — whether
+    the per-venue searches ran concurrently or one per turn."""
+    async def runner(*_a, **_k):
+        return _result(turns=2, searches=2)
+
+    await fetch_restaurant_details(POIS, runner=runner)
+    line = capsys.readouterr().err.strip()
+
+    # House style keeps the two-space indent; `.strip()` here is only trimming the trailing newline.
+    assert line.startswith("[restaurant-details] pois=2 enriched=1")
+    # The whole shape, so the format stays parseable by whoever reads the log after a run.
+    assert re.fullmatch(
+        r"\[restaurant-details\] pois=2 enriched=1 elapsed=\d+\.\d+s turns=2 searches=2", line)
+
+
+@pytest.mark.asyncio
+async def test_the_diagnostic_line_distinguishes_parallel_from_serial_searches(capsys):
+    """The decisive shape. Two venues searched in ONE model turn means the tool calls ran in
+    parallel; two venues taking a turn each means they serialized. Both are reported by the same
+    two fields, so the reader can tell which regime a real run was in."""
+    async def parallel(*_a, **_k):
+        return _result(turns=2, searches=2)        # both searches inside one turn
+
+    async def serial(*_a, **_k):
+        return _result(turns=3, searches=2)        # a turn per search
+
+    await fetch_restaurant_details(POIS, runner=parallel)
+    assert "turns=2 searches=2" in capsys.readouterr().err
+
+    await fetch_restaurant_details(POIS, runner=serial)
+    assert "turns=3 searches=2" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_search_reports_that_it_hit_the_bound(capsys, monkeypatch):
+    """Whether 90s is ever approached is the third question, and a silent `{}` cannot answer it —
+    a timeout has to be distinguishable in the log from a venue that simply publishes nothing."""
+    monkeypatch.setattr(rd, "DETAIL_TIMEOUT_S", 0.01)
+
+    async def runner(*_a, **_k):
+        await asyncio.sleep(3600)
+
+    assert await asyncio.wait_for(fetch_restaurant_details(POIS, runner=runner), timeout=5) == {}
+    line = capsys.readouterr().err
+    assert "skipped=timeout" in line and "pois=2" in line and "elapsed=" in line
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_run_shape_degrades_to_marks_rather_than_failing(capsys):
+    """The diagnostic is garnish on garnish. A result object without the SDK's shapes — every
+    injected test runner, and any future SDK rename — must still yield the details and a line,
+    not an AttributeError that costs the day its enrichment (guardrail #3)."""
+    class Bare:
+        final_output = RestaurantDetailSet(details=[detail()])
+
+    async def runner(*_a, **_k):
+        return Bare()
+
+    kept = await fetch_restaurant_details(POIS, runner=runner)
+    assert set(kept) == {0}                        # the lookup still succeeded
+    assert "turns=? searches=?" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_the_diagnostic_line_leaks_no_venue_name_or_url(capsys):
+    """House style is counts and nothing else (`[restaurants] pois=15 labeled=3`). This line ships,
+    so a venue name, an address or a source URL in it would be third-party data written to a log
+    for the life of the feature."""
+    async def runner(*_a, **_k):
+        return _result(turns=2, searches=2)
+
+    await fetch_restaurant_details(POIS, city="Osaka", runner=runner)
+    line = capsys.readouterr().err
+
+    for poi in POIS:
+        assert poi["name"] not in line and poi["address"] not in line
+    assert "Osaka" not in line
+    assert SOURCE not in line and "http" not in line

@@ -35,7 +35,7 @@ export default function RestaurantStrip({
             key={r.id}
             className={[
               'surface rounded-lg p-2.5 transition',
-              locatable ? 'cursor-pointer hover:border-[var(--brass-bright)]' : '',
+              locatable ? 'hover:border-[var(--brass-bright)]' : '',
               isSelected ? 'border-[var(--brass-bright)]' : '',
             ].filter(Boolean).join(' ')}
             {...(locatable

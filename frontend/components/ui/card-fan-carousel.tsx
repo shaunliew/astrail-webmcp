@@ -69,7 +69,7 @@ function getSlotConfig(totalCards: number, slot: number) {
 }
 
 const ARROW_CLASSES =
-  "relative flex items-center justify-center rounded-full border-[1.5px] border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 backdrop-blur-[16px] text-black/40 dark:text-white/55 cursor-pointer shrink-0 z-30 outline-none shadow-[0_4px_20px_rgba(0,0,0,0.1)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.4)] hover:border-black/25 dark:hover:border-white/25 hover:text-black/70 dark:hover:text-white/80 active:opacity-70 transition-colors duration-300 before:content-[''] before:absolute before:inset-[3px] before:rounded-full before:border before:border-black/[0.04] dark:before:border-white/[0.04] before:pointer-events-none";
+  "relative flex items-center justify-center rounded-full border-[1.5px] border-black/10 dark:border-white/10 bg-black/5 dark:bg-white/5 backdrop-blur-[16px] text-black/40 dark:text-white/55 shrink-0 z-30 outline-none shadow-[0_4px_20px_rgba(0,0,0,0.1)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.4)] hover:border-black/25 dark:hover:border-white/25 hover:text-black/70 dark:hover:text-white/80 active:opacity-70 transition-colors duration-300 before:content-[''] before:absolute before:inset-[3px] before:rounded-full before:border before:border-black/[0.04] dark:before:border-white/[0.04] before:pointer-events-none";
 
 export default function SocialCards({ cards, onOpen }: SocialCardsProps) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -278,11 +278,11 @@ export default function SocialCards({ cards, onOpen }: SocialCardsProps) {
             // `.fan-card` class regardless of element type, so a button fans identically.
             if (onOpen) {
               return (
-                <button key={index} type="button" onClick={() => onOpen(card)} aria-label={card.alt || `Card ${index}`} className="fan-card block cursor-pointer appearance-none text-left absolute left-1/2 top-0 overflow-hidden rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.25)] h-[10.5rem] w-[6rem] ml-[-3rem] min-[480px]:h-[12.5rem] min-[480px]:w-[7rem] min-[480px]:ml-[-3.5rem] sm:h-[14rem] sm:w-[8rem] sm:ml-[-4rem] md:h-[16rem] md:w-[9rem] md:ml-[-4.5rem] lg:h-[17.5rem] lg:w-[10rem] lg:ml-[-5rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]">{image}</button>
+                <button key={index} type="button" onClick={() => onOpen(card)} aria-label={card.alt || `Card ${index}`} className="fan-card block appearance-none text-left absolute left-1/2 top-0 overflow-hidden rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.25)] h-[10.5rem] w-[6rem] ml-[-3rem] min-[480px]:h-[12.5rem] min-[480px]:w-[7rem] min-[480px]:ml-[-3.5rem] sm:h-[14rem] sm:w-[8rem] sm:ml-[-4rem] md:h-[16rem] md:w-[9rem] md:ml-[-4.5rem] lg:h-[17.5rem] lg:w-[10rem] lg:ml-[-5rem] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]">{image}</button>
               );
             }
             return card.linkUrl ? (
-              <a key={index} href={card.linkUrl} target={card.linkUrl.startsWith("http") ? "_blank" : "_self"} rel="noopener noreferrer" className="fan-card block cursor-pointer absolute left-1/2 top-0 overflow-hidden rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.25)] h-[10.5rem] w-[6rem] ml-[-3rem] min-[480px]:h-[12.5rem] min-[480px]:w-[7rem] min-[480px]:ml-[-3.5rem] sm:h-[14rem] sm:w-[8rem] sm:ml-[-4rem] md:h-[16rem] md:w-[9rem] md:ml-[-4.5rem] lg:h-[17.5rem] lg:w-[10rem] lg:ml-[-5rem]">{image}</a>
+              <a key={index} href={card.linkUrl} target={card.linkUrl.startsWith("http") ? "_blank" : "_self"} rel="noopener noreferrer" className="fan-card block absolute left-1/2 top-0 overflow-hidden rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.25)] h-[10.5rem] w-[6rem] ml-[-3rem] min-[480px]:h-[12.5rem] min-[480px]:w-[7rem] min-[480px]:ml-[-3.5rem] sm:h-[14rem] sm:w-[8rem] sm:ml-[-4rem] md:h-[16rem] md:w-[9rem] md:ml-[-4.5rem] lg:h-[17.5rem] lg:w-[10rem] lg:ml-[-5rem]">{image}</a>
             ) : (
               <div key={index} className="fan-card absolute left-1/2 top-0 overflow-hidden rounded-2xl shadow-[0_20px_40px_rgba(0,0,0,0.25)] h-[10.5rem] w-[6rem] ml-[-3rem] min-[480px]:h-[12.5rem] min-[480px]:w-[7rem] min-[480px]:ml-[-3.5rem] sm:h-[14rem] sm:w-[8rem] sm:ml-[-4rem] md:h-[16rem] md:w-[9rem] md:ml-[-4.5rem] lg:h-[17.5rem] lg:w-[10rem] lg:ml-[-5rem]">{image}</div>
             );

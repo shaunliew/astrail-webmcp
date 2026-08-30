@@ -240,6 +240,29 @@ a {
   -webkit-tap-highlight-color: transparent;
 }
 
+/* Tailwind v4's Preflight DROPPED v3's `button, [role="button"] { cursor: pointer }` — it has no
+   `cursor` declaration at all now, so buttons fall back to the UA's arrow. That left ~100 buttons
+   across this app (every `onClick` bar two modal backdrops) looking unclickable. Restored once,
+   here, rather than as `cursor-pointer` on each call site. Snippet is Tailwind's own from the v3→v4
+   upgrade guide, widened to the other elements this app actually clicks.
+
+   `@layer base` ON PURPOSE, unlike its unlayered neighbours above: base loses to `utilities`, so
+   every `disabled:cursor-default` / `cursor-not-allowed` already in the components still wins on
+   the element it is written on. Putting this outside a layer would silently beat all of them.
+
+   The `:not()` exclusions are the point, not boilerplate — a pointer on a control that will not
+   respond is worse than no pointer at all. `:disabled` covers the real attribute (e.g. the
+   "Plan this trip" gate, disabled until places are selected); `[aria-disabled='true']` covers the
+   focusable-but-inert pattern, which `:disabled` does not match. */
+@layer base {
+  button:not(:disabled, [aria-disabled='true']),
+  [role='button']:not(:disabled, [aria-disabled='true']),
+  select:not(:disabled, [aria-disabled='true']),
+  summary:not([aria-disabled='true']) {
+    cursor: pointer;
+  }
+}
+
 a:focus-visible,
 button:focus-visible {
   outline: 1px solid var(--brass);
@@ -584,7 +607,6 @@ button:focus-visible {
   align-items: center;
   background: transparent;
   border: 0;
-  cursor: pointer;
   display: flex;
   flex-direction: column;
   font-family: var(--font-geist), system-ui, sans-serif;
@@ -832,7 +854,6 @@ button:focus-visible {
   /* Interactive now: the hub opens its own popup (class, nightly rate, trip total), so selection
      is no longer HotelPanel's alone. Grown to 40px with it — the old 34px was a fine passive
      marker and a poor tap target, and it now sits beside 30px eat chips. */
-  cursor: pointer;
   display: flex;
   font-size: 19px;
   height: 40px;
@@ -1331,7 +1352,6 @@ button:focus-visible {
   letter-spacing: 0.02em;
   color: #e8d5b0;
   background: transparent;
-  cursor: pointer;
   transition: border-color 140ms ease, color 140ms ease;
 }
 
@@ -1369,7 +1389,6 @@ button:focus-visible {
   padding: 0;
   border: 0;
   background: transparent;
-  cursor: pointer;
   /* Sized with width/height only — never transform. See marker-css-contract.test.ts: a transform
      on the marker root fights Mapbox's own inline transform and drifts the pin off its anchor. */
   width: 30px;

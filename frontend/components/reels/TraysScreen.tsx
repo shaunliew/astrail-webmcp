@@ -587,7 +587,7 @@ export default function TraysScreen({
               disclosure triangle, and without it the summary reads as a link that goes somewhere
               else rather than a section that opens here. `list-inside` keeps the marker inside
               the padding box so it lines up with the content above. */}
-          <summary className="w-fit cursor-pointer list-inside rounded-lg px-1 py-2.5 text-[13px] font-medium text-[color:var(--brass-deep)] transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]">
+          <summary className="w-fit list-inside rounded-lg px-1 py-2.5 text-[13px] font-medium text-[color:var(--brass-deep)] transition-opacity hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-deep)]">
             Prefer to paste Reel links here?
           </summary>
           <div className="mt-3">{capturePanel}</div>

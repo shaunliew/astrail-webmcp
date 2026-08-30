@@ -11,6 +11,8 @@ import {
   tripHotels, buildPlaceIndex, findTripPlace, recommendedHotelId,
 } from '@/lib/trip/selectors'
 import { useSharedMap } from '@/components/map/MapProvider'
+import { useOptionalGeneration } from '@/components/generation/GenerationProvider'
+import Astronaut from '@/components/mascot/Astronaut'
 import DaySelector from './DaySelector'
 import DayOverview from './DayOverview'
 import ItineraryCards from './ItineraryCards'
@@ -85,6 +87,19 @@ export default function TripWorkspace({
   readOnly?: boolean
 }) {
   const { acquire, release } = useSharedMap()
+  /**
+   * Did the run the shell just finished produce THIS trip?
+   *
+   * Only used to decide what the loading frame says, and it is a backed claim, not optimism:
+   * `complete` is set from a result frame whose verdict was success, and that same verdict is the
+   * only one that navigates here at all. Matching the id matters — a finished run must not put
+   * "your trip is ready" on some other trip the user opens next.
+   *
+   * Optional, because this component renders outside the /app shell too (nothing else in it needs
+   * a generation), and null simply means there is no arrival to continue from.
+   */
+  const shellRun = useOptionalGeneration()?.run ?? null
+  const arrivingFromGeneration = shellRun?.status === 'complete' && shellRun.tripId === tripId
   const [bundle, setBundle] = useState<TripBundle | null>(seeded ?? null)
   const [status, setStatus] = useState<'loading' | 'ready' | 'not_found'>(seeded ? 'ready' : 'loading')
   const [activeDayNumber, setActiveDayNumber] = useState(() => (seeded ? orderedDays(seeded)[0]?.day_number ?? 1 : 1))
@@ -158,7 +173,28 @@ export default function TripWorkspace({
   if (status === 'loading') {
     return (
       <main className="relative flex h-[100dvh] items-center justify-center p-6">
-        <p className="surface type-label px-4 py-2.5 text-xs uppercase tracking-wide text-[var(--muted)]">Loading trip…</p>
+        {arrivingFromGeneration ? (
+          /* The arrival, not a new page. The shell pushes here the instant the result frame
+             lands, and everything that framed the wait screen — the narration rail, the sidebar —
+             goes at once, so the bare pill below read to the first user who saw it as being
+             dumped back on the home page before his trip appeared. This carries the rail's last
+             words and its astronaut across the handoff; the dawn map behind it never moved. The
+             dot is live because the page genuinely is still working: the trip is ready, the read
+             is not. Confined to this branch, so it cannot outlive the open outcome — a read that
+             answers not-found or failed falls through to those screens below. */
+          <div data-testid="trip-arrival" className="surface flex items-center gap-3 px-5 py-4">
+            <Astronaut size={40} variant="idle" />
+            <div>
+              <p className="type-display text-[15px] text-[var(--starlight)]">Your trip is ready</p>
+              <p className="type-label flex items-center gap-2 text-xs uppercase tracking-wide text-[var(--muted)]">
+                <span aria-hidden className="pulse-dot pulse-dot--live" />
+                Opening your map…
+              </p>
+            </div>
+          </div>
+        ) : (
+          <p className="surface type-label px-4 py-2.5 text-xs uppercase tracking-wide text-[var(--muted)]">Loading trip…</p>
+        )}
       </main>
     )
   }

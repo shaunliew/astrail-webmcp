@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { useRef } from 'react'
 import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures'
 import { placesForDay } from '@/lib/trip/selectors'
-import type { TripBundle } from '@/lib/trip/backend-types'
+import type { StreamEvent, TripBundle } from '@/lib/trip/backend-types'
 
 const { getTrip, MapCtor, mapInstance, mapProps } = vi.hoisted(() => {
   const handler = () => ({ enable: vi.fn(), disable: vi.fn() })
@@ -31,6 +32,9 @@ vi.mock('mapbox-gl', () => ({
   default: { Map: MapCtor, Marker: vi.fn(), LngLatBounds: vi.fn(), accessToken: '' },
 }))
 vi.mock('mapbox-gl/dist/mapbox-gl.css', () => ({}))
+// GenerationProvider owns the router push on a finished run; this suite only cares that the run
+// reaches `complete`, not where it navigates.
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }))
 // Lightweight stamp: renders the tripId it receives, so the mount tests observe both presence
 // (per the status matrix) and WHICH id flows (the loaded bundle's, never the route param). This
 // keeps the suite's existing @/lib/trip/* mocks valid — the real panel's api/session deps stay out.
@@ -39,6 +43,7 @@ vi.mock('@/components/trip/TripFeedbackPanel', () => ({
 }))
 
 import MapProvider from '@/components/map/MapProvider'
+import GenerationProvider, { useGeneration } from '@/components/generation/GenerationProvider'
 import TripWorkspace from '@/components/trip/TripWorkspace'
 
 function fireLoad() {
@@ -377,5 +382,153 @@ describe('TripWorkspace seeded with a bundle', () => {
   it('still mounts the feedback composer on a seeded trip that is not read-only', async () => {
     renderSeeded()
     expect(await screen.findByTestId('trip-feedback-panel')).toBeInTheDocument()
+  })
+})
+
+describe('arriving from a generation the shell just finished', () => {
+  /* The last complaint from the first real run: "the transition to the complete page is not
+     obvious — it will go back to the home page then only show the complete trip."
+
+     There is no bounce through the home page. What he saw is this component: the shell pushes
+     /app/trip/{id} the instant the result frame lands, and this page then reads the bundle
+     client-side. For that whole round-trip it rendered a bare centred "Loading trip…" pill over
+     the shared dawn map — the rail, the sidebar and every other thing framing the previous screen
+     gone at once, leaving an empty map with one small label on it. That is a different page as
+     far as anyone waiting is concerned.
+
+     So when the run that just completed IS this trip, the frame continues the rail instead of
+     replacing it: the same astronaut, the same words the rail ended on, and a dot that says the
+     page is still working. The claim is backed — `complete` is set only from a result frame whose
+     verdict was success, which is also the only verdict that navigates here — and it is confined
+     to the one state where the outcome is still open. */
+  let emit: ((e: StreamEvent) => void) | null = null
+
+  function ArrivalHarness(
+    { tripId, runTripId, seeded }: { tripId: string; runTripId: string; seeded?: boolean },
+  ) {
+    const api = useGeneration()
+    const started = useRef(false)
+    if (!started.current) {
+      started.current = true
+      api.reserve()?.begin(runTripId)
+    }
+    return <TripWorkspace tripId={tripId} bundle={seeded ? TOKYO_TRIP : undefined} readOnly={seeded} />
+  }
+
+  async function arrive({ runTripId = TOKYO_TRIP.trip.id, tripId = TOKYO_TRIP.trip.id } = {}) {
+    const openStream = vi.fn((_id: string, _tok: string, onEvent: (e: StreamEvent) => void) => {
+      emit = onEvent
+      return { cancel: vi.fn() }
+    })
+    const view = render(
+      <MapProvider>
+        <GenerationProvider openStream={openStream as never} readToken={async () => 'tok'}>
+          <ArrivalHarness tripId={tripId} runTripId={runTripId} />
+        </GenerationProvider>
+      </MapProvider>,
+    )
+    await flush()
+    return view
+  }
+
+  async function finishRun(tripId = TOKYO_TRIP.trip.id) {
+    await act(async () => {
+      emit?.({ type: 'result', content: JSON.stringify({ trip_id: tripId, status: 'complete' }) })
+      await Promise.resolve()
+    })
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    emit = null
+    process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN = 'pk.test'
+    // The read never settles: every assertion below runs while the outcome is genuinely open,
+    // which is the only state this frame is allowed to appear in.
+    getTrip.mockReturnValue(new Promise(() => {}))
+  })
+  afterEach(() => { delete process.env.NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN })
+
+  it('continues the rail instead of blanking to a bare loading pill', async () => {
+    await arrive()
+    await finishRun()
+
+    const arrival = screen.getByTestId('trip-arrival')
+    expect(arrival).toHaveTextContent(/your trip is ready/i)
+    expect(arrival).toHaveTextContent(/opening your map/i)
+    expect(arrival.querySelector('[data-mascot="astronaut"]')).not.toBeNull()
+    expect(arrival.querySelector('.pulse-dot--live')).not.toBeNull()
+  })
+
+  it('says nothing optimistic when the trip was opened cold', async () => {
+    // No run to continue from — a link, the trails list, a reload. There is no evidence this
+    // trip is ready, so the frame does not claim it is.
+    render(
+      <MapProvider>
+        <TripWorkspace tripId={TOKYO_TRIP.trip.id} />
+      </MapProvider>,
+    )
+    await flush()
+
+    expect(screen.queryByTestId('trip-arrival')).toBeNull()
+    expect(screen.getByText(/loading trip/i)).toBeInTheDocument()
+  })
+
+  it('does not carry a finished run onto a DIFFERENT trip page', async () => {
+    await arrive({ runTripId: 'trip_other', tripId: TOKYO_TRIP.trip.id })
+    await finishRun('trip_other')
+
+    expect(screen.queryByTestId('trip-arrival')).toBeNull()
+    expect(screen.getByText(/loading trip/i)).toBeInTheDocument()
+  })
+
+  it('will not call a FAILED run ready, even for this very trip', async () => {
+    /* Reachable without a push: the shell holds the run for the whole session, so a user who
+       opens this trip from their trails list after a failure arrives with a terminal run for
+       exactly this id sitting in the shell. "Terminal" is not the test — the verdict is. A frame
+       promising a ready trip in front of a generation that died is a worse lie than the bare
+       pill it replaced. */
+    await arrive()
+    await act(async () => {
+      emit?.({ type: 'result', content: JSON.stringify({ trip_id: TOKYO_TRIP.trip.id, error: 'no places' }) })
+      await Promise.resolve()
+    })
+
+    expect(screen.queryByTestId('trip-arrival')).toBeNull()
+    expect(screen.getByText(/loading trip/i)).toBeInTheDocument()
+  })
+
+  it('cannot flash on /app/trip/demo, which is fixture-backed and never loads', async () => {
+    /* The demo route hands this component the Tokyo fixture, so `status` starts at 'ready' and
+       the effect returns before it could ever be set to 'loading' — the arrival frame is
+       unreachable there by construction. Asserted with a completed run for that very trip id,
+       which is the only way the frame could otherwise appear, because that route is the one a
+       judge opens with no account and a flash of "opening your map" on a page that was already
+       on screen would be the regression that matters most. */
+    render(
+      <MapProvider>
+        <GenerationProvider openStream={vi.fn() as never} readToken={async () => 'tok'}>
+          <ArrivalHarness tripId={TOKYO_TRIP.trip.id} runTripId={TOKYO_TRIP.trip.id} seeded />
+        </GenerationProvider>
+      </MapProvider>,
+    )
+    await flush()
+
+    expect(screen.queryByTestId('trip-arrival')).toBeNull()
+    expect(screen.getByText(placesForDay(TOKYO_TRIP, 1)[0].place.name)).toBeInTheDocument()
+    expect(getTrip).not.toHaveBeenCalled()
+  })
+
+  it('is gone the moment the outcome stops being open', async () => {
+    // The frame is confined to `status === 'loading'`. A read that answers "no such trip" must
+    // land on "Trip not found", never on a screen still promising a trip that is ready.
+    let settle!: (b: TripBundle | null) => void
+    getTrip.mockReturnValue(new Promise((resolve) => { settle = resolve }))
+    await arrive()
+    await finishRun()
+    expect(screen.getByTestId('trip-arrival')).toBeInTheDocument()
+
+    await act(async () => { settle(null); await Promise.resolve() })
+    expect(screen.queryByTestId('trip-arrival')).toBeNull()
+    expect(screen.getByText(/trip not found/i)).toBeInTheDocument()
   })
 })

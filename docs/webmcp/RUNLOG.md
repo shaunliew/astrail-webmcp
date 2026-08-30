@@ -1135,3 +1135,44 @@ because **a mutation reads the token FIRST for its own write** — so with a sta
 rewrite entry either way. Re-pointed through `replan_trip`, which reaches the token with no prior
 read, and both reddened. None of the three would have been caught without injecting.
 
+### Task 5 (final) · Codex round 7 · 3 categories clean, 1 finding, dispatched
+
+**Clean, and the first answers the thing I actually worried about.** A DECLINED move returns
+before `deps.move`, `startSummaryRewrite` and `refreshView`, and the per-trip `edits` counter
+only increments inside `runReplan` — which a decline never reaches. So a declined move cannot
+make a later rewrite look permanently stale. Also clean: the refusal lifecycle (local per call,
+no success-path leak, no staleness across retries, a headerless abort still yields the timeout
+text) and the activity open/close balance (nothing opened without closing, nothing closed twice,
+a rejected token opens and immediately closes one).
+
+**THE FINDING — the rail credits the user for decisions they never made.** `actor` is static for
+the whole tool lifecycle while the entry opens before validation or approval. Two reachable
+cases:
+
+- A `move_place` with a nonexistent stop fails BEFORE any card, and the rail still renders
+  "MOVE FAILED · You" with the tooltip "You decided this".
+- **Worse:** when another approval is already pending, `requestConfirm` auto-resolves the new one
+  as false *without showing its card*. `move_place` then returns **"The user declined"** and the
+  rail credits "You". The registry refused it, not the user — and that sentence goes to the
+  AGENT, which repeats it to the user as fact. Telling someone they declined something they were
+  never asked is the same class as the rail recording declined edits as `REMOVED · done` that
+  Codex caught last week, and worse, because it travels.
+
+Changing the actor to 'You' was still right; the defect is that a static per-tool actor cannot
+express "who decided" when the decision may not have happened. Dispatched with the choice left
+open — resolve the actor at settle time, or keep it static and fix the two lying paths.
+
+**One stale JSDoc**: `api.ts:446` still says rewrites are coalesced "into one". An edit
+overtaking a running narration deliberately yields two sequential runs — one in flight plus one
+queued follow-up.
+
+### OPEN hazard, revised — wider than first logged
+
+The never-settling-token case reaches further than "no tagged entry, slot stays held". For an
+explicit `replan_trip`, `RegisterTools` has ALREADY opened the untagged wrapper entry, so that
+entry stays running forever; `replanInFlight` reports true from an occupied slot with no backend
+request in existence; a later explicit replan **skips its approval card** and joins the dead
+promise; and the rail's clear operation spares running entries, so the receipt cannot even be
+dismissed. Same root cause, still deliberately unfixed — but it now touches approval and the
+permanent rail, not just the rewrite slot. **Still needs a card. Still not a demo risk.**
+

@@ -1384,3 +1384,64 @@ Two OPEN hazards, deliberately not fixed at 2am, both wanting a card and a test 
 5. With a card already on screen, ask to plan a trip → rail must read PLANNING FAILED, with no
    "You" and no "can't undo this".
 6. Decline a summary rewrite → the day panel must never show "updating" while the card is up.
+
+---
+
+## Round 9 — read-only, NOT ACTED ON
+
+Run because `4bfc71c` was the least-reviewed and most cross-cutting commit of the night. **No
+fixes dispatched.** Codex's own bottom line agrees: *"do not reopen the envelope design tonight;
+log two morning fixes."* Both are attribution, both are the same lie from new directions, and
+neither is a demo risk.
+
+### MORNING FIX 1 — rejecting a bad `decided_by` does not FAIL CLOSED
+
+`edit.ts:308` correctly accepts only `'user' | 'agent' | 'nobody'` and rejects absent, null,
+empty, unexpected and non-string values. But rejection **omits** `decidedBy`, which makes
+`WebMcpRegistry.tsx:273` fall back to the STATIC actor — and for all six gated tools that is
+**'You'**.
+
+Concrete: `move_place` starts, `resolveBundle()` throws a network exception *before the approval
+card is shown*, `RegisterTools.tsx:60` settles the thrown call with no `decided_by`, and the rail
+renders **MOVE FAILED · You** for something the user never saw. The returned paths are fixed;
+the **thrown** paths still reproduce the lie. Fix: fail closed to no actor when a gated tool
+throws without a trusted `decided_by`.
+
+### MORNING FIX 2 — the joined replan is only half-attributed
+
+The tool wrapper correctly emits `agent` for a joined rewrite (`edit.ts:636`). But the underlying
+rewrite creates a SECOND rail entry directly (`GlobalTools.tsx:939`) and settles it without
+`decided_by`, so its static actor stays 'You'. The rail then holds **contradictory actors for the
+same backend work**: `REWRITE · You` followed by `REWROTE · Astrail`. `startReplanRun` already
+knows `afterEdit`, so it has the information to tell the automatic run from a user-approved one.
+
+### QA ITEM 7 for Shaun — needs a live check, cannot be unit-tested
+
+`use-register-tool.ts:45` does not unwrap `result`, so the agent receives the **entire serialized
+JSON object** as MCP text. The successful edit tools already use this shape and models normally
+read structured JSON correctly — but whether ChatGPT ever exposes the braces to the user cannot
+be established from unit tests. **On the demo path**, so worth one smoke: trigger any gated tool
+and confirm the agent speaks the sentence rather than reading `{"result":"…"}` aloud.
+
+### Clean, and one worry retired
+
+- **The provenance guard does NOT pass vacuously** — my main concern. Its parser only reads
+  `PlaceSourceType` when the union stays on one line, so a multiline union or an intervening
+  comment makes it fail **red**, not green; the non-empty, required-member and exact-table
+  assertions prevent a vacuous pass. A maintenance annoyance, not a hole.
+- Envelope: all six endings preserve their human sentence under `result`, no declared output
+  schema to contradict, comfortably inside the 1.5 KB budget.
+- The ten read/`save_reels` tools keeping the static default are all still correct under the
+  "who decided" rule — the mixed scheme is sound.
+- The approved-edit-then-backend-failure case is closed on every explicitly handled write failure.
+- No conflict between `4bfc71c`, `7457aec` and the copy in `2c3d0b2`.
+- Stale comment: `WebMcpRegistry.tsx:14` says only the call OUTCOME cannot be static; actor is
+  now per-call too.
+
+### FINAL STATE
+
+```
+frontend  123 files / 1690 tests passed, 0 failed     tsc clean
+backend   2047 passed, 13 skipped
+```
+Tree clean. **Nothing pushed** — last pushed commit remains `d5561be`; 33 commits are local.

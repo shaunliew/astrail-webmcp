@@ -145,7 +145,14 @@ const STALE_VIEW = 'Astrail could not re-read the trip, so the page may still sh
  */
 async function refreshView(deps: EditDeps, tripId: string): Promise<{ fresh: TripBundle | null; stale: boolean }> {
   try {
-    return { fresh: await deps.refresh(tripId), stale: false }
+    const fresh = await deps.refresh(tripId)
+    // A NULL bundle is not a quieter success, and it is the likelier of the two failures. The
+    // dep resolves to `getTrip(tripId)` when no page has published a refresher, and `getTrip`
+    // answers `null` for an error OR an RLS miss without ever throwing
+    // (lib/trip/supabase-api.ts: "another user's trip reads as absent"). So the first version of
+    // this guard caught the throw, walked the null straight into the success copy, and left
+    // `move_place` saying "The map has redrawn." having confirmed nothing at all.
+    return { fresh, stale: fresh === null }
   } catch {
     // Deliberately not surfaced verbatim: this is a GET failing, not the edit, and its message
     // would read as the edit's own error on a call that succeeded.

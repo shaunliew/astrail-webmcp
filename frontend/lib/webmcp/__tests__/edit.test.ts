@@ -527,7 +527,20 @@ describe('readToolOutcome — what the rail is allowed to believe', () => {
  * the one who most needs to know the change went through.
  */
 describe('a failed refresh does not unmake the edit', () => {
-  const broken = () => vi.fn().mockRejectedValue(new Error('Could not re-read the trip.'))
+  /**
+   * The two ways a re-read fails, run through every assertion below as one table.
+   *
+   * A resolved NULL is the likelier of the two and it is not an error at all: the dep falls back
+   * to `getTrip`, which answers null for a read error OR an RLS miss and never throws
+   * (lib/trip/supabase-api.ts). The first version of this guard caught only the throw, so the
+   * null walked past it into the success copy — a test that exercised the throw alone would have
+   * passed against that bug, which is exactly how it survived a round of review.
+   */
+  const refreshes: [string, () => EditDeps['refresh']][] = [
+    ['throws', () => vi.fn().mockRejectedValue(new Error('Could not re-read the trip.'))],
+    ['resolves null', () => vi.fn().mockResolvedValue(null)],
+  ]
+  const broken = refreshes[0][1]
 
   const landed: [string, keyof EditDeps, (d: EditDeps) => Promise<unknown>][] = [
     ['move_place',     'move',     (d) => Promise.resolve(movePlaceTool(d).execute({ place: '1', to_day: 3 }))],
@@ -537,35 +550,45 @@ describe('a failed refresh does not unmake the edit', () => {
     ['replan_trip',    'replan',   (d) => Promise.resolve(replanTripTool(d).execute({}))],
   ]
 
-  it.each(landed)('%s still reports the change it made', async (_name, mutation, run) => {
-    const d = deps({ refresh: broken() })
+  /** Every tool crossed with every way the re-read can fail. */
+  const sweep = landed.flatMap(([tool, mutation, run]) =>
+    refreshes.map(([how, refresh]) => [`${tool} when the refresh ${how}`, mutation, run, refresh] as const),
+  )
+
+  it.each(sweep)('%s still reports the change it made', async (_name, mutation, run, refresh) => {
+    const d = deps({ refresh: refresh() })
     const out = envelope(await run(d)) as { result?: string; outcome?: string }
     // The write went through, so the record must say so.
     expect(d[mutation]).toHaveBeenCalled()
     expect(out.outcome).toBe('done')
   })
 
-  it.each(landed)('%s says the page is behind rather than swallowing it', async (_name, _mutation, run) => {
+  it.each(sweep)('%s says the page is behind rather than swallowing it', async (_name, _mutation, run, refresh) => {
     // Not dropped. The user is looking at a stale view of a trip that DID change, and this is the
     // line the activity rail renders.
-    const out = envelope(await run(deps({ refresh: broken() })))
+    const out = envelope(await run(deps({ refresh: refresh() })))
     expect(String(out.result)).toContain('may still show the old version')
   })
 
-  it.each(landed)('%s does not throw, so the agent is not invited to retry it', async (_name, _mutation, run) => {
-    await expect(run(deps({ refresh: broken() }))).resolves.toBeTruthy()
+  it.each(sweep)('%s does not throw, so the agent is not invited to retry it', async (_name, _mutation, run, refresh) => {
+    await expect(run(deps({ refresh: refresh() }))).resolves.toBeTruthy()
   })
 
-  it.each(landed)('%s stays inside the serialized output budget with the warning on it', async (_name, _mutation, run) => {
-    expect(envelopeLength(String(await run(deps({ refresh: broken() }))))).toBeLessThanOrEqual(OUTPUT_LIMIT)
+  it.each(sweep)('%s stays inside the serialized output budget with the warning on it', async (_name, _mutation, run, refresh) => {
+    expect(envelopeLength(String(await run(deps({ refresh: refresh() }))))).toBeLessThanOrEqual(OUTPUT_LIMIT)
   })
 
-  it('move_place stops claiming the map redrew when it could not re-read it', async () => {
-    // The one tool that asserts something about the SCREEN. Keeping that sentence on a failed
-    // re-read would be a second lie stacked on the first.
-    const out = envelope(await movePlaceTool(deps({ refresh: broken() })).execute({ place: '1', to_day: 3 }))
+  it.each(refreshes)('move_place stops claiming the map redrew when the refresh %s', async (_how, refresh) => {
+    // The one tool that asserts something about the SCREEN, and the sentence this whole guard
+    // exists to remove. Keeping it on an unconfirmed re-read is a second lie on top of the first.
+    const out = envelope(await movePlaceTool(deps({ refresh: refresh() })).execute({ place: '1', to_day: 3 }))
     expect(String(out.result)).toContain('Moved')
     expect(String(out.result)).not.toContain('The map has redrawn')
+  })
+
+  it.each(refreshes)('keeps the stale-weather warning when the refresh %s', async (_how, refresh) => {
+    const out = envelope(await setTripDatesTool(deps({ refresh: refresh() })).execute({ start_date: '2026-09-14' }))
+    expect(String(out.note)).toContain('weather')
   })
 
   it('keeps the stale-weather warning even though the re-read failed', async () => {

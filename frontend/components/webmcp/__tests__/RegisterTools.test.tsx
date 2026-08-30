@@ -183,6 +183,23 @@ describe('an entry says how the call ended', () => {
     expect(screen.queryByText(/summaries_stale/)).toBeNull()
   })
 
+  it('records a landed move as a move when the re-read resolves with nothing', async () => {
+    // The null path, which is not an error and is the likelier of the two: the refresh dep falls
+    // back to `getTrip`, which answers null for a read error OR an RLS miss without throwing.
+    // The throw-only guard walked this straight into the success copy.
+    const move = vi.fn().mockResolvedValue({})
+    await callThroughBrowser(
+      movePlaceTool(deps({ move, refresh: vi.fn().mockResolvedValue(null) })),
+      { place: '1', to_day: 3 },
+    )
+
+    expect(move).toHaveBeenCalled()
+    expect(screen.getByText('MOVED')).toBeInTheDocument()
+    expect(screen.queryByText('MOVE FAILED')).toBeNull()
+    expect(screen.getByText(/may still show the old version/)).toBeInTheDocument()
+    expect(screen.queryByText(/The map has redrawn/)).toBeNull()
+  })
+
   it('records a landed move as a move even when the page could not be re-read', async () => {
     // The inverse lie. The mutation is inside a try; the re-read was outside every one of them,
     // so a refresh that threw escaped `execute` and the wrapper's catch recorded the whole call

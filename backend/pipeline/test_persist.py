@@ -2117,7 +2117,7 @@ async def test_persist_restaurants_writes_a_clean_row_when_no_details_are_found(
 
 
 @pytest.mark.asyncio
-async def test_persist_restaurants_matches_details_to_the_right_restaurant():
+async def test_persist_restaurants_matches_details_to_the_right_restaurant(monkeypatch):
     """Entries are keyed by the POI index the agent answered with, so a partial result attaches to
     the venue it describes and not simply to the first row written."""
     c = _Client()
@@ -2130,6 +2130,9 @@ async def test_persist_restaurants_matches_details_to_the_right_restaurant():
     async def details(pois, *, city=None):
         return {1: {"opening_hours": "Daily 09:00-17:00", "source_url": "https://x.example/2"}}
 
+    # Cap raised so BOTH venues are searched: this test is about index grounding, not about how
+    # many venues the day pays for (that is _DETAIL_VENUES_PER_DAY, covered separately below).
+    monkeypatch.setattr(persist, "_DETAIL_VENUES_PER_DAY", 2)
     await persist.persist_restaurants(c, "trip-1", suggest=suggest, details_fetcher=details)
     rows = c.db["restaurant_suggestions"]
     by_place = {r["restaurant_place_id"]: r for r in rows}
@@ -2397,6 +2400,155 @@ async def test_persist_restaurants_still_propagates_a_failed_day_after_writing_t
     with pytest.raises(RuntimeError, match="mapbox down"):
         await persist.persist_restaurants(c, "trip-1", suggest=suggest)
     assert len(c.db["restaurant_suggestions"]) == 1     # the healthy day survived
+
+
+# --- persist_restaurants: how many venues per day pay for a web search ------
+@pytest.mark.asyncio
+async def test_persist_restaurants_searches_only_the_capped_number_of_venues():
+    """The dominant cost. The labeller picks 2-3 restaurants and every one of them used to get a
+    hosted web search inside the day's single details call; the cap is what makes a day cheap."""
+    c = _Client()
+    await _seed_one_place_per_day(c, 1)
+    asked = []
+
+    async def suggest(places, *, city=None, preference_block=None):
+        return [_rcand("A", 35.6587, 139.7455, name_local="a", mapbox_id="poi-a"),
+                _rcand("B", 35.6588, 139.7456, name_local="b", mapbox_id="poi-b"),
+                _rcand("C", 35.6589, 139.7457, name_local="c", mapbox_id="poi-c")]
+
+    async def details(pois, *, city=None):
+        asked.append([p["name"] for p in pois])
+        return {}
+
+    written = await persist.persist_restaurants(c, "trip-1", suggest=suggest, details_fetcher=details)
+    assert written == 3                                   # every suggestion is still persisted
+    assert len(asked) == 1 and len(asked[0]) == persist._DETAIL_VENUES_PER_DAY
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_enriches_the_nearest_venue_not_the_first():
+    """WHICH venue is verified has to be defensible, because only one of them now is. The labeller
+    is told to pick 2-3 for VARIETY and is never asked to rank them, so `candidates[0]` is not "the
+    recommendation" — it is just whichever the model emitted first. `distance_m` is Mapbox's own
+    figure for the day's search centre, so nearest-first is a claim made of grounded data."""
+    c = _Client()
+    await _seed_one_place_per_day(c, 1)
+    asked = []
+
+    async def suggest(places, *, city=None, preference_block=None):
+        far = _rcand("Far", 35.6587, 139.7455, name_local="far", mapbox_id="poi-far")
+        near = _rcand("Near", 35.6588, 139.7456, name_local="near", mapbox_id="poi-near")
+        return [far.model_copy(update={"distance_m": 900}),
+                near.model_copy(update={"distance_m": 30})]
+
+    async def details(pois, *, city=None):
+        asked.append([p["name"] for p in pois])
+        return {}
+
+    await persist.persist_restaurants(c, "trip-1", suggest=suggest, details_fetcher=details)
+    assert asked == [["near"]]                            # not "far", which is listed first
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_attaches_details_to_the_enriched_venue_not_the_first_row():
+    """THE bug the cap introduces. `fetch_restaurant_details` keys its answer by index into the
+    list IT was handed, which is no longer the candidate's own index once the enriched venue is
+    chosen by distance. Getting that remap wrong puts one venue's verified hours on another
+    venue's row — a confident wrong claim, which is the exact failure restaurant_details.py exists
+    to prevent."""
+    c = _Client()
+    await _seed_one_place_per_day(c, 1)
+
+    async def suggest(places, *, city=None, preference_block=None):
+        a = _rcand("A", 35.6587, 139.7455, name_local="a", mapbox_id="poi-a")
+        b = _rcand("B", 35.6588, 139.7456, name_local="b", mapbox_id="poi-b")
+        cc = _rcand("C", 35.6589, 139.7457, name_local="c", mapbox_id="poi-c")
+        # The NEAREST is the LAST in the list, so a prefix-slice implementation reads index 0 and
+        # a missing remap writes the hours onto "A".
+        return [a.model_copy(update={"distance_m": 800}),
+                b.model_copy(update={"distance_m": 400}),
+                cc.model_copy(update={"distance_m": 10})]
+
+    async def details(pois, *, city=None):
+        assert [p["name"] for p in pois] == ["c"]
+        return {0: {"opening_hours": "Daily 10:00-20:00", "source_url": "https://x.example/c"}}
+
+    await persist.persist_restaurants(c, "trip-1", suggest=suggest, details_fetcher=details)
+    named = {p["id"]: p["name"] for p in c.db["places"]}
+    by_name = {named[r["restaurant_place_id"]]: r for r in c.db["restaurant_suggestions"]}
+    assert by_name["C"]["evidence_json"]["details"]["opening_hours"] == "Daily 10:00-20:00"
+    assert by_name["C"]["source_url"] == "https://x.example/c"
+    for other in ("A", "B"):                              # unverified, and honestly so
+        assert "details" not in by_name[other]["evidence_json"]
+        assert by_name[other]["source_url"] is None
+        assert by_name[other]["evidence_json"]["mapbox_id"]     # still carries its Mapbox grounding
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_picks_deterministically_when_no_distance_is_known():
+    """Mapbox does not always return a distance. Sorting None against a float raises, and the
+    offline eval requires the choice to be reproducible, so absent distances must sort last and
+    ties must keep list order rather than blowing up or picking arbitrarily."""
+    c = _Client()
+    await _seed_one_place_per_day(c, 1)
+    asked = []
+
+    async def suggest(places, *, city=None, preference_block=None):
+        a = _rcand("A", 35.6587, 139.7455, name_local="a", mapbox_id="poi-a")
+        b = _rcand("B", 35.6588, 139.7456, name_local="b", mapbox_id="poi-b")
+        return [a.model_copy(update={"distance_m": None}), b.model_copy(update={"distance_m": None})]
+
+    async def details(pois, *, city=None):
+        asked.append([p["name"] for p in pois])
+        return {}
+
+    await persist.persist_restaurants(c, "trip-1", suggest=suggest, details_fetcher=details)
+    assert asked == [["a"]]                               # first in list order, and it did not raise
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_prefers_a_known_distance_over_an_absent_one():
+    """The case that actually raises. Mapbox returns `distance_m` for some POIs and not others, and
+    sorting a float against None is a TypeError — which, inside the day's fetch, degrades the whole
+    day to a failed suggest. Two absent distances compare fine and would never have caught it."""
+    c = _Client()
+    await _seed_one_place_per_day(c, 1)
+    asked = []
+
+    async def suggest(places, *, city=None, preference_block=None):
+        a = _rcand("A", 35.6587, 139.7455, name_local="a", mapbox_id="poi-a")
+        b = _rcand("B", 35.6588, 139.7456, name_local="b", mapbox_id="poi-b")
+        return [a.model_copy(update={"distance_m": None}),   # unknown, listed FIRST
+                b.model_copy(update={"distance_m": 500})]
+
+    async def details(pois, *, city=None):
+        asked.append([p["name"] for p in pois])
+        return {}
+
+    await persist.persist_restaurants(c, "trip-1", suggest=suggest, details_fetcher=details)
+    assert asked == [["b"]]              # the venue we can actually place wins
+
+
+@pytest.mark.asyncio
+async def test_persist_restaurants_drops_a_detail_keyed_past_the_venues_we_sent():
+    """Defence in depth on the remap. `keep_grounded_details` already drops an out-of-range index,
+    so this should be unreachable — but the remap indexes `picks` directly, and an unchecked key
+    would be an IndexError that fails the day rather than losing one garnish. The day must survive
+    it, and no venue may inherit the orphaned hours."""
+    c = _Client()
+    await _seed_one_place_per_day(c, 1)
+
+    async def suggest(places, *, city=None, preference_block=None):
+        return [_rcand("A", 35.6587, 139.7455, name_local="a", mapbox_id="poi-a"),
+                _rcand("B", 35.6588, 139.7456, name_local="b", mapbox_id="poi-b")]
+
+    async def details(pois, *, city=None):
+        return {5: {"opening_hours": "Daily 09:00-17:00", "source_url": "https://x.example/5"}}
+
+    written = await persist.persist_restaurants(c, "trip-1", suggest=suggest, details_fetcher=details)
+    assert written == 2
+    for row in c.db["restaurant_suggestions"]:
+        assert "details" not in row["evidence_json"] and row["source_url"] is None
 
 
 @pytest.mark.asyncio

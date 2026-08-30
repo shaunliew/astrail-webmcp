@@ -707,6 +707,38 @@ async def _find_or_create_restaurant_place(client, cand, city) -> str:
 # checking the account's limit AND making a 429 distinguishable from "this venue publishes nothing".
 _RESTAURANT_DAY_CONCURRENCY = 3
 
+# How many of a day's suggestions pay for the hours+website lookup. The labeller returns 2-3 and
+# every one of them used to be searched inside the day's single details call, which is where the
+# ~58s/day went — the call is ONE agent run per day, but it does a web search per venue inside it,
+# so the venue count is the multiplier that matters.
+#
+# ONE, because the feature stays but the amount is negotiable (Shaun, 2026-08-30). The other
+# suggestions are still persisted in full with their Mapbox grounding — name, coords, cuisine,
+# summary, address — they simply carry no verified hours, which is already the honest outcome for
+# the ~1/3 of venues that publish nothing (`enriched=2` of `pois=3`, both days of trip d7ea5c14).
+# What is NOT traded away: whatever survives is still verified. A venue keeps its hours only with
+# the source_url they were read from, exactly as before — this reduces how many venues we check,
+# never how hard we check one.
+_DETAIL_VENUES_PER_DAY = 1
+
+
+def _venues_to_enrich(candidates: list) -> list[int]:
+    """Which of a day's suggestions get the metered lookup, as indices into `candidates`.
+
+    NEAREST first, and the choice has to be defensible because only one venue is verified now.
+    `candidates[0]` is NOT "the recommendation": LABEL_INSTRUCTIONS asks the labeller to "select
+    the best 2-3 restaurants for a good, varied day of eating" and never asks it to rank them, so
+    list order is just emission order. `distance_m` comes from Mapbox's own category search around
+    the day's centroid, so "the closest suggestion to your stops is the verified one" is a claim
+    made of grounded provider data rather than of an LLM's ordering.
+
+    Deterministic (the offline eval requires it): an absent distance sorts last via +inf rather
+    than being compared against a float, and ties keep list order."""
+    order = sorted(range(len(candidates)),
+                   key=lambda i: (candidates[i].distance_m if candidates[i].distance_m is not None
+                                  else float("inf"), i))
+    return order[:_DETAIL_VENUES_PER_DAY]
+
 
 async def persist_restaurants(client, trip_id: str, *, suggest=None, details_fetcher=None,
                               preference_block: str | None = None) -> int:
@@ -793,11 +825,20 @@ async def persist_restaurants(client, trip_id: str, *, suggest=None, details_fet
             # quietly undo that (see that module's docstring).
             if fetch_details is None:
                 return candidates, {}
-            details = await fetch_details(
-                [{"name": c.name_local or c.name, "address": c.address} for c in candidates],
+            picks = _venues_to_enrich(candidates)
+            answered = await fetch_details(
+                [{"name": candidates[i].name_local or candidates[i].name,
+                  "address": candidates[i].address} for i in picks],
                 city=city,
             )
-            return candidates, details
+            # REMAP, and it is load-bearing: fetch_restaurant_details keys its answer by index into
+            # the list IT was handed, which is a position within `picks` — no longer the candidate's
+            # own index, now that the enriched venue is chosen by distance rather than taken off the
+            # front. Getting this wrong puts one venue's verified hours on another venue's row, the
+            # confident-wrong claim that module exists to prevent. Out-of-range keys are dropped
+            # here as well as there, since a key past the list we sent grounds to nothing.
+            return candidates, {picks[k]: v for k, v in answered.items()
+                                if isinstance(k, int) and 0 <= k < len(picks)}
 
     # The whole point: a day's suggestions depend on nothing another day produces, so the stage
     # costs the SLOWEST day instead of the sum. `return_exceptions=True` is what makes that safe —

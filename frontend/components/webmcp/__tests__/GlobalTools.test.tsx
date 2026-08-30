@@ -31,7 +31,9 @@ const h = vi.hoisted(() => ({
   readEntitlement: vi.fn<() => Promise<Entitlement>>(),
 }))
 
-vi.mock('next/navigation', () => ({ usePathname: () => h.pathname }))
+// GlobalTools navigates from inside a tool call (the page follows the agent), so the router
+// has to exist here even though nothing in this file drives one.
+vi.mock('next/navigation', () => ({ usePathname: () => h.pathname, useRouter: () => ({ push: vi.fn() }) }))
 
 vi.mock('@/lib/trip/supabase-api', () => ({
   listTrips: () => h.listTrips(),

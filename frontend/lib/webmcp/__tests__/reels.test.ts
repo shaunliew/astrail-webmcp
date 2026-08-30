@@ -82,6 +82,58 @@ describe('save_reels', () => {
   })
 })
 
+describe('save_reels puts the library on screen', () => {
+  const withReveal = (reveal: () => Promise<void>, save = vi.fn().mockResolvedValue({ id: 'sr_1', analysis_status: 'not_analyzed' })) =>
+    ({ spec: saveReelsTool({ save, analyze: vi.fn().mockResolvedValue({ job_id: 'job_1' }), reveal }), save })
+
+  it('reveals the library ONCE for a batch, not once per reel', async () => {
+    const reveal = vi.fn().mockResolvedValue(undefined)
+    await withReveal(reveal).spec.execute({
+      urls: ['https://www.instagram.com/reel/Ca1/', 'https://www.instagram.com/reel/Cb2/'],
+    })
+    expect(reveal).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not resolve until the page has moved', async () => {
+    // The rule the edit tools already follow: a mutation resolves only once the UI reflects it.
+    // Returning first and navigating afterwards is how the agent ends up narrating a save the
+    // user cannot see yet.
+    let arrive!: () => void
+    const arrived = new Promise<void>((resolve) => { arrive = resolve })
+    const reveal = vi.fn(() => arrived)
+    const call = Promise.resolve(withReveal(reveal).spec.execute({ urls: ['https://www.instagram.com/reel/Ca1/'] }))
+    let done = false
+    void call.then(() => { done = true })
+    await vi.waitFor(() => { expect(reveal).toHaveBeenCalled() })
+    expect(done).toBe(false)
+    arrive()
+    await call
+    expect(done).toBe(true)
+  })
+
+  it('moves nothing when nothing was saved', async () => {
+    // Navigation is only ever the direct result of something that happened. A batch of rejected
+    // links produced no library change, so yanking the user to the library would be noise.
+    const reveal = vi.fn().mockResolvedValue(undefined)
+    const out = await withReveal(reveal).spec.execute({ urls: ['https://evil.example.com/steal'] })
+    expect(reveal).not.toHaveBeenCalled()
+    expect(String(out)).toContain('Saved 0 of 1')
+  })
+
+  it('still reports the save when the page could not be moved', async () => {
+    // A reel that IS saved must never be reported as a failure because the router refused. The
+    // save is the fact; the navigation is the courtesy.
+    const reveal = vi.fn().mockRejectedValue(new Error('router exploded'))
+    const out = await withReveal(reveal).spec.execute({ urls: ['https://www.instagram.com/reel/Ca1/'] })
+    expect(String(out)).toContain('Saved 1 of 1')
+  })
+
+  it('works with no reveal wired at all', async () => {
+    const out = await tool().spec.execute({ urls: ['https://www.instagram.com/reel/Ca1/'] })
+    expect(String(out)).toContain('Saved 1 of 1')
+  })
+})
+
 import { listSavedReelsTool, type SavedReelSummary } from '../tools/reels'
 
 const reel = (

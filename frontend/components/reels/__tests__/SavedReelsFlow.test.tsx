@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { pickTripDates } from '@/test/pickTripDates'
 import { WebMcpRegistryProvider, useWebMcpRegistry } from '@/components/webmcp/WebMcpRegistry'
+import { requestViewIntent, resetViewIntent, takeViewIntent } from '@/lib/webmcp/view-intent'
 
 const { push, getAccessToken, listSavedReelCards, startOrganize, streamOrganize, getOrganizeStatus, generateTrip, streamGeneration, useEntitlement, requestSeat, mapInstance } = vi.hoisted(() => ({
   push: vi.fn(),
@@ -1189,6 +1190,131 @@ describe('a run the AGENT started owns the page too, and says why when it ends',
 
     expect(await screen.findByText(/lost contact/i)).toBeInTheDocument()
     expect(screen.queryByText(/could not be finished/i)).not.toBeInTheDocument()
+    expect(push).not.toHaveBeenCalled()
+  })
+})
+
+/* The page follows the agent (arriving from another route).
+   `save_reels` and `plan_trip_from_reels` used to write to the database and return, leaving the
+   browser wherever it was: from /app/settings the agent reported success while the screen sat
+   still, and a 60-180s generation was invisible until it teleported the user to a finished trip.
+   GlobalTools pushes the route; this component is what tells it the page actually arrived. */
+describe('SavedReelsFlow is where an agent action lands', () => {
+  function renderFlow() {
+    return render(<MapProvider><GenerationProvider><ShellProbe /><SavedReelsFlow /></GenerationProvider></MapProvider>)
+  }
+
+  let shellApi: GenerationApi | null = null
+  function ShellProbe() { shellApi = useGeneration(); return null }
+  let emitToRun: ((event: unknown) => void) | null = null
+
+  beforeEach(() => {
+    shellApi = null
+    emitToRun = null
+    push.mockReset()
+    getAccessToken.mockResolvedValue('token')
+    listSavedReelCards.mockReset(); listSavedReelCards.mockResolvedValue(cards)
+    useEntitlement.mockReset(); useEntitlement.mockReturnValue(NOT_EXHAUSTED)
+    streamGeneration.mockReset()
+    // Held open, so the test decides when — and how — the run ends.
+    streamGeneration.mockImplementation((_id: string, _token: string, onEvent: (event: unknown) => void) => {
+      emitToRun = onEvent
+      return { cancel: vi.fn() }
+    })
+  })
+
+  afterEach(() => { resetViewIntent() })
+
+  /** Resolved yet? Asked without hanging the test on a promise that may never settle. */
+  const isSettled = (p: Promise<void>) => Promise.race([p.then(() => true), Promise.resolve().then(() => false)])
+
+  it('releases a tool waiting for the page, as soon as it mounts', async () => {
+    // The arrival case. The intent is raised on another route, before this component exists —
+    // which is exactly why it cannot live in React state anywhere below the router.
+    const { settled } = requestViewIntent('saved-reels')
+    expect(await isSettled(settled)).toBe(false)
+    renderFlow()
+    await loadedInbox()
+    expect(await isSettled(settled)).toBe(true)
+  })
+
+  it('releases a tool that asked while the user was already here', async () => {
+    renderFlow()
+    await loadedInbox()
+    const { settled } = requestViewIntent('saved-reels')
+    await waitFor(async () => { expect(await isSettled(settled)).toBe(true) })
+  })
+
+  it('takes the intent exactly once — a return trip must not replay it', async () => {
+    /* Single use. Without it, every remount of this page would re-apply the last thing an agent
+       asked for: press Back, come forward again, and get yanked somewhere you did not ask to be. */
+    requestViewIntent('saved-reels')
+    const first = renderFlow()
+    await loadedInbox()
+    first.unmount()
+    renderFlow()
+    await loadedInbox()
+    expect(takeViewIntent()).toBeNull()
+  })
+
+  it('does not throw the user out of the trays to answer an intent', async () => {
+    /* The hostile-navigation rule, made executable. An intent that landed while the user was
+       mid-flow can only change anything by destroying that flow — and there is no route back to
+       a populated picker from the library. The agent's save is not worth that. */
+    listSavedReelCards.mockResolvedValue([
+      cardWithPlaces('r1', 'One-place reel', [placeProof({ place_id: 'p1', name: 'Place 1' })]),
+    ])
+    renderFlow()
+    await screen.findByText('One-place reel')
+    createTrail()
+    await screen.findByRole('heading', { name: 'Japan' })
+    fireEvent.click(screen.getByRole('checkbox', { name: /select Place 1/i }))
+
+    const { settled } = requestViewIntent('saved-reels')
+    await waitFor(async () => { expect(await isSettled(settled)).toBe(true) })
+
+    expect(screen.getByRole('heading', { name: 'Japan' })).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: /select Place 1/i })).toBeChecked()
+  })
+
+  /* The shell outlives the page, exactly as /app/layout.tsx does: the run is started while the
+     user is somewhere else, and this component mounts into it when the route change lands. */
+  function Shell({ here }: { here: boolean }) {
+    return (
+      <MapProvider>
+        <GenerationProvider>
+          <ShellProbe />
+          {here ? <SavedReelsFlow /> : <p>a different route</p>}
+        </GenerationProvider>
+      </MapProvider>
+    )
+  }
+
+  it('shows the wait screen on a FRESH mount, for a run started from another route', async () => {
+    // GenerationScene renders only inside this component, so a run started from /app/settings had
+    // nothing on screen at all. Arriving has to BE the takeover, not something a later event does.
+    const view = render(<Shell here={false} />)
+    await act(async () => { shellApi!.reserve()!.begin('trip-agent') })
+    await waitFor(() => expect(streamGeneration).toHaveBeenCalled())
+
+    view.rerender(<Shell here />)
+
+    expect(await screen.findByTestId('generation-progress')).toBeInTheDocument()
+  })
+
+  it('still hands the page back when a run that arrived this way ends badly', async () => {
+    /* The exit path, from the one mount that never had a 'generating' phase of its own. The shell
+       navigates on SUCCESS only, so without this the wait screen is where the session ends. */
+    const view = render(<Shell here={false} />)
+    await act(async () => { shellApi!.reserve()!.begin('trip-agent') })
+    await waitFor(() => expect(streamGeneration).toHaveBeenCalled())
+    view.rerender(<Shell here />)
+    await screen.findByTestId('generation-progress')
+
+    await act(async () => { emitToRun!({ type: 'result', content: JSON.stringify({ error: 'lease lost' }) }); await Promise.resolve() })
+
+    expect(await screen.findByText('Tokyo Tower at sunset')).toBeInTheDocument()
+    expect(await screen.findByText(/could not be finished/i)).toBeInTheDocument()
     expect(push).not.toHaveBeenCalled()
   })
 })

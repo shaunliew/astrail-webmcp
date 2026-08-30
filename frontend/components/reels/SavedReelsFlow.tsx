@@ -11,6 +11,7 @@ import { toGenerateRequest, type BriefInput, type DraftInspirationItem } from '@
 import { classifyGenerateError, useEntitlement } from '@/lib/entitlement'
 import TrialExhaustedCard from '@/components/entitlement/TrialExhaustedCard'
 import { useOptionalWebMcpRegistry } from '@/components/webmcp/WebMcpRegistry'
+import { subscribeViewIntent, takeViewIntent } from '@/lib/webmcp/view-intent'
 import { useOptionalGeneration } from '@/components/generation/GenerationProvider'
 import GenerationScene from '@/components/create/GenerationScene'
 import TraysScreen from './TraysScreen'
@@ -364,6 +365,31 @@ export default function SavedReelsFlow() {
     // would cost the user work they never offered up.
     if (phaseRef.current === 'generating') setPhase('brief')
   }, [status])
+
+  /**
+   * This page is where an agent action lands — and taking the intent is how it says so.
+   *
+   * `save_reels` and `plan_trip_from_reels` ask the app to come here (GlobalTools pushes the
+   * route) and then WAIT, because a tool that reports a save before the screen has moved is the
+   * defect this whole channel exists to fix. Taking the intent releases them, and it only happens
+   * once this component is mounted and rendering — which is the honest definition of "the page
+   * has moved". Single use by construction, so a back-button return here cannot replay it.
+   *
+   * Both cases are covered on purpose: the take on mount is the user ARRIVING from another route,
+   * the subscription is an intent raised while they were already standing here.
+   *
+   * Note what it deliberately does NOT do: touch `phase`. Arriving from another route remounts
+   * this component at the library already, so there is nothing to set — and an intent that landed
+   * while the user was mid-flow would have to throw that flow away to change anything. Leaving
+   * the trays would drop a picker there is no route back to without re-organizing, and leaving
+   * 'organizing' or 'generating' would cancel the only thing that ever ends those screens. The
+   * agent's save is not a reason to cost someone that; the route change is the whole ask.
+   */
+  useEffect(() => {
+    const acknowledge = () => { takeViewIntent() }
+    acknowledge()
+    return subscribeViewIntent(acknowledge)
+  }, [])
 
   async function handleGenerate() {
     /* The lock is shared with the agent's `plan_trip_from_reels`, and it is TAKEN here rather

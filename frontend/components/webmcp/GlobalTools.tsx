@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import type { Trip, TripBundle, TripStatus } from '@/lib/trip/backend-types'
 import { getTrip, listTrips } from '@/lib/trip/supabase-api'
 import { addTripPlace, deleteTripPlace, editTripDates, editTripPlace, generateTrip, replanTrip } from '@/lib/trip/api'
@@ -9,6 +9,7 @@ import { captureSavedReel, listSavedReelCards, startOrganize } from '@/lib/reels
 import { getAccessToken } from '@/lib/supabase/session'
 import { TRIAL_LIFETIME_LIMIT, readEntitlement } from '@/lib/entitlement'
 import { globalTools } from '@/lib/webmcp/tools'
+import { AGENT_VIEW_ROUTE, requestViewIntent, type ViewReason } from '@/lib/webmcp/view-intent'
 import type { AppStateSnapshot } from '@/lib/webmcp/tools/app-state'
 import type { TripAllowance } from '@/lib/webmcp/tools/generation'
 import { RegisterTools } from './RegisterTools'
@@ -206,6 +207,7 @@ function labelFor(pathname: string, tripStatus: TripStatus | null): string {
 
 export default function GlobalTools() {
   const pathname = usePathname() ?? '/app'
+  const router = useRouter()
   const hasSession = useHasSession(pathname)
   const { requestConfirm, openTrip, refreshOpenTrip, refreshSavedReels, adoptOrganizeJob } = useWebMcpRegistry()
   // The run belongs to the shell, not to this component. It must outlive any single tool call
@@ -379,6 +381,27 @@ export default function GlobalTools() {
     [tripReader],
   )
 
+  /**
+   * Move the page to where an action's result is visible, and do not come back until it is there.
+   *
+   * The one navigation seam in this component, and it is only ever reached from inside a tool's
+   * `execute` — never from an effect, a subscription or a data load. That is the whole rule:
+   * yanking someone off a page they are reading is worse than not moving at all, so the app moves
+   * as the direct result of something the agent was just asked to do, once per action, and not
+   * otherwise.
+   *
+   * The intent is raised BEFORE the push so the page can consume it in the same tick it mounts,
+   * and awaited afterwards so the tool cannot report a result the screen has not caught up with.
+   * A `router.push` for the route we are already on is skipped: the page on screen is the thing
+   * that acknowledges the intent, and a redundant push is a re-render nobody asked for.
+   */
+  const showView = useCallback(async (reason: ViewReason) => {
+    const { settled } = requestViewIntent(reason)
+    if (pathRef.current !== AGENT_VIEW_ROUTE) router.push(AGENT_VIEW_ROUTE)
+    // Bounded inside the intent itself, so a route that never arrives costs a beat, not the call.
+    await settled
+  }, [router])
+
   const refreshReels = useCallback(async () => {
     try {
       const cards = await listSavedReelCards()
@@ -485,23 +508,33 @@ export default function GlobalTools() {
           throw err
         }
       },
-      openStream: (tripId: string) => {
+      openStream: async (tripId: string) => {
         // Commits the reservation `create` took: the shell opens the one stream, keeps the event
-        // history the wait screen renders from, and navigates when it finishes. Returns
-        // immediately — the tool must resolve in about a second and must never await the stream.
+        // history the wait screen renders from, and navigates when it finishes. It never awaits
+        // the STREAM — the tool must resolve in about a second, the pipeline runs for 60-180.
         const reservation = reservationRef.current
         reservationRef.current = null
         // No reservation means no lock is held by this call, and starting a stream anyway is
         // exactly the second unowned run the reservation exists to prevent. `begin` applies the
         // same rule to a reservation that expired while the POST above was in flight: it reports
         // the job as orphaned rather than opening a stream on a lock it no longer holds.
-        reservation?.begin(tripId)
+        //
+        // ...and with no run attached there is nothing for the page to show, so nothing moves:
+        // /app would render the plain library while the agent announced a trip being built.
+        if (!reservation) return
+        reservation.begin(tripId)
+        /* Then the screen follows. GenerationScene renders only inside SavedReelsFlow — only on
+           /app — so a run started from /app/settings or /app/trips took the agent's longest and
+           most visible action and made it invisible for two minutes, ending in a teleport to a
+           finished trip. Attached FIRST, moved second: the page it lands on already has a run to
+           render, instead of flashing an empty library on the way. */
+        await showView('trip-generation')
       },
       confirm: requestConfirm,
       readLibrary: loadSavedReels,
       readAllowance,
     }),
-    [requestConfirm, loadSavedReels, readAllowance, shell],
+    [requestConfirm, loadSavedReels, readAllowance, shell, showView],
   )
 
   const edit = useMemo(
@@ -530,13 +563,18 @@ export default function GlobalTools() {
     [requestConfirm],
   )
 
+  /* The saved-reel library, put on screen once a save has actually landed. `save_reels` decides
+     WHEN — once per batch, and only if something was saved — because it is the only thing that
+     knows the batch's outcome; this only knows where the library is. */
+  const revealSavedReels = useCallback(() => showView('saved-reels'), [showView])
+
   /* Built twice from one context, so the two readers cannot drift apart: everything is assembled
      against the write-safe reader, then the READ-ONLY tools are swapped for the copies that can
      see the sample. Keyed on `readOnlyHint`, not on a list of names — a write tool added later is
      sample-blind by default, and an unmatched name degrades to the strict spec rather than the
      permissive one. `save_reels` and `plan_trip_from_reels` are writes that never touch `trips`,
      so the strict reader costs them nothing. */
-  const deps = { readAppState, saveReel, analyzeReels, loadSavedReels, generation, edit }
+  const deps = { readAppState, saveReel, analyzeReels, loadSavedReels, revealSavedReels, generation, edit }
   const sampleAware = new Map(
     globalTools({ ...deps, trips: sampleReader })
       .filter((s) => s.annotations?.readOnlyHint === true)

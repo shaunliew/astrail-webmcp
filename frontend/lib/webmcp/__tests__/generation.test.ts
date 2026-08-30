@@ -517,6 +517,26 @@ describe('plan_trip_from_reels', () => {
     expect(parsed.poll_after_seconds).toBeGreaterThan(0)
     expect(d.openStream).toHaveBeenCalledWith('trip-123')
   })
+
+  it('does not resolve until the wait screen is on screen', async () => {
+    /* `openStream` is what puts the run in front of the user — the shell attaches it and the
+       app moves to the page that renders it. Returning while that is still in flight is how the
+       agent ends up announcing a trip is building beside a settings page that never changed. */
+    let arrive!: () => void
+    const arrived = new Promise<void>((resolve) => { arrive = resolve })
+    const openStream = vi.fn(() => arrived)
+    const call = Promise.resolve(planTripFromReelsTool(deps({ openStream })).execute({
+      reel_urls: ['https://www.instagram.com/reel/Cabc123/'],
+      start_date: '2026-03-03', end_date: '2026-03-07',
+    }))
+    let done = false
+    void call.then(() => { done = true })
+    await vi.waitFor(() => { expect(openStream).toHaveBeenCalled() })
+    expect(done).toBe(false)
+    arrive()
+    await call
+    expect(done).toBe(true)
+  })
 })
 
 describe('plan_trip_from_reels — what the approval card says about cost', () => {

@@ -16,6 +16,19 @@ export type SaveReelsDeps = {
   save: (url: string) => Promise<SavedReelLike>
   /** Queues extraction for reels that have not been analysed. One job for the whole batch. */
   analyze: (savedReelIds: string[]) => Promise<unknown>
+  /**
+   * Puts the saved-reel library on screen, wherever the user is standing, and resolves once it
+   * is there.
+   *
+   * Without it this tool wrote to the database and returned, so a user reading /app/settings was
+   * told their reels were saved while the screen sat still — which reads exactly like the save
+   * having quietly failed. A person who clicks Save lands in their library; so does the agent's
+   * version of that action.
+   *
+   * Optional: the tool works unwired (tests, and any shell with no router), it simply moves
+   * nothing.
+   */
+  reveal?: () => Promise<void>
 }
 
 /** Only the two fields this tool reads. Narrow on purpose: a wider type would invite the tool to
@@ -104,6 +117,22 @@ export function saveReelsTool(deps: SaveReelsDeps): ToolSpec {
         }
       } else if (saved > 0) {
         analysis = '\nAll of them were already analysed, so nothing was re-extracted.'
+      }
+
+      /* The page follows the action — ONCE for the batch, and only when something actually
+         landed. A batch of rejected links changed nothing in the library, so moving the user
+         there would be navigation with no cause, which is the one kind this app must not do.
+
+         Awaited, so the tool cannot report a save the user's screen has not caught up with yet —
+         the same rule the edit tools follow. Its failure is swallowed on purpose and only here:
+         the reels ARE saved, and reporting that as a failed call because the router refused
+         would send the user off to re-save something they already have. */
+      if (saved > 0 && deps.reveal) {
+        try {
+          await deps.reveal()
+        } catch {
+          // Nothing to add to the report: the save below is still exactly what happened.
+        }
       }
       return `Saved ${saved} of ${raw.length}.\n${results.join('\n')}${analysis}`
     },

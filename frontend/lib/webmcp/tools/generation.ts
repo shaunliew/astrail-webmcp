@@ -33,8 +33,16 @@ export type GenerationDeps = {
   store: GenerationStore
   /** Starts the backend job and returns its trip id. */
   create: (req: GenerateTripRequest) => Promise<string>
-  /** Opens the SSE stream for a trip. Kept out of `execute` so it outlives the tool call. */
-  openStream: (tripId: string) => void
+  /**
+   * Attaches the run to the shell: opens the SSE stream, and moves the app to the page that
+   * renders the wait screen. Kept out of `execute` so the STREAM outlives the tool call.
+   *
+   * May resolve asynchronously, and is awaited: the wait screen is the visible half of this tool,
+   * so a call that returned before the page moved would tell the user a trip was building while
+   * the settings page they were reading sat unchanged. It never awaits the stream itself — the
+   * navigation is tens of milliseconds and bounded, the pipeline is 60-180 seconds.
+   */
+  openStream: (tripId: string) => void | Promise<void>
   /**
    * Renders an in-page approval card and resolves with the user's answer.
    * Not optional: this call spends the user's ONE lifetime free trip plus real Apify/OpenAI
@@ -271,7 +279,9 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
         throw err
       }
 
-      deps.openStream(tripId)
+      // Awaited: this both opens the stream and takes the user to the screen that renders it.
+      // See GenerationDeps.openStream — the tool must not report a run the page has not reached.
+      await deps.openStream(tripId)
 
       // `next_tool` + `poll_after_seconds` as STRUCTURED fields: agents follow those far more
       // reliably than the same instruction buried in prose.

@@ -23,6 +23,13 @@ export type ToolContext = {
   analyzeReels: (savedReelIds: string[]) => Promise<unknown>
   /** Reads the saved-reel library so the agent can plan from it without re-pasting links. */
   loadSavedReels: () => Promise<SavedReelSummary[]>
+  /**
+   * Takes the user to their library once a save has landed, and resolves when they are there.
+   *
+   * Optional: without a router behind it (tests, the spec contract) the tools still work, they
+   * simply move nothing.
+   */
+  revealSavedReels?: () => Promise<void>
   generation: GenerationDeps
   /** Itinerary mutations. Gated server-side by WEBMCP_EDITS_ENABLED. */
   edit: Omit<EditDeps, 'trips'>
@@ -39,7 +46,7 @@ export function globalTools(ctx: ToolContext): ToolSpec[] {
   return [
     getAppStateTool(ctx.readAppState),
     listTripsTool(ctx.trips),
-    saveReelsTool({ save: ctx.saveReel, analyze: ctx.analyzeReels }),
+    saveReelsTool({ save: ctx.saveReel, analyze: ctx.analyzeReels, reveal: ctx.revealSavedReels }),
     listSavedReelsTool({ load: ctx.loadSavedReels }),
     getItineraryTool(ctx.trips),
     getPlaceEvidenceTool(ctx.trips),

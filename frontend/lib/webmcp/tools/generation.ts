@@ -70,13 +70,16 @@ export type GenerationDeps = {
    * (`capture_saved_reel`, 20260718120000_saved_reels_foundation.sql), so a reel Astrail has
    * already read arrives with its caption and cover attached.
    *
-   * Extraction is left out ON PURPOSE, and that is the whole design. The organize job and the
-   * generation pipeline both scrape through Apify on a cache miss (backend/organizer.py
-   * `_process_item`, backend/pipeline/runner.py) and share one write-through cache keyed on
-   * normalized_url + EXTRACTOR_VERSION. Queuing extraction here would race the run this tool is
-   * about to start and pay Apify twice for the same reel. Left out, the pipeline's own scrape
-   * fills that cache and organizing these reels afterwards reuses it — no scrape, and no daily
-   * analysis slot either (the quota is reserved only on a cache MISS).
+   * Extraction is left out of THIS CALL on purpose, and that is the whole design. The organize
+   * job and the generation pipeline both scrape through Apify on a cache miss (backend/
+   * organizer.py `_process_item`, backend/pipeline/runner.py) and share one write-through cache
+   * keyed on normalized_url + EXTRACTOR_VERSION. Queuing extraction here would race the run this
+   * tool is about to start and pay Apify twice for the same reel. Left out, the pipeline's own
+   * scrape fills that cache first and organizing these reels afterwards reuses it — no scrape,
+   * and no daily analysis slot either (the quota is reserved only on a cache MISS).
+   *
+   * "Afterwards" is the CALLER's job, not the agent's: GlobalTools organizes exactly these reels
+   * on the run's successful terminal frame. The agent is told so, and told not to do it itself.
    *
    * Optional, and a failure is REPORTED rather than raised: the run is already under way by the
    * time this is attempted, and a library write must never cost the user the trip they approved
@@ -149,15 +152,19 @@ function describeReuse(alreadyRead: number, total: number): string {
  * What the card says about the library write, before the user agrees to it.
  *
  * Two facts, because leaving either out is a way of being wrong. That the reels are saved —
- * approving "plan a trip" must not quietly also mean "and file these in my collection". And that
- * their places are not saved with them: the card view only shows places for a Reel whose
- * `analysis_status` is `organized`, which nothing on this path sets, so a user promised a full
- * card would open the library and find the same emptiness this change exists to fix.
+ * approving "plan a trip" must not quietly also mean "and file these in my collection". And WHEN
+ * their places appear: the card view only shows places for a Reel whose `analysis_status` is
+ * `organized`, which these reach only once this run has finished, so a card promising them now
+ * would send the user to the same emptiness this change exists to fix — just sooner.
+ *
+ * It no longer says "when you organize them", because that is no longer a thing the user has to
+ * do: the caller organizes them itself once the run lands (GlobalTools). Leaving the old wording
+ * up would ask the user to go and repeat work that is already scheduled.
  */
 function describeLibrarySave(total: number): string {
   return total === 1
-    ? 'Saves this reel to your library — its places fill in when you organize it.'
-    : 'Saves these reels to your library — their places fill in when you organize them.'
+    ? 'Saves this reel to your library — its places fill in once the trip is built.'
+    : 'Saves these reels to your library — their places fill in once the trip is built.'
 }
 
 /**
@@ -176,19 +183,25 @@ async function saveReelsToLibrary(
 }
 
 /**
- * What the agent is told about the write, and — the expensive half — WHEN it may organize.
+ * What the agent is told about the write, and — the expensive half — that it must NOT organize.
  *
- * The ordering clause is load-bearing, not politeness. `save_reels` starts an organize job, and
- * an organize that overlaps this run misses the shared cache on both sides and buys the same
- * Apify scrape twice. Run after the trip lands, the same job is a cache hit: no scrape, and no
- * daily analysis slot (the quota is reserved only on a miss). So the note names the ordering
- * rather than leaving the agent to pick one.
+ * This clause is load-bearing, not politeness. `save_reels` starts an organize job, and an
+ * organize that overlaps this run misses the shared cache on both sides and buys the same Apify
+ * scrape twice. It used to tell the agent to run one itself after the trip landed, which was the
+ * right ordering but the wrong owner: an agent that forgot, or whose session ended with the run,
+ * left the reels reading "Not analyzed" forever — the reported defect.
+ *
+ * So the caller now owns the ordering (GlobalTools organizes on the run's successful terminal
+ * frame) and the agent is told to stay out of it. An agent that organizes anyway races that job
+ * and is refused by the RPC's per-reel fence (AS409 -> HTTP 409), which is a confusing error to
+ * hand a user about work that is already happening.
  */
 function describeLibraryOutcome(saved: number, total: number): string {
   const noun = total === 1 ? 'reel' : 'reels'
-  const ordering = `The places are not filled in yet. Organize the ${noun} AFTER the trip has ` +
-    'finished — save_reels on the same links then reuses what this run read, so it costs ' +
-    'nothing extra. Do not do it while the trip is still building: that reads them again.'
+  const ordering = `The places are not filled in yet — the ${noun} will be organized ` +
+    'automatically once the trip finishes, reusing what this run read, at no extra cost. Do not ' +
+    'call save_reels on these links to organize them yourself: it is already handled, and doing ' +
+    'it while the trip is still building reads them again.'
   if (saved === 0) {
     return total === 1
       ? 'The reel could not be added to the library. The trip is unaffected — tell the user the ' +

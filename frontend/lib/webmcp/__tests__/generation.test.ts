@@ -888,17 +888,25 @@ describe('plan_trip_from_reels — putting the reels in the user\'s library', ()
     expect(String(parsed.library)).toContain('1 of 2')
   })
 
-  it('never starts extraction itself, and says when it is safe to', async () => {
+  it('never starts extraction itself, and tells the agent not to either', async () => {
     /* The trap this design exists to avoid: the organize job and the generation pipeline BOTH
        scrape through Apify on a cache miss (backend/organizer.py `_process_item`,
        backend/pipeline/runner.py), and they share one write-through cache keyed on
        normalized_url + EXTRACTOR_VERSION. Extracting here would race the run this call just
-       started and pay Apify twice for the same reel. Organizing AFTER it lands is a cache hit —
-       free — so that is the only ordering the agent is told to use. */
+       started and pay Apify twice for the same reel.
+
+       The ordering is no longer the AGENT's to get right — GlobalTools organizes these reels on
+       the run's successful terminal frame — so the note has to say two things: the places are
+       coming, and do not go and fetch them. An agent that ignores the second races that job and
+       collects a 409 from the RPC's per-reel fence. */
     const d = deps()
     const parsed = JSON.parse(String(await run(d)))
-    expect(String(parsed.library)).toMatch(/after/i)
-    expect(String(parsed.library)).toMatch(/not.*while|while.*building/i)
+    const library = String(parsed.library)
+    expect(library).toMatch(/automatically/i)
+    expect(library).toMatch(/do not call save_reels/i)
+    // The old copy INSTRUCTED the organize the caller now performs; an agent reading both would
+    // do it twice.
+    expect(library).not.toMatch(/organize the reels? after/i)
   })
 
   it('tells the user on the approval card that this writes to their library', async () => {
@@ -908,10 +916,15 @@ describe('plan_trip_from_reels — putting the reels in the user\'s library', ()
     expect(d.confirm.mock.calls[0][0]).toMatch(/librar/i)
   })
 
-  it('does not promise the places will be there — they arrive with organizing', async () => {
+  it('does not promise the places are there yet — it says when they arrive', async () => {
+    /* The card view only shows places once `analysis_status` is `organized`, which happens after
+       this run finishes. It must not tell the user to go and organize them either: that is the
+       caller's job now, and asking is asking for duplicated work. */
     const d = deps()
     await run(d)
-    expect(d.confirm.mock.calls[0][0]).toMatch(/organi[sz]e/i)
+    const card = String(d.confirm.mock.calls[0][0])
+    expect(card).toMatch(/fill in once the trip is built/i)
+    expect(card).not.toMatch(/when you organi[sz]e/i)
   })
 
   it('stays inside the tool-output budget with the library line attached', async () => {

@@ -161,4 +161,33 @@ describe('HotelPanel', () => {
     )
     expect(screen.getByText(/on map/i)).toBeInTheDocument()
   })
+
+  /* The hover affordance here was dead for the same reason the itinerary's selected border was:
+     `hover:border-[var(--brass)]` is a layered single-class utility and the scoped `.surface`
+     rules in globals.css are UNLAYERED, so they win outright and the border never paints. The
+     selected half was already fixed by `.surface--selected`; the hover half was missed on the
+     first sweep and survived because nothing asserted it — jsdom resolves no cascade, so a
+     button can request a style, render the class, pass every test and paint nothing.
+
+     Both sides are pinned, as in ItineraryCards: the markup must ask for the modifier AND
+     globals.css must still define it. A class assertion alone goes green against a stylesheet
+     that dropped the rule. */
+  it('paints hover with a modifier the stylesheet actually defines', async () => {
+    const { readFileSync } = await import('node:fs')
+    expect(readFileSync('app/globals.css', 'utf8')).toMatch(/\.surface--hoverable:hover/)
+
+    // Only a PLACED hotel renders as a button, so the fixture gives one — both branches are
+    // covered by rendering it each way rather than by needing two rows.
+    const view = renderPanel([placed, unresolved], { selectedHotelId: null })
+    const idle = screen.getByRole('button')
+    expect(idle.className).toContain('surface--hoverable')
+    expect(idle.className).not.toContain('hover:border-[var(--brass)]')
+
+    view.rerender(
+      <HotelPanel hotels={[placed, unresolved]} selectedHotelId={placed.id} onSelectHotel={() => {}} layerMode="route" />,
+    )
+    const chosen = screen.getByRole('button')
+    expect(chosen.className).toContain('surface--selected')
+    expect(chosen.className).not.toContain('surface--hoverable')
+  })
 })

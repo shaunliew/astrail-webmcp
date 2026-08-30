@@ -277,8 +277,9 @@ export default function ItineraryCards({
   onSelectPlace: (placeId: string) => void
   legs?: TransportLeg[]
   placeIndex?: Map<string, Place>
-  /* Covers only. Optional because the workspace does not pass it yet — without it every stop
-     draws the same placeholder it draws for a stop that genuinely has no Reel. */
+  /* Covers only. Optional because `ItineraryCards` is rendered in tests without a bundle;
+     TripWorkspace DOES pass it, and must — without it every stop draws the same placeholder it
+     draws for a stop that genuinely has no Reel, which is a silent whole-panel regression. */
   bundle?: TripBundle
   /* place_id → seconds spent AT the place. No source is wired: see the block comment above
      `deriveEstimatedTimes` for why this is deliberately left unfed rather than defaulted. */

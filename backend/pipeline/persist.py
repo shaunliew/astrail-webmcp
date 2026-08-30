@@ -712,14 +712,20 @@ _RESTAURANT_DAY_CONCURRENCY = 3
 # ~58s/day went — the call is ONE agent run per day, but it does a web search per venue inside it,
 # so the venue count is the multiplier that matters.
 #
-# ONE, because the feature stays but the amount is negotiable (Shaun, 2026-08-30). The other
-# suggestions are still persisted in full with their Mapbox grounding — name, coords, cuisine,
-# summary, address — they simply carry no verified hours, which is already the honest outcome for
-# the ~1/3 of venues that publish nothing (`enriched=2` of `pois=3`, both days of trip d7ea5c14).
-# What is NOT traded away: whatever survives is still verified. A venue keeps its hours only with
-# the source_url they were read from, exactly as before — this reduces how many venues we check,
-# never how hard we check one.
-_DETAIL_VENUES_PER_DAY = 1
+# TWO, and the deciding argument is COVERAGE, not the clock. The measured per-venue hit rate is
+# ~2/3 (`enriched=2` of `pois=3`, both days of trip d7ea5c14), because plenty of small venues
+# publish nothing — a correct outcome this agent reports honestly rather than guessing around. At
+# one venue a day that compounds into roughly ONE DAY IN THREE with no verified hours at all; at
+# two it is about one in nine. A day with no receipts on it is the worst thing to put in front of
+# someone judging a product whose whole argument is that claims come with receipts, and it is not
+# worth the few seconds saved (decided with the team lead, 2026-08-30).
+#
+# The other suggestions are still persisted in full with their Mapbox grounding — name, coords,
+# cuisine, summary, address — they simply carry no verified hours. What is NOT traded away:
+# whatever survives is still verified. A venue keeps its hours only alongside the source_url they
+# were read from, exactly as before. This reduces how many venues we check, never how hard we
+# check one.
+_DETAIL_VENUES_PER_DAY = 2
 
 
 def _venues_to_enrich(candidates: list) -> list[int]:

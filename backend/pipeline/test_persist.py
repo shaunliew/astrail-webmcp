@@ -2426,7 +2426,7 @@ async def test_persist_restaurants_searches_only_the_capped_number_of_venues():
 
 
 @pytest.mark.asyncio
-async def test_persist_restaurants_enriches_the_nearest_venue_not_the_first():
+async def test_persist_restaurants_enriches_the_nearest_venue_not_the_first(monkeypatch):
     """WHICH venue is verified has to be defensible, because only one of them now is. The labeller
     is told to pick 2-3 for VARIETY and is never asked to rank them, so `candidates[0]` is not "the
     recommendation" — it is just whichever the model emitted first. `distance_m` is Mapbox's own
@@ -2434,6 +2434,9 @@ async def test_persist_restaurants_enriches_the_nearest_venue_not_the_first():
     c = _Client()
     await _seed_one_place_per_day(c, 1)
     asked = []
+    # Pinned to ONE here: which venue is *preferred* is only observable while the cap is below the
+    # number of candidates. The shipped cap is covered by the capped-number test above.
+    monkeypatch.setattr(persist, "_DETAIL_VENUES_PER_DAY", 1)
 
     async def suggest(places, *, city=None, preference_block=None):
         far = _rcand("Far", 35.6587, 139.7455, name_local="far", mapbox_id="poi-far")
@@ -2463,25 +2466,29 @@ async def test_persist_restaurants_attaches_details_to_the_enriched_venue_not_th
         a = _rcand("A", 35.6587, 139.7455, name_local="a", mapbox_id="poi-a")
         b = _rcand("B", 35.6588, 139.7456, name_local="b", mapbox_id="poi-b")
         cc = _rcand("C", 35.6589, 139.7457, name_local="c", mapbox_id="poi-c")
-        # The NEAREST is the LAST in the list, so a prefix-slice implementation reads index 0 and
-        # a missing remap writes the hours onto "A".
+        # Distances chosen so `picks` is [2, 1] — NON-CONTIGUOUS and REORDERED against the
+        # candidate list. A prefix slice would read [0, 1] and a missing remap would write C's
+        # hours onto A, so both halves of the permutation are exercised at once.
         return [a.model_copy(update={"distance_m": 800}),
                 b.model_copy(update={"distance_m": 400}),
                 cc.model_copy(update={"distance_m": 10})]
 
     async def details(pois, *, city=None):
-        assert [p["name"] for p in pois] == ["c"]
-        return {0: {"opening_hours": "Daily 10:00-20:00", "source_url": "https://x.example/c"}}
+        assert [p["name"] for p in pois] == ["c", "b"]     # nearest first, and A never asked about
+        return {0: {"opening_hours": "C 10:00-20:00", "source_url": "https://x.example/c"},
+                1: {"opening_hours": "B 09:00-17:00", "source_url": "https://x.example/b"}}
 
     await persist.persist_restaurants(c, "trip-1", suggest=suggest, details_fetcher=details)
     named = {p["id"]: p["name"] for p in c.db["places"]}
     by_name = {named[r["restaurant_place_id"]]: r for r in c.db["restaurant_suggestions"]}
-    assert by_name["C"]["evidence_json"]["details"]["opening_hours"] == "Daily 10:00-20:00"
+    # Each answer lands on the venue it describes — key 0 -> candidate 2, key 1 -> candidate 1.
+    assert by_name["C"]["evidence_json"]["details"]["opening_hours"] == "C 10:00-20:00"
     assert by_name["C"]["source_url"] == "https://x.example/c"
-    for other in ("A", "B"):                              # unverified, and honestly so
-        assert "details" not in by_name[other]["evidence_json"]
-        assert by_name[other]["source_url"] is None
-        assert by_name[other]["evidence_json"]["mapbox_id"]     # still carries its Mapbox grounding
+    assert by_name["B"]["evidence_json"]["details"]["opening_hours"] == "B 09:00-17:00"
+    assert by_name["B"]["source_url"] == "https://x.example/b"
+    assert "details" not in by_name["A"]["evidence_json"]   # unverified, and honestly so
+    assert by_name["A"]["source_url"] is None
+    assert by_name["A"]["evidence_json"]["mapbox_id"]       # still carries its Mapbox grounding
 
 
 @pytest.mark.asyncio
@@ -2503,7 +2510,7 @@ async def test_persist_restaurants_picks_deterministically_when_no_distance_is_k
         return {}
 
     await persist.persist_restaurants(c, "trip-1", suggest=suggest, details_fetcher=details)
-    assert asked == [["a"]]                               # first in list order, and it did not raise
+    assert asked == [["a", "b"]]          # list order preserved, and the sort did not raise
 
 
 @pytest.mark.asyncio
@@ -2526,7 +2533,7 @@ async def test_persist_restaurants_prefers_a_known_distance_over_an_absent_one()
         return {}
 
     await persist.persist_restaurants(c, "trip-1", suggest=suggest, details_fetcher=details)
-    assert asked == [["b"]]              # the venue we can actually place wins
+    assert asked == [["b", "a"]]         # the venue we can actually place sorts ahead of the unknown
 
 
 @pytest.mark.asyncio

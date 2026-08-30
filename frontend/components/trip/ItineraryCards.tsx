@@ -82,7 +82,10 @@ function RouteLinkRow({ link }: { link: RouteLink }) {
   return (
     <Rail>
       <p className="type-label py-1.5 text-[10px] uppercase tracking-wide text-[var(--muted)]">
-        {from ? <span className="text-[var(--faint)]">from {from} · </span> : null}
+        {/* A place name is a name — it keeps its own case even inside a label-cased line. */}
+        {from ? (
+          <span className="normal-case tracking-normal text-[var(--faint)]">from {from} · </span>
+        ) : null}
         {leg.transport_mode.replace('_', ' ')}
         {routed && timing ? (
           <span className="tabular-nums text-[var(--brass-bright)]"> · {timing}</span>

@@ -16,6 +16,10 @@ vi.mock('next/font/google', () => ({
 
 vi.mock('next/script', () => ({ default: () => null }))
 
+// The closing CTA's bookend clip drives framer-motion's useInView, which needs an
+// IntersectionObserver jsdom does not have. The copy is what is under test, not the video.
+vi.mock('@/components/story/PlayOnceVideo', () => ({ default: () => null }))
+
 import LandingPage from '../page'
 import { metadata } from '../layout'
 
@@ -160,5 +164,26 @@ describe('the no-account sample trail', () => {
     // requirement is stated once, in the "For judges" card that is about setup.
     const name = demoLink().textContent ?? ''
     expect(name).not.toMatch(/agent|webmcp|tool/i)
+  })
+})
+
+describe('the story deck does not promise tools on the page that registers none', () => {
+  /* `/` registers ZERO WebMCP tools — `GlobalTools` mounts in the /app layout only
+     (app/app/layout.tsx). The closing CTA nonetheless read "Open THIS page in ChatGPT's built-in
+     browser and the agent can read it, save the Reels you paste…", which is the same defect the
+     hero carried and nothing was watching either of them. That is why this exists: the claim is
+     cheap to reintroduce, reads perfectly well, and is false.
+
+     Rendered rather than grepped, because the sentence a judge reads is the thing under test and
+     a source-level match would pass on copy that never reaches the screen. */
+  it('sends the reader to the app, not to the page they are standing on', async () => {
+    const { default: FinalCTA } = await import('@/components/story/sections/FinalCTA')
+    render(<FinalCTA />)
+
+    const copy = screen.getByText(/built-in\s+browser/i).textContent ?? ''
+    expect(copy).toMatch(/not this page/i)
+    // The no-account path is the other half: an account was never the only way in, and the CTA
+    // used to say "Sign in first" as though it were.
+    expect(copy).toMatch(/sample trail opens with no account/i)
   })
 })

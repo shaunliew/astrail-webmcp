@@ -20,10 +20,17 @@ import { useLenis } from './useLenis'
    Aster walks in and idles, a two-chapter story interlude says who he is and
    why Astrail exists (ZH, 2026-08-06), then the page scrolls into the real
    product: how it works (real screenshots), a live map,
-   the demo video, the FAQ, an honest FOMO CTA, and a full footer. The primary
-   action everywhere is "Sign in to try it" (the tools act as the signed-in user), because
-   signing up and using it puts you in the running for one of the 25 unlimited
-   seats, which we grant at our discretion. */
+   the demo video, the FAQ, the CTA, and a full footer.
+
+   Repointed to the challenge build (2026-08-31). The beta/seat framing this comment used to
+   describe is gone from the rendered page and should not be restored from here. The primary
+   action is still "Sign in to try it" — the tools act as the signed-in user — but signing in is
+   no longer the ONLY way in: `/app/trip/demo` offers six of the sixteen tools with no account,
+   and the sticky ChallengeBanner links it above everything else.
+
+   NOTE for anyone writing copy in this file: `/` registers NO WebMCP tools. `GlobalTools` mounts
+   in the /app layout only. Describing what the agent can do once you are in the app is fine;
+   writing "open this page and the agent can…" is a false claim on the judged surface. */
 export default function StoryStage() {
   useLenis()
 

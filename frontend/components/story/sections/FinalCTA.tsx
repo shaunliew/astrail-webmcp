@@ -5,11 +5,14 @@ import Link from 'next/link'
 import PlayOnceVideo from '../PlayOnceVideo'
 import { CLIPS, STILLS } from '../story-config'
 
-/* The warm bookend — the mech lands and waves. The message is now the open
-   beta: plan free today, and the scarce thing (unlimited planning for 25
-   explorers) is granted at our discretion to active early users, so the CTA IS the FOMO action.
-   The full-launch future (hotel booking via Travala) is the subordinate
-   "notify me" — never the main action. */
+/* The warm bookend — the mech lands and waves. The message is the challenge build, not a beta:
+   the seat/FOMO framing this comment used to describe was dropped when the FAQ was retargeted
+   (landing-copy.ts), because "should I join this beta" is the wrong question in front of a judge.
+   Do not restore it from this comment.
+
+   The copy also used to say "open THIS page" and then list what the agent can do, which is false
+   on `/` — `GlobalTools` mounts only under /app, so the root landing registers no tools at all.
+   Say "the app", never "this page". */
 export default function FinalCTA() {
   return (
     <section className="story-cta relative min-h-[92vh] overflow-hidden bg-[color:var(--paper-1)]">
@@ -36,10 +39,13 @@ export default function FinalCTA() {
           Ask it what you can do here.
         </h2>
         <p className="story-sub max-w-[32em] text-[color:var(--ink-600)]">
-          Open this page in ChatGPT&rsquo;s built-in browser and the agent can
-          read it, save the Reels you paste, build the trip while narrating each
-          stage, and move a stop to another day &mdash; on the same map you are
-          looking at. Sign in first; the tools act as you.
+          Not this page &mdash; the app. Open Astrail in ChatGPT&rsquo;s built-in
+          browser and the agent can read what you already have, save the Reels
+          you paste, build the trip while narrating each stage, and move a stop
+          to another day &mdash; on the same map you are looking at, through the
+          same setters your click uses. The sample trail opens with no account.
+          Moving, adding, removing or rescheduling a stop stops for a card on
+          the page first.
         </p>
 
         <div className="mt-8 flex flex-wrap items-center gap-4">
@@ -57,7 +63,7 @@ export default function FinalCTA() {
         </p>
 
         <p className="mt-8 text-[13px] uppercase tracking-[0.16em] text-[color:var(--ink-400)]">
-          16 tools &middot; read &middot; act &middot; every claim sourced
+          16 tools &middot; read &middot; act &middot; every stop says where it came from
         </p>
       </div>
     </section>

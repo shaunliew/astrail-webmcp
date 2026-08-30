@@ -38,12 +38,12 @@ const STEPS = [
   {
     eyebrow: 'Step 3',
     title: 'Change it by saying so',
-    body: 'A day-by-day itinerary on a real map, every stop traceable \u2014 to the reel it came from, to Astrail\u2019s own reasoning where it suggested one, or to you. \u201cDay 2 is packed \u2014 move stop 7 to day 3\u201d and the route redraws while you watch, because the agent drives the same setters your click does.',
+    body: 'A day-by-day itinerary on a real map, every stop traceable \u2014 to the reel it came from, to Astrail\u2019s own reasoning where it suggested one, or to you. \u201cDay 2 is packed \u2014 move stop 7 to day 3.\u201d Astrail asks on the page rather than in chat, then the route redraws while you watch \u2014 the agent drives the same setters your click does \u2014 and it rewrites the day summaries itself, so the prose never describes a trip you no longer have.',
     src: SCREENS.tripWorkspace,
     alt: 'Astrail trip workspace: itinerary beside the live map',
     slotLabel: 'real screenshot \u2014 trip workspace',
     badge: 'Agent',
-    note: 'move_place \u00b7 remove_place \u00b7 add_place \u00b7 replan_trip \u00b7 show_on_map',
+    note: 'move_place \u00b7 remove_place \u00b7 add_place \u00b7 set_trip_dates \u2014 each behind an approval card on the page, each starting the rewrite itself',
   },
 ] as const
 
@@ -58,7 +58,8 @@ export default function HowItWorks() {
           How it works
         </p>
         <h2 className="story-h max-w-[24ch] text-[color:var(--ink-900)]">
-          From saved reels to a real plan — with an agent doing the clicking.
+          You bring the reels and the taste. The agent does the clicking. You
+          are both working the same map.
         </h2>
 
         <div className="mt-14 flex flex-col gap-20">

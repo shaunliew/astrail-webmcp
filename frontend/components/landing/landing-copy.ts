@@ -3,18 +3,21 @@ export const navItems = [
   { label: "Proof", href: "#proof" },
 ] as const;
 
+/* Rewritten for the WebMCP Challenge build, for the same reason the FAQ below was. These steps
+   described an app you OPERATE — paste, wait, receive — in an entry about an app you WORK WITH.
+   Each step now names both hands: what you bring, and what the agent does with it. */
 export const howItWorksSteps = [
   {
-    title: "Paste the Reels you saved",
-    body: "Drop in the links, your dates, your budget, and any preferences you already have. Messy is fine.",
+    title: "Bring the Reels, not a brief",
+    body: "Drop in 1-5 links, your dates and your budget, messy as they come — or open Astrail in ChatGPT and just say it. The agent calls the same tool the save button does, so talking to it and clicking through it are one app, not two products.",
   },
   {
-    title: "Astrail verifies the places",
-    body: "We pull the real stops out of each Reel, research them, and keep the evidence attached to every recommendation.",
+    title: "Watch it work, not a spinner",
+    body: "Astrail pulls the real places out of each Reel, drops any it cannot verify, and orders them into days that make sense on a map. Ask the agent to start it and you get the run narrated — the stage it is on, what it kept, what it dropped — instead of two minutes of nothing.",
   },
   {
-    title: "Get a route you can follow",
-    body: "You get a day-by-day plan with route logic, the reasoning behind each stop, and a saved trip you can come back to.",
+    title: "Change it by saying so",
+    body: "“Day 2 is packed — move stop 7 to day 3.” Astrail asks on the page before it commits, the route redraws while you watch, and it rewrites the day summaries itself so the prose never describes a trip you no longer have. Every stop still says where it came from.",
   },
 ] as const;
 

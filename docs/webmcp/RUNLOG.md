@@ -1246,3 +1246,47 @@ backend   uv run pytest -q   → 2047 passed, 13 skipped
 ```
 Working tree clean. Nothing pushed.
 
+### Task 9 · Codex round 8 · the two least-reviewed commits · 1 HIGH + 4, dispatched
+
+Ran because `8f47a69` and `b49c4e6` had been reviewed by nobody, and `8f47a69` widened
+`requestConfirm`'s return type across all six gated tools.
+
+**The seam I was most worried about is CLEAN.** `'unavailable'` is a non-empty string and
+therefore truthy, so any consumer doing `if (approved)` would have read a turned-away request as
+an APPROVAL and written. Codex checked every production consumer and every test double: all six
+sites test `'unavailable'` explicitly before `!approved`, and no double leaks a truthy string
+into an approval branch. No `'unavailable'` path reaches a write, `startSummaryRewrite`, or the
+paid generation call.
+
+**HIGH — and it is the same bug we just fixed, one layer out.** `plan_trip_from_reels` returns
+plain text WITHOUT `outcome: "failed"` (generation.ts:371), and `readToolOutcome` treats every
+plain-text response as **done** (edit.ts:281). So on a turned-away card the agent gets the
+truthful sentence while the rail renders **PLANNING · You** with "Astrail can't undo this" — the
+human-facing audit record says a change landed and credits the user for a card they never saw.
+The commit's claim that all six report `failed` is true of the five edit tools and false end to
+end. Its new test checks the prose and that `create` was not called; it never drives the result
+through `RegisterTools`, which is where the translation happens. Fourth time tonight a test
+verified the half that was easy to reach.
+
+**MEDIUM — the actor rule is too coarse in BOTH directions**, including the over-correction I
+explicitly asked to avoid:
+- A user APPROVES an edit, the backend write fails, result is `failed`, chip withheld. They made
+  that decision and the rail now omits it.
+- A `replan_trip` JOINING a rewrite raises no card yet returns `done`; static actor 'You' makes
+  the rail say "You decided this", contradicting the code's own comment that the join was not the
+  user's decision.
+
+The lesson, and it invalidates my round-7 call: `done` vs `failed` cannot answer "did a human
+decide this", because both are reachable with and without a decision. I offered the smaller
+option assuming status was a good enough proxy. It is not. Told the agent to take settle-time
+metadata if that is what it needs.
+
+**Three copy overstatements** in the landing work, to `claims-fix`: "the prose never describes a
+trip you no longer have" (stale ~30 s, indefinitely if the rewrite fails — the code says so in
+its own comment); "the request is shown to you in full" (the card omits Reel URLs, budget_level,
+origin_city — and the entire argument for the confirm gate is that the user reads what is about
+to be sent); and two "same tool"/"same setters" claims attached to the wrong tools. That last
+idea is true of `show_on_map` and `set_map_mode`, so it should move rather than be deleted.
+
+**Landing otherwise clean**, including the provenance wording the whole audit turned on.
+

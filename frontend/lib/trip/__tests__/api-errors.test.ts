@@ -145,12 +145,12 @@ describe('replanTrip is bounded', () => {
    * stalls. `fetch` RESOLVES here, so anything that disarms the timer on the fetch alone has
    * already disarmed it before the part that hangs.
    */
-  function stalledBodyFetch(ok = true) {
+  function stalledBodyFetch(status = 200) {
     const mock = vi.fn((_url: string, init: RequestInit) =>
       Promise.resolve({
-        ok,
-        status: ok ? 200 : 500,
-        statusText: ok ? 'OK' : 'Internal Server Error',
+        ok: status < 400,
+        status,
+        statusText: status === 200 ? 'OK' : 'Error',
         json: () =>
           new Promise((_resolve, reject) => {
             init.signal?.addEventListener('abort', () =>
@@ -189,25 +189,39 @@ describe('replanTrip is bounded', () => {
     expect((await timeOut()).message).toMatch(/stopped waiting/i)
   })
 
-  it('gives up when it is the ERROR body that stalls', async () => {
-    /* `editErrorMessage` reads the body too, and swallows its own failures — so an aborted read
-       there arrives back as an ordinary refusal message rather than as an abort. That is why the
-       timeout is detected on the SIGNAL and not on the error that surfaced. */
+  it('keeps a refusal it read off a real status, even when that body stalls', async () => {
+    /* The case where the timeout DESTROYS information. A 409 means the editability guard refused
+       before touching anything — no routes refreshed, nothing running. `editErrorMessage` swallows
+       its own aborted body read and still derives the right message from `res.status`, and the
+       abort check used to throw that away and replace it with a timeout sentence guessing the
+       opposite. A named status is evidence; a timeout is an inference. */
     vi.useFakeTimers()
-    stalledBodyFetch(false)
-    expect((await timeOut()).message).toMatch(/stopped waiting/i)
+    stalledBodyFetch(409)
+    const message = (await timeOut()).message
+    expect(message).toContain('cannot be edited right now')
+    expect(message).not.toMatch(/stopped waiting/i)
   })
 
-  it('does not claim the trip is unchanged, because it is not', async () => {
-    /* `/trips/{id}/replan` refreshes the routes BEFORE narrating (backend/main.py), those are
-       durable writes, and aborting a browser fetch neither rolls them back nor stops the server
-       task. Telling the user nothing happened is false in both directions at once. */
+  it('keeps a refusal for any status it actually saw, not only the ones it names', async () => {
+    vi.useFakeTimers()
+    stalledBodyFetch(500)
+    const message = (await timeOut()).message
+    expect(message).toContain('Request failed (500)')
+    expect(message).not.toMatch(/stopped waiting/i)
+  })
+
+  it('claims nothing about what the server did or did not do', async () => {
+    /* This message has now been wrong in both directions. "The trip itself is unchanged" was false
+       because `/trips/{id}/replan` refreshes routes BEFORE narrating and an abort rolls nothing
+       back; "the routes were already refreshed" was the same error mirrored, because the stall can
+       happen before the request ever reaches FastAPI. From the browser both are guesses. */
     vi.useFakeTimers()
     hangingFetch()
     const message = (await timeOut()).message
     expect(message).not.toMatch(/unchanged/i)
+    expect(message).not.toMatch(/routes were already refreshed/i)
     expect(message).toContain('may still be finishing on the server')
-    expect(message).toContain('routes were already refreshed')
+    expect(message).toContain('may already have changed')
     expect(message).not.toContain('operation was aborted')
   })
 

@@ -1017,6 +1017,49 @@ describe('the summary rewrite an edit starts', () => {
     })
   })
 
+  it('does not open a tagged entry before there is a request to tag', async () => {
+    /* The trip page's "Updating this day's summary" marker keys on a running subject-tagged
+       entry. `getAccessToken()` reads Supabase's session behind an auth lock and can stall, so an
+       entry opened before it would leave that marker standing indefinitely with nothing in
+       flight — the same lie the approval card used to tell, one step earlier. `h.session =
+       'pending'` is this file's existing model of that stall: a promise that never settles. */
+    heldReplans()
+    const tools = await editableTripPage()
+    h.session = 'pending'
+
+    /* Driven through `replan_trip`, not an edit: a mutation reads the token FIRST for its own
+       write, so a pending session hangs the move and never reaches the rewrite — a test built on
+       an edit here passes whether the entry is opened before the token or after it. */
+    void tools.replan_trip.execute({})
+    await waitFor(() => { expect(cardsShown.length).toBeGreaterThan(0) })
+    await settle()
+
+    expect(railEntries.filter((e) => e.tool === 'replan_trip' && e.subject === TRIP_ID)).toHaveLength(0)
+    expect(replanTripApi).not.toHaveBeenCalled()
+  })
+
+  it('still records the rewrite when the token, not the request, is what failed', async () => {
+    /* Opening the entry after the token means a token FAILURE would otherwise leave no record at
+       all — a rewrite that vanished silently. Driven through `replan_trip` rather than an edit,
+       because an edit reads the token FIRST for its own write: a session that cannot produce one
+       fails the move and never reaches the rewrite at all. */
+    heldReplans()
+    const tools = await editableTripPage()
+    h.session = 'no'
+
+    const call = tools.replan_trip.execute({})
+    await waitFor(() => { expect(cardsShown.length).toBeGreaterThan(0) })
+    await call
+
+    await waitFor(() => {
+      const entry = railEntries.find((e) => e.tool === 'replan_trip' && e.subject === TRIP_ID)
+      expect(entry?.status).toBe('failed')
+      // No edit behind this one, so it must not claim there was.
+      expect(entry?.detail).not.toContain('The edit was saved')
+      expect(entry?.detail).toContain('could not be rewritten')
+    })
+  })
+
   it('does not invent an edit in the record when a manual rewrite fails', async () => {
     /* `replan_trip` can be approved and run with no edit behind it at all, and on failure the
        rail said "The edit was saved" regardless — a durable record asserting something that never

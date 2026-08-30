@@ -419,20 +419,23 @@ export type ReplanTripResult = { days_narrated: number; routes_refreshed: boolea
 const REPLAN_TIMEOUT_MS = 120_000
 
 /**
- * What the user is told when it runs out, and every clause is load-bearing.
+ * What the user is told when it runs out. The whole message is a statement of UNCERTAINTY, and
+ * that is the point rather than a hedge.
  *
- * "The trip itself is unchanged" was the first version and it is false: `/trips/{id}/replan`
- * refreshes the routes BEFORE it narrates (backend/main.py), those are durable writes, and
- * aborting a fetch in the browser neither rolls them back nor stops the server task. So the trip
- * HAS changed and the narration may still be running and about to write more.
+ * It has now been wrong in both directions. "The trip itself is unchanged" was false because
+ * `/trips/{id}/replan` refreshes the routes BEFORE it narrates (backend/main.py) and aborting a
+ * browser fetch neither rolls that back nor stops the server task. Replacing it with "the routes
+ * were already refreshed" was the same mistake mirrored: a stall can happen before the request
+ * ever reaches FastAPI, in which case nothing was refreshed and nothing is running. From here
+ * both are guesses, so the honest thing is to say which way it MIGHT have gone and stop.
  *
- * That is also why it does not say "try again". A second rewrite started now can finish before
- * the first one the server is still working on, which lets the OLDER snapshot\'s prose land last
- * and overwrite the newer — the same stale-write hazard the per-trip queue exists to prevent,
- * arriving from the one direction the client cannot see.
+ * It also does not say "try again". A second rewrite started now can finish before the one the
+ * server may still be working on, which lets the OLDER snapshot\'s prose land last and overwrite
+ * the newer — the same stale write the per-trip queue prevents, arriving from the one direction
+ * the client cannot see.
  */
 const REPLAN_TIMED_OUT =
-  'Astrail stopped waiting for the summaries to be rewritten. The rewrite may still be finishing on the server, and the routes were already refreshed, so re-read the trip in a moment rather than starting another.'
+  'Astrail stopped waiting for the summaries to be rewritten. The rewrite may still be finishing on the server and the trip may already have changed, so re-read it in a moment rather than starting another.'
 
 /**
  * Re-routes the trip and rewrites its day summaries.
@@ -440,14 +443,22 @@ const REPLAN_TIMED_OUT =
  * Costs an LLM call and nothing from the user's trip allowance (`/trips/{id}/replan` has no quota
  * reserve and no entitlement check, only the burst limiter). Every itinerary edit now starts one
  * of these on its own, so it is no longer approval-gated on that path — but it must never be
- * SILENT: go through `GlobalTools`, which coalesces one rewrite per trip and puts it on the
- * activity rail, rather than calling this directly.
+ * SILENT: go through `GlobalTools`, which coalesces this tab's rewrites for a trip into one and
+ * puts them on the activity rail, rather than calling this directly. Another tab counts its own.
  */
 export async function replanTrip(tripId: string, accessToken: string): Promise<ReplanTripResult> {
   // AbortController rather than AbortSignal.timeout: the latter is absent in some of the
   // environments this runs under, and a silently-undefined signal is exactly no bound at all.
   const controller = new AbortController()
   const bell = setTimeout(() => controller.abort(), REPLAN_TIMEOUT_MS)
+  /* A refusal we read off a real status line, kept apart from everything else in this function.
+     `editErrorMessage` swallows its own failed body read and still derives the right message from
+     `res.status`, so a backend that answers 409 and then stalls its error body produces a correct,
+     specific refusal — which the abort check below would otherwise throw away and replace with a
+     timeout sentence guessing that the routes were refreshed, when the editability guard had in
+     fact refused before touching anything. A named 409 beats a guessed timeout: the status is
+     evidence, the timeout is an inference. */
+  let refusal: Error | null = null
   try {
     const res = await fetch(`${BACKEND_URL}/trips/${tripId}/replan`, {
       method: 'POST',
@@ -456,13 +467,17 @@ export async function replanTrip(tripId: string, accessToken: string): Promise<R
     })
     // Both reads are inside the bound, deliberately: each consumes the response BODY, which is
     // the half a stalled proxy holds open.
-    if (!res.ok) throw new Error(await editErrorMessage(res))
+    if (!res.ok) {
+      refusal = new Error(await editErrorMessage(res))
+      throw refusal
+    }
     return (await res.json()) as ReplanTripResult
   } catch (e) {
+    if (e === refusal) throw e
     // An abort surfaces as a DOMException named AbortError, whose own message ("The operation was
     // aborted") tells a user nothing about what was attempted or what it left behind. Checked on
-    // the SIGNAL rather than on the error, because an aborted body read inside `editErrorMessage`
-    // is swallowed by that function and arrives here as an ordinary refusal message.
+    // the SIGNAL rather than on the error, because an aborted body read on the SUCCESS path
+    // arrives here as a bare AbortError with no status behind it.
     if (controller.signal.aborted) throw new Error(REPLAN_TIMED_OUT)
     throw e
   } finally {

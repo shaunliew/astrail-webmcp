@@ -852,7 +852,7 @@ export default function GlobalTools() {
    * writes the prose. A run that started before an edit therefore writes prose that cannot know
    * about it — so joining it and reporting the summaries as current states the opposite of the
    * truth, on the surface this whole feature exists to keep honest. A join is only safe when the
-   * run in flight was started after every edit that has landed, which is exactly `covers ===
+   * run in flight was started after every edit THIS TAB HAS OBSERVED, which is exactly `covers ===
    * edits`. Anything else queues ONE follow-up instead, which keeps the saving that coalescing
    * was for — N edits during a rewrite still cost two narrations, not N + 1.
    */
@@ -921,13 +921,23 @@ export default function GlobalTools() {
   const startReplanRun = useCallback(
     (tripId: string, state: TripRewrites, afterEdit: boolean): Promise<ReplanTripResult> => {
       const covers = state.edits
-      /* Subject-tagged, which is what lets the trip page mark ONLY its own panel and only while
-         the request is genuinely out. The entry `RegisterTools` opens for the tool call carries
-         no subject on purpose: it starts before `execute` and spans the approval card. */
-      const entry = beginActivity('replan_trip', tripId)
       const run = (async () => {
+        /* The entry opens AFTER the token, not before, and the trip page depends on the
+           difference. Its "Updating this day's summary" marker keys on a running subject-tagged
+           entry, so an entry opened first would light the marker while `getAccessToken()` was
+           still reading Supabase's session behind its auth lock — which can stall, and the marker
+           would then stand indefinitely with no request in flight. Same lie as the one the
+           approval card used to tell, one step earlier.
+           The entry `RegisterTools` opens for the tool CALL is untagged for the same reason: it
+           starts before `execute` and spans the card.
+           What this does not close: a token that never settles at all leaves no entry and holds
+           the trip's slot in `rewrites` — the wedge the fetch timeout closes for the request,
+           still open for the token. It needs a bound of its own. */
+        let entry: number | undefined
         try {
-          const result = await replanTrip(tripId, await getAccessToken())
+          const token = await getAccessToken()
+          entry = beginActivity('replan_trip', tripId)
+          const result = await replanTrip(tripId, token)
           const days = result.days_narrated
           endActivity(
             entry,
@@ -943,8 +953,13 @@ export default function GlobalTools() {
              written for a removal the user had refused. When there WAS an edit it is already
              persisted, and a bare "failed" reads as it having been rolled back. */
           const why = e instanceof Error ? ` — ${e.message}` : '.'
+          /* Opened here when the token is what failed, so a rewrite that never got as far as a
+             request is still recorded rather than disappearing. Nothing was spent on that path,
+             but the edit it belongs to still owes the user the reason its summaries did not
+             refresh. */
+          const id = entry ?? beginActivity('replan_trip', tripId)
           endActivity(
-            entry,
+            id,
             'failed',
             afterEdit
               ? `The edit was saved, but the day summaries could not be rewritten${why}`
@@ -977,9 +992,10 @@ export default function GlobalTools() {
    * otherwise the follow-up that will.
    *
    * `afterEdit` is what tells the two callers apart, and it is not a nicety. An edit RAISES the
-   * version the prose owes, so it can never be satisfied by a run that started before it. A bare
-   * "make the prose current" request raises nothing and is happy with a run already under way.
-   * Collapsing them would either lose the coalescing entirely or reinstate the stale-join bug.
+   * version the prose owes, so it can never be satisfied by a run that started before it — before
+   * it AS THIS TAB SAW IT, which is the whole of what `edits` can know. A bare "make the prose
+   * current" request raises nothing and is happy with a run already under way. Collapsing them
+   * would either lose the coalescing entirely or reinstate the stale-join bug.
    */
   const runReplan = useCallback(
     (tripId: string, opts?: { afterEdit?: boolean }): Promise<ReplanTripResult> => {

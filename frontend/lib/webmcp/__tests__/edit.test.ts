@@ -327,6 +327,15 @@ describe('replan_trip', () => {
     expect(summary).toContain('does not use a trip from your allowance')
   })
 
+  it('does not promise the agent it can see rewrites this page did not start', () => {
+    /* The coalescing is per tab — `edits` is an in-memory counter — so telling the agent flatly
+       that "a rewrite already running" will be joined overstates what the page can detect. It can
+       only ever see its own. Agent-facing copy is where an overclaim costs most: the agent repeats
+       it to the user as fact. */
+    const description = replanTripTool(deps()).description
+    expect(description).toContain('this page already has a rewrite running')
+  })
+
   it('does not describe itself to the agent as something to call after an edit', () => {
     // Every edit starts one now. A description still saying "use this after adding, moving or
     // removing stops" is an instruction to buy a second narration of the same trip.

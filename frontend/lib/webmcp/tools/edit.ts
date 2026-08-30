@@ -29,11 +29,12 @@ export type EditDeps = {
   /**
    * Rewrites the summaries so they describe the stops the trip actually has.
    *
-   * ONE run per trip at a time, wherever it was started from: the shell coalesces on trip id, so
-   * a caller that only wants current prose joins the run already going instead of buying a second
-   * narration. It announces itself on the activity rail — the only surface on which a rewrite
-   * nobody approved becomes visible — and it still REJECTS on failure, so `replan_trip` can
-   * report that.
+   * One run at a time per trip PER TAB: the shell coalesces on trip id, so a caller that only
+   * wants current prose joins the run already going instead of buying a second narration. Per tab
+   * because the count behind it lives in memory — another tab, or a run this tab stopped waiting
+   * for after a timeout, is outside what it can see. It announces itself on the activity rail —
+   * the only surface on which a rewrite nobody approved becomes visible — and it still REJECTS on
+   * failure, so `replan_trip` can report that.
    *
    * `afterEdit` is not optional in spirit, only in type. The backend reads the trip's stops and
    * THEN awaits the narrator for ~30 seconds (`persist_narration`), so a run that started before
@@ -554,7 +555,7 @@ export function replanTripTool(deps: EditDeps): ToolSpec {
   return {
     name: 'replan_trip',
     description:
-      'Rewrites the trip description and day summaries so they match the stops the trip has now, and recalculates the routes. Every edit already starts this by itself, so do NOT call it after one — only when the user asks for the wording to be refreshed, or after a rewrite failed. Call it directly; Astrail asks on the page, so do not ask in chat first. It costs nothing from the trip allowance, and if a rewrite is already running it waits for that one rather than starting a second.',
+      'Rewrites the trip description and day summaries so they match the stops the trip has now, and recalculates the routes. Every edit already starts this by itself, so do NOT call it after one — only when the user asks for the wording to be refreshed, or after a rewrite failed. Call it directly; Astrail asks on the page, so do not ask in chat first. It costs nothing from the trip allowance, and if this page already has a rewrite running it waits for that one rather than starting a second.',
     inputSchema: {
       type: 'object',
       properties: { trip_id: { type: 'string', description: 'Trip id from list_trips. Omit for the open trip.' } },

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { useEffect } from 'react'
 import AgentActivityRail from '../AgentActivityRail'
 import { RegisterTools } from '../RegisterTools'
@@ -117,5 +118,81 @@ describe('tool execution is logged automatically', () => {
     } finally {
       console.error = original
     }
+  })
+})
+
+/**
+ * The rail is the human's audit surface, so it is held to an audit log's promises: the record
+ * survives the session, every entry says who decided it, and it never offers a button the app
+ * cannot honour.
+ */
+describe('the rail is a record, not a toast', () => {
+  it('keeps the record past the old eight-second fade window', async () => {
+    vi.useFakeTimers()
+    try {
+      withRail((r) => {
+        const id = r.beginActivity('move_place')
+        r.endActivity(id, 'done', 'Moved "Senso-ji" to day 3.')
+      })
+      expect(screen.getByText('MOVED')).toBeInTheDocument()
+      await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+      // A user still reading at 00:30 must not watch the evidence delete itself.
+      expect(screen.getByText('MOVED')).toBeInTheDocument()
+      expect(screen.getByText(/Senso-ji/)).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the whole session reachable behind a toggle, without growing the rail', async () => {
+    withRail((r) => { for (let i = 0; i < 12; i++) r.beginActivity('get_itinerary') })
+    // Compact until asked: the collapsed rail shows the newest entry and nothing else.
+    expect(await screen.findAllByText('READING')).toHaveLength(1)
+    await userEvent.click(screen.getByRole('button', { name: /earlier/i }))
+    expect(screen.getAllByText('READING')).toHaveLength(12)   // all twelve, not a five-deep tail
+    await userEvent.click(screen.getByRole('button', { name: /earlier/i }))
+    expect(screen.getAllByText('READING')).toHaveLength(1)
+  })
+
+  it('names who decided each action, in the words the app already uses', async () => {
+    withRail((r) => { r.beginActivity('move_place'); r.beginActivity('add_place') })
+    // add_place puts an approval card in front of the user, so the decision was theirs.
+    expect(await screen.findByText('You')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /earlier/i }))
+    // move_place asks nobody — the one durable edit an agent makes on its own initiative.
+    expect(screen.getByText('Astrail')).toBeInTheDocument()
+  })
+
+  it('names the three tools that used to fall back to a generic WORKING', async () => {
+    withRail((r) => {
+      r.beginActivity('add_place'); r.beginActivity('set_trip_dates'); r.beginActivity('replan_trip')
+    })
+    expect(await screen.findByText('REWROTE')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /earlier/i }))
+    expect(screen.getByText('ADDED')).toBeInTheDocument()
+    expect(screen.getByText('RESCHEDULED')).toBeInTheDocument()
+    expect(screen.queryByText('WORKING')).not.toBeInTheDocument()
+  })
+
+  it('still says something for a tool it has never met', async () => {
+    withRail((r) => { r.beginActivity('teleport_user') })
+    expect(await screen.findByText('WORKING')).toBeInTheDocument()
+  })
+
+  it('says a change cannot be taken back rather than offering an undo it cannot perform', async () => {
+    withRail((r) => {
+      const read = r.beginActivity('get_itinerary')
+      r.endActivity(read, 'done', 'Kyoto · 3 days · 6 stops')
+      const edit = r.beginActivity('move_place')
+      r.endActivity(edit, 'done', 'Moved "Senso-ji" to day 3.')
+    })
+    expect(await screen.findByText("Astrail can't undo this")).toBeInTheDocument()
+    // `remove_place` has no inverse and `move_place` cannot restore a null sort_order, so the
+    // rail must never grow a control that implies otherwise.
+    expect(screen.queryByRole('button', { name: /undo/i })).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: /earlier/i }))
+    // The read is recorded too, and carries no reversibility claim of any kind.
+    expect(screen.getByText(/Kyoto/)).toBeInTheDocument()
+    expect(screen.getAllByText("Astrail can't undo this")).toHaveLength(1)
   })
 })

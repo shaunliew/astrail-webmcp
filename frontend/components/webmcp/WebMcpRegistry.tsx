@@ -4,16 +4,66 @@ import type { TripBundle } from '@/lib/trip/backend-types'
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from 'react'
 
 /**
- * Agent actions are announced in the app's words, never the tool's. A user should read
- * "MOVED  7 - Senso-ji -> Day 3", not `move_place({place_ref:"7"})`.
+ * What the rail can say about a call, knowing only which tool was named.
+ *
+ * `RegisterTools` wraps every execute and passes the tool NAME and nothing else, so everything
+ * the record asserts has to be a static property of the tool rather than of the invocation.
+ * That is a constraint worth keeping: a per-call claim assembled from a tool's prose output
+ * would be a claim about untrusted text (guardrail #11), and a record that can be written by
+ * the thing it audits is not a record.
  */
-const LABELS: Record<string, string> = {
-  get_app_state: 'READING', list_trips: 'READING', get_itinerary: 'READING',
-  get_place_evidence: 'CHECKING', get_map_view: 'LOOKING', list_saved_reels: 'READING',
-  show_on_map: 'SHOWING', set_map_mode: 'SWITCHING',
-  save_reels: 'SAVING', plan_trip_from_reels: 'PLANNING', get_trip_progress: 'WATCHING',
-  move_place: 'MOVED', remove_place: 'REMOVED',
+type ToolFacts = {
+  /**
+   * Agent actions are announced in the app's words, never the tool's. A user should read
+   * "MOVED  7 - Senso-ji -> Day 3", not `move_place({place_ref:"7"})`.
+   */
+  label: string
+  /**
+   * Who decided the call happens — the accountability half of an audit log.
+   *
+   * Every entry here is a tool call, so the agent always PERFORMS it; the only place the user's
+   * own hand enters is the approval card. So this reads "whose decision was this", which stays
+   * true on both branches of a card: a declined removal was still the user's call. The two words
+   * are the app's existing ones for the same distinction (`EvidenceChip`: requested_by_you ->
+   * "You", suggested_by_astrail -> "Astrail").
+   */
+  actor: 'You' | 'Astrail'
+  /**
+   * True when the call writes something that outlives the page.
+   *
+   * Deliberately NOT `readOnlyHint`. That hint means "safe to call speculatively" and is false
+   * for `show_on_map` because a camera fly is noticeable — but a camera fly changes nothing a
+   * user could want back, and labelling it a change would make the record cry wolf.
+   */
+  changes: boolean
 }
+
+const TOOLS: Record<string, ToolFacts> = {
+  get_app_state:        { label: 'READING',     actor: 'Astrail', changes: false },
+  list_trips:           { label: 'READING',     actor: 'Astrail', changes: false },
+  get_itinerary:        { label: 'READING',     actor: 'Astrail', changes: false },
+  list_saved_reels:     { label: 'READING',     actor: 'Astrail', changes: false },
+  get_place_evidence:   { label: 'CHECKING',    actor: 'Astrail', changes: false },
+  get_map_view:         { label: 'LOOKING',     actor: 'Astrail', changes: false },
+  get_trip_progress:    { label: 'WATCHING',    actor: 'Astrail', changes: false },
+  show_on_map:          { label: 'SHOWING',     actor: 'Astrail', changes: false },
+  set_map_mode:         { label: 'SWITCHING',   actor: 'Astrail', changes: false },
+  save_reels:           { label: 'SAVING',      actor: 'Astrail', changes: true },
+  // The one durable edit that reaches the database without an approval card, which is exactly
+  // why the rail has to name it: unasked, unannounced anywhere else, and not reversible.
+  move_place:           { label: 'MOVED',       actor: 'Astrail', changes: true },
+  plan_trip_from_reels: { label: 'PLANNING',    actor: 'You',     changes: true },
+  add_place:            { label: 'ADDED',       actor: 'You',     changes: true },
+  remove_place:         { label: 'REMOVED',     actor: 'You',     changes: true },
+  set_trip_dates:       { label: 'RESCHEDULED', actor: 'You',     changes: true },
+  replan_trip:          { label: 'REWROTE',     actor: 'You',     changes: true },
+}
+
+/**
+ * A tool the table has not met. `changes: true` is the fail-safe direction: it costs an extra
+ * "can't undo" line on something harmless, where guessing `false` would hide a real write.
+ */
+const UNKNOWN_TOOL: ToolFacts = { label: 'WORKING', actor: 'Astrail', changes: true }
 
 /**
  * A view of what is currently registered, so the UI can SHOW the user what the agent can do.
@@ -31,11 +81,9 @@ export type RegisteredToolView = {
   registered: boolean
 }
 
-export type ActivityEntry = {
+export type ActivityEntry = ToolFacts & {
   id: number
   tool: string
-  /** Written in the app's vocabulary, never the tool's. */
-  label: string
   detail: string | null
   status: 'running' | 'done' | 'failed'
   at: number
@@ -125,12 +173,15 @@ export function WebMcpRegistryProvider({ children }: { children: React.ReactNode
 
   // Stable by construction. The render-loop bug earlier came from depending on the CONTEXT VALUE
   // (memoized on state) instead of on callbacks like these, so keep these dependency-free.
+
+  // Every call is kept for the session. The `slice(-4)` this replaces made the rail a fading
+  // tail of five: the fifth read silently deleted the edit the user was about to question, and
+  // an audit log that discards its own oldest entries is the one thing an audit log may not do.
+  // The rail, not the store, is what stays compact — it collapses to the newest entry.
   const beginActivity = useCallback((tool: string) => {
     const id = ++activitySeq.current
-    setActivity((prev) => [
-      ...prev.slice(-4),   // a tail, not a transcript
-      { id, tool, label: LABELS[tool] ?? 'WORKING', detail: null, status: 'running', at: Date.now() },
-    ])
+    const facts = TOOLS[tool] ?? UNKNOWN_TOOL
+    setActivity((prev) => [...prev, { id, tool, ...facts, detail: null, status: 'running', at: Date.now() }])
     return id
   }, [])
 

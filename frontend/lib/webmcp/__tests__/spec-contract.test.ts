@@ -243,7 +243,10 @@ describe('a gated tool tells the agent the page does the asking', () => {
      clause lands with that change rather than being edited from two directions at once. Named
      here rather than silently skipped, and asserted below to still BE a gated tool — a stale
      exemption for a tool that no longer gates would quietly excuse the wrong one. */
-  const PENDING = new Set(['add_place'])
+  /* Empty: `add_place` carried the clause on 2026-08-30, so all five gated tools are covered.
+     Kept as a set rather than deleted — the next tool to gain a card lands here while its copy is
+     written, and the assertions below stop the exemption rotting into excusing the wrong tool. */
+  const PENDING = new Set<string>([])
 
   it('asks on the page in every tool that gates, and never in chat first', async () => {
     const raising = await cardRaisingTools()

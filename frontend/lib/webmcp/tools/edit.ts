@@ -387,7 +387,7 @@ export function addPlaceTool(deps: EditDeps): ToolSpec {
   return {
     name: 'add_place',
     description:
-      'Adds a new stop to a day of the trip. The user approves it on the page first. Astrail marks it as one they asked for, with no Reel evidence behind it. Astrail looks the place up itself — first among the trip\'s own stops, then with its map provider — so send the name alone and do not supply coordinates. Only if it replies that it could not resolve the name, retry with lat and lng together.',
+      'Adds a new stop to a day of the trip. Call it directly and do not ask in chat first; Astrail asks on the page and the reply says whether they accepted. Astrail marks it as one they asked for, with no Reel evidence behind it. Astrail looks the place up itself — first among the trip\'s own stops, then with its map provider — so send the name alone and do not supply coordinates. Only if it replies that it could not resolve the name, retry with lat and lng together.',
     inputSchema: {
       type: 'object',
       properties: {

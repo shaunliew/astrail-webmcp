@@ -2,6 +2,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import ItineraryCards from '@/components/trip/ItineraryCards'
+import { thumbnailFor } from '@/components/map/popup-model'
+import type { TripPlace } from '@/lib/trip/backend-types'
 import { placesForDay, legsForDay, buildPlaceIndex, buildTrailNumbers } from '@/lib/trip/selectors'
 import { resolvePlaceRef } from '@/lib/webmcp/resolve'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures'
@@ -14,6 +16,7 @@ const day3Legs = legsForDay(TOKYO_TRIP, 'day_3')
 const idx = buildPlaceIndex(TOKYO_TRIP)
 /* The SAME numbering the map paints and `resolvePlaceRef` answers to — not a copy of it. */
 const PINS = buildTrailNumbers(TOKYO_TRIP)
+const ALL_PLACES = [...day1, ...day2, ...day3]
 
 describe('ItineraryCards', () => {
   it('renders a card per place with its name and source badge', () => {
@@ -190,5 +193,134 @@ describe('ItineraryCards', () => {
         expect(within(li).getByText(`Stop ${PINS.get(day1[i].id)} of ${PINS.size}`)).toBeInTheDocument()
       })
     })
+  })
+})
+
+/* ── Covers ───────────────────────────────────────────────────────────────────────────────
+   `thumbnailFor` is null for every stop that did NOT come from a Reel, which on a real trail
+   is a large minority. The panel must draw something honest there rather than a broken <img>
+   or a generic grey square: the absence IS information — nothing was pulled from a Reel. */
+describe('ItineraryCards covers', () => {
+  const dayOf = (tp: TripPlace) => placesForDay(TOKYO_TRIP, tp.day_number!)
+
+  it('shows the reel cover on a stop that came from a reel', () => {
+    const withCover = ALL_PLACES.find((tp) => thumbnailFor(TOKYO_TRIP, tp))
+    // If the fixture ever loses its covered stops this asserts nothing. Fail loudly instead.
+    expect(withCover, 'fixture has no reel-covered stop — this test proves nothing').toBeDefined()
+    const { container } = render(
+      <ItineraryCards
+        bundle={TOKYO_TRIP} places={dayOf(withCover!)} trailNumbers={PINS}
+        selectedPlaceId={null} onSelectPlace={() => {}}
+      />,
+    )
+    const card = container.querySelector<HTMLElement>(`[data-place-id="${withCover!.place_id}"]`)!
+    expect(card.querySelector('img')).toHaveAttribute('src', thumbnailFor(TOKYO_TRIP, withCover!))
+  })
+
+  it('draws a placeholder, not a broken image, for a stop with no reel behind it', () => {
+    const noCover = ALL_PLACES.find((tp) => !thumbnailFor(TOKYO_TRIP, tp))
+    expect(noCover, 'fixture has no uncovered stop — this test proves nothing').toBeDefined()
+    const { container } = render(
+      <ItineraryCards
+        bundle={TOKYO_TRIP} places={dayOf(noCover!)} trailNumbers={PINS}
+        selectedPlaceId={null} onSelectPlace={() => {}}
+      />,
+    )
+    const card = container.querySelector<HTMLElement>(`[data-place-id="${noCover!.place_id}"]`)!
+    expect(card.querySelector('img')).toBeNull()
+    expect(card.querySelector('[data-cover="none"]')).not.toBeNull()
+  })
+
+  /* The workspace does not pass a bundle yet. Without one the panel cannot know a cover exists,
+     and must degrade to the same honest placeholder rather than throwing or drawing nothing. */
+  it('degrades to placeholders when no bundle is supplied', () => {
+    const { container } = render(
+      <ItineraryCards places={day1} trailNumbers={PINS} selectedPlaceId={null} onSelectPlace={() => {}} />,
+    )
+    expect(container.querySelectorAll('img')).toHaveLength(0)
+    expect(container.querySelectorAll('[data-cover="none"]')).toHaveLength(day1.length)
+  })
+})
+
+/* ── Estimated times ──────────────────────────────────────────────────────────────────────
+   There is NO clock time and NO dwell duration anywhere in the schema — `TripPlace` has no
+   duration field, and the only `place_durations` in the codebase is HOTEL-hub → place ROUTE
+   duration (selectors.ts::hubSpokeFeatures), which is a travel time, not time-at-place. So a
+   start/end pair can only ever be DERIVED, and only from durations we actually hold. When we
+   hold none, the panel prints none: a fabricated schedule is exactly the hallucinated-claim
+   failure the evidence chip beside it exists to rule out. */
+describe('ItineraryCards estimated times', () => {
+  const clock = /^\d{1,2}:\d{2}$/
+
+  it('prints no times at all when no dwell durations are supplied', () => {
+    render(
+      <ItineraryCards
+        places={day1} legs={day1Legs} placeIndex={idx} trailNumbers={PINS}
+        selectedPlaceId={null} onSelectPlace={() => {}}
+      />,
+    )
+    expect(screen.queryAllByText(clock)).toHaveLength(0)
+    expect(screen.queryByText(/est\./i)).toBeNull()
+  })
+
+  /* Derived from the REAL numbers, not from even spacing: 09:00 start, +60 min at Akasaka,
+     + leg_1's 150 s (the same "3 min" the folded leg prints), +30 min at the cafe. */
+  it('derives times from the real dwell and travel durations, and labels them estimates', () => {
+    const dwell = new Map([[day1[0].place_id, 3600], [day1[1].place_id, 1800]])
+    render(
+      <ItineraryCards
+        places={day1} legs={day1Legs} placeIndex={idx} trailNumbers={PINS} dwellSeconds={dwell}
+        selectedPlaceId={null} onSelectPlace={() => {}}
+      />,
+    )
+    const steps = screen.getAllByRole('listitem')
+    expect(within(steps[0]).getByText('09:00')).toBeInTheDocument()
+    expect(within(steps[0]).getByText('10:00')).toBeInTheDocument()
+    expect(within(steps[1]).getByText('10:03')).toBeInTheDocument()   // 10:00 + leg_1's 3 min
+    expect(within(steps[1]).getByText('10:33')).toBeInTheDocument()
+    // Unmissably an estimate, not a booking.
+    expect(screen.getAllByText(/est\./i).length).toBeGreaterThan(0)
+  })
+
+  /* We know when you ARRIVE somewhere we have no dwell for; we do not know when you leave. */
+  it('gives a stop with unknown dwell an arrival but no departure', () => {
+    const dwell = new Map([[day1[0].place_id, 3600]])
+    render(
+      <ItineraryCards
+        places={day1} legs={day1Legs} placeIndex={idx} trailNumbers={PINS} dwellSeconds={dwell}
+        selectedPlaceId={null} onSelectPlace={() => {}}
+      />,
+    )
+    const steps = screen.getAllByRole('listitem')
+    expect(within(steps[1]).getByText('10:03')).toBeInTheDocument()
+    expect(within(steps[1]).queryAllByText(clock)).toHaveLength(1)   // arrival only
+  })
+
+  /* An empty map is not "a day that starts at 09:00" — it is a day we know nothing about. The
+     only number a 09:00 start would print is the assumption itself. */
+  it('treats an empty dwell map as no data at all, not as a 09:00 start', () => {
+    render(
+      <ItineraryCards
+        places={day1} legs={day1Legs} placeIndex={idx} trailNumbers={PINS}
+        dwellSeconds={new Map()} selectedPlaceId={null} onSelectPlace={() => {}}
+      />,
+    )
+    expect(screen.queryAllByText(clock)).toHaveLength(0)
+    expect(screen.queryByText(/est\./i)).toBeNull()
+  })
+
+  /* Most saved trips carry no legs. Travel time between two stops is then unknown, so the
+     arrival at the second stop is unknowable — and is left blank rather than guessed at. */
+  it('stops estimating past a gap in the travel data', () => {
+    const dwell = new Map([[day1[0].place_id, 3600], [day1[1].place_id, 1800]])
+    render(
+      <ItineraryCards
+        places={day1} legs={[]} placeIndex={idx} trailNumbers={PINS} dwellSeconds={dwell}
+        selectedPlaceId={null} onSelectPlace={() => {}}
+      />,
+    )
+    const steps = screen.getAllByRole('listitem')
+    expect(within(steps[0]).getByText('09:00')).toBeInTheDocument()
+    expect(within(steps[1]).queryAllByText(clock)).toHaveLength(0)
   })
 })

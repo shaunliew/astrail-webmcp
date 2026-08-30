@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useEffect } from 'react'
 import AgentActivityRail from '../AgentActivityRail'
@@ -285,4 +285,115 @@ describe('the rail can be cleared', () => {
     expect(await screen.findByText('SAVING')).toBeInTheDocument()
   })
 
+})
+
+/**
+ * A receipt that says how old it is.
+ *
+ * Confirmed from a real run: the trip finished and the newest card still read "generating · 86s".
+ * That card is not stale data and it is not a missed re-render — `RegisterTools` is the only
+ * writer of entries in the app, and `detail` is immutable text captured when the call returned.
+ * The entry is a CORRECT receipt of a call that did return exactly that.
+ *
+ * The flaw is narrower than it looks. `get_trip_progress` is the one tool whose return value is a
+ * world-state rather than a description of what the call did: "Moved Senso-ji to day 3" is true
+ * forever, "generating · 86s" is false a second later. Since the rail shows the newest entry on
+ * its own, a reader takes a timestamped record as a current status.
+ *
+ * So the record is not touched and nothing expires. The card is given its age, which is the one
+ * piece of information that turns a status back into history.
+ */
+describe('an entry says how old it is', () => {
+  it('says nothing while the receipt is still current', async () => {
+    withRail((r) => { r.endActivity(r.beginActivity('get_itinerary'), 'done', 'Kyoto · 3 days') })
+    expect(await screen.findByText(/Kyoto/)).toBeInTheDocument()
+    expect(screen.queryByText(/ago/)).toBeNull()
+  })
+
+  it('stops the progress card claiming to be current', async () => {
+    vi.useFakeTimers()
+    try {
+      withRail((r) => {
+        r.endActivity(r.beginActivity('get_trip_progress'), 'done', 'generating · 86s · enriching places')
+      })
+      expect(screen.getByText(/generating · 86s/)).toBeInTheDocument()
+      await act(async () => { await vi.advanceTimersByTimeAsync(4 * 60_000) })
+
+      // The record is untouched — it still says what the call returned — and it no longer
+      // presents that as the state of the world right now.
+      expect(screen.getByText(/generating · 86s/)).toBeInTheDocument()
+      expect(screen.getByText('4m ago')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('settles on a label that stays true, so the clock can stop', async () => {
+    vi.useFakeTimers()
+    try {
+      withRail((r) => { r.endActivity(r.beginActivity('move_place'), 'done', 'Moved "Senso-ji" to day 3.') })
+      await act(async () => { await vi.advanceTimersByTimeAsync(90 * 60_000) })
+      expect(screen.getByText('over an hour ago')).toBeInTheDocument()
+
+      // "3h ago" would need a clock running all afternoon to stay honest. This one does not:
+      // it is still true a day later, which is what lets the interval be torn down for good.
+      const ticking = vi.getTimerCount()
+      await act(async () => { await vi.advanceTimersByTimeAsync(6 * 60 * 60_000) })
+      expect(screen.getByText('over an hour ago')).toBeInTheDocument()
+      expect(ticking).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps one clock for the whole rail, not one per entry', async () => {
+    vi.useFakeTimers()
+    try {
+      const one = render(
+        <WebMcpRegistryProvider>
+          <Runner run={(r) => { r.beginActivity('get_itinerary') }} />
+          <AgentActivityRail />
+        </WebMcpRegistryProvider>,
+      )
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      const withOne = vi.getTimerCount()
+      one.unmount()
+
+      render(
+        <WebMcpRegistryProvider>
+          <Runner run={(r) => { for (let i = 0; i < 8; i++) r.beginActivity('get_itinerary') }} />
+          <AgentActivityRail />
+        </WebMcpRegistryProvider>,
+      )
+      // The read-back has to be OPEN for this to mean anything: collapsed, the rail draws one
+      // card whatever the history holds, so a per-entry clock and a per-rail clock would be
+      // indistinguishable and this test would prove nothing.
+      fireEvent.click(screen.getByRole('button', { name: /earlier/i }))
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      expect(screen.getAllByText('READING')).toHaveLength(8)
+      expect(vi.getTimerCount()).toBe(withOne)
+      expect(withOne).toBeGreaterThan(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('takes its clock down with it when the dock folds it away', async () => {
+    vi.useFakeTimers()
+    try {
+      const view = render(
+        <WebMcpRegistryProvider>
+          <Runner run={(r) => { r.beginActivity('get_itinerary') }} />
+          <AgentActivityRail />
+        </WebMcpRegistryProvider>,
+      )
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      expect(vi.getTimerCount()).toBeGreaterThan(0)
+      // Folding unmounts the rail, which is the whole reason the clock lives here.
+      view.unmount()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

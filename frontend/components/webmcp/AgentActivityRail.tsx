@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useOptionalWebMcpRegistry, type ActivityEntry } from './WebMcpRegistry'
 
 /**
@@ -24,8 +24,41 @@ import { useOptionalWebMcpRegistry, type ActivityEntry } from './WebMcpRegistry'
  * taken back, not to render a control that fails when pressed.
  */
 
+/**
+ * How long the rail waits before an entry is worth dating, and when its age stops moving.
+ *
+ * The second one is what lets the clock be switched off rather than merely slowed. "3h ago" needs
+ * a timer running all afternoon to stay honest; "over an hour ago" is still true tomorrow, so once
+ * every entry on screen has reached it there is nothing left to update, ever.
+ */
+const TICK_MS = 30_000
+const AGE_SETTLES_AFTER_MS = 60 * 60_000
+
+/**
+ * The age of a receipt, or null while it is new enough to still read as current.
+ *
+ * Confirmed from a real run: the trip finished and the newest card still read "generating · 86s".
+ * That is not stale data and not a missed re-render — `RegisterTools` is the only writer of
+ * entries in the app and `detail` is immutable text captured when the call returned, so the entry
+ * is a CORRECT receipt of a call that did return exactly that.
+ *
+ * The flaw is narrower than it looks. `get_trip_progress` is the one tool whose return value is a
+ * world-state rather than a description of what the call did: "Moved Senso-ji to day 3" stays true
+ * forever, "generating · 86s" is false a second later. Since the rail shows the newest entry on
+ * its own, a reader takes a timestamped record as a current status. So nothing here rewrites the
+ * record or expires it — the card is simply given its age, which is the one piece of information
+ * that turns a status back into history.
+ */
+export function ageLabel(at: number, now: number): string | null {
+  const minutes = Math.floor((now - at) / 60_000)
+  if (minutes < 1) return null
+  if (minutes < 60) return `${minutes}m ago`
+  return 'over an hour ago'
+}
+
 /** One receipt. The card the rail has always drawn, plus the two things it never said. */
-function Entry({ entry }: { entry: ActivityEntry }) {
+function Entry({ entry, now }: { entry: ActivityEntry; now: number }) {
+  const age = ageLabel(entry.at, now)
   return (
     <div className="rounded-lg border border-[#C9974E]/40 bg-black/80 px-3 py-2 text-xs backdrop-blur">
       <div className="flex items-center gap-2">
@@ -43,14 +76,19 @@ function Entry({ entry }: { entry: ActivityEntry }) {
             author-supplied name, so an aria-label here would be silently dropped by AT and read
             as covered. The visible word is the accessible name, and it is the same word a
             sighted user gets; the tooltip only spells out the sentence for a pointer. */}
-        <span
-          title={`${entry.actor} decided this`}
-          className={[
-            'ml-auto shrink-0 rounded px-1.5 py-0.5 text-[10px]',
-            entry.actor === 'You' ? 'bg-[#C9974E]/20 text-[#E8D5B0]' : 'bg-white/10 text-white/60',
-          ].join(' ')}
-        >
-          {entry.actor}
+        {/* Age sits beside the actor rather than inside the detail line, which is `line-clamp-2`
+            and would swallow it on a long caption-derived summary. Costs no height. */}
+        <span className="ml-auto flex shrink-0 items-center gap-1.5">
+          {age && <span className="text-[10px] text-white/35">{age}</span>}
+          <span
+            title={`${entry.actor} decided this`}
+            className={[
+              'rounded px-1.5 py-0.5 text-[10px]',
+              entry.actor === 'You' ? 'bg-[#C9974E]/20 text-[#E8D5B0]' : 'bg-white/10 text-white/60',
+            ].join(' ')}
+          >
+            {entry.actor}
+          </span>
         </span>
       </div>
       {entry.detail && (
@@ -82,6 +120,7 @@ export default function AgentActivityRail({ compact = false }: { compact?: boole
     throughId: 0,
     spared: [],
   })
+  const [now, setNow] = useState(() => Date.now())
 
   /**
    * What the rail is showing: everything since the last clear, plus anything still in flight.
@@ -102,6 +141,26 @@ export default function AgentActivityRail({ compact = false }: { compact?: boole
   const visible = registry?.activity.filter(
     (e) => e.id > cleared.throughId || cleared.spared.includes(e.id),
   )
+
+  /**
+   * One clock for the whole rail, not one per entry, and only while a label can still move.
+   *
+   * The youngest entry is the one that decides: if IT has settled, every older one has too. The
+   * interval tears itself down when that happens, because `shouldTick` flips on the tick that
+   * crosses the threshold. It also goes when the rail does — the dock unmounts the rail while
+   * folded, so a folded dock keeps no clock at all.
+   *
+   * State is local to the rail on purpose. A tick here re-renders these few cards and nothing
+   * else; putting it in the registry would re-render every consumer, the map included.
+   */
+  const newestAt = visible?.length ? visible[visible.length - 1].at : 0
+  const shouldTick = newestAt > 0 && now - newestAt < AGE_SETTLES_AFTER_MS
+
+  useEffect(() => {
+    if (!shouldTick) return
+    const id = setInterval(() => setNow(Date.now()), TICK_MS)
+    return () => clearInterval(id)
+  }, [shouldTick])
 
   if (!visible?.length) return null
 
@@ -131,12 +190,12 @@ export default function AgentActivityRail({ compact = false }: { compact?: boole
           ].join(' ')}
         >
           {earlier.map((e) => (
-            <Entry key={e.id} entry={e} />
+            <Entry key={e.id} entry={e} now={now} />
           ))}
         </div>
       )}
 
-      <Entry entry={latest} />
+      <Entry entry={latest} now={now} />
 
       {/* Last, so it keeps its place: the dock is bottom-anchored and grows upward, which makes
           the bottom-most control the only one that never moves under the user's finger. Both

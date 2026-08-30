@@ -85,6 +85,29 @@ describe('ItineraryCards', () => {
       .toHaveAttribute('aria-current', 'true')
   })
 
+  /* `aria-current` alone is not the selected state — a sighted user has to SEE which stop the map
+     is showing. The card cannot carry that with a Tailwind `border-[var(--brass)]` utility: the
+     scoped `.paper-scope .surface` rule in globals.css is unlayered, so it out-ranks every layered
+     single-class utility and silently swallows the border (globals.css says exactly this, and
+     ships `.surface--selected` because it already happened once on the hotel picker). Utilities
+     that lose leave no error and no failing test — only a state nobody can see. So the contract is
+     asserted on BOTH sides: the markup asks for the modifier, and the stylesheet still defines it. */
+  it('paints selection with a modifier the stylesheet actually defines', async () => {
+    const { readFileSync } = await import('node:fs')
+    const css = readFileSync('app/globals.css', 'utf8')
+    expect(css).toMatch(/\.surface\.surface--selected\s*\{/)
+    expect(css).toMatch(/\.surface--hoverable:hover/)
+
+    render(<ItineraryCards places={day1} trailNumbers={PINS} selectedPlaceId={day1[0].place_id} onSelectPlace={() => {}} />)
+    const selected = screen.getByRole('button', { name: new RegExp(day1[0].place.name, 'i') })
+    expect(selected.className).toContain('surface--selected')
+    expect(selected.className).not.toContain('surface--hoverable')
+
+    const other = screen.getByRole('button', { name: new RegExp(day1[1].place.name, 'i') })
+    expect(other.className).toContain('surface--hoverable')
+    expect(other.className).not.toContain('surface--selected')
+  })
+
   /* Pin numbers are one shared vocabulary across the map, the panel, the user and the WebMCP
      tools. Two schemes under one name is a silent wrong-stop bug, not a cosmetic mismatch: a
      user reading "01" beside SANDO LAB and saying "move stop 1" moves Akasaka Station instead,

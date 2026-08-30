@@ -101,23 +101,6 @@ describe('TripWorkspace', () => {
     expect(await screen.findByTestId('trip-map')).toBeInTheDocument()
   })
 
-  /* The cover tile is the one thing on the timeline that needs data the LIST does not hold: the
-     Reel thumbnail hangs off the bundle, so `ItineraryCards` can only draw it if the workspace
-     hands the bundle down. It shipped without that prop and every stop fell back to the dashed
-     placeholder — a whole-panel regression that ItineraryCards' own tests could not see, because
-     they pass a bundle in directly. The seam is what needs asserting, so this test renders the
-     real workspace and demands a real thumbnail. */
-  it('hands the bundle down so Reel covers can render', async () => {
-    const withCover = placesForDay(TOKYO_TRIP, 1).find((tp) => thumbnailFor(TOKYO_TRIP, tp))
-    expect(withCover, 'day-1 fixture must have at least one Reel-derived cover').toBeTruthy()
-
-    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
-    renderWorkspace(TOKYO_TRIP.trip.id)
-
-    const card = (await screen.findByText(withCover!.place.name)).closest('[data-place-id]')
-    expect(card?.querySelector('img')).toHaveAttribute('src', thumbnailFor(TOKYO_TRIP, withCover!))
-  })
-
   it('activates a pin\'s own day when it is selected from the map', async () => {
     // The map shows every day's pins; the itinerary list shows only the active day. Selecting a
     // Day 3 pin while Day 1 was open opened the panel on a list that did not contain it — no

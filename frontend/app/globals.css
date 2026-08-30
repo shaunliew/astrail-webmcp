@@ -599,6 +599,14 @@ button:focus-visible {
     0 0 14px var(--brass-glow);
 }
 
+/* Hover half of the same trap. `hover:border-[var(--brass)]` is a layered single-class utility,
+   so the unlayered scoped .surface rules above swallow it exactly as they swallowed the selected
+   border — the affordance was written in the markup and never painted. Scoped, so it wins. */
+.paper-scope .surface--hoverable:hover,
+.app-shell .surface--hoverable:hover {
+  border-color: var(--brass);
+}
+
 .paper-scope .surface.trip-card:hover {
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), 0 14px 34px rgba(0, 0, 0, 0.24);
 }

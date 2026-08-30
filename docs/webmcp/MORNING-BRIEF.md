@@ -7,15 +7,26 @@ Everything below is verified against the code or explicitly marked as unverified
 
 Each is something only you can do. The first is new and is an **eligibility** item, not a nicety.
 
-### 1. The LICENSE will not show, and Devpost names that badge specifically
+### 1. Change the default branch to `feat/webmcp` — one setting, three problems
 
-`LICENSE` is canonical unmodified MIT, so GitHub's detector will recognise it — but it exists only
-on `feat/webmcp`. **GitHub reads the license off the default branch, which is `main`, and `main`
-has no LICENSE.** Making the repo public is therefore not enough: the About badge stays empty.
+**This is bigger than the license, and it is the single highest-value action available.**
 
-Two fixes, either works: put `LICENSE` on `main`, or change the repo's default branch to
-`feat/webmcp`. Verify afterwards that the badge actually renders — the rule is about what a judge
-sees on the repo page, not about the file existing.
+`origin/main` is **148 commits behind and contains zero WebMCP code** — no `frontend/lib/webmcp/`,
+no LICENSE, and a README that never mentions WebMCP. A judge clicking the repo link lands on the
+**default branch**, so today they would see an entry with no WebMCP implementation at all. Devpost
+explicitly requires the repo to visibly contain `document.modelContext.registerTool({...})`.
+
+Changing the default branch to `feat/webmcp` fixes all three at once: the code becomes visible, the
+README a judge reads becomes the right one, and the LICENSE badge appears (canonical MIT, detector
+will recognise it).
+
+⚠ **Do NOT merge `feat/webmcp` into `main` to achieve this.** `render.yaml` deploys from
+`branch: main` with `autoDeployTrigger: checksPass` — merging would auto-deploy the hackathon
+branch to **production**. An earlier draft of this brief suggested putting LICENSE on `main` as an
+alternative; that was written before I checked what `main` deploys. Use the default-branch setting.
+
+Verify afterwards that the About badge actually renders — the rule is about what a judge sees on
+the repo page, not about the file existing.
 
 ### 2. The two merges
 

@@ -82,6 +82,25 @@ function isReelEvidence(kind: string): boolean {
 }
 
 /**
+ * The canonical form both sides of the Reel join must agree on.
+ *
+ * Two normalisers produce Reel URLs here and they disagree by a trailing slash:
+ * `backend/scrape/reel_url.py` returns `.../reel/ABC` (the STORED form — it is what
+ * `reel_cache.normalized_url` holds, and what `lib/trip/supabase-api.ts` keys its synthesised
+ * inspiration rows on), while `lib/trip/parse-inspiration.ts` returns `.../reel/ABC/`, which is
+ * the form a pasted URL reaches `evidence_json.source_reel_url` in.
+ *
+ * So the two sides of this join genuinely arrive in different shapes on real rows, and a strict
+ * `===` between them finds nothing — a missing cover rather than an error, which is why it went
+ * unnoticed. `lib/trip/supabase-api.ts` strips the same way for the same reason; this is that
+ * rule applied at the one join that had been comparing raw.
+ *
+ * Deliberately ONLY the trailing slash: the code itself must still match exactly, or a cover
+ * would be attributed to a Reel the place did not come from (guardrail #1).
+ */
+const reelKey = (url: string): string => url.replace(/\/+$/, '')
+
+/**
  * The Instagram Reel a stop came from, if it can be attributed honestly.
  *
  * Shared by the popup and the map pin so a stop never shows one Reel's photo and another's link.
@@ -132,7 +151,12 @@ export function reelUrlFor(bundle: TripBundle, tripPlace: TripPlace): string | n
 export function thumbnailFor(bundle: TripBundle, tripPlace: TripPlace): string | null {
   const reel = reelUrlFor(bundle, tripPlace)
   if (!reel) return null
-  return bundle.inspiration.find((i) => i.normalized_reel_url === reel)?.thumbnail_url ?? null
+  const key = reelKey(reel)
+  // Canonical key on BOTH sides — see `reelKey`. A `requested_place` inspiration row carries a
+  // null URL and must never match.
+  return bundle.inspiration.find(
+    (i) => i.normalized_reel_url !== null && reelKey(i.normalized_reel_url) === key,
+  )?.thumbnail_url ?? null
 }
 
 export function buildPopupModel(bundle: TripBundle, tripPlace: TripPlace): PopupModel {

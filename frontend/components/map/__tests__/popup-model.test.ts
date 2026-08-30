@@ -240,6 +240,106 @@ describe('buildPopupModel', () => {
     expect(buildPopupModel(dropped as never, first).imageUrl).toBeNull()
   })
 
+  /* REGRESSION (reported from real use: the Harry Potter Reel's cover stopped appearing).
+
+     The two sides of this join are normalised by DIFFERENT normalisers, and they disagree by a
+     trailing slash. `evidence_json.source_reel_url` carries the form the trip was REQUESTED in
+     — backend/pipeline/runner.py stamps the raw pasted URL, and lib/trip/parse-inspiration.ts
+     produces `.../reel/ABC/` — while the inspiration rows lib/trip/supabase-api.ts synthesises
+     are keyed on the STORED form, `.../reel/ABC`, because backend/scrape/reel_url.py drops the
+     slash. A strict `===` between them finds nothing and returns a placeholder, silently.
+
+     Every fixture here hand-writes both sides from ONE constant, so no existing test can see
+     this. These two spell the mismatch out in both directions. */
+  it.each([
+    ['evidence slashed, inspiration stored-form', 'https://www.instagram.com/reel/DYGH3jFBZHz/', 'https://www.instagram.com/reel/DYGH3jFBZHz'],
+    ['evidence stored-form, inspiration slashed', 'https://www.instagram.com/reel/DYGH3jFBZHz', 'https://www.instagram.com/reel/DYGH3jFBZHz/'],
+  ])('resolves the cover when the two sides differ only by a trailing slash (%s)', (_label, evidenceUrl, inspirationUrl) => {
+    const trip = {
+      ...TOKYO_TRIP,
+      places: [{
+        ...first,
+        evidence_json: {
+          ...first.evidence_json,
+          evidence_kind: 'reel_quote' as const,
+          source_reel_url: evidenceUrl,
+        },
+      }],
+      inspiration: [{
+        ...(TOKYO_TRIP.inspiration[0] ?? ({} as never)),
+        normalized_reel_url: inspirationUrl,
+        thumbnail_url: 'https://cdn.example/cover.jpg',
+      }],
+    }
+    expect(buildPopupModel(trip as never, trip.places[0] as never).imageUrl)
+      .toBe('https://cdn.example/cover.jpg')
+  })
+
+  it('still shows no cover for a DIFFERENT Reel that merely shares a trailing-slash shape', () => {
+    // The canonical key must not become a loose match: only the slash may differ, never the code.
+    const trip = {
+      ...TOKYO_TRIP,
+      places: [{
+        ...first,
+        evidence_json: {
+          ...first.evidence_json,
+          evidence_kind: 'reel_quote' as const,
+          source_reel_url: 'https://www.instagram.com/reel/DYGH3jFBZHz/',
+        },
+      }],
+      inspiration: [{
+        ...(TOKYO_TRIP.inspiration[0] ?? ({} as never)),
+        normalized_reel_url: 'https://www.instagram.com/reel/SOMETHINGELSE',
+        thumbnail_url: 'https://cdn.example/other.jpg',
+      }],
+    }
+    expect(buildPopupModel(trip as never, trip.places[0] as never).imageUrl).toBeNull()
+  })
+
+  it('ignores a requested-place inspiration row, which carries no Reel URL at all', () => {
+    // insp_3 in the fixture is a `requested_place` with `normalized_reel_url: null`. Canonicalising
+    // must not dereference it — and a null must never match a real Reel.
+    const trip = {
+      ...TOKYO_TRIP,
+      places: [{
+        ...first,
+        evidence_json: {
+          ...first.evidence_json,
+          evidence_kind: 'reel_quote' as const,
+          source_reel_url: 'https://www.instagram.com/reel/DYGH3jFBZHz/',
+        },
+      }],
+      inspiration: [
+        { ...(TOKYO_TRIP.inspiration[2] ?? ({} as never)), normalized_reel_url: null, thumbnail_url: 'https://cdn.example/wrong.jpg' },
+        { ...(TOKYO_TRIP.inspiration[0] ?? ({} as never)), normalized_reel_url: 'https://www.instagram.com/reel/DYGH3jFBZHz', thumbnail_url: 'https://cdn.example/cover.jpg' },
+      ],
+    }
+    expect(buildPopupModel(trip as never, trip.places[0] as never).imageUrl)
+      .toBe('https://cdn.example/cover.jpg')
+  })
+
+  it('degrades to no cover when the matched Reel has no thumbnail stored', () => {
+    // reel_cache.thumbnail_url is nullable (a cover re-host can fail). A matched row with no
+    // cover must yield null so the pin/popup draw the placeholder, never a broken tile.
+    const trip = {
+      ...TOKYO_TRIP,
+      places: [{
+        ...first,
+        evidence_json: {
+          ...first.evidence_json,
+          evidence_kind: 'reel_quote' as const,
+          source_reel_url: 'https://www.instagram.com/reel/DYGH3jFBZHz/',
+        },
+      }],
+      inspiration: [{
+        ...(TOKYO_TRIP.inspiration[0] ?? ({} as never)),
+        normalized_reel_url: 'https://www.instagram.com/reel/DYGH3jFBZHz',
+        thumbnail_url: null,
+      }],
+    }
+    expect(buildPopupModel(trip as never, trip.places[0] as never).imageUrl).toBeNull()
+  })
+
   it('reports confidence as a whole percent', () => {
     expect(buildPopupModel(TOKYO_TRIP, first).confidence).toBe(65)
   })

@@ -18,7 +18,7 @@ const STEPS = [
   {
     eyebrow: 'Step 1',
     title: 'Hand it the reels',
-    body: 'Paste 1\u20135 Instagram Reel links with your dates, budget and vibe \u2014 or open the page in ChatGPT and say \u201csave these reels\u201d. The agent calls the same tool the form does, so the two paths are not different features.',
+    body: 'Paste 1\u20135 Instagram Reel links with your dates, budget and vibe \u2014 or open Astrail in ChatGPT and say \u201csave these reels\u201d. The agent saves through the same endpoint the form posts to, and starts the extraction the form makes you kick off separately \u2014 so the two paths are one feature, not two.',
     src: SCREENS.createTrail,
     alt: 'Astrail create-trail form with pasted reel links',
     slotLabel: 'real screenshot \u2014 create-trail form',
@@ -38,7 +38,7 @@ const STEPS = [
   {
     eyebrow: 'Step 3',
     title: 'Change it by saying so',
-    body: 'A day-by-day itinerary on a real map, every stop traceable \u2014 to the reel it came from, to Astrail\u2019s own reasoning where it suggested one, or to you. \u201cDay 2 is packed \u2014 move stop 7 to day 3.\u201d Astrail asks on the page rather than in chat, then the route redraws while you watch \u2014 the agent drives the same setters your click does \u2014 and it rewrites the day summaries itself, so the prose never describes a trip you no longer have.',
+    body: 'A day-by-day itinerary on a real map, every stop traceable \u2014 to the reel it came from, to Astrail\u2019s own reasoning where it suggested one, or to you. \u201cDay 2 is packed \u2014 move stop 7 to day 3.\u201d Astrail asks on the page rather than in chat, the route redraws while you watch, and it starts rewriting the day summaries itself \u2014 about half a minute, marked as updating while it runs; if it fails the activity rail says so, and the summaries stay behind until you ask again.',
     src: SCREENS.tripWorkspace,
     alt: 'Astrail trip workspace: itinerary beside the live map',
     slotLabel: 'real screenshot \u2014 trip workspace',

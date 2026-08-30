@@ -9,7 +9,7 @@ export const navItems = [
 export const howItWorksSteps = [
   {
     title: "Bring the Reels, not a brief",
-    body: "Drop in 1-5 links, your dates and your budget, messy as they come — or open Astrail in ChatGPT and just say it. The agent calls the same tool the save button does, so talking to it and clicking through it are one app, not two products.",
+    body: "Drop in 1-5 links, your dates and your budget, messy as they come — or open Astrail in ChatGPT and just say it. The agent saves through the same endpoint the save button posts to, then starts the extraction that by hand is a second click. One app either way, not two products.",
   },
   {
     title: "Watch it work, not a spinner",
@@ -17,7 +17,7 @@ export const howItWorksSteps = [
   },
   {
     title: "Change it by saying so",
-    body: "“Day 2 is packed — move stop 7 to day 3.” Astrail asks on the page before it commits, the route redraws while you watch, and it rewrites the day summaries itself so the prose never describes a trip you no longer have. Every stop still says where it came from.",
+    body: "“Day 2 is packed — move stop 7 to day 3.” Astrail asks on the page before it commits, the route redraws while you watch, and it starts rewriting the day summaries itself. That takes about half a minute, and the panel marks them as updating while it runs rather than passing an old description off as current; if the rewrite fails, they stay behind until you ask for another. Every stop still says where it came from.",
   },
 ] as const;
 
@@ -38,7 +38,7 @@ export const faqs = [
   {
     question: "Can it do things without asking me?",
     answer:
-      "Not the ones that matter. Planning a trip stops for approval on the page first, and so does every edit to a finished one — moving a stop included, because a move now costs a rewrite. The request is shown to you in full before it is sent, and so is the spending inside it: looking up the coordinates for a stop you asked for is a paid call, and it happens after you accept the card, not before. Exactly one action spends with no card in front of it — saving a Reel starts extracting the places in it. That one is bounded by a daily limit, and it skips a Reel whose places it has already extracted, though a Reel that was saved but never made it through extraction is tried again. Reading is free and stays silent; a confirmation on every click would make the whole thing tiresome to use.",
+      "Not the ones that matter. Planning a trip stops for approval on the page first, and so does every edit to a finished one — moving a stop included, because a move now costs a rewrite. The card names what is about to happen before it is sent: the dates, how many Reels, your own preferences quoted back word for word, and that it will spend one of your trips. It is a summary rather than the raw request — the links themselves, and details like budget and departure city, are not reprinted on it. The spending is named too: looking up the coordinates for a stop you asked for is a paid call, and it happens after you accept the card, not before. Exactly one action spends with no card in front of it — saving a Reel starts extracting the places in it. That one is bounded by a daily limit, and it skips a Reel whose places it has already extracted, though a Reel that was saved but never made it through extraction is tried again. Reading is free and stays silent; a confirmation on every click would make the whole thing tiresome to use.",
   },
   {
     question: "What stops it inventing things?",

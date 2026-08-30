@@ -41,9 +41,10 @@ export default function FinalCTA() {
         <p className="story-sub max-w-[32em] text-[color:var(--ink-600)]">
           Not this page &mdash; the app. Open Astrail in ChatGPT&rsquo;s built-in
           browser and the agent can read what you already have, save the Reels
-          you paste, build the trip while narrating each stage, and move a stop
-          to another day &mdash; on the same map you are looking at, through the
-          same setters your click uses. The sample trail opens with no account.
+          you paste, build the trip while narrating each stage, move a stop to
+          another day, and fly the map to it &mdash; that last one through the
+          very setters your own click runs, so its camera move and yours are the
+          same event, on the same map. The sample trail opens with no account.
           Moving, adding, removing or rescheduling a stop stops for a card on
           the page first.
         </p>

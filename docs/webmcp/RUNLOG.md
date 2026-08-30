@@ -1290,3 +1290,97 @@ idea is true of `show_on_map` and `set_map_mode`, so it should move rather than 
 
 **Landing otherwise clean**, including the provenance wording the whole audit turned on.
 
+### Task 9 (closed) · round-8 fixes · `4bfc71c` + `7457aec` · PASS
+
+**The HIGH was six endings, not one.** Codex traced the `unavailable` path; `auto-replan` found
+that EVERY non-change ending of `plan_trip_from_reels` was bare prose, and `readToolOutcome`
+reads plain text as `done` — it must, because most tools answer in prose. So the rail rendered
+**PLANNING · You · Astrail can't undo this** for the unshown card, a card the user **DECLINED**,
+all four validation bail-outs, and the trial-exhausted refusal.
+
+**The declined path predates every change made tonight.** A user who refused a trip plan was
+told, in the permanent audit record, that they had planned one. Verified by injection: returning
+the declined path as bare prose reddens *"does not record a declined trip as a started one
+either"*.
+
+**The actor is settle-time data now**, which is what I should have called in round 7:
+`decided_by: 'user' | 'agent' | 'nobody'`, written in the same envelope as `outcome`, believed
+only when it is one of the three words. Both failure directions close: an approved edit whose
+write fails says `user` and keeps the chip; a `replan_trip` that joins says `agent` and reads
+"Astrail". Status could never have answered it — `done` and `failed` are each reachable with and
+without a human.
+
+### Task 10 · the provenance claim pinned · `7457aec` · PASS
+
+The single most valuable claim in the entry, and until now the only corrected one with no guard.
+Six tests, built the way the night's lessons demanded: it parses `PlaceSourceType` out of
+`backend-types.ts` at run time and asserts its rule table covers exactly that set — so a fourth
+kind of stop reddens it until the page admits the fourth kind exists. It catches BOTH clause
+orders ("every stop … quote" and "the quote behind each stop", the exact wording `LiveMapDemo`
+shipped), renders each section separately so joined text cannot manufacture or hide a failure,
+and keeps the regexes loose enough that the copy stays rewritable.
+
+It also documents what it CANNOT do — a universal quote claim phrased without the words it looks
+for slips past. A floor, not a proof, and it says so rather than letting a green run read as
+certification.
+
+### GATES — final, on a quiet tree
+
+```
+frontend  npx vitest run     → 123 files / 1690 tests passed, 0 failed
+frontend  npx tsc --noEmit   → clean
+backend   uv run pytest -q   → 2047 passed, 13 skipped
+```
+Working tree clean. **Nothing pushed** — last pushed commit is still `d5561be`.
+
+---
+
+## The finding of the night
+
+**Five times, a fault injection came back GREEN and exposed a test verifying the reachable half
+rather than the load-bearing one.** Every one was in a test written by the agent that wrote the
+fix. Twice more, a false claim survived a full audit *because nothing pinned it* — both of
+`claims-fix`'s landing-page findings were invisible to 1,656 passing tests.
+
+And the four overstatements Codex caught in the landing copy were in text written **during the
+claims audit** — the pass whose entire subject was not overstating things.
+
+Neither writing nor reviewing caught those. A second reader on the new text did. If one process
+change survives tonight, it is `claims-fix`'s: **new copy gets a second reader and a pin before
+it is called done.**
+
+## Two things I got wrong, recorded rather than smoothed
+
+1. I briefed an agent to decide the fate of a 10-second undo and a ghost pin. **Neither has ever
+   existed** — I took both from the PLAN and stated them as shipped code. `AgentActivityRail`
+   says the opposite in a comment and has a test pinning it.
+2. I asserted the landing page still told the pre-WebMCP story. **`howItWorksSteps` renders only
+   at `/classic`**; `/` already led with the agent. I read a copy file and never traced the
+   consumer.
+3. My round-7 call that terminal status was a good enough proxy for "who decided" was wrong in
+   both directions, and round 8 proved it.
+
+Same defect class the whole night was spent hunting: a claim taken from a document rather than
+from the code.
+
+## For Shaun, in the morning
+
+**Deployment is the only real blocker and nothing above started it.** No live URL exists.
+
+Two OPEN hazards, deliberately not fixed at 2am, both wanting a card and a test story:
+- A `getAccessToken()` that never settles wedges a trip's rewrite slot, leaves the wrapper entry
+  running forever, makes the next explicit replan **skip its approval card** and join a dead
+  promise, and the rail cannot dismiss a running entry. Wants a bound the shape of the fetch one.
+- `app/robots.ts` still emits `allow: "/"` plus a sitemap and host while the meta tag forbids
+  indexing. Meta wins, so the outcome is right, but it hands a crawler the URL list. **Your
+  surface — untouched.**
+
+**QA only a human can run**, accumulated from four agents:
+1. Does Mapbox resolve "Tokyo Tower" live? (hit/miss against their index; no offline test can say)
+2. Remove two stops inside the ~30 s rewrite window → two REWROTE entries, final summary naming
+   neither stop.
+3. Move a stop and DECLINE → it must not move, rail reads MOVE DECLINED, no rewrite starts.
+4. With a card already on screen, ask for another edit → must NOT say you declined it.
+5. With a card already on screen, ask to plan a trip → rail must read PLANNING FAILED, with no
+   "You" and no "can't undo this".
+6. Decline a summary rewrite → the day panel must never show "updating" while the card is up.

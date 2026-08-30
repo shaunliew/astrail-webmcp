@@ -535,10 +535,11 @@ export function replanTripTool(deps: EditDeps): ToolSpec {
 
       const dayCount = r.bundle.days.length
       /* Whether this call would START work, or merely wait for work already under way.
-         No `await` between this read and the `deps.replan` below, deliberately: the in-flight set
-         is only ever mutated in a promise continuation, so with nothing yielding in between a
-         rewrite cannot finish in the gap and quietly turn a join into a fresh, unapproved
-         narration. */
+         On the joining branch nothing yields between this read and `deps.replan` below, and that
+         is deliberate: the in-flight set is only ever mutated in a promise continuation, so with
+         no await in the gap a rewrite cannot finish there and turn a join into a fresh narration
+         the user was never asked about. The other branch awaits the card, and a rewrite starting
+         while the card is up is harmless — `deps.replan` joins that one too. */
       const joining = deps.replanInFlight?.(r.bundle.trip.id) === true
 
       // Approval, for the one shape of this call that is still a decision. An agent asking to

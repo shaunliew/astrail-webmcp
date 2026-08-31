@@ -78,9 +78,18 @@ before the first build:
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | |
 | `NEXT_PUBLIC_MAPBOX_PUBLIC_TOKEN` | `pk.` token, URL-restricted to the new domain |
 | `NEXT_PUBLIC_SITE_URL` | the Vercel origin |
-| `NEXT_PUBLIC_DEMO_EMAIL` | judge credentials — the landing renders "Submission blocked" without both |
-| `NEXT_PUBLIC_DEMO_PASSWORD` | |
 | `NEXT_PUBLIC_MOCK_AUTH` | **must be `false`/unset.** `true` short-circuits every call to a mock and never reaches the backend |
+
+### 🚨 Do NOT set `NEXT_PUBLIC_DEMO_EMAIL` / `NEXT_PUBLIC_DEMO_PASSWORD`
+
+**Corrected 2026-08-31 — the first draft of this file listed them as required. That was wrong.**
+`NEXT_PUBLIC_*` is inlined into the **client bundle** at build time, so a credential set there is
+readable out of the shipped JavaScript whether or not any component prints it. A working login in
+a public bundle is an open door to an account that spends real Apify and OpenAI credit.
+
+Judge credentials go in the **Devpost submission form's testing-instructions field**, which only
+Devpost and the judges can see. They must not appear in this repo, in Vercel env, or in the
+landing page.
 
 `NEXT_PUBLIC_DELETION_ENABLED` stays off — account deletion is a three-switch cross-owner
 sequence and is not part of this submission.

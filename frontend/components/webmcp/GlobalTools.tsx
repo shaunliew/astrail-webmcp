@@ -1051,8 +1051,26 @@ export default function GlobalTools() {
 
   /* The saved-reel library, put on screen once a save has actually landed. `save_reels` decides
      WHEN — once per batch, and only if something was saved — because it is the only thing that
-     knows the batch's outcome; this only knows where the library is. */
-  const revealSavedReels = useCallback(() => showView('saved-reels'), [showView])
+     knows the batch's outcome; this only knows where the library is.
+
+     The LIST first, then the screen. The Library renders the page's own cards, so revealing
+     before that list has caught up shows "No saved reels yet" until the fetch lands — and the
+     account most likely to hit that is the one saving for the very first time, where the sentence
+     is not just stale but the exact opposite of what just happened. The per-save refreshes in
+     `saveReel` cannot be this guarantee: each is fire-and-forget and any of them can resolve
+     before a later reel in the same batch lands. This one runs after all of them, once.
+
+     Its failure is not the reveal's. A list that would not reload is a stale library; not showing
+     up at all is the defect this whole channel exists to fix, so a refused refresh still gets the
+     screen — and `save_reels` still reports the save either way. */
+  const revealSavedReels = useCallback(async () => {
+    try {
+      await refreshSavedReels.current?.()
+    } catch {
+      // Stale beats absent. Nothing is owed to the report: the reels ARE saved.
+    }
+    await showView('saved-reels')
+  }, [showView, refreshSavedReels])
 
   /* Built twice from one context, so the two readers cannot drift apart: everything is assembled
      against the write-safe reader, then the READ-ONLY tools are swapped for the copies that can

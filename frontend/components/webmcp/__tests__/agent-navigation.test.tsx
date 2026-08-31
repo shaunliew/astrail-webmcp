@@ -89,6 +89,16 @@ function AutoDecline() {
   return null
 }
 
+/** Stands in for a mounted SavedReelsFlow publishing its re-fetch into the registry slot. */
+function PageRefresh({ refresh }: { refresh: () => Promise<void> }) {
+  const { refreshSavedReels } = useWebMcpRegistry()
+  useEffect(() => {
+    refreshSavedReels.current = refresh
+    return () => { refreshSavedReels.current = null }
+  }, [refreshSavedReels, refresh])
+  return null
+}
+
 const REEL = 'https://www.instagram.com/reel/Cabc123/'
 const PLAN_ARGS = { reel_urls: [REEL], start_date: '2026-03-03', end_date: '2026-03-07' }
 
@@ -172,6 +182,59 @@ describe('save_reels takes the user to their library', () => {
       .toContain('Saved 0 of 1')
     expect(h.push).not.toHaveBeenCalled()
     expect(takeViewIntent()).toBeNull()
+  })
+
+  it('lets the page catch up with the save BEFORE putting it on screen', async () => {
+    /* The reveal opens the Library, which renders the PAGE's cards — so revealing before that
+       list has caught up shows "No saved reels yet" for as long as the fetch takes. The account
+       most likely to see it is the one saving for the very first time, i.e. every new user's
+       first minute with the product.
+
+       Ordering, not merely presence: the refresh has to be finished before the intent exists at
+       all. Once for the batch rather than once per reel — the fire-and-forget refreshes inside
+       each save keep the list live WHILE the batch runs, but any one of them can resolve before
+       a later reel lands, so none of them can be the guarantee. */
+    let listed!: () => void
+    const listing = new Promise<void>((resolve) => { listed = resolve })
+    const refresh = vi.fn(() => listing)
+    h.pathname = '/app'
+    render(
+      <WebMcpRegistryProvider><GlobalTools /><AutoApprove /><PageRefresh refresh={refresh} /></WebMcpRegistryProvider>,
+    )
+    let spec: ToolSpec | undefined
+    await waitFor(() => {
+      spec = h.specs.find((s) => s.name === 'save_reels')
+      expect(spec).toBeTruthy()
+    })
+
+    const run = Promise.resolve(spec!.execute({ urls: [REEL] }))
+    await waitFor(() => { expect(refresh).toHaveBeenCalled() })
+    expect(takeViewIntent()).toBeNull() // the screen has not been asked to move yet
+
+    listed()
+
+    await pageArrives()
+    expect(String(await run)).toContain('Saved 1 of 1')
+  })
+
+  it('still shows the library when the page cannot refresh itself', async () => {
+    // A list that fails to reload is a stale library; not revealing at all is the bug this whole
+    // channel exists to fix. Stale beats absent, and the save is reported either way.
+    const refresh = vi.fn().mockRejectedValue(new Error('offline'))
+    h.pathname = '/app'
+    render(
+      <WebMcpRegistryProvider><GlobalTools /><AutoApprove /><PageRefresh refresh={refresh} /></WebMcpRegistryProvider>,
+    )
+    let spec: ToolSpec | undefined
+    await waitFor(() => {
+      spec = h.specs.find((s) => s.name === 'save_reels')
+      expect(spec).toBeTruthy()
+    })
+
+    const run = spec!.execute({ urls: [REEL] })
+
+    await pageArrives()
+    expect(String(await run)).toContain('Saved 1 of 1')
   })
 })
 

@@ -87,13 +87,18 @@ Open [http://localhost:3000](http://localhost:3000). A real generation needs val
 
 ## Test in ChatGPT
 
-> **Filled in at submission:** the live URL and the judge account below are placeholders until the
-> challenge deployment exists. They are the two things this section cannot be followed without.
+> **Filled in at submission:** the live URL below is a placeholder until the challenge deployment
+> exists.
 
 - **Live URL:** `<filled at submission>`
-- **Judge account:** `<filled at submission>` — email and password. There is no OAuth in the judged
-  path: Google refuses OAuth inside embedded browsers, so Astrail ships a plain password sign-in
-  for this.
+- **Judge account:** in the **testing-instructions field of our Devpost submission**, which only
+  Devpost and the judges can see. **The credentials do not go in this file, or in any other file
+  here** — it is a working login to an account that spends real Apify and OpenAI credit, and this
+  repository is public. The landing page does not print them either, and reads no
+  `NEXT_PUBLIC_DEMO_*` variable, because `NEXT_PUBLIC_*` is inlined into the client bundle at build
+  time: a value the deployment sets is readable from the shipped JavaScript whether or not anything
+  renders it. There is no OAuth in the judged path — Google refuses OAuth inside embedded browsers,
+  so Astrail ships a plain password sign-in for this.
 
 Then:
 

@@ -72,30 +72,50 @@ describe('WebMCP Challenge landing', () => {
     expect(section).toHaveTextContent('WebMCP chip')
   })
 
-  it('renders the configured demo account for judges', () => {
+  /* Two tests here used to pin the opposite rule: that the page RENDERS the demo credentials from
+     `NEXT_PUBLIC_DEMO_EMAIL` / `NEXT_PUBLIC_DEMO_PASSWORD`, and warns loudly when they are unset.
+     They went with the feature. What replaces them guards the reason it was removed.
+
+     `NEXT_PUBLIC_*` is inlined into the client bundle at build time. If those vars are set on the
+     deployment, their values are readable straight out of the shipped JavaScript whether or not a
+     component prints them — so deleting the markup was never the fix, and a test that only checked
+     the markup would have passed over a live leak. The READ is the exposure, and it is the read
+     these assertions watch. The account spends real Apify and OpenAI credit. */
+
+  it('never reads a demo credential out of the client bundle', () => {
+    // Source-level on purpose, and the one case where that beats rendering: a `process.env` read
+    // that reaches no JSX still ships its value. Nothing rendered could reveal that.
+    const page = readFileSync(join(__dirname, '..', 'page.tsx'), 'utf8')
+
+    expect(page, 'page.tsx reads a NEXT_PUBLIC demo credential again').not.toMatch(
+      /process\.env\.NEXT_PUBLIC_DEMO_(EMAIL|PASSWORD)/,
+    )
+  })
+
+  it('offers judges a route to the credentials without printing anything like one', () => {
+    // Set them anyway: if the reads ever come back, this fails on real-looking values rather than
+    // passing because the test environment happened to be empty.
     vi.stubEnv('NEXT_PUBLIC_DEMO_EMAIL', 'judge@example.com')
     vi.stubEnv('NEXT_PUBLIC_DEMO_PASSWORD', 'demo-password')
 
     render(<LandingPage />)
-
     const section = screen.getByRole('region', { name: 'For judges' })
-    expect(within(section).getByText('Demo account')).toBeInTheDocument()
-    expect(within(section).getByText('judge@example.com')).toBeInTheDocument()
-    expect(within(section).getByText('demo-password')).toBeInTheDocument()
-    expect(within(section).queryByRole('alert')).not.toBeInTheDocument()
-  })
+    const shown = section.textContent ?? ''
 
-  it('blocks submission visibly when either demo credential variable is missing', () => {
-    vi.stubEnv('NEXT_PUBLIC_DEMO_EMAIL', 'judge@example.com')
-    vi.stubEnv('NEXT_PUBLIC_DEMO_PASSWORD', '')
-
-    render(<LandingPage />)
-
-    const warning = screen.getByRole('alert')
-    expect(warning).toHaveTextContent('Submission blocked')
-    expect(warning).toHaveTextContent('NEXT_PUBLIC_DEMO_EMAIL')
-    expect(warning).toHaveTextContent('NEXT_PUBLIC_DEMO_PASSWORD')
-    expect(screen.queryByText('judge@example.com')).not.toBeInTheDocument()
+    // The card still has to get a judge in — pointing at Devpost's private field is the whole
+    // replacement, and a card that just went quiet would read as an oversight to reinstate.
+    expect(section).toHaveTextContent(/Devpost/i)
+    // Nothing credential-shaped: no address, and no labelled password.
+    expect(shown, 'an email address is rendered in the judges card').not.toMatch(
+      /[\w.+-]+@[\w-]+\.[\w.]+/,
+    )
+    // The credential pair was a <dl> of Email/Password terms, and a labelled pair is what a <dl>
+    // is FOR here — so its absence is the structural half of the same guard. Checked as structure
+    // rather than as words because the word "password" belongs in the honest sentence that stayed.
+    expect(section.querySelector('dl'), 'a labelled term/value pair is back in the judges card')
+      .toBeNull()
+    expect(within(section).queryByText('judge@example.com')).not.toBeInTheDocument()
+    expect(within(section).queryByText('demo-password')).not.toBeInTheDocument()
   })
 
   it('marks the whole challenge deployment noindex and nofollow', () => {

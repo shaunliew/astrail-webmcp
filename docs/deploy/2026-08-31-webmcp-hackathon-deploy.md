@@ -16,6 +16,17 @@ changing the env var alone does not change the shipped header.
 
 ---
 
+## ⚠️ Deploy the BACKEND FIRST
+
+Added 2026-08-31. `add_place` now sends an optional `name_local` so a Japanese landmark named in
+English resolves (Mapbox's Japan POI dataset has no English names at all). `TripPlaceCreateRequest`
+uses `extra="forbid"`, so **an old backend rejects every add that carries the field** — a
+frontend-first deploy 422s the edit beat of the demo, on the judged surface, with a validation
+error the user cannot act on.
+
+Backend, verify, then frontend. The reverse order is the only sequencing in this run-sheet that
+breaks something rather than merely delaying it.
+
 ## 1 · Render — backend
 
 **Do NOT reuse `render.yaml`.** It names `astrail-backend` on `MalaysiaKaki/astrail@main` — the

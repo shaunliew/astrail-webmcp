@@ -34,7 +34,6 @@ const P = {
   sandolab: place('pl_sandolab', 'SANDO LAB TOKYO', 'restaurant', 35.7007615, 139.7717192, 'Akihabara'),
   ichiran: place('pl_ichiran', 'Ichiran Shibuya', 'restaurant', 35.6606, 139.7002, 'Shibuya'),
   disney: place('pl_disney', 'Tokyo Disneyland', 'attraction', 35.6329, 139.8804, 'Urayasu'),
-  hotelBase: place('pl_hotelbase', 'Shinjuku Granbell Hotel', 'hotel', 35.6938, 139.7034, 'Shinjuku'),
 }
 
 const trip: Trip = {
@@ -57,23 +56,12 @@ const trip: Trip = {
         day_number: 3, refs: ['leg_3'], leg_m: 19000,
       },
     ],
-    comparisons: [
-      {
-        axis: 'price_vs_rating', scope: 'hotel',
-        option_a: {
-          label: 'Shinjuku Granbell Hotel', value: 'USD 128/night · 4★',
-          pro: 'Central base with a confirmed mid-range price and a 4-star rating.',
-          con: 'Adds transfer time on the Disneyland day.',
-        },
-        option_b: {
-          label: 'Near Tokyo Disneyland', value: 'Price unavailable',
-          pro: 'Would keep the longest day closer to the park.',
-          con: 'The hotel search was skipped, so price and rating are not confirmed.',
-        },
-        recommendation: 'Keep the Shinjuku base unless Disneyland convenience matters more than a confirmed price and rating.',
-        refs: ['hotel_1', 'hotel_2'],
-      },
-    ],
+    /* Empty, as on every trip generated since hotel search was switched off. The runner builds
+       comparisons only `if HOTEL_SEARCH_ENABLED`, so a price-vs-rating card here would be advice
+       derived from a search that never ran — and the one this replaced quoted "USD 128/night · 4★"
+       for a price nothing had ever quoted. The card and the rows it compares live together in
+       `tokyo-hotels.ts`, where they are test data and not a claim to a visitor. */
+    comparisons: [],
   },
   created_at: '2026-08-01T09:00:00Z', updated_at: '2026-08-01T09:03:00Z',
 }
@@ -122,11 +110,6 @@ const places: TripPlace[] = [
     quotes: ['Also want to go Tokyo Disneyland'],
     rationale: null, evidence_kind: 'requested_by_you',
   }, 3, 0),
-  tp('tp_hotelbase', P.hotelBase, 'agent_suggested', {
-    confidence: 0.75, source_url: null, quote: null, quotes: [],
-    rationale: 'Central Shinjuku base suggested for the trip; not tied to a specific day.',
-    evidence_kind: 'suggested_by_astrail',
-  }, null, null),
 ]
 
 const days: TripDay[] = [
@@ -216,55 +199,67 @@ const restaurants: RestaurantSuggestion[] = [
   },
 ]
 
-const hotels: HotelSuggestion[] = [
-  {
-    id: 'hotel_1', trip_id: TRIP_ID, trip_day_id: null, base_place_id: 'pl_hotelbase', // single base hotel — intentionally not tied to a specific day
-    name: 'Shinjuku Granbell Hotel', area: 'Shinjuku', star_rating: 4,
-    // Snapshot keys mirror persist_hotels' real write shape (pricePerNight/totalPrice/currency) —
-    // the earlier `nightly` key was fixture drift the backend never wrote.
-    price_snapshot: { currency: 'USD', pricePerNight: 128, totalPrice: 384 }, travala_hotel_id: 'tv_12345',
-    preference_match_json: { matched: ['central', 'mid_range'] },
-    source: 'travala', status: 'suggested', searched_at: '2026-08-01T09:02:30Z',
-    // Hotel-hub: geocoded + ranked #1 (the route-central recommended hub). Coords match pl_hotelbase.
-    // route_score is the mean route duration to the trip's places in SECONDS (not a 0-1 score).
-    lat: 35.6938, lng: 139.7034, geo_status: 'placed', route_score: 420, rank: 1, is_recommended: true,
-    // Projected by getTrip from travala_result_json (guest score is 0-10, NOT the 1-5 star class).
-    // The deadline is a snapshot taken at searched_at, so it can be in the past by the time a
-    // trip is reopened — this one deliberately is, to exercise that.
-    guest_rating: 9.4, refundable: true, free_cancellation_until: '2026-08-10T14:59:00Z',
-    place_durations: { pl_akasaka: 1500, pl_hpcafe: 1500, pl_sandolab: 2400, pl_ichiran: 1500, pl_disney: 11000 },
-  },
-  // Baked partial failure (PRD §17): a skipped hotel search → honest-failure: unresolved, no coords, no pin.
-  {
-    id: 'hotel_2', trip_id: TRIP_ID, trip_day_id: 'day_3', base_place_id: null,
-    name: 'Near Tokyo Disneyland', area: 'Urayasu', star_rating: null,
-    price_snapshot: {}, travala_hotel_id: null, preference_match_json: {},
-    source: 'travala', status: 'skipped', searched_at: null,
-    // Hotel-hub: never placed on the map (Guardrail #1) — nullable geo/rank fields stay null.
-    lat: null, lng: null, geo_status: 'unresolved', route_score: null, rank: null, is_recommended: false,
-    guest_rating: null, refundable: null, free_cancellation_until: null,
-    place_durations: {},
-  },
-]
+/* No hotels, which is what a trip generated today has. Hotel search ships OFF
+   (`backend/pipeline/runner.py::HOTEL_SEARCH_ENABLED`, 2026-08-30 — Travala's MCP endpoint 401s
+   every unauthenticated call) and the disabled arm CLEARS any rows an earlier run left
+   (`persist.py::clear_hotels`), so nothing produces a hotel suggestion any more.
+
+   What sat here was a fabrication: "Shinjuku Granbell Hotel · USD 128/night · 4★" with
+   `travala_hotel_id: 'tv_12345'`, presented as a Travala result on the public sample trail. It
+   also made the demo the only trip in the product where `set_map_mode hub` SUCCEEDS, so a judge
+   who tried the hotel view here and then on their own trip got two answers and no explanation.
+   With no hotels, `TripWorkspace` hides "Where to stay" and the whole map-layer toggle, and both
+   map tools decline hub the same way everywhere.
+
+   The rows are not deleted — `hotel_2` is a deliberate baked partial failure (PRD §17) and the
+   pair carries the placed/unresolved coverage. They moved to `./tokyo-hotels.ts`, which composes
+   `TOKYO_TRIP_WITH_HOTELS` for the suites that need a trip WITH hotels: still the shape of every
+   trip generated before the switch, and still in the database. */
+const hotels: HotelSuggestion[] = []
+
+/* The covers `thumbnailFor` serves to every "From your Instagram Reel" pin and itinerary card.
+
+   These held `/landing/globe-japan.webp`, `/landing/coldopen-hero.webp` and `/landing/cta.webp`
+   — Astrail's OWN landing-page hero art, shown to a judge as the frame Astrail pulled out of
+   their Reel, on the page whose entire argument is that nothing is presented as something it is
+   not. `app/page.tsx` promises each Reel-sourced stop "that Reel's own cover frame"; this is
+   where that promise is kept or broken.
+
+   These two ARE that frame. Both Reels were already in `reel_cache` with their covers re-hosted
+   to the public `reel-covers` bucket (`backend/pipeline/thumbnails.py`), so recovering them cost
+   no Apify call and no quota slot. The files are copied into `public/reel-covers/<short code>.jpg`
+   rather than linked from Storage: a real trip fetches its covers over the network, but the
+   sample trail is deliberately the one page that reaches no backend at all, and a link out of the
+   repo can rot silently — a dropped bucket, a rotated project — leaving a judge with a broken
+   image and nothing red to warn us. A file in the deploy cannot, and the naming is the
+   provenance: `_cover_key` names a re-hosted frame by its Reel's short code, so the filename ties
+   the image to the Reel it came from. `lib/trip/fixtures/__tests__/tokyo-trip.test.ts` holds both
+   halves — the name matches the row's Reel, and the file is actually there.
+
+   `insp_3` is a typed request, not a Reel, so it carries NO cover: `supabase-api.ts` fills
+   thumbnail_url only from a saved reel card keyed by normalized_reel_url, so null is what a real
+   trip has here. The dashed no-cover tile reads "nothing was pulled from a Reel", which is true. */
+const COVER_HARRY_POTTER = '/reel-covers/DYGH3jFBZHz.jpg'
+const COVER_SANDO = '/reel-covers/DXwcVVliX3B.jpg'
 
 const inspiration: TripInspirationItem[] = [
   {
     id: 'insp_1', trip_id: TRIP_ID, item_type: 'reel_url', source: 'manual_paste',
     normalized_reel_url: REEL_HARRY_POTTER, reel_cache_id: 'rc_1',
     requested_place_text: null, resolved_place_id: 'pl_akasaka', status: 'places_found',
-    thumbnail_url: '/landing/globe-japan.webp',
+    thumbnail_url: COVER_HARRY_POTTER,
   },
   {
     id: 'insp_2', trip_id: TRIP_ID, item_type: 'reel_url', source: 'clipboard',
     normalized_reel_url: REEL_SANDO, reel_cache_id: 'rc_2',
     requested_place_text: null, resolved_place_id: 'pl_sandolab', status: 'places_found',
-    thumbnail_url: '/landing/coldopen-hero.webp',
+    thumbnail_url: COVER_SANDO,
   },
   {
     id: 'insp_3', trip_id: TRIP_ID, item_type: 'requested_place', source: 'manual_input',
     normalized_reel_url: null, reel_cache_id: null,
     requested_place_text: 'Tokyo Disneyland', resolved_place_id: 'pl_disney', status: 'resolved',
-    thumbnail_url: '/landing/cta.webp',
+    thumbnail_url: null,
   },
 ]
 
@@ -284,7 +279,6 @@ const events: GenerationEvent[] = [
   ev('ge_5', 'decision', 'preferences', 'Using saved preference memory: walkable days, ramen, balanced pace.', 22),
   ev('ge_6', 'decision', 'transport', 'Computed 2 of 3 route legs.', 40),
   ev('ge_7', 'warning', 'transport', 'Could not route Ichiran Shibuya → Tokyo Disneyland.', 41),
-  ev('ge_8', 'warning', 'hotels', 'Skipped a hotel search near Disneyland (missing dates for that leg).', 46),
   ev('ge_9', 'decision', 'save', 'Saved trip with gaps.', 55),
 ]
 

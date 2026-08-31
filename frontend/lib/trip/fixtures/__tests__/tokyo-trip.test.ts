@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { thumbnailFor } from '@/components/map/popup-model'
+import { recommendedHotelId } from '@/lib/trip/selectors'
 import { TOKYO_TRIP } from '../tokyo-trip'
 
 /**
@@ -123,5 +125,133 @@ describe('the sample trail is internally consistent', () => {
       expect(ids, `${r.id} is anchored to a missing place`).toContain(r.near_place_id)
       expect(ids, `${r.id} suggests a missing place`).toContain(r.restaurant_place_id)
     }
+  })
+})
+
+/**
+ * The covers, which is where the provenance claim gets physical.
+ *
+ * `app/page.tsx` tells a visitor that every stop from a Reel "carries that Reel's own cover
+ * frame", and `thumbnailFor` resolves a stop's cover through these inspiration rows. They held
+ * `/landing/globe-japan.webp`, `/landing/coldopen-hero.webp` and `/landing/cta.webp` — Astrail's
+ * OWN marketing art, served to a judge under a "From your Instagram Reel" label on the one page
+ * whose argument is that nothing is presented as something it is not. Nothing was red, because
+ * nothing checked.
+ *
+ * WHERE THE REAL ONES COME FROM. A scraped reel's cover is re-hosted out of Apify's expiring
+ * `displayUrl` into the public `reel-covers` Storage bucket at `<short code>.jpg`
+ * (`backend/pipeline/thumbnails.py`, keyed by `pipeline/cache.py::_cover_key`). Both demo Reels
+ * were already cached, so the frames cost no Apify call and no quota slot to obtain.
+ *
+ * WHY THEY ARE COPIED IN rather than linked. A real trip reads its covers from Storage over the
+ * network, but the sample trail is deliberately the one page that reaches no backend at all
+ * (`app/app/trip/demo/page.tsx`), and a URL pointing out of the repo can rot — a dropped bucket,
+ * a rotated project — with nothing here going red until a judge sees the broken image. A file
+ * that ships in the deploy cannot, and the existence check below is what keeps it that way.
+ */
+describe('the sample trail shows the Reels own cover frames', () => {
+  // Both spellings, for the same reason CAPTURE_CANDIDATES has two.
+  const PUBLIC_CANDIDATES = ['public', 'frontend/public']
+    .map((base) => resolve(process.cwd(), base))
+  const publicRoot = PUBLIC_CANDIDATES.find(existsSync)
+
+  const shortCode = (reelUrl: string) => reelUrl.replace(/\/+$/, '').split('/').pop()!
+  const reelRows = TOKYO_TRIP.inspiration.filter((i) => i.normalized_reel_url !== null)
+
+  it('has Reel rows to cover at all — the check proves nothing without them', () => {
+    expect(reelRows.length).toBeGreaterThan(0)
+  })
+
+  it('names every cover for the Reel it belongs to, so a foreign image cannot sit there', () => {
+    // The filename IS the provenance: `_cover_key` names a re-hosted frame by the Reel's own
+    // short code, so a cover whose name matches the row's Reel came from that Reel by
+    // construction. An arbitrary image path — marketing art, a stock photo — cannot satisfy this.
+    for (const row of reelRows) {
+      expect(row.thumbnail_url, `${row.id} shows no cover for the Reel it names`).toBeTruthy()
+      expect(row.thumbnail_url).toBe(`/reel-covers/${shortCode(row.normalized_reel_url!)}.jpg`)
+    }
+  })
+
+  it('ships every cover it points at, so the demo cannot degrade to a broken image', () => {
+    expect(publicRoot, `no public/ dir in ${PUBLIC_CANDIDATES.join(', ')}`).toBeTruthy()
+    for (const row of reelRows) {
+      const file = resolve(publicRoot!, row.thumbnail_url!.replace(/^\//, ''))
+      expect(existsSync(file), `${row.thumbnail_url} is not in the deploy`).toBe(true)
+      // A real frame, not a zero-byte placeholder someone touched to make this pass.
+      expect(readFileSync(file).byteLength).toBeGreaterThan(1024)
+    }
+  })
+
+  it('resolves a cover for every stop the reader is told came from a Reel', () => {
+    // The row-level checks above pass on a bundle where no stop reaches those rows. This walks
+    // the reader's actual path — `thumbnailFor`, the function the pin and the itinerary card
+    // both call — and ends at a file on disk.
+    const fromReels = TOKYO_TRIP.places.filter((tp) => tp.source_type === 'reel_extracted')
+    expect(fromReels.length).toBeGreaterThan(0)
+    for (const tp of fromReels) {
+      const cover = thumbnailFor(TOKYO_TRIP, tp)
+      expect(cover, `${tp.place.name} is labelled "from a Reel" with no cover`).toBeTruthy()
+      expect(existsSync(resolve(publicRoot!, cover!.replace(/^\//, '')))).toBe(true)
+    }
+  })
+
+  it('leaves a non-Reel row uncovered, exactly as a real trip leaves it', () => {
+    // `supabase-api.ts` fills thumbnail_url only from a saved reel card keyed by
+    // normalized_reel_url, so a `requested_place` row is null on every real trip. It held
+    // `/landing/cta.webp` — a shape the product cannot produce, dressing a typed request as
+    // something pulled from Instagram.
+    for (const row of TOKYO_TRIP.inspiration.filter((i) => i.normalized_reel_url === null)) {
+      expect(row.thumbnail_url).toBeNull()
+    }
+  })
+
+  it('borrows no landing-page artwork anywhere in the bundle', () => {
+    // The regression guard proper, field-agnostic: the defect was the site's own hero images
+    // being passed off as Reel frames, and it is the defect wherever it reappears.
+    expect(JSON.stringify(TOKYO_TRIP)).not.toMatch(/\/landing\//)
+  })
+})
+
+/**
+ * The commercial-data boundary.
+ *
+ * The sample trail shipped a hotel it called "Shinjuku Granbell Hotel · USD 128/night · 4★",
+ * attributed to Travala and backed by `travala_hotel_id: 'tv_12345'`. Hotel search is OFF
+ * (`backend/pipeline/runner.py::HOTEL_SEARCH_ENABLED`), so no search produced any of it — an
+ * invented booking id and an invented nightly price, presented to judges as a real suggestion on
+ * a public page. It also made the demo the ONLY trip in the product where the hotel hub view
+ * worked, so a judge who tried it here and then on their own trip got two answers.
+ *
+ * The rows still exist as test data in `tokyo-hotels.ts`, where nobody is shown them. This is the
+ * boundary between the two: whatever that file holds must not leak back into what a route renders.
+ */
+describe('the sample trail invents no commercial data', () => {
+  it('carries no hotel at all, which is what a trip generated today carries', () => {
+    expect(TOKYO_TRIP.hotels).toEqual([])
+    expect(recommendedHotelId(TOKYO_TRIP)).toBeNull()
+  })
+
+  it('quotes no price and no booking id anywhere in the bundle', () => {
+    // Field-agnostic, because the price also reached the page through the tradeoff comparison's
+    // `value: 'USD 128/night · 4★'` — a second surface, the same fabrication.
+    const serialized = JSON.stringify(TOKYO_TRIP)
+    expect(serialized).not.toMatch(/travala/i)
+    expect(serialized).not.toMatch(/pricePerNight|totalPrice|price_snapshot":\s*\{[^}]/)
+    expect(serialized).not.toMatch(/\bUSD\b/)
+  })
+
+  it('derives no hotel recommendation, because no search ran', () => {
+    // The runner builds comparisons only `if HOTEL_SEARCH_ENABLED`: a price-vs-rating card is
+    // advice, and stating it about a search that never happened is a conclusion about nothing.
+    expect(TOKYO_TRIP.trip.tradeoffs.comparisons).toEqual([])
+    // The pacing notes are independent of hotels and must survive — this is not "empty tradeoffs".
+    expect(TOKYO_TRIP.trip.tradeoffs.notes.length).toBeGreaterThan(0)
+  })
+
+  it('claims no hotel work on the decision rail either', () => {
+    // The disabled arm never constructs the hotel stage, so no hotel event reaches a real rail.
+    // The demo's said "Skipped a hotel search near Disneyland (missing dates for that leg)" —
+    // a reported outcome for work the pipeline cannot do.
+    expect(TOKYO_TRIP.events.some((e) => e.stage === 'hotels')).toBe(false)
   })
 })

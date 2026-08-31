@@ -171,7 +171,18 @@ hand it to a write tool would let the agent pretend an edit had happened.
 
 **The journey, in order.** Open the live URL in ChatGPT desktop's built-in browser on GPT-5.6 Sol or
 Terra, signed in with the supplied credentials. Click the **Site tools** arrow in the address bar and
-open **Available site tools** — 13 are listed on the app, 16 once a trip is open. Then, in chat:
+open **Available site tools** — 13 are listed on the app, 16 once a trip is open.
+
+**One thing to know first, and it is ChatGPT's behaviour rather than ours.** A site can register
+tools; it cannot make an agent call them. Which tool an agent reaches for — a site tool, or plain
+browser control — is the model's decision, and WebMCP gives a page no say in it. So if ChatGPT
+answers a prompt below by driving the page directly, clicking through the UI instead of calling a
+tool, no approval card appears and nothing happens the way this run-sheet describes it. **Say so
+and ask it to use Astrail's own tools, then ask again.** We have watched it choose browser control
+over the tools on a bare prompt; we have *not* tested whether saying so once holds for the rest of
+a conversation, so this is advice for when it happens rather than a claim about how ChatGPT works.
+
+Then, in chat:
 
 1. *"What can I do here?"* — `get_app_state` reports where you are and what is available next.
 2. *"Plan me 3 days in Osaka, 14-16 March, from these reels: …"* — paste any 1-5 public Instagram

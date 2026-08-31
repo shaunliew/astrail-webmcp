@@ -168,12 +168,19 @@ plan it by talking, while the map moves in front of you."
 - Record `/app/trip/demo` **signed out**. It needs no credential, spends nothing, and is the path a
   judge will take. It also means no account details on camera.
 - Do a silent rehearsal pass first and check the tool list renders — a cold page can take a beat.
+- **Watch which one it uses.** A site can register tools; it cannot make an agent call them, and
+  the choice is ChatGPT's rather than the page's. On a bare prompt it has been seen driving the
+  browser directly instead — clicking through the UI, no tool call, no approval card, and the beat
+  proves nothing on camera even though it looks like it worked. If that happens, ask it to use
+  Astrail's own tools and shoot the beat again. Nobody has tested whether saying it once holds for
+  the rest of a session, so check every beat rather than assuming the first one fixed it.
 
 ## If something fails on camera
 
 | Fails | Do this |
 |---|---|
 | Tool list empty | Wrong model or site tools off. Both are in Recording notes; fix and restart |
+| The page moves but no tool fired | ChatGPT drove the browser instead. Ask it to use Astrail's own tools and reshoot the beat — see Recording notes |
 | A tool errors | Cut to the sample trail — every tool there answers, which is why it is the backbone |
 | Generation stalls | It is pre-recorded. Use the recording |
 | Over 3:00 | Cut generation (2:05) first, then trim the map beat (1:35) to the day fly-to. **Never cut 0:35 or 1:00** |

@@ -26,7 +26,12 @@ function promptsFor(pathname: string): Prompt[] {
       { text: 'Show me day 2 on the map', why: 'moves the live map' },
       { text: 'Day 2 looks packed — move stop 7 to day 3', why: 'edits the itinerary' },
       { text: 'Why is this place on my trip?', why: 'shows the Reel quote behind it' },
-      { text: 'Show the hotel view', why: 'switches the map layer' },
+      // Honest about WHEN it works. Hotel search is off in this build, so the hub layer has
+      // something to draw only on a trip generated before the switch — the sample trail included.
+      // On a trip the reader just made, `set_map_mode` declines and says why. The panel claims
+      // above that its prompts are never wrong for the page you are on; this is the one that
+      // could be, so it says so rather than sending someone at a decline.
+      { text: 'Show the hotel view', why: 'switches the map layer — older trips only, hotel search is off' },
     ]
   }
   return [
@@ -80,8 +85,18 @@ export default function ExamplePrompts() {
           </li>
         ))}
       </ul>
-      <p className="mt-2 border-t border-white/10 pt-2 text-[11px] text-white/45">
-        Type these in ChatGPT while this page is open.
+      {/* Said once, here, where the prompts are — not stitched into the prompts themselves. The
+          sentences stay the sentences you would actually say; an entry whose whole claim is that
+          you talk to the app normally cannot hand people an incantation to recite.
+
+          Deliberately advice for a thing that MAY happen, never a rule about how ChatGPT behaves:
+          it was observed choosing browser control over the tools on a bare prompt, and nobody has
+          tested whether saying so once holds for the rest of a conversation. Claiming it does
+          would be a claim about someone else's product that we cannot support. */}
+      <p className="mt-2 border-t border-white/10 pt-2 text-[11px] leading-4 text-white/45">
+        Type these in ChatGPT while this page is open. If it starts clicking the page instead of
+        using Astrail&rsquo;s own tools, say so and ask it to use them &mdash; which tool it
+        reaches for is ChatGPT&rsquo;s call, not something a site decides.
       </p>
     </div>
   )

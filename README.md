@@ -122,6 +122,11 @@ Then:
      on an empty map. It has no 3D mode either, and no tool zooms deep enough to extrude buildings
      — that is the popup's street-level button, driven by a click rather than by the agent.
 
+Which tool the agent picks is ChatGPT's decision, never the page's — a site can register tools, it
+cannot make an agent call them. Usually a plain prompt reaches them; if one gets browser control
+instead, the page moves with no tool call and no approval card, and the answer is to ask it to use
+Astrail's own tools and repeat the prompt.
+
 The five edit tools require `WEBMCP_EDITS_ENABLED=true` on the deployment; they return 404 when it
 is unset.
 

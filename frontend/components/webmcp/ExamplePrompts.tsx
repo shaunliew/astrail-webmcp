@@ -23,6 +23,7 @@ type Prompt = { text: string; why: string }
 function promptsFor(pathname: string): Prompt[] {
   if (pathname.startsWith('/app/trip/')) {
     return [
+      { text: 'Add Tokyo Disneyland to day 1', why: 'Astrail looks the place up itself' },
       { text: 'Show me day 2 on the map', why: 'moves the live map' },
       { text: 'Day 2 looks packed — move stop 7 to day 3', why: 'edits the itinerary' },
       { text: 'Why is this place on my trip?', why: 'shows the Reel quote behind it' },
@@ -42,7 +43,7 @@ function promptsFor(pathname: string): Prompt[] {
     // `plan_trip_from_reels`, so the reader never handles a link twice. A single combined prompt
     // works too, but teaches the flow that skips the step people said they could not figure out.
     { text: 'Save these reels: <paste links>', why: 'no more tab-switching' },
-    { text: 'Now plan me 3 days in Tokyo, 12–14 December', why: 'uses the reels you just saved' },
+    { text: 'Use the reels I just saved and plan me 2 days in Tokyo, 15–16 November', why: 'reads your library and builds the trip' },
   ]
 }
 

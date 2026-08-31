@@ -1481,3 +1481,45 @@ bump is read as a signal about the grant baseline rather than a mystery.
 depending on CLI defaults for defence in depth. That is a migration against the production DB —
 his gated surface — and not a thing to run two days before a deadline. Recorded here so pinning
 does not bury it.
+
+---
+
+## 2026-08-31 morning — live-test fallout
+
+**The stale forecast** (`c0dacff`). Shaun moved a trip Sep 9–10 → Oct 9–10 and September's weather
+stayed on screen against October dates. `edit_trip_dates` updated `day_date` and the trip range
+and touched none of `weather_summary` / `weather_source` / `weather_payload`; `replan_trip` does
+routes and prose only. Not a stale cache — a false statement about the world, on the product
+whose whole argument is that every claim is evidence-backed. **I flagged this hours ago and never
+dispatched it**; he found it live.
+
+Cleared per row by comparing PARSED dates, so extending only the end date keeps every existing
+day's forecast. Clear rather than refetch because the provider horizon is ~16 days and Oct 9 was
+~39 out — a refetch would spend a call to learn there is nothing to say. It also closed a hazard
+I had only half-seen: `persist_narration` feeds `weather_summary` to the narrator, so the
+automatic rewrite would have read September's forecast into *fresh* October prose, where it no
+longer looks stale.
+
+**Bare prompts.** Shaun found ChatGPT sometimes reaches for browser control instead of the site
+tools. My first instinct — caveat the prompts — was wrong, and his correction is the sharper
+read: bare prompts usually work, and an agent picking the right tool out of ordinary language IS
+the demo. Copy telling everyone to say "use the site tools" argues the opposite. The prompts stay
+bare and leading; the recovery lives in the limits table and the README, where someone already
+stuck will look.
+
+**The unlisted find, and the method note that matters more than it.** `Show the hotel view` was
+offered on every trip page. Hotel search is off, so `set_map_mode hub` DECLINES on any trip made
+since 30 Aug — but the demo fixture carries hotel rows, so it worked on the sample trail and
+failed on a trip a judge just made, with nothing on screen saying which they were on. The panel's
+own docstring promises its prompts are never wrong for the page you are on.
+
+`claims-fix`'s note on how it was found is the transferable part: **the audit found what it was
+pointed at.** The two best finds of the night — this, and `FinalCTA`'s "open **this** page" —
+both came from being in a file for an unrelated reason and reading the whole thing.
+
+**Method note, from my own error twice over:** a grep tells you what strings exist; it does not
+tell you which of them a given reader sees. `promptsFor(pathname)` returns one of two sets and a
+judge sees exactly one — invisible to grep, which is how I reported "six prompts" when there are
+eight. Same shape as asserting the landing page's story from `landing-copy.ts` without tracing
+which component renders it. **When the claim is about what someone will SEE, read the branch, not
+the file.**

@@ -26,19 +26,23 @@ function promptsFor(pathname: string): Prompt[] {
       { text: 'Show me day 2 on the map', why: 'moves the live map' },
       { text: 'Day 2 looks packed — move stop 7 to day 3', why: 'edits the itinerary' },
       { text: 'Why is this place on my trip?', why: 'shows the Reel quote behind it' },
-      // Honest about WHEN it works. Hotel search is off in this build, so the hub layer has
-      // something to draw only on a trip generated before the switch — the sample trail included.
-      // On a trip the reader just made, `set_map_mode` declines and says why. The panel claims
-      // above that its prompts are never wrong for the page you are on; this is the one that
-      // could be, so it says so rather than sending someone at a decline.
-      { text: 'Show the hotel view', why: 'switches the map layer — older trips only, hotel search is off' },
+      // Three, not four. `Show the hotel view` used to sit here with a qualifier explaining that
+      // it only works on a trip generated before hotel search was switched off. A first-run panel
+      // is an on-ramp: a prompt that declines on every trip made since is a bad first thing to
+      // try, however honestly it is labelled. Removed rather than replaced — this panel earns
+      // nothing by being four items long.
     ]
   }
   return [
     { text: 'What can I do here?', why: 'the agent reads the app and explains it' },
     { text: 'What reels do I have saved?', why: 'lists your library' },
+    // These two are deliberately a SEQUENCE, and the wording carries it: "Now" only makes sense
+    // after the line above. Saving first and then planning from the library is the flow the agent
+    // is best at — it reads the URLs back out of `list_saved_reels` and feeds them to
+    // `plan_trip_from_reels`, so the reader never handles a link twice. A single combined prompt
+    // works too, but teaches the flow that skips the step people said they could not figure out.
     { text: 'Save these reels: <paste links>', why: 'no more tab-switching' },
-    { text: 'Plan me 4 days in Kyoto, 14–17 March', why: 'builds a trip from your reels' },
+    { text: 'Now plan me 3 days in Tokyo, 12–14 December', why: 'uses the reels you just saved' },
   ]
 }
 

@@ -41,6 +41,24 @@ describe('ExamplePrompts', () => {
     expect(screen.queryByText(/What reels do I have saved/)).not.toBeInTheDocument()
   })
 
+  /* A first-run panel is an on-ramp, so every prompt on it has to WORK. `Show the hotel view`
+     used to sit on the trip page with an honest qualifier saying it only works on a trip made
+     before hotel search was switched off — which is no trip a new reader has. Nothing pinned it,
+     so removing it passed in silence, and nothing would stop it coming back the same way.
+
+     Pinned as a rule rather than a list, so it also catches the next disabled thing somebody
+     suggests: no prompt may name a capability this build does not have. */
+  it('never suggests something this build cannot do', async () => {
+    for (const path of ['/app', '/app/trip/abc']) {
+      mockPath.value = path
+      const { unmount } = show()
+      const text = (await screen.findByRole('region', { name: /prompt/i }).catch(() => document.body)).textContent ?? ''
+      expect(text, `${path} suggests hotels, which are switched off`).not.toMatch(/hotel/i)
+      expect(text, `${path} suggests 3D, which no tool sets`).not.toMatch(/\b3D\b/i)
+      unmount()
+    }
+  })
+
   it('stays hidden where there is no agent to talk to', () => {
     // Telling someone to "ask the agent" in plain Safari is worse than saying nothing.
     const { container } = show(false)

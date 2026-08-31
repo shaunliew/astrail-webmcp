@@ -82,7 +82,7 @@ export default function LandingPage() {
               </li>
             </ul>
             <a
-              href="https://github.com/MalaysiaKaki/astrail/blob/feat/webmcp/docs/webmcp/WHATS-NEW.md"
+              href="https://github.com/shaunliew/astrail-webmcp/blob/main/docs/webmcp/WHATS-NEW.md"
               className="mt-7 inline-flex font-semibold text-[color:var(--spruce-deep)] underline underline-offset-4"
             >
               Read the full new-vs-pre-existing record

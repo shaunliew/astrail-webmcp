@@ -56,7 +56,7 @@ describe('WebMCP Challenge landing', () => {
     expect(within(section).getByRole('link', { name: /full new-vs-pre-existing record/i }))
       .toHaveAttribute(
         'href',
-        'https://github.com/MalaysiaKaki/astrail/blob/feat/webmcp/docs/webmcp/WHATS-NEW.md',
+        'https://github.com/shaunliew/astrail-webmcp/blob/main/docs/webmcp/WHATS-NEW.md',
       )
   })
 

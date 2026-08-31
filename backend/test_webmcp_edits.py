@@ -1414,3 +1414,71 @@ async def test_cheap_edit_routes_never_call_persist_narration(monkeypatch, opera
 
     assert response.status_code in {200, 201}
     assert narration_calls == []
+
+
+async def test_add_place_geocodes_the_local_script_name_the_agent_supplied(monkeypatch):
+    """The Japan bug end to end. Mapbox's Japan POI dataset has no English names — verified
+    against the live API, `q="Tokyo Disneyland"` returns zero features under every language — so
+    an add that only ever sent the English name could not resolve a single Tokyo landmark."""
+    db: dict = {}
+    _seed_owned_trip(db)
+    _seed_osaka_places(db)
+    spy = _stub_geocoder(monkeypatch, result=_geo(35.6327, 139.8806))
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={
+                "name": "Tokyo Disneyland",
+                "name_local": "東京ディズニーランド",
+                "day_number": 1,
+            },
+        )
+
+    assert response.status_code == 201
+    assert len(spy.calls) == 1                                  # the hit costs one paid call
+    assert spy.calls[0]["query"] == "東京ディズニーランド"
+    assert spy.calls[0]["language"] == "ja"
+    # The stop is still filed under the name the USER used: the local name is a lookup key, not
+    # a rename, and the itinerary must read back in the language they typed.
+    added = next(row for row in db["places"] if row["name"] == "Tokyo Disneyland")
+    assert (added["lat"], added["lng"]) == (35.6327, 139.8806)
+
+
+async def test_add_place_ignores_a_blank_local_name(monkeypatch):
+    """A blank is an absent local name, not a blank query — and must not cost a second call."""
+    db: dict = {}
+    _seed_owned_trip(db)
+    _seed_osaka_places(db)
+    spy = _stub_geocoder(monkeypatch, result=_geo(34.6687, 135.5013))
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={"name": "Dotonbori", "name_local": "   ", "day_number": 1},
+        )
+
+    assert response.status_code == 201
+    assert len(spy.calls) == 1
+    assert spy.calls[0]["query"] == "Dotonbori"
+
+
+async def test_add_place_asks_for_the_local_name_before_it_asks_for_coordinates(monkeypatch):
+    """What the 422 tells the agent to do next decides the provenance of the pin it comes back
+    with. A name is looked up and gated by Mapbox; a lat/lng is model-asserted all the way to the
+    map (guardrail #1). So the cheaper, checkable retry has to be named FIRST."""
+    db: dict = {}
+    _seed_owned_trip(db)
+    _seed_osaka_places(db)
+    _stub_geocoder(monkeypatch, result=None)
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.post(
+            f"/trips/{_TRIP_ID}/places",
+            json={"name": "Tokyo Disneyland", "day_number": 1},
+        )
+
+    assert response.status_code == 422
+    message = response.json()["error"]["message"]
+    assert "name_local" in message
+    assert message.index("name_local") < message.index("lat and lng")

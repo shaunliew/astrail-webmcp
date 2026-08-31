@@ -370,7 +370,10 @@ export type EditTripDatesResult = { trip: Trip; days_touched: number[] }
 
 export async function addTripPlace(
   tripId: string,
-  body: { name: string; day_number: number; position?: number | null; lat?: number | null; lng?: number | null },
+  // `name_local` mirrors TripPlaceCreateRequest.name_local (backend/api/schemas.py): the place
+  // written the way its country writes it, used as the map-lookup query and nothing else. The
+  // stop is still filed under `name`.
+  body: { name: string; name_local?: string | null; day_number: number; position?: number | null; lat?: number | null; lng?: number | null },
   accessToken: string,
 ): Promise<AddTripPlaceResult> {
   const res = await fetch(`${BACKEND_URL}/trips/${tripId}/places`, {

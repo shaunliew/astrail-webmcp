@@ -24,7 +24,7 @@ import { resolveBundle, type TripReader } from './trips'
 
 export type EditDeps = {
   trips: TripReader
-  add: (tripId: string, body: { name: string; day_number: number; position?: number | null; lat?: number | null; lng?: number | null }) => Promise<unknown>
+  add: (tripId: string, body: { name: string; name_local?: string | null; day_number: number; position?: number | null; lat?: number | null; lng?: number | null }) => Promise<unknown>
   setDates: (tripId: string, body: { start_date?: string | null; end_date?: string | null }) => Promise<unknown>
   /**
    * Rewrites the summaries so they describe the stops the trip actually has.
@@ -470,11 +470,18 @@ export function addPlaceTool(deps: EditDeps): ToolSpec {
   return {
     name: 'add_place',
     description:
-      'Adds a new stop to a day of the trip. Call it directly and do not ask in chat first; Astrail asks on the page and the reply says whether they accepted. Astrail marks it as one they asked for, with no Reel evidence behind it. Astrail looks the place up itself — first among the trip\'s own stops, then with its map provider — so send the name alone and do not supply coordinates. Only if it replies that it could not resolve the name, retry with lat and lng together.',
+      // Every clause here is rationed: the contract test caps this at 500 characters, because a
+      // tool list is context the agent pays for on every turn. The name_local sentence earns its
+      // place by naming the ONE country where the alternative is a lookup that cannot succeed.
+      'Adds a new stop to a day of the trip. Call it directly and do not ask in chat first; Astrail asks on the page and the reply says whether they accepted. Marked as a place they asked for, with no Reel evidence. Astrail looks the name up itself, so do not supply coordinates. Where the local language is not written in Latin script, also send name_local: Japan\'s map data has no English place names. If it still cannot resolve the name, retry with name_local, then with lat and lng.',
     inputSchema: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Place name, e.g. "Universal Studios Japan".' },
+        name: { type: 'string', description: 'Place name, e.g. "Universal Studios Japan". The stop is filed and shown under this name.' },
+        name_local: {
+          type: 'string',
+          description: 'The place in the local language and script, e.g. "東京ディズニーランド". It is the query Astrail looks up; for Japan it is the only one that works.',
+        },
         day: { type: 'integer', description: 'Day number to add it to.', minimum: 1 },
         position: { type: 'integer', description: 'Position within the day, 1 = first. Omit to append.', minimum: 1 },
         lat: { type: 'number', description: 'Latitude. Only if asked for; must be paired with lng.' },
@@ -497,6 +504,12 @@ export function addPlaceTool(deps: EditDeps): ToolSpec {
       const day = typeof args.day === 'number' ? args.day : null
       if (day === null) return noChange('failed', 'Which day should it go on?')
 
+      // The other value on this card the model chose and the user cannot check. It is what gets
+      // LOOKED UP, so a wrong one resolves to a real place that is not the one they asked for —
+      // the same failure as a wrong lat/lng, arriving by a different door. Blank means absent:
+      // sending it would spend a paid map lookup on an empty string.
+      const nameLocal = String(args.name_local ?? '').trim()
+
       const hasLat = typeof args.lat === 'number'
       const hasLng = typeof args.lng === 'number'
       if (hasLat !== hasLng) return noChange('failed', 'Give both lat and lng, or neither.')
@@ -509,8 +522,9 @@ export function addPlaceTool(deps: EditDeps): ToolSpec {
       const pin = hasLat && hasLng
         ? `\nIt will be pinned at ${(args.lat as number).toFixed(4)}, ${(args.lng as number).toFixed(4)} — coordinates I supplied rather than ones Astrail looked up. Check them before accepting.`
         : ''
+      const local = nameLocal && nameLocal !== name ? `\nIt will be looked up as "${nameLocal}" — the local name I chose for it.` : ''
       const approved = await deps.confirm(
-        `Add "${name}" to day ${day} of this trip.\nIt will be marked as a place you asked for, with no Reel evidence behind it.${pin}`,
+        `Add "${name}" to day ${day} of this trip.\nIt will be marked as a place you asked for, with no Reel evidence behind it.${local}${pin}`,
       )
       if (approved === 'unavailable') return noChange('failed', NO_CARD)
       if (!approved) return noChange('declined', `The user declined. "${name}" was not added.`, 'user')
@@ -518,6 +532,7 @@ export function addPlaceTool(deps: EditDeps): ToolSpec {
       try {
         await deps.add(r.bundle.trip.id, {
           name,
+          name_local: nameLocal || null,
           day_number: day,
           position: typeof args.position === 'number' ? args.position : null,
           lat: hasLat ? (args.lat as number) : null,

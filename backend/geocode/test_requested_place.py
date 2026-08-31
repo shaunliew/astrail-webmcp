@@ -331,3 +331,111 @@ async def test_geocode_requested_place_never_logs_the_token(caplog):
     with caplog.at_level("DEBUG"):
         await rp.geocode_requested_place("Dotonbori", _context(), token="sk.secret", geocode=spy)
     assert "sk.secret" not in caplog.text
+
+
+# --------------------------------------------------------------------------- local-script name
+
+
+async def test_geocode_requested_place_queries_the_local_name_first():
+    """The Japan bug, at the seam. Mapbox's JP POI index carries only Japanese names — an
+    English query returns NOTHING — so the local-script name, when the agent knows it, is the
+    one that must be sent."""
+    spy = _Spy(result=_found(35.63279624, 139.8806725))
+    result = await rp.geocode_requested_place(
+        "Tokyo Disneyland", _context(), name_local="東京ディズニーランド",
+        token="sk.test", geocode=spy,
+    )
+
+    assert result is not None
+    assert len(spy.calls) == 1                     # the hit costs exactly one paid call
+    assert spy.calls[0]["query"] == "東京ディズニーランド"
+    assert spy.calls[0]["language"] == "ja"
+
+
+async def test_geocode_requested_place_falls_back_to_the_plain_name_on_a_miss():
+    """The local name is a MODEL'S GUESS: it can be wrong, or simply not the string the provider
+    indexed. A guess that misses must not end an add the plain name would have resolved, so the
+    plain name gets the second and LAST attempt."""
+    class _MissThenHit(_Spy):
+        async def __call__(self, query, **kwargs):
+            self.calls.append({"query": query, **kwargs})
+            return None if len(self.calls) == 1 else _found(34.6544, 135.5064)
+
+    spy = _MissThenHit()
+    result = await rp.geocode_requested_place(
+        "Gyeongbokgung Palace", _context(), name_local="경복궁", token="sk.test", geocode=spy,
+    )
+
+    assert result is not None
+    assert [call["query"] for call in spy.calls] == ["경복궁", "Gyeongbokgung Palace"]
+    assert [call["language"] for call in spy.calls] == ["en", "en"]   # neither is Japanese script
+
+
+async def test_geocode_requested_place_retries_the_plain_name_after_a_rejected_result():
+    """A result the trip gate refuses is as much a non-answer as a miss."""
+    class _RejectThenHit(_Spy):
+        async def __call__(self, query, **kwargs):
+            self.calls.append({"query": query, **kwargs})
+            if len(self.calls) == 1:
+                return _found(1.2540, 103.8238, country_code="SG")   # wrong country
+            return _found(34.6544, 135.5064)
+
+    spy = _RejectThenHit()
+    result = await rp.geocode_requested_place(
+        "Dotonbori", _context(), name_local="道頓堀", token="sk.test", geocode=spy,
+    )
+    assert result is not None and len(spy.calls) == 2
+
+
+async def test_geocode_requested_place_still_gates_a_local_name_result():
+    """The local name buys a better QUERY, never a weaker check: a hit in the wrong country is
+    refused exactly as an English one is."""
+    spy = _Spy(result=_found(1.2540, 103.8238, country_code="SG"))
+    assert await rp.geocode_requested_place(
+        "Chinatown", _context(), name_local="牛車水", token="sk.test", geocode=spy,
+    ) is None
+    assert len(spy.calls) == 2      # both attempts refused; nothing accepted
+
+
+async def test_geocode_requested_place_makes_one_call_without_a_local_name():
+    """The cost regression that matters most: today's path is unchanged at one paid call."""
+    spy = _Spy(result=None)
+    assert await rp.geocode_requested_place(
+        "Nowhere", _context(), token="sk.test", geocode=spy,
+    ) is None
+    assert len(spy.calls) == 1
+
+
+async def test_geocode_requested_place_does_not_pay_twice_for_the_same_query():
+    spy = _Spy(result=None)
+    await rp.geocode_requested_place(
+        "東京タワー", _context(), name_local="  東京タワー  ", token="sk.test", geocode=spy,
+    )
+    assert len(spy.calls) == 1      # the two candidates collapse to one query
+
+
+async def test_geocode_requested_place_does_not_retry_after_a_provider_fault():
+    """A fault is infra, not a miss — a second paid call would most likely buy the same fault."""
+    spy = _Spy(raises=ResolveError("mapbox down"))
+    assert await rp.geocode_requested_place(
+        "Tokyo Disneyland", _context(), name_local="東京ディズニーランド",
+        token="sk.test", geocode=spy,
+    ) is None
+    assert len(spy.calls) == 1
+
+
+async def test_geocode_requested_place_bounds_both_attempts_with_one_deadline(monkeypatch):
+    """Two attempts must not buy twice the wall clock on a user-approved add."""
+    monkeypatch.setattr(rp, "GEOCODE_TIMEOUT_S", 0.02)
+    monkeypatch.setattr(rp, "GEOCODE_DEADLINE_SLACK_S", 0.03)
+    spy = _Spy(result=_found(34.6544, 135.5064), sleep=30)
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    result = await rp.geocode_requested_place(
+        "Tokyo Disneyland", _context(), name_local="東京ディズニーランド",
+        token="sk.test", geocode=spy,
+    )
+
+    assert result is None
+    assert loop.time() - started < 5

@@ -1,5 +1,5 @@
 """Geocode query policy — pure, offline, no key, no network."""
-from geocode.policy import geocode_query, query_language
+from geocode.policy import choose_query, geocode_query, query_language
 from models.place import PlaceResult
 
 
@@ -40,3 +40,29 @@ def test_geocode_query_japanese_name_without_local_still_ja():
 def test_geocode_query_english_name_without_local_is_english():
     q, lang = geocode_query(_place(name="Harry Potter Cafe", name_local=None))
     assert q == "Harry Potter Cafe" and lang == "en"
+
+
+# --------------------------------------------------------------------------- choose_query
+
+
+def test_choose_query_prefers_the_local_script_name():
+    # The add_place case: the user types English, the agent supplies the local-script name.
+    # Mapbox's Japan POI index carries ONLY Japanese names, so the query must be the Japanese one.
+    assert choose_query("Tokyo Disneyland", "東京ディズニーランド") == ("東京ディズニーランド", "ja")
+
+
+def test_choose_query_falls_back_to_the_plain_name():
+    assert choose_query("Tokyo Disneyland", None) == ("Tokyo Disneyland", "en")
+    assert choose_query("Tokyo Disneyland", "") == ("Tokyo Disneyland", "en")
+    assert choose_query("Tokyo Disneyland", "   ") == ("Tokyo Disneyland", "en")
+
+
+def test_choose_query_strips_both_names():
+    assert choose_query("  Tokyo Tower  ", None) == ("Tokyo Tower", "en")
+    assert choose_query("Tokyo Tower", "  東京タワー ") == ("東京タワー", "ja")
+
+
+def test_geocode_query_is_choose_query_over_a_place():
+    # One rule, one implementation: the reel path and the add_place path cannot drift apart.
+    place = _place(name="Tokyo Tower", name_local="東京タワー")
+    assert geocode_query(place) == choose_query(place.name, place.name_local)

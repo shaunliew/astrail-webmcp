@@ -280,6 +280,14 @@ class TripPlaceCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=120)
+    # The same place written the way the destination writes it — "東京ディズニーランド" for
+    # "Tokyo Disneyland". Optional, and a LOOKUP KEY rather than a rename: the stop is filed and
+    # displayed under `name`. It exists because Mapbox's Japan POI dataset indexes places only
+    # under their Japanese names (measured: an English query returns zero features in any
+    # language), so without it no Tokyo landmark could be resolved by name at all. Model-asserted,
+    # but unlike a lat/lng it is verified downstream — whatever it resolves to still has to pass
+    # the country and 500 km trip gates.
+    name_local: str | None = Field(default=None, max_length=120)
     day_number: int = Field(ge=1, strict=True)
     position: int | None = Field(default=None, ge=1, strict=True)
     lat: float | None = Field(default=None, ge=-90.0, le=90.0)
@@ -292,6 +300,14 @@ class TripPlaceCreateRequest(BaseModel):
         if not name:
             raise ValueError("name must not be blank")
         return name
+
+    @field_validator("name_local")
+    @classmethod
+    def blank_local_name_is_absent(cls, value: str | None) -> str | None:
+        """A blank is an ABSENT local name, never a blank query. Rejecting it instead would 422 an
+        add over a field the agent was free to omit; carrying it through would spend a paid Mapbox
+        call on an empty string."""
+        return (value or "").strip() or None
 
     @model_validator(mode="after")
     def require_coordinate_pair(self):

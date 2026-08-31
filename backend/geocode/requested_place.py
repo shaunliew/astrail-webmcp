@@ -9,7 +9,11 @@ of record for that path; asking the agent survives only as the LAST resort.
 COST — a paid call is the third thing tried, never the first. Mapbox forward geocoding bills the
 permanent (storable-results) tier at $5/1,000 with no free tier, so `main.add_trip_place` runs the
 FREE local reuse first (`_find_requested_place_coordinates`: an exact-name `places` row that shares
-this trip's city or country) and only geocodes on a miss. The write-through half is
+this trip's city or country) and only geocodes on a miss. On that miss it spends ONE call, or
+two when the agent supplied a local-script `name_local` that missed — `candidate_queries` is the
+hard bound, and it exists because Mapbox's Japan POI dataset indexes places only under their
+JAPANESE names: `q="Tokyo Disneyland"` returns zero features in any language, which is the bug
+this path shipped with, in the country the product is built for. The write-through half is
 `_find_or_create_place`, which persists the resolved coordinate — and the country this module
 recovered — BEFORE the 201 returns (Guardrail #7).
 
@@ -66,7 +70,7 @@ import logging
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Iterable
 
-from geocode.policy import query_language
+from geocode.policy import choose_query
 from models.geocode import GeocodeResult
 from pipeline.geo import haversine_m
 
@@ -240,10 +244,38 @@ def accept_agent_coordinates(lat: float, lng: float, context: TripGeoContext) ->
     return nearest is None or nearest <= MAX_TRIP_DISTANCE_M
 
 
+def candidate_queries(name: str, name_local: str | None) -> tuple[tuple[str, str], ...]:
+    """The (query, language) attempts for one add, in order, AT MOST TWO. Pure.
+
+    The local name leads, because where it matters it is the ONLY query that can work. Measured
+    against the live Search Box API with types=poi: Japan's POI dataset carries no English names
+    at all, so "Tokyo Disneyland", "Tokyo Tower", "Senso-ji" and "Tokyo Skytree" each return zero
+    features, while 東京ディズニーランド / 東京タワー / 浅草寺 / 東京スカイツリー each resolve
+    exactly. (Korea, Thailand, Indonesia, Malaysia and France all resolve the English name fine —
+    Japan is the outlier, not the rule.)
+
+    The plain name is then the fallback, because the local name is a MODEL'S GUESS and a wrong or
+    unindexed guess must not end an add that the plain name would have resolved. Verified live:
+    a nonsense local name costs both attempts and returns nothing, rather than resolving to
+    something else.
+
+    Deduped, so the overwhelmingly common case — no local name, or the same string twice — stays
+    at exactly ONE paid call. Never more than two: this is a $5/1,000 permanent-tier call on a
+    user-approved hot path, and an unbounded ladder of guesses is how a geocode becomes the most
+    expensive part of an edit.
+    """
+    primary = choose_query(name, name_local)
+    fallback = choose_query(name, None)
+    candidates = [candidate for candidate in (primary, fallback) if candidate[0]]
+    # dict.fromkeys: dedupe on the whole (query, language) pair, order preserved.
+    return tuple(dict.fromkeys(candidates))
+
+
 async def geocode_requested_place(
     name: str,
     context: TripGeoContext,
     *,
+    name_local: str | None = None,
     token: str | None,
     geocode: Callable[..., Awaitable[GeocodeResult | None]] | None = None,
     timeout_s: float | None = None,
@@ -251,16 +283,23 @@ async def geocode_requested_place(
     """One bounded, trip-biased, provider-verified lookup — or None, meaning "ask the agent".
 
     Returns None WITHOUT spending anything when there is no name, no token, or no trip bias to
-    steer and check the answer with. Otherwise makes exactly one paid Search Box call and returns
-    its result only if `accept_geocode` verifies it.
+    steer and check the answer with. Otherwise makes at most the `candidate_queries` calls — one
+    without a local-script name, which is every call this took before — and returns the first
+    result `accept_geocode` verifies.
+
+    `name_local` is the agent's assertion of what the place is called where it is, and it buys a
+    better QUERY and nothing else: the country and distance gates run on its result exactly as they
+    run on the plain name's. That is what separates it from the lat/lng escape hatch, which is
+    model-asserted all the way to the pin. A wrong local name costs a miss or a rejection, both of
+    which fall through to the next attempt and then to asking.
 
     Every failure mode collapses to None on purpose: a miss, a rejected result, a timeout, a
     non-2xx and a malformed body all leave the caller in the same place (ask for lat/lng), and an
     add that would otherwise 500 on a provider blip instead completes. Only the exception TYPE is
     logged — a Mapbox message can carry the URL, and the token rides in the query string.
     """
-    query = name.strip()
-    if not query or not token or not context.has_bias:
+    attempts = candidate_queries(name, name_local)
+    if not attempts or not token or not context.has_bias:
         return None
 
     resolver = geocode
@@ -271,28 +310,32 @@ async def geocode_requested_place(
         resolver = strict_forward_geocode
 
     timeout = GEOCODE_TIMEOUT_S if timeout_s is None else timeout_s
-    try:
-        result = await asyncio.wait_for(
-            resolver(
+
+    async def _resolve() -> GeocodeResult | None:
+        for query, language in attempts:
+            result = await resolver(
                 query,
                 token=token,
                 proximity_lng_lat=proximity_bias(context),
                 country=country_filter(context),
-                language=query_language(query),
+                language=language,
                 types=GEOCODE_TYPES,
                 timeout_s=timeout,
-            ),
-            timeout=timeout + GEOCODE_DEADLINE_SLACK_S,
-        )
+            )
+            if result is None:
+                continue                       # a miss: try the other name, if there is one
+            if accept_geocode(result, context):
+                return result
+            logger.info("requested_place_geocode_rejected reason=outside_trip_context")
+        return None
+
+    try:
+        # ONE deadline over both attempts, not one each: the second name must not double how long
+        # a user-approved add can hang. A provider fault inside `_resolve` propagates here and ends
+        # the add — it is infra rather than a miss, and a second call would most likely buy it again.
+        return await asyncio.wait_for(_resolve(), timeout=timeout + GEOCODE_DEADLINE_SLACK_S)
     except Exception as exc:
         # Type only (token safety). TimeoutError, ResolveError and any provider/parse fault alike:
         # the add falls back to asking rather than failing.
         logger.warning("requested_place_geocode_failed error=%s", type(exc).__name__)
         return None
-
-    if result is None:
-        return None
-    if not accept_geocode(result, context):
-        logger.info("requested_place_geocode_rejected reason=outside_trip_context")
-        return None
-    return result

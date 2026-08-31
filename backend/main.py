@@ -935,6 +935,10 @@ async def add_trip_place(
             geocoded = await geocode_requested_place(
                 req.name,
                 context,
+                # The agent's local-script name, when it knows one. Japan's POI index carries no
+                # English names at all, so for the primary market this is the only query that can
+                # resolve; it buys a better query and no relaxation of any gate.
+                name_local=req.name_local,
                 token=os.environ.get("MAPBOX_SECRET_TOKEN"),
             )
         if resolved is None and geocoded is None:
@@ -944,7 +948,9 @@ async def add_trip_place(
                     "code": "validation_error",
                     "message": (
                         f"Could not resolve coordinates for '{req.name}' from this trip's "
-                        "places or from a map lookup; supply both lat and lng"
+                        "places or from a map lookup; retry with name_local set to the place's "
+                        "name in the local language and script (Japanese for a trip in Japan, "
+                        "whose map data has no English place names), or supply both lat and lng"
                     ),
                 },
             )

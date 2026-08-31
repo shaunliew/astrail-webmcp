@@ -71,3 +71,57 @@ describe('the add_place approval card', () => {
     expect(out).toContain('Give both lat and lng')
   })
 })
+
+/**
+ * The local-script name — the second thing on this card the model asserts and the user cannot
+ * otherwise check.
+ *
+ * `name_local` is what Astrail actually sends to the map provider for a place in Japan, because
+ * Mapbox's Japan POI dataset carries no English names at all (measured against the live API:
+ * "Tokyo Disneyland" returns zero features under every language, "東京ディズニーランド"
+ * resolves). That makes it the string that DECIDES the pin, exactly as a supplied lat/lng does,
+ * and the card follows the same rule for the same reason: a value the model chose, which the
+ * lookup will act on, is shown to the person approving it.
+ */
+describe('the add_place approval card and the local-script name', () => {
+  it('shows the local name the agent chose, because it is what will be looked up', async () => {
+    const d = deps()
+    await addPlaceTool(d).execute({
+      name: 'Tokyo Disneyland', name_local: '東京ディズニーランド', day: 1,
+    })
+    expect(cardText(d)).toContain('東京ディズニーランド')
+  })
+
+  it('says nothing about a local name when none was given', async () => {
+    const d = deps()
+    await addPlaceTool(d).execute({ name: 'Tokyo Tower', day: 1 })
+    expect(cardText(d)).not.toMatch(/looked up as/i)
+  })
+
+  it('forwards the local name to the backend, which is the only place it does anything', async () => {
+    const d = deps()
+    await addPlaceTool(d).execute({
+      name: 'Tokyo Disneyland', name_local: '東京ディズニーランド', day: 1,
+    })
+    expect(d.add).toHaveBeenCalledWith(TOKYO_TRIP.trip.id, expect.objectContaining({
+      name: 'Tokyo Disneyland',
+      name_local: '東京ディズニーランド',
+    }))
+  })
+
+  it('treats a blank local name as absent rather than sending it', async () => {
+    const d = deps()
+    await addPlaceTool(d).execute({ name: 'Tokyo Tower', name_local: '   ', day: 1 })
+    expect(d.add).toHaveBeenCalledWith(TOKYO_TRIP.trip.id, expect.objectContaining({ name_local: null }))
+    expect(cardText(d)).not.toMatch(/looked up as/i)
+  })
+
+  it('declares name_local in the tool schema, or the agent can never send it', async () => {
+    const schema = addPlaceTool(deps()).inputSchema
+    const props = schema?.properties as Record<string, { type?: string }> | undefined
+    expect(props?.name_local?.type).toBe('string')
+    // additionalProperties is false on this tool: an undeclared parameter is REJECTED, so the
+    // schema is the whole of whether this fix can ever fire.
+    expect(schema?.additionalProperties).toBe(false)
+  })
+})

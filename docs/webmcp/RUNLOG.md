@@ -1523,3 +1523,85 @@ judge sees exactly one — invisible to grep, which is how I reported "six promp
 eight. Same shape as asserting the landing page's story from `landing-copy.ts` without tracing
 which component renders it. **When the claim is about what someone will SEE, read the branch, not
 the file.**
+
+---
+
+## 2026-08-31 evening — the two live-test bugs, both fixed
+
+Shaun ran the whole flow end to end in ChatGPT and it worked. Two defects fell out of it, and an
+agent overturned my diagnosis on **both**.
+
+### The library did not open · `67149aa` `f99763c` `3dbe3c1`
+
+Reported symptom: agent saves reels, page stays on home. The rail proved the tool ran
+(`SAVING · Astrail · Saved 3 of 3`), so not a routing miss.
+
+**My diagnosis pointed at the wrong thing.** I aimed at `Phase`; the library is `libraryOpen`
+state inside `TraysScreen` — literally the "Open" control in his screenshot. No phase switch could
+have fixed it. Worse, the corollary: **the cross-route path never worked either.** I warned the
+agent not to break "the path that works today" and there wasn't one.
+
+Its fourth guard is the one I could not have specified: an agent-started run leaves `phase` at
+`'inbox'` for the whole 60–180s while `GenerationScene` covers the viewport, so a phase-only check
+would open the library *behind* the wait screen and spring it on the user when the run ended.
+
+Two follow-ups approved. The `console.warn` on a failed reveal — that swallowed failure is exactly
+why this reached live testing. And the empty-library flash, which the agent sized as narrow and
+**is the demo**: a first-ever save on an empty account is beat 3. It also moved my proposed await
+from `saveReel` to `revealSavedReels` for a reason I had missed — a per-save refresh fires *before
+the next reel is saved*, so it can resolve on a list still missing reels 2 and 3. Per-save awaiting
+is not merely costlier, it is not a guarantee.
+
+### `add_place` could not find a Japanese landmark · `1b52904`
+
+I measured `q=東京タワー&language=ja` resolving, and prescribed **"retry with `language=ja`"**.
+That is not what I tested — I proved a Japanese *query string* works and then recommended a
+*language parameter* on an English one. The agent measured what I actually specified:
+
+| query | + `language=ja` |
+|---|---|
+| `Tokyo Tower` | a **bar** in Marunouchi |
+| `Senso-ji` | a **car-rental depot in Ishigaki, ~1,900 km away** |
+| `Tokyo Skytree` | a **bus stop** |
+
+Mapbox fuzzy-matches English tokens against Japanese names and **always returns something**. My
+fix would have converted a safe miss into a confidently wrong pin — guardrail #1 inverted, on the
+feature that exists to uphold it. Only one case was caught by the distance gate.
+
+Real cause: Mapbox's Japan POI dataset has **no English names**. Korea, Thailand, Malaysia and
+France all resolve fine; Japan is the outlier. Only the query string can fix it. The shipped design
+adds an optional `name_local` reusing `geocode.policy.choose_query` — no extra LLM call, no extra
+Mapbox call on existing paths, country and distance gates untouched. Verified with 14 real calls.
+
+**It also refused my second "bug" and was right.** I claimed `decided_by: "user"` was false on the
+failed add. `deps.confirm` is line 56, `deps.add` line 63 — the card comes first, so the 422 lands
+after a real approval. I had confused it with a round-9 finding about *pre-card* failures, which is
+the opposite case with the opposite correct answer.
+
+### A rule of mine that needed a boundary
+
+I told it "mechanism goes in a code comment, not the tool description". Correct when the mechanism
+is **invisible to the agent** — a language retry changes nothing the agent does. Wrong for
+`name_local`, which is a tool INPUT: if the description does not tell the agent to send it, the
+parameter is never populated and the fix sits unused. Applying my rule there would have deleted the
+feature while leaving the code in place.
+
+### GATES — green
+
+```
+frontend  123 files / 1731 tests passed      tsc clean
+backend   2066 passed, 13 skipped
+```
+Tree clean. **Nothing pushed.**
+
+### ⚠️ DEPLOY ORDER — backend first
+
+`add_place` now sends `name_local`; `TripPlaceCreateRequest` has `extra="forbid"`. A
+frontend-first deploy 422s every add on the judged surface. In the run-sheet as `f1b8853`.
+
+### Still open for Shaun
+
+- One live pass to confirm the model volunteers `name_local` — it is a behavioural dependency, not
+  a guarantee. The reworded 422 recovers with a NAME rather than coordinates either way.
+- The empty-flash residual on the CROSS-ROUTE path (save from `/app/trips` on an empty account).
+  Not the demo path. Needs `LibraryPanel` to tell "empty" from "not read yet".

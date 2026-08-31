@@ -1445,3 +1445,39 @@ frontend  123 files / 1690 tests passed, 0 failed     tsc clean
 backend   2047 passed, 13 skipped
 ```
 Tree clean. **Nothing pushed** — last pushed commit remains `d5561be`; 33 commits are local.
+
+---
+
+## 2026-08-31 — RLS suite red on the submission repo
+
+Surfaced by the first CI run on `shaunliew/astrail-webmcp`. **Not a regression and not caused by
+the repo move:** `supabase/` is byte-identical to `dev` and untouched since 22 Aug, and the last
+green run (MalaysiaKaki `dev`, 23 Aug) used the **same Postgres image**, `15.8.1.085`.
+
+**I got the cause wrong first.** I said newer Supabase images had changed the default grants;
+the logs show Postgres did not move at all. Only `realtime` did (v2.129.0 → v2.129.3), and
+`supabase db start` does not use it. The one genuinely unpinned thing is the **CLI** — whose own
+bootstrap decides what `anon` and `authenticated` hold before any migration runs.
+
+**All three failures share one signature, and none is an exposure:**
+
+| Test | Wanted | Got |
+|---|---|---|
+| authenticated INSERT `trips` | `permission denied` (no GRANT) | `violates row-level security policy` |
+| authenticated INSERT `jobs`  | `permission denied` (no GRANT) | `violates row-level security policy` |
+| anon SELECT `trips`          | `42501` | **no exception** |
+
+Every one is still **denied**. The migrations grant `select on public.trips to authenticated`
+and nothing whatsoever to `anon`, with RLS enabled — so on the anon read, RLS filters to **zero
+rows** instead of raising. No data is exposed. What moved is which layer refuses: the belt is
+gone in this CLI, the braces hold.
+
+**Action taken:** pinned `supabase/setup-cli` to **2.115.0**, the last stable release on or
+before the green run. Unpinned `latest` is the real defect — CI that changes underneath you
+cannot tell you whether your code changed. The reasoning is written into the workflow so a future
+bump is read as a signal about the grant baseline rather than a mystery.
+
+**NOT done, and Shaun's call after submission:** explicit `revoke` statements so the schema stops
+depending on CLI defaults for defence in depth. That is a migration against the production DB —
+his gated surface — and not a thing to run two days before a deadline. Recorded here so pinning
+does not bury it.

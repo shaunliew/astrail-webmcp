@@ -12,9 +12,24 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Supabase CLI
+        # PINNED, not `latest`. On 2026-08-31 this suite went red with no change to
+        # supabase/ at all — same migrations, same tests, same Postgres image
+        # (15.8.1.085) as the last green run on 2026-08-23. The only moving part was the
+        # CLI, whose own bootstrap decides what `anon` and `authenticated` are granted
+        # before a migration runs. Three tests flipped together: two INSERTs that used to
+        # be refused for want of a GRANT are now refused by RLS instead, and an anon
+        # SELECT that used to raise 42501 now returns zero rows without raising. Every
+        # one is still DENIED — the migrations grant `select` to authenticated and
+        # nothing at all to anon — but the outer layer moved, so the tests that pin
+        # WHICH layer refuses stopped holding.
+        #
+        # 2.115.0 is the last stable release on or before that green run. Bump it
+        # deliberately, and expect those three tests to need rereading when you do: they
+        # assert defence in depth, so a bump that changes the answer is telling you the
+        # grant baseline moved, which is exactly what you want to hear about.
         uses: supabase/setup-cli@v1
         with:
-          version: latest
+          version: 2.115.0
 
       # DB-only start: Postgres + auto-applied migrations from supabase/migrations/.
       # Faster than full `supabase start` — GoTrue/Studio/etc. aren't needed for

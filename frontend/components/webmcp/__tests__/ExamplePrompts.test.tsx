@@ -56,31 +56,20 @@ describe('ExamplePrompts', () => {
     await waitFor(() => expect(screen.queryByText(/What can I do here\?/)).not.toBeInTheDocument())
   })
 
-  it('says what to do when ChatGPT drives the page instead of calling a tool', async () => {
-    /* Every prompt this panel offers is bare, on purpose — the entry's claim is that you talk to
-       the app normally, and prompts prefixed "use the site tools" would undermine the thing they
-       advertise. But a bare prompt has been observed getting browser control instead: the page
-       moves, no tool fires, no approval card appears, and a judge reasonably concludes the
-       integration does not work. The recovery has to be offered somewhere, and this panel is
-       where the prompts are.
+  it('keeps the prompts bare, with no recovery caveat beside them', async () => {
+    /* Two assertions lived here pinning a recovery hint in the footer — "ask it to use Astrail's
+       tools" — and the copy they watched was deliberately removed, so they went with it rather
+       than being left to pass vacuously against a footer that no longer says anything.
 
-       Asserted as substance, not wording: that the reader is told to ask for the tools, and that
-       the limitation is attributed honestly to the agent's choice rather than implied to be
-       something Astrail controls. */
+       What replaces them is the rule that made the copy go: a caveat next to the prompts reads,
+       to someone who has not hit the problem, as an admission the integration is flaky. Bare
+       prompts mostly do reach the tools, and an agent picking the right one from ordinary
+       language is the thing being shown off. The hint belongs where someone stuck would look —
+       it is a row in SUBMISSION.md's state-of-each-path table — not in front of every reader. */
     show()
 
     const footer = await screen.findByText(/Type these in ChatGPT/i)
-    expect(footer).toHaveTextContent(/ask it to use them|use Astrail’s own tools/i)
-    expect(footer).toHaveTextContent(/ChatGPT’s call|not something a site decides/i)
-  })
-
-  it('never claims that saying it once keeps working', async () => {
-    // Nobody has tested persistence. Promising it would be a claim about someone else's product
-    // that we cannot support, on the surface whose whole subject is not overstating things.
-    show()
-
-    const footer = await screen.findByText(/Type these in ChatGPT/i)
-    expect(footer.textContent ?? '').not.toMatch(/\b(once|thereafter|from then on|for the rest of)\b/i)
+    expect(footer.textContent ?? '').not.toMatch(/site tools|use Astrail|clicking|instead of/i)
   })
 
   it('still renders when localStorage throws', async () => {

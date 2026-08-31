@@ -171,18 +171,7 @@ hand it to a write tool would let the agent pretend an edit had happened.
 
 **The journey, in order.** Open the live URL in ChatGPT desktop's built-in browser on GPT-5.6 Sol or
 Terra, signed in with the supplied credentials. Click the **Site tools** arrow in the address bar and
-open **Available site tools** — 13 are listed on the app, 16 once a trip is open.
-
-**One thing to know first, and it is ChatGPT's behaviour rather than ours.** A site can register
-tools; it cannot make an agent call them. Which tool an agent reaches for — a site tool, or plain
-browser control — is the model's decision, and WebMCP gives a page no say in it. So if ChatGPT
-answers a prompt below by driving the page directly, clicking through the UI instead of calling a
-tool, no approval card appears and nothing happens the way this run-sheet describes it. **Say so
-and ask it to use Astrail's own tools, then ask again.** We have watched it choose browser control
-over the tools on a bare prompt; we have *not* tested whether saying so once holds for the rest of
-a conversation, so this is advice for when it happens rather than a claim about how ChatGPT works.
-
-Then, in chat:
+open **Available site tools** — 13 are listed on the app, 16 once a trip is open. Then, in chat:
 
 1. *"What can I do here?"* — `get_app_state` reports where you are and what is available next.
 2. *"Plan me 3 days in Osaka, 14-16 March, from these reels: …"* — paste any 1-5 public Instagram
@@ -211,6 +200,7 @@ in the sense defined in §2 — no row here is a claim about a deployed URL.
 | ✅ | `add_place`, `remove_place` | **Live-run 2026-08-30** through the agent, each with its on-page approval |
 | ⚙ | `move_place`, `set_trip_dates` | Implemented and unit-tested; not live-run |
 | ⚠ | The five edit tools | Require `WEBMCP_EDITS_ENABLED=true` on the deployment |
+| ⚠ | Which tool the agent picks | ChatGPT's decision, never the page's — a site can register tools, it cannot make an agent call them. Usually a plain prompt reaches them. If one gets browser control instead, the page moves with no tool call and no approval card: ask it to use Astrail's own tools and repeat the prompt |
 | ✅ | The signed-in landing screen | An empty account now leads with the agent and a starter prompt; the paste box is the fallback, not the front door |
 | ✅ | `/app/trip/demo` | A fixture-backed sample trail, reachable with **no account** — six tools are offered and all six answer, and the edit tools deliberately cannot see it |
 

@@ -397,6 +397,10 @@ export default function SavedReelsFlow() {
   const status = shellRun?.status
   const phaseRef = useRef(phase)
   phaseRef.current = phase
+  // Read the same way `phase` is, and for the same reason: the intent effect below has to judge
+  // what is ON SCREEN from a subscription callback that outlives the render it was created in.
+  const statusRef = useRef(status)
+  statusRef.current = status
   useEffect(() => {
     if (status === 'complete' || status === 'failed') void entRef.current.refetch()
     if (status !== 'failed' && status !== 'unknown') return
@@ -423,15 +427,36 @@ export default function SavedReelsFlow() {
    * Both cases are covered on purpose: the take on mount is the user ARRIVING from another route,
    * the subscription is an intent raised while they were already standing here.
    *
-   * Note what it deliberately does NOT do: touch `phase`. Arriving from another route remounts
-   * this component at the library already, so there is nothing to set — and an intent that landed
-   * while the user was mid-flow would have to throw that flow away to change anything. Leaving
-   * the trays would drop a picker there is no route back to without re-organizing, and leaving
-   * 'organizing' or 'generating' would cancel the only thing that ever ends those screens. The
-   * agent's save is not a reason to cost someone that; the route change is the whole ask.
+   * ACKNOWLEDGING is unconditional; ACTING on it is not — and the two used to be the same thing,
+   * which is the bug this branch exists for. Signed in on /app, "save these reels" saved them,
+   * released the tool and moved nothing: the route was already right, so the take was the whole
+   * of it and the user still had to find "Open" themselves. `save_reels` awaits this reveal
+   * precisely so it cannot report a save the screen has not caught up with, and that promise was
+   * being kept only from other routes.
+   *
+   * What it still deliberately does NOT do is touch `phase`. An intent that lands mid-flow can
+   * only change anything by throwing that flow away: leaving the trays drops a picker there is no
+   * route back to without re-organizing, leaving the brief loses dates typed nowhere else, and
+   * leaving 'organizing' or 'generating' cancels the only thing that ever ends those screens. The
+   * agent's save is not a reason to cost someone that. So the reveal is offered to exactly one
+   * phase — 'inbox', the library's own screen, where there is no work to lose — and dropped
+   * everywhere else. Dropped, never queued: a reveal that waited for the user to walk back would
+   * open the Library minutes later with nothing they did to explain it.
+   *
+   * `status` is the half `phase` cannot see. An AGENT-started run leaves this page at 'inbox' for
+   * the whole 60-180s it builds, with GenerationScene over the top — so a phase check alone would
+   * honour a save raised mid-run and open the Library behind a screen nobody can see it through.
    */
+  const [libraryReveals, setLibraryReveals] = useState(0)
   useEffect(() => {
-    const acknowledge = () => { takeViewIntent() }
+    const acknowledge = () => {
+      const intent = takeViewIntent()
+      // Reason, not merely arrival: a generation asks for this page because the WAIT SCREEN
+      // renders here, and it has its own way of taking the viewport (the shell run, below).
+      if (intent?.reason !== 'saved-reels') return
+      if (phaseRef.current !== 'inbox' || statusRef.current === 'generating') return
+      setLibraryReveals((asked) => asked + 1)
+    }
     acknowledge()
     return subscribeViewIntent(acknowledge)
   }, [])
@@ -598,7 +623,10 @@ export default function SavedReelsFlow() {
           {inboxNotice}
         </p>
       ) : null}
-      <TraysScreen cards={liveCards} cardsStatus={cardsStatus} onCapture={handleCapture} onOrganize={handleOrganize} onCreateTrail={onCreateTrail} />
+      {/* `revealLibrary` is the count of asks this page has honoured, not a flag: the user can
+          close the Library between two saves, and the second one has to be able to open it
+          again. WHETHER is decided above, where the phase is; WHAT to open is TraysScreen's. */}
+      <TraysScreen cards={liveCards} cardsStatus={cardsStatus} onCapture={handleCapture} onOrganize={handleOrganize} onCreateTrail={onCreateTrail} revealLibrary={libraryReveals} />
     </div>
   )
 }

@@ -1065,4 +1065,68 @@ describe('TraysScreen', () => {
       expect(band().className).not.toContain('brass-wash')
     })
   })
+
+  /* ── The agent's reveal ──────────────────────────────────────────────────────────────────────
+     `save_reels` awaits a reveal so it cannot report a save the screen has not caught up with,
+     and the screen it means is this one's Library — the thing behind "Open". SavedReelsFlow
+     decides WHETHER (its phase is what can be too expensive to leave); this decides WHAT, and
+     `revealLibrary` is the count of asks it has been handed. */
+  describe('revealLibrary', () => {
+    const home = <TraysScreen cards={[card({ id: 'r1', caption: 'Tokyo Tower at sunset' })]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} />
+
+    it('opens the Library when the count goes up', async () => {
+      const view = render(home)
+      await screen.findByRole('button', { name: /your inspiration starts here/i })
+
+      view.rerender(<TraysScreen cards={[card({ id: 'r1', caption: 'Tokyo Tower at sunset' })]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} revealLibrary={1} />)
+
+      expect(await screen.findByText(/your saved reels live here/i)).toBeInTheDocument()
+      expect(screen.queryByText(/welcome back/i)).not.toBeInTheDocument()
+    })
+
+    it('opens it in browse mode — a save is something to look at, not a picker', async () => {
+      // The other mode belongs to "Plan a trip", where the user has already said what they want.
+      // An agent's save has said nothing of the sort, and landing in a selection grid asks a
+      // question nobody posed.
+      const view = render(home)
+      await screen.findByRole('button', { name: /your inspiration starts here/i })
+
+      view.rerender(<TraysScreen cards={[card({ id: 'r1', caption: 'Tokyo Tower at sunset' })]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} revealLibrary={1} />)
+
+      await screen.findByText(/your saved reels live here/i)
+      expect(screen.getByRole('button', { name: 'Browse' })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    it('ignores a count it was BORN with — a reveal older than this screen is not this screen’s', async () => {
+      /* The replay guard. This component unmounts for every other phase of the flow above it, so
+         a count raised while the user was mid-organize would otherwise be applied by the mount
+         that happens when they finally come back — a Library opening minutes later with nothing
+         the user did to explain it. */
+      render(<TraysScreen cards={[card({ id: 'r1' })]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} revealLibrary={4} />)
+
+      expect(await screen.findByRole('button', { name: /your inspiration starts here/i })).toBeInTheDocument()
+      expect(screen.queryByText(/your saved reels live here/i)).toBeNull()
+    })
+
+    it('does not take an open tray away to answer it, and does not queue it either', async () => {
+      /* The same rule the flow above applies to its own phases, one level down: a tray being read
+         (or renamed) is somewhere the user chose to be. And an ignored reveal is DROPPED — if it
+         were merely deferred, closing the tray would spring the Library open afterwards. */
+      listCollections.mockResolvedValue([collection({ id: 'c1', name: 'Tokyo winter' })])
+      getMembershipsByCollection.mockResolvedValue({ c1: ['r1'] })
+      const withTray = (revealLibrary?: number) => (
+        <TraysScreen cards={[card({ id: 'r1', caption: 'Tokyo Tower at sunset' })]} onCapture={noop} onOrganize={noop} onCreateTrail={noop} revealLibrary={revealLibrary} />
+      )
+      const view = render(withTray())
+      fireEvent.click(await screen.findByRole('button', { name: 'Tokyo winter' }))
+      await screen.findByRole('button', { name: /back/i })
+
+      view.rerender(withTray(1))
+
+      expect(screen.queryByText(/your saved reels live here/i)).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: /back/i }))
+      expect(await screen.findByRole('button', { name: /your inspiration starts here/i })).toBeInTheDocument()
+      expect(screen.queryByText(/your saved reels live here/i)).toBeNull()
+    })
+  })
 })

@@ -52,13 +52,17 @@ vi.mock('@/lib/entitlement', async (importOriginal) => ({
 // these tests stay about the organize/stream/poll/generate LOGIC, not inbox markup.
 type MockTrayCard = { id: string; caption: string | null; normalized_url: string }
 vi.mock('@/components/reels/TraysScreen', () => ({
-  default: ({ cards, onOrganize, onCreateTrail }: { cards: MockTrayCard[]; onOrganize: (ids: string[]) => void; onCreateTrail: (trayCards: MockTrayCard[]) => void }) => (
+  default: ({ cards, onOrganize, onCreateTrail, revealLibrary = 0 }: { cards: MockTrayCard[]; onOrganize: (ids: string[]) => void; onCreateTrail: (trayCards: MockTrayCard[]) => void; revealLibrary?: number }) => (
     <div>
       {cards.map((c) => <span key={c.id}>{c.caption ?? c.normalized_url}</span>)}
       <button type="button" onClick={() => onOrganize([cards[0]?.id ?? ''])}>mock-plan-trip</button>
       {/* Create-trail (T3.1b): forward the loaded cards straight into the flow's real handler,
           so a test controls the tray's places via the listSavedReelCards mock. */}
       <button type="button" onClick={() => onCreateTrail(cards)}>mock-create-trail</button>
+      {/* The reveal seam, rendered so this file can assert the DECISION the flow makes — which
+          phases forward an agent's "show me the library" and which drop it. What the number then
+          DOES on screen belongs to the real component, and is pinned in TraysScreen.test.tsx. */}
+      <span data-testid="library-reveals">{revealLibrary}</span>
     </div>
   ),
 }))
@@ -1389,6 +1393,131 @@ describe('SavedReelsFlow is where an agent action lands', () => {
 
     expect(screen.getByRole('heading', { name: 'Japan' })).toBeInTheDocument()
     expect(screen.getByRole('checkbox', { name: /select Place 1/i })).toBeChecked()
+  })
+
+  /* ── Honouring the intent, not merely acknowledging it ───────────────────────────────────────
+     Acknowledging released the tool and changed nothing else, which was right for every phase
+     except the one people actually save from. Signed in on /app, "save these reels" saved them
+     and left the home screen exactly as it was — the user still had to find "Open" themselves,
+     and `save_reels` awaits its reveal precisely so that cannot happen.
+
+     `library-reveals` is the seam: the count this page hands the inbox, which the real
+     TraysScreen turns into an open Library (TraysScreen.test.tsx). Read here because it is the
+     DECISION that was wrong — every unsafe phase must leave it alone. */
+  const revealCount = () => Number(screen.getByTestId('library-reveals').textContent)
+
+  it('reveals the library for an intent that lands while the user is already home', async () => {
+    renderFlow()
+    await loadedInbox()
+    expect(revealCount()).toBe(0)
+
+    const { settled } = requestViewIntent('saved-reels')
+
+    await waitFor(() => { expect(revealCount()).toBe(1) })
+    expect(await isSettled(settled)).toBe(true)
+  })
+
+  it('reveals it on arrival from another route too', async () => {
+    // The path that already moved the browser. It must keep working, and now land on the same
+    // screen the already-here case does — one destination for one action, not two.
+    requestViewIntent('saved-reels')
+    renderFlow()
+    await loadedInbox()
+
+    await waitFor(() => { expect(revealCount()).toBe(1) })
+  })
+
+  it('reveals once per ask, so two saves in a row both land', async () => {
+    // A flag could not express this: the user can close the Library between two saves, and the
+    // second one has to be able to open it again.
+    renderFlow()
+    await loadedInbox()
+    requestViewIntent('saved-reels')
+    await waitFor(() => { expect(revealCount()).toBe(1) })
+
+    requestViewIntent('saved-reels')
+
+    await waitFor(() => { expect(revealCount()).toBe(2) })
+  })
+
+  it('leaves the library alone for a generation intent', async () => {
+    /* Reason, not merely arrival. `plan_trip_from_reels` asks for this page because the wait
+       screen renders here; opening the saved-reel Library underneath it would be a screen the
+       user never sees, waiting to surprise them when the run ends. */
+    renderFlow()
+    await loadedInbox()
+
+    const { settled } = requestViewIntent('trip-generation')
+    await waitFor(async () => { expect(await isSettled(settled)).toBe(true) })
+
+    expect(revealCount()).toBe(0)
+  })
+
+  it('asks for nothing from the trays — and the walk home proves it', async () => {
+    /* The fault-injection direction. A reveal raised mid-picker cannot be "deferred": leaving it
+       queued would open the Library the moment the user walked back, minutes later, with no
+       action of theirs to explain it. Ignored means dropped. */
+    listSavedReelCards.mockResolvedValue([
+      cardWithPlaces('r1', 'One-place reel', [placeProof({ place_id: 'p1', name: 'Place 1' })]),
+    ])
+    renderFlow()
+    await screen.findByText('One-place reel')
+    createTrail()
+    await screen.findByRole('heading', { name: 'Japan' })
+
+    const { settled } = requestViewIntent('saved-reels')
+    await waitFor(async () => { expect(await isSettled(settled)).toBe(true) })
+    fireEvent.click(screen.getByRole('button', { name: /^back$/i }))
+
+    expect(await screen.findByText('One-place reel')).toBeInTheDocument()
+    expect(revealCount()).toBe(0)
+  })
+
+  it('asks for nothing from the brief either', async () => {
+    // A half-filled brief is the most expensive screen to lose in this flow: the dates and
+    // preferences typed into it exist nowhere else.
+    listSavedReelCards.mockResolvedValue([
+      cardWithPlaces('r1', 'One-place reel', [placeProof({ place_id: 'p1', name: 'Place 1' })]),
+    ])
+    renderFlow()
+    await screen.findByText('One-place reel')
+    createTrail()
+    await screen.findByRole('heading', { name: 'Japan' })
+    fireEvent.click(screen.getByRole('checkbox', { name: /select Place 1/i }))
+    fireEvent.click(screen.getByRole('button', { name: /plan this trip/i }))
+    await screen.findByRole('button', { name: /generate/i })
+
+    const { settled } = requestViewIntent('saved-reels')
+    await waitFor(async () => { expect(await isSettled(settled)).toBe(true) })
+
+    expect(screen.getByRole('button', { name: /generate/i })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /back to places/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /^back$/i }))
+    expect(await screen.findByText('One-place reel')).toBeInTheDocument()
+    expect(revealCount()).toBe(0)
+  })
+
+  it('asks for nothing while a run is on the wait screen', async () => {
+    /* The case the phase alone cannot see. An AGENT-started run leaves `phase` at 'inbox' the
+       whole time it is building, so a check on the phase would honour a save raised mid-run and
+       open the Library behind GenerationScene — invisible until the run ended, then on screen
+       for no reason the user could name. */
+    renderFlow()
+    await loadedInbox()
+    await act(async () => { shellApi!.reserve()!.begin('trip-agent') })
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    await waitFor(() => expect(streamGeneration).toHaveBeenCalled())
+    await screen.findByTestId('generation-progress')
+
+    const { settled } = requestViewIntent('saved-reels')
+    await waitFor(async () => { expect(await isSettled(settled)).toBe(true) })
+    expect(screen.getByTestId('generation-progress')).toBeInTheDocument()
+
+    // The run dies, handing the inbox back — the count it comes back to must still be nothing.
+    await act(async () => { emitToRun!({ type: 'result', content: JSON.stringify({ error: 'lease lost' }) }); await Promise.resolve() })
+
+    expect(await screen.findByText('Tokyo Tower at sunset')).toBeInTheDocument()
+    expect(revealCount()).toBe(0)
   })
 
   /* The shell outlives the page, exactly as /app/layout.tsx does: the run is started while the

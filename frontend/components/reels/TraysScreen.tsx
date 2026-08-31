@@ -112,6 +112,7 @@ export default function TraysScreen({
   onCapture,
   onOrganize,
   onCreateTrail,
+  revealLibrary = 0,
 }: {
   cards: SavedReelCard[]
   // Parent's saved-reel fetch state; forwarded to TrayDetail so an in-flight/failed cards
@@ -120,6 +121,14 @@ export default function TraysScreen({
   onCapture: (url: string) => Promise<void>
   onOrganize: (ids: string[]) => Promise<void>
   onCreateTrail: (trayCards: SavedReelCard[]) => void
+  /**
+   * How many times the flow above has asked for the Library — the screen behind "Open" — to be
+   * put on screen, because an agent saved reels into it. A COUNT, not a flag: closing the
+   * Library and saving again is one ask each, and a boolean could only ever say the first.
+   *
+   * Optional, and 0 without a parent that asks: this screen is complete on its own.
+   */
+  revealLibrary?: number
 }) {
   const [name, setName] = useState('traveler')
   const [collections, setCollections] = useState<ReelCollection[]>([])
@@ -189,6 +198,37 @@ export default function TraysScreen({
     return () => { activeRef.current = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  /**
+   * The agent's save, put on screen.
+   *
+   * `save_reels` awaits a reveal so it cannot report a save the user's screen has not caught up
+   * with, and the screen it means is the Library: the home shows a greeting, a capture form and
+   * the trays, so a save that only bumps a count leaves the reels themselves behind a button the
+   * user has to find. This is that button, pressed for them.
+   *
+   * `revealedAt` is what makes an ask BELONG to this screen. The flow above unmounts this
+   * component for every other phase it has, so a count raised while the user was mid-organize
+   * would otherwise be applied by the mount that happens when they come back — a Library opening
+   * minutes later with nothing they did to explain it. A count this component was born with is
+   * therefore already spent.
+   *
+   * ...and an ask is spent whether or not it is acted on: an open tray (or a half-filled create
+   * dialog) is somewhere the user chose to be, and the same rule the flow applies to its own
+   * phases applies to these. Consuming it there is the point — deferring would spring the
+   * Library open the moment they closed the tray.
+   */
+  const revealedAt = useRef(revealLibrary)
+  useEffect(() => {
+    if (revealLibrary === revealedAt.current) return
+    revealedAt.current = revealLibrary
+    // Already there — and possibly mid-selection, which switching the mode would disturb.
+    if (libraryOpen || openTrayId !== null || createOpen) return
+    // Browse, always: 'select' belongs to "Plan a trip", where the user has already said what
+    // they want. An agent's save has said nothing of the sort.
+    setLibraryMode('browse')
+    setLibraryOpen(true)
+  }, [revealLibrary, libraryOpen, openTrayId, createOpen])
 
   const cardById = useMemo(() => new Map(cards.map((card) => [card.id, card])), [cards])
 

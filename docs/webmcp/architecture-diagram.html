@@ -1,0 +1,788 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=1920, initial-scale=1">
+  <title>Astrail WebMCP architecture</title>
+  <style>
+    :root {
+      --void: #0A0B14;
+      --deep: #111322;
+      --surface: #191C2E;
+      --ink: #0B0C10;
+      --starlight: #F2ECE0;
+      --paper: #F3EEE2;
+      --paper-bright: #F7F3E8;
+      --brass: #C9974E;
+      --brass-bright: #EFC98D;
+      --muted: #9A9DB0;
+      --line: rgba(242, 236, 224, 0.16);
+      --green: #8ED3B2;
+    }
+
+    * { box-sizing: border-box; }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: var(--void);
+      color: var(--starlight);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    body {
+      background:
+        radial-gradient(circle at 64% 2%, rgba(201, 151, 78, 0.10), transparent 29%),
+        linear-gradient(180deg, #0A0B14 0%, #0C0E18 100%);
+    }
+
+    .stage {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      isolation: isolate;
+      transform: translate(-50%, -50%) scale(var(--diagram-scale, 1));
+      transform-origin: center;
+    }
+
+    .band {
+      position: absolute;
+      left: 0;
+      width: 100%;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .webmcp { top: 0; height: 225px; }
+    .pipeline { top: 225px; height: 260px; }
+    .result { top: 485px; height: 595px; border-bottom: 0; }
+
+    .eyebrow {
+      color: var(--brass-bright);
+      font-size: 14px;
+      font-weight: 800;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+    }
+
+    .section-title {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      color: var(--paper-bright);
+      font-weight: 500;
+      letter-spacing: -0.02em;
+    }
+
+    .webmcp-heading {
+      position: absolute;
+      left: 34px;
+      top: 14px;
+      display: flex;
+      align-items: baseline;
+      gap: 18px;
+    }
+
+    .webmcp-heading .section-title { font-size: 28px; }
+
+    .story-line {
+      position: absolute;
+      top: 19px;
+      right: 36px;
+      display: flex;
+      gap: 18px;
+      align-items: center;
+      color: #B9BBC7;
+      font-size: 15px;
+      letter-spacing: 0.015em;
+    }
+
+    .story-line strong { color: var(--paper); font-weight: 700; }
+    .story-arrow { color: var(--brass); font-size: 22px; }
+
+    .browser,
+    .page-box,
+    .write-box {
+      position: absolute;
+      top: 55px;
+      height: 148px;
+      border-radius: 16px;
+    }
+
+    .browser {
+      left: 35px;
+      width: 390px;
+      border: 1px solid rgba(242, 236, 224, 0.24);
+      background: linear-gradient(145deg, #202334, #151725);
+      padding: 20px 22px;
+    }
+
+    .browser-title,
+    .page-title,
+    .write-title {
+      font-size: 20px;
+      font-weight: 800;
+      color: var(--paper-bright);
+      letter-spacing: -0.01em;
+    }
+
+    .browser-sub {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .conversation {
+      display: grid;
+      gap: 7px;
+      margin-top: 15px;
+    }
+
+    .bubble {
+      height: 18px;
+      border-radius: 9px;
+      background: rgba(242, 236, 224, 0.09);
+    }
+
+    .bubble:first-child { width: 75%; justify-self: end; background: rgba(201, 151, 78, 0.22); }
+    .bubble:last-child { width: 91%; }
+
+    .page-box {
+      left: 710px;
+      width: 730px;
+      border: 2px solid var(--brass);
+      background:
+        linear-gradient(90deg, rgba(201, 151, 78, 0.10), transparent 42%),
+        var(--surface);
+      box-shadow: 0 0 34px rgba(201, 151, 78, 0.12);
+      padding: 17px 20px;
+    }
+
+    .page-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 15px;
+    }
+
+    .page-title span {
+      display: inline-block;
+      margin-left: 10px;
+      color: var(--brass-bright);
+      font-size: 14px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .count-badge {
+      border-radius: 999px;
+      padding: 7px 12px;
+      background: var(--brass);
+      color: var(--ink);
+      font-size: 15px;
+      font-weight: 900;
+      white-space: nowrap;
+    }
+
+    .inside {
+      margin-top: 11px;
+      color: var(--paper-bright);
+      font-size: 23px;
+      font-weight: 900;
+      letter-spacing: 0.015em;
+    }
+
+    .state-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+      align-items: center;
+    }
+
+    .pill {
+      padding: 5px 9px;
+      border: 1px solid rgba(242, 236, 224, 0.18);
+      border-radius: 999px;
+      background: rgba(10, 11, 20, 0.45);
+      color: #D6D3CC;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .shared-state {
+      position: absolute;
+      right: 18px;
+      top: 45px;
+      width: 270px;
+      text-align: right;
+      color: var(--green);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.07em;
+    }
+
+    .read-loop {
+      position: absolute;
+      right: 18px;
+      bottom: 13px;
+      padding: 5px 10px;
+      border-right: 2px solid var(--green);
+      border-bottom: 2px solid var(--green);
+      border-radius: 0 0 12px 0;
+      color: var(--green);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.06em;
+    }
+
+    .map-loop {
+      position: absolute;
+      right: 18px;
+      bottom: 39px;
+      color: var(--brass-bright);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.06em;
+    }
+
+    .demo-note {
+      position: absolute;
+      left: 17px;
+      bottom: 14px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.055em;
+    }
+
+    .unregister-note {
+      position: absolute;
+      left: 470px;
+      top: 112px;
+      width: 225px;
+      padding: 5px 8px;
+      border-radius: 7px;
+      background: rgba(10, 11, 20, 0.94);
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 900;
+      line-height: 1.2;
+      text-align: center;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      z-index: 3;
+    }
+
+    .write-box {
+      right: 35px;
+      width: 390px;
+      border: 1px solid rgba(201, 151, 78, 0.36);
+      background: rgba(25, 28, 46, 0.74);
+      padding: 16px 19px;
+    }
+
+    .write-title { font-size: 17px; }
+
+    .approval {
+      margin-top: 9px;
+      padding: 8px 10px;
+      border-left: 3px solid var(--brass);
+      background: rgba(201, 151, 78, 0.10);
+      color: var(--paper);
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1.3;
+    }
+
+    .backend-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+      color: #D7D5D1;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .backend-node {
+      padding: 7px 10px;
+      border: 1px solid rgba(242, 236, 224, 0.15);
+      border-radius: 8px;
+      background: #10121E;
+    }
+
+    .arrow { color: var(--brass-bright); }
+
+    .top-arrows {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    .top-arrows text {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-weight: 800;
+      paint-order: stroke;
+      stroke: var(--void);
+      stroke-width: 6px;
+      stroke-linejoin: round;
+    }
+
+    .pipeline-heading {
+      position: absolute;
+      left: 35px;
+      top: 15px;
+      display: flex;
+      gap: 15px;
+      align-items: baseline;
+    }
+
+    .pipeline-heading .section-title { font-size: 26px; }
+
+    .infra-note {
+      position: absolute;
+      right: 35px;
+      top: 18px;
+      color: var(--muted);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.035em;
+    }
+
+    .infra-note strong { color: var(--paper); }
+
+    .flow-node {
+      position: absolute;
+      top: 91px;
+      width: 146px;
+      height: 78px;
+      padding: 12px 10px 9px;
+      border: 1px solid rgba(242, 236, 224, 0.18);
+      border-radius: 13px;
+      background: var(--surface);
+      text-align: center;
+      z-index: 2;
+    }
+
+    .flow-node b,
+    .fan-node b,
+    .ready-node b {
+      display: block;
+      color: var(--paper-bright);
+      font-size: 17px;
+      letter-spacing: 0.02em;
+    }
+
+    .flow-node small,
+    .fan-node small,
+    .ready-node small {
+      display: block;
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.2;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .scrape { left: 35px; }
+    .extract { left: 205px; }
+    .dedup { left: 375px; }
+    .assemble { left: 545px; }
+    .weather { left: 715px; }
+    .save { left: 885px; }
+
+    .fan-node {
+      position: absolute;
+      left: 1100px;
+      width: 285px;
+      height: 54px;
+      padding: 8px 10px;
+      border: 1px solid rgba(201, 151, 78, 0.34);
+      border-radius: 11px;
+      background: linear-gradient(90deg, rgba(201, 151, 78, 0.09), var(--surface));
+      z-index: 2;
+    }
+
+    .fan-node b { font-size: 15px; }
+    .fan-node small { margin-top: 3px; font-size: 10px; }
+    .transport { top: 58px; }
+    .restaurants { top: 120px; }
+    .summaries { top: 182px; }
+
+    .ready-node {
+      position: absolute;
+      left: 1585px;
+      top: 107px;
+      width: 210px;
+      height: 88px;
+      padding: 19px 14px;
+      border: 2px solid var(--brass);
+      border-radius: 16px;
+      background: rgba(201, 151, 78, 0.14);
+      text-align: center;
+      z-index: 2;
+    }
+
+    .ready-node b { font-size: 20px; }
+
+    .hotels-off {
+      position: absolute;
+      right: 35px;
+      bottom: 15px;
+      color: #777A8B;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.1em;
+      text-decoration: line-through;
+      text-transform: uppercase;
+    }
+
+    .flow-lines {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    .result-heading {
+      position: absolute;
+      left: 35px;
+      top: 13px;
+      display: flex;
+      gap: 17px;
+      align-items: baseline;
+    }
+
+    .result-heading .section-title { font-size: 31px; }
+
+    .result-heading .caption {
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .proof {
+      position: absolute;
+      overflow: hidden;
+      border: 1px solid rgba(242, 236, 224, 0.18);
+      border-radius: 14px;
+      background: #0E101B;
+      box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
+    }
+
+    .proof-label {
+      position: absolute;
+      z-index: 5;
+      left: 10px;
+      top: 10px;
+      padding: 7px 9px;
+      border-radius: 7px;
+      background: rgba(10, 11, 20, 0.92);
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+      color: var(--paper-bright);
+      font-size: 24px;
+      font-weight: 900;
+      line-height: 1.04;
+      letter-spacing: 0.065em;
+      text-transform: uppercase;
+    }
+
+    .proof-label em {
+      color: var(--brass-bright);
+      font-style: normal;
+    }
+
+    .full-proof {
+      left: 35px;
+      top: 68px;
+      width: 660px;
+      height: 507px;
+      border-color: rgba(201, 151, 78, 0.58);
+      background: var(--paper);
+    }
+
+    .full-proof img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: var(--paper);
+    }
+
+    .full-proof .proof-label {
+      left: 14px;
+      top: 14px;
+      font-size: 24px;
+      background: rgba(10, 11, 20, 0.94);
+    }
+
+    .evidence-proof { left: 720px; top: 68px; width: 505px; height: 507px; }
+    .provenance-proof { left: 1250px; top: 68px; width: 635px; height: 151px; }
+    .restaurant-proof { left: 1250px; top: 234px; width: 635px; height: 134px; }
+    .transport-proof { left: 1250px; top: 383px; width: 320px; height: 192px; }
+    .tool-proof { left: 1585px; top: 383px; width: 300px; height: 192px; }
+
+    .proof svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+      background: #0E101B;
+    }
+
+    .crop-shade {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+    }
+
+    .evidence-proof .proof-label { max-width: 420px; }
+
+    .proof-detail {
+      position: absolute;
+      z-index: 5;
+      left: 10px;
+      bottom: 10px;
+      max-width: calc(100% - 20px);
+      padding: 6px 9px;
+      border-radius: 7px;
+      background: rgba(10, 11, 20, 0.90);
+      color: #D8D5CF;
+      font-size: 20px;
+      font-weight: 750;
+    }
+
+    .transport-proof .proof-label,
+    .tool-proof .proof-label { max-width: calc(100% - 20px); }
+
+    .transport-proof .proof-label.secondary {
+      top: auto;
+      bottom: 10px;
+      color: var(--paper-bright);
+    }
+
+    .callout-lines {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 4;
+    }
+  </style>
+</head>
+<body>
+  <main class="stage" aria-label="Astrail WebMCP architecture diagram">
+    <section class="band webmcp" aria-labelledby="webmcp-title">
+      <div class="webmcp-heading">
+        <span class="eyebrow">01 · WebMCP layer</span>
+        <h1 class="section-title" id="webmcp-title">The agent enters the page you are watching</h1>
+      </div>
+
+      <div class="story-line">
+        <span><strong>BEFORE</strong> · paste · research · route by hand</span>
+        <span class="story-arrow">→</span>
+        <span><strong>WITH WEBMCP</strong> · say it · inspect · steer</span>
+      </div>
+
+      <article class="browser" aria-label="ChatGPT built-in browser">
+        <div class="browser-title">ChatGPT · built-in browser</div>
+        <div class="browser-sub">Conversation + live site</div>
+        <div class="conversation" aria-hidden="true">
+          <div class="bubble"></div>
+          <div class="bubble"></div>
+        </div>
+      </article>
+
+      <article class="page-box" aria-label="Astrail React page">
+        <div class="page-top">
+          <div class="page-title">Astrail React page <span>live</span></div>
+          <div class="count-badge">13 global + 3 map = 16</div>
+        </div>
+        <div class="inside">execute() RUNS INSIDE THE PAGE</div>
+        <div class="state-row">
+          <span class="pill">loaded trip</span>
+          <span class="pill">session</span>
+          <span class="pill">React state</span>
+          <span class="shared-state">AGENT + USER SHARE LIVE PAGE STATE</span>
+        </div>
+        <div class="demo-note">6 ON /app/trip/demo · NO ACCOUNT</div>
+        <div class="map-loop">↩ MAP ACTIONS · STAY IN PAGE</div>
+        <div class="read-loop">↩ OPEN-TRIP READS · NO NETWORK</div>
+      </article>
+
+      <div class="unregister-note">3 map tools unregister<br>on navigation</div>
+
+      <article class="write-box" aria-label="Approved writes">
+        <div class="write-title">Persisted writes leave the page</div>
+        <div class="approval">6 TOOLS CAN ASK · IN-PAGE APPROVAL</div>
+        <div class="backend-row">
+          <span class="backend-node">FastAPI · Render</span>
+          <span class="arrow">→</span>
+          <span class="backend-node">Supabase · Postgres</span>
+        </div>
+      </article>
+
+      <svg class="top-arrows" viewBox="0 0 1920 225" aria-hidden="true">
+        <defs>
+          <marker id="brass-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#C9974E"/>
+          </marker>
+          <marker id="light-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#F2ECE0"/>
+          </marker>
+        </defs>
+        <path d="M 704 92 C 625 78, 535 78, 432 94" fill="none" stroke="#C9974E" stroke-width="3" marker-end="url(#brass-arrow)"/>
+        <text x="470" y="69" fill="#EFC98D" font-size="15">document.modelContext.registerTool()</text>
+        <path d="M 432 166 C 525 184, 620 184, 704 166" fill="none" stroke="#F2ECE0" stroke-width="2.5" marker-end="url(#light-arrow)"/>
+        <text x="510" y="205" fill="#F2ECE0" font-size="15">invoke → execute()</text>
+        <path d="M 1448 130 L 1481 130" fill="none" stroke="#C9974E" stroke-width="3" marker-end="url(#brass-arrow)"/>
+        <text x="1452" y="114" fill="#EFC98D" font-size="12">write</text>
+      </svg>
+    </section>
+
+    <section class="band pipeline" aria-labelledby="pipeline-title">
+      <div class="pipeline-heading">
+        <span class="eyebrow">02 · Pipeline</span>
+        <h2 class="section-title" id="pipeline-title">Multi-agent · OpenAI Agents SDK</h2>
+      </div>
+      <div class="infra-note"><strong>FastAPI on Render</strong> · default GPT-5.5 · GPT-4o fallback</div>
+
+      <article class="flow-node scrape"><b>Scrape</b><small>Apify · direct HTTP<br>parallel</small></article>
+      <article class="flow-node extract"><b>Extract</b><small>per Reel · parallel<br>Agents SDK</small></article>
+      <article class="flow-node dedup"><b>Dedup</b><small>name + geo</small></article>
+      <article class="flow-node assemble"><b>Assemble days</b><small>deterministic</small></article>
+      <article class="flow-node weather"><b>Weather</b><small>Open-Meteo<br>direct HTTP</small></article>
+      <article class="flow-node save"><b>Save</b><small>Supabase<br>Postgres</small></article>
+
+      <article class="fan-node transport"><b>Transport</b><small>Mapbox · routing</small></article>
+      <article class="fan-node restaurants"><b>Restaurants</b><small>Mapbox + Agents SDK</small></article>
+      <article class="fan-node summaries"><b>Day summaries</b><small>Agents SDK</small></article>
+
+      <article class="ready-node"><b>Trip ready</b><small>map + itinerary + evidence</small></article>
+      <div class="hotels-off">Hotels · off in this build</div>
+
+      <svg class="flow-lines" viewBox="0 0 1920 260" aria-hidden="true">
+        <defs>
+          <marker id="flow-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#C9974E"/>
+          </marker>
+        </defs>
+        <g fill="none" stroke="#C9974E" stroke-width="2.5" marker-end="url(#flow-arrow)">
+          <path d="M 181 130 L 199 130"/>
+          <path d="M 351 130 L 369 130"/>
+          <path d="M 521 130 L 539 130"/>
+          <path d="M 691 130 L 709 130"/>
+          <path d="M 861 130 L 879 130"/>
+          <path d="M 1031 130 L 1065 130 L 1065 85 L 1094 85"/>
+          <path d="M 1031 130 L 1094 147"/>
+          <path d="M 1031 130 L 1065 130 L 1065 209 L 1094 209"/>
+          <path d="M 1385 85 L 1455 85 L 1455 151 L 1579 151"/>
+          <path d="M 1385 147 L 1579 151"/>
+          <path d="M 1385 209 L 1455 209 L 1455 151 L 1579 151"/>
+        </g>
+        <text x="1051" y="37" fill="#EFC98D" font-family="ui-sans-serif, sans-serif" font-size="12" font-weight="900" letter-spacing="1.4">PARALLEL FAN-OUT</text>
+      </svg>
+    </section>
+
+    <section class="band result" aria-labelledby="result-title">
+      <div class="result-heading">
+        <span class="eyebrow">03 · The result</span>
+        <h2 class="section-title" id="result-title">You + the agent plan on the same map</h2>
+        <span class="caption">real Astrail UI · every crop comes from this screen</span>
+      </div>
+
+      <figure class="proof full-proof">
+        <div class="proof-label">Actual Astrail UI</div>
+        <img src="./screenshot.png" alt="Astrail itinerary and Mapbox map with selected Sando Lab Tokyo evidence popup">
+        <div class="crop-shade"></div>
+      </figure>
+
+      <figure class="proof evidence-proof">
+        <div class="proof-label"><em>Evidence</em> · Reel frame + Watch the Reel</div>
+        <svg viewBox="1660 700 900 1120" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Actual Astrail evidence popup crop">
+          <image href="./screenshot.png" x="0" y="0" width="3386" height="2446"/>
+        </svg>
+        <div class="proof-detail">The source stays attached to the stop.</div>
+        <div class="crop-shade"></div>
+      </figure>
+
+      <figure class="proof provenance-proof">
+        <div class="proof-label"><em>Extract</em> · FROM REEL + caption quote</div>
+        <svg viewBox="30 1685 810 355" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Actual Astrail From Reel evidence crop">
+          <image href="./screenshot.png" x="0" y="0" width="3386" height="2446"/>
+        </svg>
+        <div class="crop-shade"></div>
+      </figure>
+
+      <figure class="proof restaurant-proof">
+        <div class="proof-label"><em>Agent suggestion</em> · ASTRAIL PICK</div>
+        <svg viewBox="25 2060 815 255" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Actual Astrail restaurant recommendation crop">
+          <image href="./screenshot.png" x="0" y="0" width="3386" height="2446"/>
+        </svg>
+        <div class="crop-shade"></div>
+      </figure>
+
+      <figure class="proof transport-proof">
+        <div class="proof-label"><em>Saved itinerary</em><br>numbered pins</div>
+        <div class="proof-label secondary"><em>Transport</em><br>walk / drive legs</div>
+        <svg viewBox="25 1840 2200 555" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Actual Astrail numbered pins and travel legs crop">
+          <image href="./screenshot.png" x="0" y="0" width="3386" height="2446"/>
+        </svg>
+        <div class="crop-shade"></div>
+      </figure>
+
+      <figure class="proof tool-proof">
+        <div class="proof-label"><em>Tool layer</em></div>
+        <svg viewBox="2910 2141 476 305" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Actual Astrail WebMCP active 16 tools chip crop">
+          <image href="./screenshot.png" x="0" y="0" width="3386" height="2446"/>
+        </svg>
+        <div class="crop-shade"></div>
+      </figure>
+
+      <svg class="callout-lines" viewBox="0 0 1920 595" aria-hidden="true">
+        <g fill="none" stroke="#C9974E" stroke-width="2" stroke-dasharray="5 6" opacity="0.78">
+          <path d="M 1208 77 L 1240 77"/>
+          <path d="M 1225 302 L 1240 302"/>
+          <path d="M 1638 479 L 1647 479"/>
+        </g>
+        <g fill="#C9974E">
+          <circle cx="1208" cy="77" r="4"/>
+          <circle cx="1240" cy="77" r="4"/>
+          <circle cx="1225" cy="302" r="4"/>
+          <circle cx="1240" cy="302" r="4"/>
+          <circle cx="1638" cy="479" r="4"/>
+          <circle cx="1647" cy="479" r="4"/>
+        </g>
+      </svg>
+    </section>
+  </main>
+  <script>
+    (() => {
+      const DESIGN_WIDTH = 1920;
+      const DESIGN_HEIGHT = 1080;
+      const fitDiagram = () => {
+        const scale = Math.min(
+          window.innerWidth / DESIGN_WIDTH,
+          window.innerHeight / DESIGN_HEIGHT,
+        );
+        document.documentElement.style.setProperty('--diagram-scale', String(scale));
+      };
+      fitDiagram();
+      window.addEventListener('resize', fitDiagram, { passive: true });
+    })();
+  </script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures/tokyo-trip'
+import type { TripBundle } from '@/lib/trip/backend-types'
 import { envelopeLength, OUTPUT_LIMIT } from '../fit'
 import { addPlaceTool, movePlaceTool, readToolOutcome, removePlaceTool, replanTripTool, setTripDatesTool, type EditDeps } from '../tools/edit'
 
@@ -312,7 +313,7 @@ describe('replan_trip', () => {
     const d = deps()
     await replanTripTool(d).execute({})
     const summary = String((d.confirm as ReturnType<typeof vi.fn>).mock.calls[0][0])
-    expect(summary).toContain('3 days will be re-described')
+    expect(summary).toContain(`${TOKYO_TRIP.days.length} days will be re-described`)
   })
 
   it('does not tell the user a rewrite costs them a trip', async () => {
@@ -504,12 +505,25 @@ describe('set_trip_dates rewrites too, and still will not launder the forecast',
      _refresh_trip_routes + persist_narration — routes and prose, never weather. The backend now
      clears a moved day's forecast in the same request, which also closes the laundering hazard
      this suite used to pin: there is no stale forecast left for the rewrite to read. */
-  /* Derived, not hardcoded: the fixture's day 3 is an intentional weather gap (beyond the
-     forecast window), so a literal day count would assert a number the trip never had. */
-  const FORECAST_DAYS = TOKYO_TRIP.days.filter((d) => d.weather_summary).length
+  /* The before-state is BUILT here rather than read off the fixture, and that is a deliberate
+     change. The number under test is a DIFFERENCE — what the trip HAD minus what the re-read says
+     it has — so it needs at least two forecast days for "all of them" and "one fewer" to be
+     different answers. Reading the count off the demo trip used to give three; the trip was then
+     consolidated to two days, one of which is an intentional forecast gap, leaving exactly ONE
+     forecast day and collapsing both cases onto the same number — at which point the pair would
+     have gone on passing while testing nothing. This suite is about the counting, not about how
+     many days the sample trail happens to have, so it now says so. */
+  const weatherOn = (count: number): TripBundle => ({
+    ...TOKYO_TRIP,
+    days: TOKYO_TRIP.days.map((d, i) => ({ ...d, weather_summary: i < count ? 'Warm, 28°C.' : null })),
+  })
+  const ALL_WEATHER = weatherOn(TOKYO_TRIP.days.length)
+  const FORECAST_DAYS = ALL_WEATHER.days.length
+  /** A trip that arrived with a forecast on every day — the "before" both counts are measured from. */
+  const hadForecast = { ...reader, current: () => ALL_WEATHER, load: async () => ALL_WEATHER }
 
   it('reports how many days lost their forecast', async () => {
-    const d = deps({ refresh: vi.fn().mockResolvedValue(NO_WEATHER) })
+    const d = deps({ trips: hadForecast, refresh: vi.fn().mockResolvedValue(NO_WEATHER) })
     const out = envelope(await setTripDatesTool(d).execute({ start_date: '2026-09-14' }))
     expect(String(out.note)).toContain(`cleared on ${FORECAST_DAYS} days`)
     expect(out.next_tool).toBeUndefined()
@@ -519,8 +533,7 @@ describe('set_trip_dates rewrites too, and still will not launder the forecast',
     /* The rule for which days move lives in the backend. A second copy here would be free to
        drift into a reply stating a number the database disagrees with, so the count is the
        difference between what the trip HAD and what the re-read says it has. */
-    const oneLeft = { ...TOKYO_TRIP, days: TOKYO_TRIP.days.map((day, i) => (i === 0 ? day : { ...day, weather_summary: null })) }
-    const d = deps({ refresh: vi.fn().mockResolvedValue(oneLeft) })
+    const d = deps({ trips: hadForecast, refresh: vi.fn().mockResolvedValue(weatherOn(1)) })
     const out = envelope(await setTripDatesTool(d).execute({ start_date: '2026-09-14' }))
     expect(String(out.note)).toContain(`cleared on ${FORECAST_DAYS - 1} day`)
     expect(String(out.note)).not.toContain(`cleared on ${FORECAST_DAYS} day`)

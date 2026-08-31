@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render } from '@testing-library/react'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures'
+import { placesForDay } from '@/lib/trip/selectors'
 import type { TripBundle } from '@/lib/trip/backend-types'
 import type { ToolSpec } from '@/lib/webmcp/types'
 import { movePlaceTool, type EditDeps } from '@/lib/webmcp/tools/edit'
@@ -110,7 +111,8 @@ describe('TripTools', () => {
     const result = await tool('show_on_map').execute({ target: 'day', day: 2 })
     expect(actions.showDay).toHaveBeenCalledWith(2)
     expect(actions.openPanel).toHaveBeenCalled()
-    expect(String(result)).toContain('SANDO LAB TOKYO')
+    // Read from the day, not named: the fixture's stops have been redistributed once already.
+    expect(String(result)).toContain(placesForDay(TOKYO_TRIP, 2)[0].place.name)
   })
 
   /* The seeded bundle is the PUBLIC sample trail, and it has no hotels — hotel search ships off,
@@ -135,7 +137,7 @@ describe('TripTools', () => {
     mount({ bundle: TOKYO_TRIP, readOnly: true })
     const result = String(await tool('get_map_view').execute({}))
     expect(result).toContain('zoom 11.5')
-    expect(result).toContain('3 days')
+    expect(result).toContain(`${TOKYO_TRIP.days.length} days`)
   })
 
   /**

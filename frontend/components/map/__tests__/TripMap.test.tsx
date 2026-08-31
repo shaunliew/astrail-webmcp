@@ -486,15 +486,17 @@ describe('TripMap', () => {
         'line-color': ['get', 'color'],
       }),
     }))
-    // Each day is a separate feature so Mapbox can colour it independently.
+    // Each day is a separate feature so Mapbox can colour it independently — one per day the
+    // trip actually has, read from the fixture rather than listed, so consolidating the trip
+    // cannot leave this asserting a day that no longer exists.
     expect(mapInstance.addSource).toHaveBeenCalledWith('trip-trail', expect.objectContaining({
       data: expect.objectContaining({
         type: 'FeatureCollection',
-        features: expect.arrayContaining([
-          expect.objectContaining({ properties: expect.objectContaining({ day_number: 1 }) }),
-          expect.objectContaining({ properties: expect.objectContaining({ day_number: 2 }) }),
-          expect.objectContaining({ properties: expect.objectContaining({ day_number: 3 }) }),
-        ]),
+        features: expect.arrayContaining(
+          TOKYO_TRIP.days.map((d) => expect.objectContaining({
+            properties: expect.objectContaining({ day_number: d.day_number }),
+          })),
+        ),
       }),
     }))
 
@@ -613,8 +615,10 @@ describe('TripMap', () => {
     fireLoad()
 
     const features = trailFeatures()
-    expect(features.map((feature) => feature.properties.day_number)).toEqual([1, 2, 3])
-    expect(new Set(features.map((feature) => feature.properties.color)).size).toBe(3)
+    const dayNumbers = TOKYO_TRIP.days.map((d) => d.day_number)
+    expect(features.map((feature) => feature.properties.day_number)).toEqual(dayNumbers)
+    // One distinct colour per day — that is what "colours each day segment" means.
+    expect(new Set(features.map((feature) => feature.properties.color)).size).toBe(dayNumbers.length)
     for (let index = 1; index < features.length; index++) {
       expect(features[index].geometry.coordinates[0]).toEqual(
         features[index - 1].geometry.coordinates.at(-1),
@@ -659,12 +663,12 @@ describe('TripMap', () => {
     mapInstance.flyTo.mockClear()
     view.rerender(
       <MapProvider>
-        <TripMap bundle={TOKYO_TRIP} activeDayNumber={3} selectedPlaceId={null} onSelectPlace={() => {}} />
+        <TripMap bundle={TOKYO_TRIP} activeDayNumber={2} selectedPlaceId={null} onSelectPlace={() => {}} />
       </MapProvider>,
     )
     // day change only moves the camera; the trail is day-independent, so it is not re-added
     expect(mapInstance.addSource).not.toHaveBeenCalledWith('trip-trail', expect.anything())
-    expect(mapInstance.flyTo).toHaveBeenCalled() // Day 3's single stop → camera flies there
+    expect(mapInstance.flyTo).toHaveBeenCalled() // Day 2's single stop → camera flies there
   })
 
   // The wiring itself: the source must receive the LEG's road points, not five straight

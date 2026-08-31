@@ -13,8 +13,13 @@ import {
 
 describe('trip selectors', () => {
   it('orderedDays returns days sorted by day_number', () => {
+    // Derived from the fixture's own (unsorted) list by a different expression than the
+    // selector uses, so it stays honest when the trip is reshaped — a literal [1, 2, 3] is a
+    // statement about the fixture's length, which is not what this test is about.
     const days = orderedDays(TOKYO_TRIP)
-    expect(days.map((d) => d.day_number)).toEqual([1, 2, 3])
+    expect(days.map((d) => d.day_number)).toEqual(
+      TOKYO_TRIP.days.map((d) => d.day_number).sort((a, b) => (a ?? 0) - (b ?? 0)),
+    )
   })
 
   it("placesForDay returns only that day's trip-places, sorted by sort_order", () => {

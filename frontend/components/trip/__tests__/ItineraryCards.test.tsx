@@ -10,13 +10,23 @@ import { TOKYO_TRIP } from '@/lib/trip/fixtures'
 
 const day1 = placesForDay(TOKYO_TRIP, 1)
 const day2 = placesForDay(TOKYO_TRIP, 2)
-const day3 = placesForDay(TOKYO_TRIP, 3)
 const day1Legs = legsForDay(TOKYO_TRIP, 'day_1')
-const day3Legs = legsForDay(TOKYO_TRIP, 'day_3')
+/* The day the trip's CROSS-DAY leg arrives into — the leg that sets off from the previous day's
+   last stop. Found rather than named: it was day 3 until the trip was consolidated to two days,
+   and a test pointing at a leg that no longer spans days would go on passing while watching
+   nothing. `lib/trip/__tests__/tokyo-trip.test.ts` asserts the fixture still supplies the shape. */
+const crossDayLeg = TOKYO_TRIP.transport_legs.find((leg) => {
+  const origin = TOKYO_TRIP.places.find((tp) => tp.place_id === leg.from_place_id)
+  const legDay = TOKYO_TRIP.days.find((d) => d.id === leg.trip_day_id)
+  return origin != null && legDay != null && origin.day_number !== legDay.day_number
+})!
+const arrivalDayNumber = TOKYO_TRIP.days.find((d) => d.id === crossDayLeg.trip_day_id)!.day_number!
+const arrivalDay = placesForDay(TOKYO_TRIP, arrivalDayNumber)
+const arrivalDayLegs = legsForDay(TOKYO_TRIP, crossDayLeg.trip_day_id!)
 const idx = buildPlaceIndex(TOKYO_TRIP)
 /* The SAME numbering the map paints and `resolvePlaceRef` answers to — not a copy of it. */
 const PINS = buildTrailNumbers(TOKYO_TRIP)
-const ALL_PLACES = [...day1, ...day2, ...day3]
+const ALL_PLACES = [...day1, ...day2]
 
 describe('ItineraryCards', () => {
   it('renders a card per place with its name and source badge', () => {
@@ -146,10 +156,15 @@ describe('ItineraryCards', () => {
        (`orderedTripPlaces` drops it). Printing a number beside it would be inventing a handle
        that resolves to a different stop — the exact failure this whole block exists to stop. */
     it('leaves a stop the map cannot pin unnumbered rather than inventing one', () => {
-      const unpinned = day2[1]
+      /* A day with more than one stop, so the unpinned one sits BESIDE numbered siblings — that
+         is the case where an invented number would resolve to a different stop. Day 2 held two
+         stops until the trip was consolidated; picking the day by shape rather than by number
+         keeps this testing the same thing. */
+      const day = [day1, day2].find((stops) => stops.length > 1)!
+      const unpinned = day[1]
       const partial = new Map([...PINS].filter(([id]) => id !== unpinned.id))
       const { container } = render(
-        <ItineraryCards places={day2} trailNumbers={partial} selectedPlaceId={null} onSelectPlace={() => {}} />,
+        <ItineraryCards places={day} trailNumbers={partial} selectedPlaceId={null} onSelectPlace={() => {}} />,
       )
       const card = container.querySelector<HTMLElement>(`[data-place-id="${unpinned.place_id}"]`)!
       expect(within(card).queryByText(/^\d+$/)).toBeNull()
@@ -188,18 +203,18 @@ describe('ItineraryCards', () => {
     it('shows a leg arriving from another day above the first stop, warning and all', () => {
       render(
         <ItineraryCards
-          places={day3} legs={day3Legs} placeIndex={idx} trailNumbers={PINS}
+          places={arrivalDay} legs={arrivalDayLegs} placeIndex={idx} trailNumbers={PINS}
           selectedPlaceId={null} onSelectPlace={() => {}}
         />,
       )
       const [li] = screen.getAllByRole('listitem')
-      const origin = idx.get('pl_ichiran')!.name
+      const origin = idx.get(crossDayLeg.from_place_id!)!.name
       expect(li).toHaveTextContent(/public transit may be preferable/i)
       expect(li).toHaveTextContent(origin)   // names where you set off from
       /* And it is read on the way IN, not as a footnote after you have arrived. Without this the
          test passes on a fold that misses the leg entirely and falls back to trailing it. */
       const text = li.textContent ?? ''
-      expect(text.indexOf(origin)).toBeLessThan(text.indexOf(day3[0].place.name))
+      expect(text.indexOf(origin)).toBeLessThan(text.indexOf(arrivalDay[0].place.name))
     })
 
     // Most saved trips carry no legs at all. The route must still read as a route.

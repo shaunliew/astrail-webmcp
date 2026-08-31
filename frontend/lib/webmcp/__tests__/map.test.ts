@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { TripBundle } from '@/lib/trip/backend-types'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures/tokyo-trip'
+import { placesForDay } from '@/lib/trip/selectors'
 import { TOKYO_TRIP_WITH_HOTELS } from '@/lib/trip/fixtures/tokyo-hotels'
 import { getMapViewTool, setMapModeTool, showOnMapTool, type MapDeps } from '../tools/map'
 
@@ -54,9 +55,11 @@ describe('show_on_map', () => {
   })
 
   it('names the stops it just put on screen, so the agent can talk about them', () => {
-    const out = String(showOnMapTool(deps()).execute({ target: 'day', day: 2 }))
-    expect(out).toContain('Showing day 2')
-    expect(out).toContain('SANDO LAB TOKYO')
+    // Every stop of the day asked for, read from the fixture: naming one literally stops testing
+    // this the moment the trip is reshaped and that stop lands on a different day.
+    const out = String(showOnMapTool(deps()).execute({ target: 'day', day: 1 }))
+    expect(out).toContain('Showing day 1')
+    for (const tp of placesForDay(TOKYO_TRIP, 1)) expect(out).toContain(tp.place.name)
   })
 
   it('flies to a stop by pin number and selects it', () => {
@@ -86,7 +89,7 @@ describe('show_on_map', () => {
     expect(d.setLayerMode).toHaveBeenCalledWith('route')
     // Was `toContain('whole trip')`, which asserted the overclaim itself — this branch moves no
     // camera. Tightened to the half of that sentence the page does keep: the trip's real shape.
-    expect(out).toContain('3 days, 5 stops')
+    expect(out).toContain(`${TOKYO_TRIP.days.length} days, ${TOKYO_TRIP.places.length} stops`)
   })
 
   it('says plainly when there is no trip open rather than failing silently', () => {
@@ -179,16 +182,25 @@ describe('map tools: claims the page actually keeps', () => {
   it('counts only the stops that reached the map, and names the one that did not', () => {
     // placesForDay does NOT filter coordinates, so the old string counted a stop that has no pin.
     const bundle = withoutCoords(TOKYO_TRIP, 'tp_ichiran')
-    const out = String(showOnMapTool(deps({ bundle: () => bundle })).execute({ target: 'day', day: 2 }))
-    expect(out).toContain('1 stop on the map: SANDO LAB TOKYO')
+    const day = TOKYO_TRIP.places.find((tp) => tp.id === 'tp_ichiran')!.day_number!
+    const mapped = placesForDay(TOKYO_TRIP, day).filter((tp) => tp.id !== 'tp_ichiran')
+    const out = String(showOnMapTool(deps({ bundle: () => bundle })).execute({ target: 'day', day }))
+    // The count is the stops that KEPT a pin, and every one of them is named.
+    expect(out).toContain(`${mapped.length} stops on the map:`)
+    for (const tp of mapped) expect(out).toContain(tp.place.name)
+    // The one that lost its pin is named too, as missing rather than as mapped.
     expect(out).toMatch(/no location/i)
     expect(out).toContain('Ichiran Shibuya')
   })
 
   it('admits when a day had nothing to frame and the camera fell back to the whole trip', () => {
     // TripMap's [activeDayNumber] effect: frame(pts.length ? pts : <all trip points>).
-    const bundle = withoutCoords(withoutCoords(TOKYO_TRIP, 'tp_sandolab'), 'tp_ichiran')
-    const out = String(showOnMapTool(deps({ bundle: () => bundle })).execute({ target: 'day', day: 2 }))
+    // EVERY stop of the day loses its coordinates, derived from the day itself — the previous
+    // pair of ids emptied day 2 only while day 2 happened to hold exactly those two stops.
+    const day = 2
+    const bundle = placesForDay(TOKYO_TRIP, day)
+      .reduce((acc, tp) => withoutCoords(acc, tp.id), TOKYO_TRIP)
+    const out = String(showOnMapTool(deps({ bundle: () => bundle })).execute({ target: 'day', day }))
     expect(out).toMatch(/whole trip/i)
     expect(out).toMatch(/no location/i)
   })

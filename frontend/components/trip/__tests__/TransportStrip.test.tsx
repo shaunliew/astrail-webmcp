@@ -15,7 +15,10 @@ describe('TransportStrip', () => {
   })
 
   it('surfaces the warning for a no_route leg instead of a duration', () => {
-    const legs = legsForDay(TOKYO_TRIP, 'day_3') // baked no_route leg
+    // Follows the baked no_route leg (PRD §17) to whichever day holds it, rather than naming a
+    // day id — the trip was consolidated from three days to two and 'day_3' stopped existing.
+    const noRoute = TOKYO_TRIP.transport_legs.find((l) => l.status === 'no_route')!
+    const legs = legsForDay(TOKYO_TRIP, noRoute.trip_day_id!)
     render(<TransportStrip legs={legs} placeIndex={idx} />)
     expect(screen.getByText(/public transit may be preferable/i)).toBeInTheDocument()
   })

@@ -112,16 +112,18 @@ describe('TripWorkspace', () => {
     // Assert on the itinerary CARD, not the place name: the fixture's routing warning also says
     // "Tokyo Disneyland", so a text query matches before the day ever switches.
     const card = (id: string) => document.querySelector(`[data-place-id="${id}"]`)
+    // The LAST day, whichever that is: the point is a pin on a day the panel is NOT showing.
+    const lastDayNumber = TOKYO_TRIP.days[TOKYO_TRIP.days.length - 1].day_number!
     const day1 = placesForDay(TOKYO_TRIP, 1)[0]
-    const day3 = placesForDay(TOKYO_TRIP, 3)[0]
+    const otherDay = placesForDay(TOKYO_TRIP, lastDayNumber)[0]
 
     await waitFor(() => expect(card(day1.place_id)).not.toBeNull())
-    expect(card(day3.place_id)).toBeNull()          // day 3's card is absent while day 1 is open
+    expect(card(otherDay.place_id)).toBeNull()   // its card is absent while day 1 is open
 
-    await act(async () => { mapProps.current!.onSelectPlace(day3.place_id) })
+    await act(async () => { mapProps.current!.onSelectPlace(otherDay.place_id) })
 
-    expect(card(day3.place_id)).not.toBeNull()
-    expect(card(day3.place_id)).toHaveAttribute('aria-current', 'true')
+    expect(card(otherDay.place_id)).not.toBeNull()
+    expect(card(otherDay.place_id)).toHaveAttribute('aria-current', 'true')
     expect(card(day1.place_id)).toBeNull()          // the day switched, not merely appended
   })
 
@@ -215,13 +217,16 @@ describe('TripWorkspace', () => {
   it('switching days swaps the visible places', async () => {
     getTrip.mockResolvedValueOnce(TOKYO_TRIP)
     renderWorkspace(TOKYO_TRIP.trip.id)
+    // The last day, whichever it is — the claim is that switching AWAY from day 1 swaps the list.
+    const lastDay = TOKYO_TRIP.days[TOKYO_TRIP.days.length - 1].day_number!
     const day1Place = placesForDay(TOKYO_TRIP, 1)[0].place.name
-    const day3Place = placesForDay(TOKYO_TRIP, 3)[0].place.name
+    const lastDayPlace = placesForDay(TOKYO_TRIP, lastDay)[0].place.name
+    const lastTab = new RegExp(`day ${lastDay}`, 'i')
     // wait for load
-    await screen.findByRole('tab', { name: /day 3/i })
-    fireEvent.click(screen.getByRole('tab', { name: /day 3/i }))
-    // getAllByText: day 3's narrated title is also the place name (Tokyo Disneyland)
-    await waitFor(() => expect(screen.getAllByText(day3Place).length).toBeGreaterThan(0))
+    await screen.findByRole('tab', { name: lastTab })
+    fireEvent.click(screen.getByRole('tab', { name: lastTab }))
+    // getAllByText: that day's narrated title is also the place name (Tokyo Disneyland)
+    await waitFor(() => expect(screen.getAllByText(lastDayPlace).length).toBeGreaterThan(0))
     expect(screen.queryByText(day1Place)).not.toBeInTheDocument()
   })
 

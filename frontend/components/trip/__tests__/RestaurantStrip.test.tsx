@@ -8,7 +8,7 @@ const idx = buildPlaceIndex(TOKYO_TRIP)
 
 describe('RestaurantStrip', () => {
   it('renders each restaurant with its summary', () => {
-    const rests = restaurantsForDay(TOKYO_TRIP, 'day_2')
+    const rests = restaurantsForDay(TOKYO_TRIP, TOKYO_TRIP.restaurants[0].trip_day_id!)
     render(<RestaurantStrip restaurants={rests} placeIndex={idx} />)
     expect(screen.getByText(new RegExp(rests[0].summary.slice(0, 12), 'i'))).toBeInTheDocument()
   })

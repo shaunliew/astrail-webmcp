@@ -14,7 +14,9 @@ describe('DayOverview', () => {
   })
 
   it('omits the weather line entirely for days beyond the forecast window', () => {
-    const day = TOKYO_TRIP.days[2] // fixture's intentional weather gap
+    // Found, not indexed: the fixture's day count has changed once and days[2] became undefined,
+    // which fails as a crash rather than as the assertion this test is making.
+    const day = TOKYO_TRIP.days.find((d) => d.weather_summary === null)! // intentional weather gap
     render(<DayOverview day={day} />)
     expect(screen.getByText(day.title as string)).toBeInTheDocument()
     expect(screen.queryByText('Weather')).not.toBeInTheDocument()

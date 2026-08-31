@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import type { TripBundle, TripDay, TripPlace } from '@/lib/trip/backend-types'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures/tokyo-trip'
+import { placesForDay } from '@/lib/trip/selectors'
 import { formatItinerary, formatTripList, tripHeader } from '../format'
 import { envelopeLength, OUTPUT_LIMIT, OUTPUT_TARGET } from '../fit'
 
@@ -55,10 +56,13 @@ describe('formatItinerary', () => {
   })
 
   it('scopes to a single day when asked', () => {
+    // The stop is read from the day being asked for, not named literally: the fixture's days
+    // have been redistributed once already, and a hardcoded name silently stops testing scoping
+    // the moment it moves to another day.
     const out = formatItinerary(TOKYO_TRIP, 2)
     expect(out).toContain('D2')
     expect(out).not.toContain('D1 ')
-    expect(out).toContain('SANDO LAB TOKYO')
+    expect(out).toContain(placesForDay(TOKYO_TRIP, 2)[0].place.name)
   })
 
   it('reports a missing day with the valid range instead of returning nothing', () => {

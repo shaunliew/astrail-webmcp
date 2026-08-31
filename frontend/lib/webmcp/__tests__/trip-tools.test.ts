@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures/tokyo-trip'
+import { placesForDay } from '@/lib/trip/selectors'
 import type { TripBundle } from '@/lib/trip/backend-types'
 import { envelopeLength, OUTPUT_LIMIT } from '../fit'
 import { getItineraryTool, getPlaceEvidenceTool, type TripReader } from '../tools/trips'
@@ -64,7 +65,7 @@ describe('get_itinerary — resolving which trip', () => {
 
   it('scopes to one day when asked', async () => {
     const out = await getItineraryTool(reader()).execute({ trip_id: SHORT, day: 2 })
-    expect(String(out)).toContain('SANDO LAB TOKYO')
+    expect(String(out)).toContain(placesForDay(TOKYO_TRIP, 2)[0].place.name)
     expect(String(out)).not.toContain('D1 ')
   })
 })

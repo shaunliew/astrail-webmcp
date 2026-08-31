@@ -14,9 +14,13 @@ describe('DaySelector', () => {
   })
 
   it('calls onSelect with the day number when a tab is clicked', () => {
+    // The LAST day, whichever that is — clicking a literal 'day 3' found no tab once the trip
+    // was consolidated to two days, and a missing tab fails as a lookup error rather than as
+    // this test's actual claim.
+    const last = days[days.length - 1].day_number!
     const onSelect = vi.fn()
     render(<DaySelector days={days} activeDayNumber={1} onSelect={onSelect} />)
-    fireEvent.click(screen.getByRole('tab', { name: /day 3/i }))
-    expect(onSelect).toHaveBeenCalledWith(3)
+    fireEvent.click(screen.getByRole('tab', { name: new RegExp(`day ${last}`, 'i') }))
+    expect(onSelect).toHaveBeenCalledWith(last)
   })
 })

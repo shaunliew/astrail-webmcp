@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { TripBundle } from '@/lib/trip/backend-types'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures/tokyo-trip'
+import { TOKYO_TRIP_WITH_HOTELS } from '@/lib/trip/fixtures/tokyo-hotels'
 import { getMapViewTool, setMapModeTool, showOnMapTool, type MapDeps } from '../tools/map'
 
 const deps = (over: Partial<MapDeps> = {}): MapDeps => ({
@@ -14,8 +15,16 @@ const deps = (over: Partial<MapDeps> = {}): MapDeps => ({
 })
 
 /** No hotel ever got a coordinate — the honest-failure state (C5) that makes TripWorkspace
- *  disable the Hotel toggle, and makes the hub layer draw literally nothing. */
-const NO_PLACED_HOTEL: TripBundle = { ...TOKYO_TRIP, hotels: [] }
+ *  disable the Hotel toggle, and makes the hub layer draw literally nothing.
+ *
+ *  This IS the demo bundle, deliberately, rather than a spread that blanks its hotels: hotel
+ *  search ships off, so every trip made today looks like this, and so does the public sample
+ *  trail. Binding the name to `TOKYO_TRIP` means re-adding hotels to the demo — which is how it
+ *  came to be the one trip in the product where the hub view worked — turns these red. */
+const NO_PLACED_HOTEL: TripBundle = TOKYO_TRIP
+
+/** A trip generated BEFORE the switch: real hotel rows, one of them geocoded and ranked. */
+const WITH_PLACED_HOTEL: TripBundle = TOKYO_TRIP_WITH_HOTELS
 
 /** Strip one stop's coordinates, the way a "saved with gaps" trip arrives. `hasRealCoords`
  *  then drops it from the pins, the trail and the camera framing — but NOT from `placesForDay`. */
@@ -100,7 +109,7 @@ describe('show_on_map', () => {
 
 describe('set_map_mode', () => {
   it('switches to the hotel hub view', () => {
-    const d = deps()
+    const d = deps({ bundle: () => WITH_PLACED_HOTEL })
     const out = String(setMapModeTool(d).execute({ mode: 'hub' }))
     expect(d.setLayerMode).toHaveBeenCalledWith('hub')
     expect(out).toContain('hotel')
@@ -187,7 +196,7 @@ describe('map tools: claims the page actually keeps', () => {
   it('stops promising hub distances the spoke layer never labels', () => {
     // drawSpokes adds two `line` layers and no symbol layer — the spokes carry a duration_s
     // property that nothing ever renders.
-    const out = String(showOnMapTool(deps()).execute({ target: 'hotel_hub' }))
+    const out = String(showOnMapTool(deps({ bundle: () => WITH_PLACED_HOTEL })).execute({ target: 'hotel_hub' }))
     expect(out).not.toMatch(/how far/i)
     expect(out).toMatch(/no distance/i)
   })
@@ -198,7 +207,7 @@ describe('map tools: claims the page actually keeps', () => {
   })
 
   it('set_map_mode stops calling the unlabelled spokes "distances"', () => {
-    const out = String(setMapModeTool(deps()).execute({ mode: 'hub' }))
+    const out = String(setMapModeTool(deps({ bundle: () => WITH_PLACED_HOTEL })).execute({ mode: 'hub' }))
     expect(out).not.toMatch(/distances/i)
     expect(out).toMatch(/line/i)
   })
@@ -231,18 +240,32 @@ describe('map tools: claims the page actually keeps', () => {
   // The other half of the pair: a trip that DOES have a placed hotel still switches, so the two
   // tests above pin the emptiness check rather than a tool that stopped switching altogether.
   it('still switches for a trip whose hotel is on the map', () => {
-    const d = deps()
+    const d = deps({ bundle: () => WITH_PLACED_HOTEL })
     showOnMapTool(d).execute({ target: 'hotel_hub' })
     expect(d.setLayerMode).toHaveBeenCalledWith('hub')
-    const d2 = deps()
+    const d2 = deps({ bundle: () => WITH_PLACED_HOTEL })
     setMapModeTool(d2).execute({ mode: 'hub' })
     expect(d2.setLayerMode).toHaveBeenCalledWith('hub')
+  })
+
+  /* The inconsistency this whole change closes. `set_map_mode hub` used to SUCCEED on the public
+     sample trail (its fixture hotel was geocoded and ranked) and DECLINE on every trip generated
+     since — so a judge who tried the hotel view on the demo and then on their own trip got two
+     different answers and nothing to explain the difference. Same bundle shape now, same answer. */
+  it('declines hub on the public sample trail, exactly as on a trip made today', () => {
+    for (const d of [deps({ bundle: () => TOKYO_TRIP })]) {
+      expect(String(setMapModeTool(d).execute({ mode: 'hub' }))).toMatch(/no hotel/i)
+      expect(String(showOnMapTool(d).execute({ target: 'hotel_hub' }))).toMatch(/no hotel/i)
+      expect(d.setLayerMode).not.toHaveBeenCalled()
+    }
   })
 
   it('set_map_mode still emits no caption-derived name — its audited hint is false', () => {
     // Reading the bundle to tell the truth about the hub must not start echoing the hotel's
     // NAME: spec-contract.test.ts audits this tool as untrustedContentHint:false.
-    const spec = setMapModeTool(deps({ bundle: () => canaryNames(TOKYO_TRIP) }))
+    // Canaried on the bundle that HAS a hotel: with no hotel row there is no name to leak, and
+    // the check would pass on a tool that echoed every one it was given.
+    const spec = setMapModeTool(deps({ bundle: () => canaryNames(WITH_PLACED_HOTEL) }))
     expect(spec.annotations?.untrustedContentHint).toBe(false)
     for (const mode of ['route', 'hub', '3d']) {
       expect(String(spec.execute({ mode }))).not.toContain(CANARY)

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { act, render, screen } from '@testing-library/react'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures'
+import { TOKYO_TRIP_WITH_HOTELS } from '@/lib/trip/fixtures/tokyo-hotels'
 import { markTripFramed } from '@/lib/trip/map-handoff'
 import MapProvider from '@/components/map/MapProvider'
 import TripMap from '@/components/map/TripMap'
@@ -346,7 +347,7 @@ describe('TripMap', () => {
     // [selectedHotelId, layerMode], so a value present at mount resolves before the map is ready.
     const view = render(
       <MapProvider>
-        <TripMap bundle={TOKYO_TRIP} activeDayNumber={1} selectedPlaceId={null} onSelectPlace={() => {}} />
+        <TripMap bundle={TOKYO_TRIP_WITH_HOTELS} activeDayNumber={1} selectedPlaceId={null} onSelectPlace={() => {}} />
       </MapProvider>,
     )
     await flush()
@@ -356,7 +357,7 @@ describe('TripMap', () => {
 
     view.rerender(
       <MapProvider>
-        <TripMap bundle={TOKYO_TRIP} activeDayNumber={1} selectedPlaceId={null}
+        <TripMap bundle={TOKYO_TRIP_WITH_HOTELS} activeDayNumber={1} selectedPlaceId={null}
           onSelectPlace={() => {}} layerMode="hub" selectedHotelId="hotel_1" />
       </MapProvider>,
     )
@@ -464,8 +465,11 @@ describe('TripMap', () => {
     mapInstance.getSource.mockReturnValue(undefined as never)
   })
 
+  /* Rendered WITH hotels because the last assertion is about the base-hotel pin receding, and
+     that place travels with the hotels now (a trip made today has neither). Numbering is
+     unaffected: the base hotel is undayed, so it was never in the 1..N sequence. */
   it('draws one continuous trail through every stop and numbers them globally', async () => {
-    renderMap()
+    renderMap({ bundle: TOKYO_TRIP_WITH_HOTELS })
     await flush()
     fireLoad()
 
@@ -679,13 +683,16 @@ describe('TripMap', () => {
   })
 
   // ---- Hotel-hub map (plan 2026-08-04-hotel-hub-map, T9) ----
+  // Every case below renders TOKYO_TRIP_WITH_HOTELS, not the demo bundle: hotel search is off, so
+  // a trip generated today has no hotel rows and nothing here would have anything to draw. These
+  // are the pre-switch trips that do — still in the database, still opened by their owners.
   // Route mode is covered by the trail test above (the receding base-hotel pin at 'the undayed
   // base hotel is not a stop on the trail' MUST stay green — it proves route mode is untouched).
   // The spoke GEOMETRY is unit-tested in T7 (selectors); here we assert at the marker-class /
   // layer-added level, the right altitude for canvas-heavy map rendering.
 
   it('hub mode pins the selected placed hotel, draws spokes, and suppresses the duplicate base-hotel place pin', async () => {
-    renderMap({ selectedHotelId: 'hotel_1', layerMode: 'hub' })
+    renderMap({ bundle: TOKYO_TRIP_WITH_HOTELS, selectedHotelId: 'hotel_1', layerMode: 'hub' })
     await flush()
     fireLoad()
 
@@ -709,7 +716,7 @@ describe('TripMap', () => {
   // Proves the [selectedHotelId, layerMode] redraw effect is load-bearing: a live toggle must tear
   // the trail down (via routeIdsRef/clearRoutes) and draw the spokes in its place.
   it('toggling route -> hub tears down the itinerary trail and draws the hotel spokes', async () => {
-    const view = renderMap() // route mode by default
+    const view = renderMap({ bundle: TOKYO_TRIP_WITH_HOTELS }) // route mode by default
     await flush()
     fireLoad()
     expect(mapInstance.addSource).toHaveBeenCalledWith('trip-trail', expect.anything())
@@ -721,7 +728,7 @@ describe('TripMap', () => {
     view.rerender(
       <MapProvider>
         <TripMap
-          bundle={TOKYO_TRIP}
+          bundle={TOKYO_TRIP_WITH_HOTELS}
           activeDayNumber={1}
           selectedPlaceId={null}
           onSelectPlace={() => {}}
@@ -738,7 +745,7 @@ describe('TripMap', () => {
   })
 
   it('hub mode with no hotel selected draws no hub and no spokes (honest empty-state)', async () => {
-    renderMap({ selectedHotelId: null, layerMode: 'hub' })
+    renderMap({ bundle: TOKYO_TRIP_WITH_HOTELS, selectedHotelId: null, layerMode: 'hub' })
     await flush()
     fireLoad()
 
@@ -747,7 +754,7 @@ describe('TripMap', () => {
   })
 
   it('hub mode with an unresolved (unplaceable) selected hotel draws no hub and no spokes', async () => {
-    renderMap({ selectedHotelId: 'hotel_2', layerMode: 'hub' }) // hotel_2 → geo_status 'unresolved'
+    renderMap({ bundle: TOKYO_TRIP_WITH_HOTELS, selectedHotelId: 'hotel_2', layerMode: 'hub' }) // hotel_2 → geo_status 'unresolved'
     await flush()
     fireLoad()
 

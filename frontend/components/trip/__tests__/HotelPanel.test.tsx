@@ -2,10 +2,14 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import HotelPanel from '@/components/trip/HotelPanel'
 import { tripHotels } from '@/lib/trip/selectors'
-import { TOKYO_TRIP } from '@/lib/trip/fixtures'
+import { TOKYO_TRIP_WITH_HOTELS } from '@/lib/trip/fixtures/tokyo-hotels'
 import type { HotelSuggestion } from '@/lib/trip/backend-types'
 
-const HOTELS = tripHotels(TOKYO_TRIP)
+/* The hotels moved out of `TOKYO_TRIP` when the public sample trail stopped shipping a
+   fabricated Travala price (see tokyo-hotels.ts). The panel still has to render them: trips
+   generated before hotel search was switched off still have real rows in the database, and
+   hiding a user's own data would be its own dishonesty. */
+const HOTELS = tripHotels(TOKYO_TRIP_WITH_HOTELS)
 const placed = HOTELS.find((h) => h.geo_status === 'placed')!        // hotel_1: placed + recommended (rank 1)
 const unresolved = HOTELS.find((h) => h.geo_status === 'unresolved')! // hotel_2: skipped → never placed
 

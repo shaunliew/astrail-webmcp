@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures'
+import { TOKYO_TRIP_WITH_HOTELS } from '@/lib/trip/fixtures/tokyo-hotels'
 import type {
   Place, TripBundle, TripDay, TripPlace, TransportLeg, HotelSuggestion,
 } from '@/lib/trip/backend-types'
@@ -34,8 +35,10 @@ describe('trip selectors', () => {
     expect(rests.every((r) => r.trip_day_id === 'day_2')).toBe(true)
   })
 
-  it('tripHotels returns the hotel rows', () => {
-    expect(tripHotels(TOKYO_TRIP).length).toBeGreaterThan(0)
+  it('tripHotels returns the hotel rows of a trip that has them, and none when it has none', () => {
+    // The demo bundle carries no hotels (hotel search is off); the pre-switch bundle does.
+    expect(tripHotels(TOKYO_TRIP_WITH_HOTELS).length).toBeGreaterThan(0)
+    expect(tripHotels(TOKYO_TRIP)).toEqual([])
   })
 
   it('buildPlaceIndex maps every place_id to its Place', () => {
@@ -68,8 +71,10 @@ describe('trip selectors', () => {
     expect(pinLabelForPlace(TOKYO_TRIP, stops[0])).toBe('1')  // Day 1's first stop
     expect(pinLabelForPlace(TOKYO_TRIP, stops[2])).toBe('3')  // Day 2 continues the sequence
     expect(pinLabelForPlace(TOKYO_TRIP, stops[4])).toBe('5')  // last day carries the highest number
-    // pins that are not stops (the undayed base hotel) recede — no number
-    expect(pinLabelForPlace(TOKYO_TRIP, TOKYO_TRIP.places.find((tp) => tp.day_number === null)!)).toBeNull()
+    // pins that are not stops (the undayed base hotel) recede — no number. Only the pre-switch
+    // bundle still has such a place: with hotel search off nothing suggests a hotel base.
+    const undayed = TOKYO_TRIP_WITH_HOTELS.places.find((tp) => tp.day_number === null)!
+    expect(pinLabelForPlace(TOKYO_TRIP_WITH_HOTELS, undayed)).toBeNull()
   })
 })
 
@@ -236,13 +241,13 @@ const asType = (tp: TripPlace, t: Place['place_type']): TripPlace => ({
 
 describe('hotel-hub selectors', () => {
   it('recommendedHotelId returns the rank-1 placed hotel', () => {
-    expect(recommendedHotelId(TOKYO_TRIP)).toBe('hotel_1')
+    expect(recommendedHotelId(TOKYO_TRIP_WITH_HOTELS)).toBe('hotel_1')
   })
 
   it('recommendedHotelId returns null when no hotel is placed', () => {
     const allUnresolved: TripBundle = {
-      ...TOKYO_TRIP,
-      hotels: TOKYO_TRIP.hotels.map((h) => ({
+      ...TOKYO_TRIP_WITH_HOTELS,
+      hotels: TOKYO_TRIP_WITH_HOTELS.hotels.map((h) => ({
         ...h, geo_status: 'unresolved' as const, is_recommended: false, rank: null,
         lat: null, lng: null,
       })),
@@ -251,14 +256,14 @@ describe('hotel-hub selectors', () => {
   })
 
   it('selectedHotel finds a hotel by id and returns null for misses / null', () => {
-    expect(selectedHotel(TOKYO_TRIP, 'hotel_1')?.id).toBe('hotel_1')
-    expect(selectedHotel(TOKYO_TRIP, 'nope')).toBeNull()
-    expect(selectedHotel(TOKYO_TRIP, null)).toBeNull()
+    expect(selectedHotel(TOKYO_TRIP_WITH_HOTELS, 'hotel_1')?.id).toBe('hotel_1')
+    expect(selectedHotel(TOKYO_TRIP_WITH_HOTELS, 'nope')).toBeNull()
+    expect(selectedHotel(TOKYO_TRIP_WITH_HOTELS, null)).toBeNull()
   })
 
   it('hubSpokeFeatures draws a straight 2-point spoke from the hub to each dayed destination', () => {
-    const hotel = TOKYO_TRIP.hotels.find((h) => h.id === 'hotel_1')!
-    const fc = hubSpokeFeatures(hotel, TOKYO_TRIP)
+    const hotel = TOKYO_TRIP_WITH_HOTELS.hotels.find((h) => h.id === 'hotel_1')!
+    const fc = hubSpokeFeatures(hotel, TOKYO_TRIP_WITH_HOTELS)
     expect(fc.type).toBe('FeatureCollection')
     // The five dayed, real-coord places in journey order; the UNDAYED base-hotel place is excluded.
     const destIds = fc.features.map((f) => f.properties?.place_id)
@@ -315,20 +320,20 @@ describe('hotel-hub selectors', () => {
   })
 
   it('hubSpokeFeatures returns an empty collection for an unresolved hotel', () => {
-    const hotel = TOKYO_TRIP.hotels.find((h) => h.id === 'hotel_2')!
-    expect(hubSpokeFeatures(hotel, TOKYO_TRIP)).toEqual({ type: 'FeatureCollection', features: [] })
+    const hotel = TOKYO_TRIP_WITH_HOTELS.hotels.find((h) => h.id === 'hotel_2')!
+    expect(hubSpokeFeatures(hotel, TOKYO_TRIP_WITH_HOTELS)).toEqual({ type: 'FeatureCollection', features: [] })
   })
 
   it('hubSpokeFeatures returns an empty collection for an absent hotel', () => {
-    expect(hubSpokeFeatures(null, TOKYO_TRIP)).toEqual({ type: 'FeatureCollection', features: [] })
+    expect(hubSpokeFeatures(null, TOKYO_TRIP_WITH_HOTELS)).toEqual({ type: 'FeatureCollection', features: [] })
   })
 
   it('hubSpokeFeatures returns an empty collection for a placed hotel without real coords', () => {
     // Null coords (the pre-check) AND (0,0) (hasRealCoords' zero-guard) both yield no spokes —
     // an unlocatable hub is never pinned (Guardrail #1).
-    expect(hubSpokeFeatures(testHotel({ lat: null, lng: null }), TOKYO_TRIP))
+    expect(hubSpokeFeatures(testHotel({ lat: null, lng: null }), TOKYO_TRIP_WITH_HOTELS))
       .toEqual({ type: 'FeatureCollection', features: [] })
-    expect(hubSpokeFeatures(testHotel({ lat: 0, lng: 0 }), TOKYO_TRIP))
+    expect(hubSpokeFeatures(testHotel({ lat: 0, lng: 0 }), TOKYO_TRIP_WITH_HOTELS))
       .toEqual({ type: 'FeatureCollection', features: [] })
   })
 })

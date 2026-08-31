@@ -113,11 +113,22 @@ describe('TripTools', () => {
     expect(String(result)).toContain('SANDO LAB TOKYO')
   })
 
-  it('switches the map layer on a seeded bundle', async () => {
+  /* The seeded bundle is the PUBLIC sample trail, and it has no hotels — hotel search ships off,
+     so neither does a trip made today. The tool must decline rather than switch into a layer that
+     draws nothing and (with the toggle hidden) offers no way back. This used to succeed here and
+     nowhere else, which is the whole reason the demo's hotels were fabricated data. */
+  it('declines the hotel layer on a seeded bundle with no hotels, and says why', async () => {
     mount({ bundle: TOKYO_TRIP, readOnly: true })
     const result = await tool('set_map_mode').execute({ mode: 'hub' })
-    expect(actions.setLayerMode).toHaveBeenCalledWith('hub')
-    expect(String(result)).toMatch(/hotel/i)
+    expect(actions.setLayerMode).not.toHaveBeenCalled()
+    expect(String(result)).toMatch(/no hotel/i)
+  })
+
+  it('still switches the map layer between route and 3D on a seeded bundle', async () => {
+    mount({ bundle: TOKYO_TRIP, readOnly: true })
+    const result = await tool('set_map_mode').execute({ mode: 'route' })
+    expect(actions.setLayerMode).toHaveBeenCalledWith('route')
+    expect(String(result)).toMatch(/route/i)
   })
 
   it('reports the live camera and the seeded trip shape', async () => {

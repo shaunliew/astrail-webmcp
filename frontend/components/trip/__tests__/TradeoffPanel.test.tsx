@@ -2,6 +2,12 @@ import { describe, it, expect } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import TradeoffPanel from '@/components/trip/TradeoffPanel'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures'
+import { TOKYO_TRIP_WITH_HOTELS } from '@/lib/trip/fixtures/tokyo-hotels'
+
+/* Comparisons are DERIVED from a hotel search, so a trip made today has none — the runner only
+   builds them `if HOTEL_SEARCH_ENABLED`. Notes are independent of hotels and stay on TOKYO_TRIP;
+   anything asserting a comparison card reads the pre-switch trip that really had one. */
+const WITH_COMPARISON = TOKYO_TRIP_WITH_HOTELS.trip.tradeoffs
 
 describe('TradeoffPanel', () => {
   it('renders nothing when both tradeoff axes are empty', () => {
@@ -16,7 +22,7 @@ describe('TradeoffPanel', () => {
   })
 
   it('renders hotel comparisons with Astrail attribution', () => {
-    const comparison = TOKYO_TRIP.trip.tradeoffs.comparisons[0]
+    const comparison = WITH_COMPARISON.comparisons[0]
     render(<TradeoffPanel tradeoffs={{ notes: [], comparisons: [comparison] }} />)
     expect(screen.getByRole('heading', { name: 'Price vs rating' })).toBeInTheDocument()
     expect(screen.getByText(comparison.option_a.label)).toBeInTheDocument()
@@ -35,7 +41,7 @@ describe('TradeoffPanel', () => {
   })
 
   it('comparisons variant renders the card with no outer heading and no notes', () => {
-    const t = TOKYO_TRIP.trip.tradeoffs
+    const t = WITH_COMPARISON
     render(<TradeoffPanel tradeoffs={t} variant="comparisons" />)
     expect(screen.getByRole('heading', { name: 'Price vs rating' })).toBeInTheDocument()
     // No outer heading: the surrounding Section already titles the surface.

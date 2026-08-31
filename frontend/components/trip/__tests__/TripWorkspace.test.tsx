@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { useRef } from 'react'
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures'
+import { TOKYO_TRIP_WITH_HOTELS } from '@/lib/trip/fixtures/tokyo-hotels'
 import { thumbnailFor } from '@/components/map/popup-model'
 import { placesForDay } from '@/lib/trip/selectors'
 import { resolvePlaceRef } from '@/lib/webmcp/resolve'
@@ -224,10 +225,14 @@ describe('TripWorkspace', () => {
     expect(screen.queryByText(day1Place)).not.toBeInTheDocument()
   })
 
-  // Hotel-hub map (plan 2026-08-04-hotel-hub-map, T8). Route ⇄ Hotel is a single segmented
-  // control; the mode is observable through each segment's aria-pressed state.
+  /* Hotel-hub map (plan 2026-08-04-hotel-hub-map, T8). Route ⇄ Hotel is a single segmented
+     control; the mode is observable through each segment's aria-pressed state.
+
+     The hotel cases below load TOKYO_TRIP_WITH_HOTELS: hotel search ships off, so a trip made
+     today has no hotel rows and the whole control is hidden (the case just after them). The
+     surfaces still have to work for trips generated before the switch, whose rows are real. */
   it('toggles the map layer between route and hotel', async () => {
-    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP_WITH_HOTELS)
     renderWorkspace(TOKYO_TRIP.trip.id)
     const hotelBtn = await screen.findByRole('button', { name: /^hotel$/i })
     const routeBtn = screen.getByRole('button', { name: /^route$/i })
@@ -243,8 +248,8 @@ describe('TripWorkspace', () => {
   // disabled rather than flipping to a silently blank map.
   it('disables the hotel layer when no hotel could be placed', async () => {
     const allUnresolved: TripBundle = {
-      ...TOKYO_TRIP,
-      hotels: TOKYO_TRIP.hotels.map((h) => ({
+      ...TOKYO_TRIP_WITH_HOTELS,
+      hotels: TOKYO_TRIP_WITH_HOTELS.hotels.map((h) => ({
         ...h, geo_status: 'unresolved' as const, is_recommended: false, rank: null, lat: null, lng: null,
       })),
     }
@@ -272,17 +277,31 @@ describe('TripWorkspace', () => {
   })
 
   it('still shows them for a trip that has hotel rows, so old trips keep their data', async () => {
-    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP_WITH_HOTELS)
     renderWorkspace(TOKYO_TRIP.trip.id)
     expect(await screen.findByRole('heading', { name: 'Where to stay' })).toBeInTheDocument()
     expect(screen.getByRole('group', { name: /map layer/i })).toBeInTheDocument()
-    expect(screen.getAllByText(TOKYO_TRIP.hotels[0].name).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(TOKYO_TRIP_WITH_HOTELS.hotels[0].name).length).toBeGreaterThan(0)
+  })
+
+  /* The public sample trail is the same case as any other hotel-less trip, and it is the one a
+     judge opens. It shipped as the ONLY trip in the product with a placed hotel — a fabricated
+     Travala price — which made it the only trip where the hub view worked. */
+  it('offers no hotel surface on the demo bundle, the way it offers none on a new trip', async () => {
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    renderWorkspace(TOKYO_TRIP.trip.id)
+    await screen.findByRole('tab', { name: /day 1/i })
+    expect(screen.queryByRole('heading', { name: 'Where to stay' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: /map layer/i })).not.toBeInTheDocument()
+    // and no invented price reaches the page along with it
+    expect(screen.queryByText(/128/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Price vs rating' })).not.toBeInTheDocument()
   })
 
   // Merge-lite (2026-08-06): ONE hotel decision surface. The price-vs-rating card renders exactly
   // once (inside "Where to stay", not also at the top), and the pacing notes render as "Heads up".
   it('renders the price-vs-rating card once, with pacing notes under Heads up', async () => {
-    getTrip.mockResolvedValueOnce(TOKYO_TRIP)
+    getTrip.mockResolvedValueOnce(TOKYO_TRIP_WITH_HOTELS)
     renderWorkspace(TOKYO_TRIP.trip.id)
     await screen.findByRole('heading', { name: 'Price vs rating' })
     expect(screen.getAllByRole('heading', { name: 'Price vs rating' })).toHaveLength(1)

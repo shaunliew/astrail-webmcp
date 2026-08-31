@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures/tokyo-trip'
+import { TOKYO_TRIP_WITH_HOTELS } from '@/lib/trip/fixtures/tokyo-hotels'
 
 describe('Tokyo fixture invariants', () => {
   it('is a complete, saved-with-gaps trip', () => {
@@ -26,9 +27,22 @@ describe('Tokyo fixture invariants', () => {
     expect(kinds.has('agent_suggested')).toBe(true)
   })
 
-  it('has a baked partial failure: one no_route leg + one skipped hotel (PRD §17)', () => {
+  it('has a baked partial failure: an unroutable leg and a dayless forecast (PRD §17)', () => {
     expect(TOKYO_TRIP.transport_legs.some((l) => l.status === 'no_route')).toBe(true)
-    expect(TOKYO_TRIP.hotels.some((h) => h.status === 'skipped')).toBe(true)
+    expect(TOKYO_TRIP.days.some((d) => d.weather_source === 'none')).toBe(true)
+  })
+
+  /* Hotel search ships OFF, and the disabled arm clears whatever an earlier run persisted, so a
+     trip generated today has no hotel rows — the demo bundle carries none because it is what a
+     real trip carries. The skipped-hotel failure case did not go away with it; it moved to the
+     pre-switch bundle, which is still the shape of every trip generated before 2026-08-30. */
+  it('carries no hotels, the way a trip generated today does not', () => {
+    expect(TOKYO_TRIP.hotels).toEqual([])
+    expect(TOKYO_TRIP.trip.tradeoffs.comparisons).toEqual([])
+  })
+
+  it('keeps the skipped-hotel partial failure on the pre-switch bundle (PRD §17)', () => {
+    expect(TOKYO_TRIP_WITH_HOTELS.hotels.some((h) => h.status === 'skipped')).toBe(true)
   })
 
   it('days are date-backed and carry weather (PRD §15)', () => {

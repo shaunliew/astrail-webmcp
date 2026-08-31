@@ -1075,6 +1075,131 @@ async def test_change_dates_redates_every_day_without_changing_day_number(monkey
     ]
 
 
+async def test_change_dates_clears_the_forecast_on_days_that_moved(monkeypatch):
+    """A forecast for the old dates is a claim about weather on a day the trip no longer has.
+
+    Nothing else clears it: this endpoint used to write only day_date, and /replan runs
+    _refresh_trip_routes + persist_narration. Reported live — a Tokyo trip moved from September to
+    October kept September's forecast on rows now labelled October.
+    """
+    db: dict = {}
+    _seed_owned_trip(db)
+    db["trip_days"] = [
+        {
+            "id": f"day-{number}",
+            "trip_id": _TRIP_ID,
+            "day_number": number,
+            "day_date": f"2026-08-{26 + number:02d}",
+            "weather_summary": "Sunny, 24°C",
+            "weather_source": "open_meteo",
+            "weather_payload": {"high_c": 24},
+        }
+        for number in (1, 2, 3)
+    ]
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.patch(
+            f"/trips/{_TRIP_ID}",
+            json={"start_date": "2026-10-09", "end_date": "2026-10-11"},
+        )
+
+    assert response.status_code == 200
+    # All three columns together — a summary cleared while the payload survives is the same bug
+    # one layer down, and the payload is NOT NULL with an "is an object" check, so it resets to {}.
+    for row in db["trip_days"]:
+        assert row["weather_summary"] is None
+        assert row["weather_source"] is None
+        assert row["weather_payload"] == {}
+
+
+async def test_change_dates_keeps_the_forecast_on_days_that_did_not_move(monkeypatch):
+    """The case a whole-trip wipe passes a one-day test and fails.
+
+    Extending the END of a range leaves every existing day on the date it already had, so their
+    forecasts still describe the right dates and destroying them would be a second bug traded for
+    the first.
+    """
+    db: dict = {}
+    _seed_owned_trip(db)
+    db["trip_days"] = [
+        {
+            "id": f"day-{number}",
+            "trip_id": _TRIP_ID,
+            "day_number": number,
+            "day_date": f"2026-08-{26 + number:02d}",
+            "weather_summary": f"Sunny, day {number}",
+            "weather_source": "open_meteo",
+            "weather_payload": {"day": number},
+        }
+        for number in (1, 2, 3)
+    ]
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.patch(
+            f"/trips/{_TRIP_ID}",
+            # Same start, later end: days 1-3 keep 08-27, 08-28, 08-29.
+            json={"start_date": "2026-08-27", "end_date": "2026-09-02"},
+        )
+
+    assert response.status_code == 200
+    for row in db["trip_days"]:
+        assert row["weather_summary"] == f"Sunny, day {row['day_number']}"
+        assert row["weather_source"] == "open_meteo"
+        assert row["weather_payload"] == {"day": row["day_number"]}
+
+
+async def test_change_dates_clears_only_the_days_that_actually_moved(monkeypatch):
+    """The mixed case, which is the one that separates a real fix from a blanket wipe.
+
+    Shifting the start by one day moves every day BUT the one that lands where another used to be
+    is still a move — so this pins the rule per row rather than per trip: day 1 moves off 08-27,
+    and a day left on its own date keeps what it had.
+    """
+    db: dict = {}
+    _seed_owned_trip(db)
+    db["trip_days"] = [
+        {"id": "day-1", "trip_id": _TRIP_ID, "day_number": 1, "day_date": "2026-08-27",
+         "weather_summary": "Day 1 forecast", "weather_source": "open_meteo", "weather_payload": {"d": 1}},
+        # Already sitting where the new range will put it, so it must be left alone.
+        {"id": "day-2", "trip_id": _TRIP_ID, "day_number": 2, "day_date": "2026-08-29",
+         "weather_summary": "Day 2 forecast", "weather_source": "open_meteo", "weather_payload": {"d": 2}},
+    ]
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.patch(
+            f"/trips/{_TRIP_ID}",
+            # Day 1 -> 08-28 (moved), day 2 -> 08-29 (unchanged).
+            json={"start_date": "2026-08-28", "end_date": "2026-08-29"},
+        )
+
+    assert response.status_code == 200
+    by_number = {row["day_number"]: row for row in db["trip_days"]}
+    assert by_number[1]["weather_summary"] is None
+    assert by_number[1]["weather_payload"] == {}
+    assert by_number[2]["weather_summary"] == "Day 2 forecast"
+    assert by_number[2]["weather_payload"] == {"d": 2}
+
+
+async def test_change_dates_leaves_a_no_op_edit_alone(monkeypatch):
+    """Re-sending the range the trip already has must not cost it its forecast."""
+    db: dict = {}
+    _seed_owned_trip(db)
+    db["trip_days"] = [
+        {"id": "day-1", "trip_id": _TRIP_ID, "day_number": 1, "day_date": "2026-08-27",
+         "weather_summary": "Unchanged", "weather_source": "open_meteo", "weather_payload": {"d": 1}},
+    ]
+
+    async with _client(monkeypatch, db) as client:
+        response = await client.patch(
+            f"/trips/{_TRIP_ID}",
+            json={"start_date": "2026-08-27", "end_date": "2026-08-27"},
+        )
+
+    assert response.status_code == 200
+    assert db["trip_days"][0]["weather_summary"] == "Unchanged"
+    assert db["trip_days"][0]["weather_payload"] == {"d": 1}
+
+
 def _seed_structural_edit_trip(db):
     _seed_owned_trip(db)
     castle_id = "00000000-0000-0000-0000-000000000001"

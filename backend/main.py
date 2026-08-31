@@ -1037,6 +1037,21 @@ async def add_trip_place(
     )
 
 
+def _as_day_date(value: object) -> date | None:
+    """A stored `trip_days.day_date` as a date, or None when it is absent or unreadable.
+
+    Compared rather than string-matched so that a day whose date did NOT move keeps its forecast:
+    a whole-trip wipe passes a one-day test and silently destroys good weather on every range
+    change that leaves some days where they were. `None` reads as "moved" — a day with no date
+    recorded cannot have a forecast attributed to it (`persist_weather` matches on day_date), so
+    clearing is both harmless and the safe direction.
+    """
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
 @app.patch(
     "/trips/{trip_id}",
     response_model=TripDateEditResponse,
@@ -1096,9 +1111,29 @@ async def edit_trip_dates(
     days_touched = [row["day_number"] for row in days]
     for row in days:
         day_date = effective_start + timedelta(days=row["day_number"] - 1)
+        patch: dict = {"day_date": day_date.isoformat()}
+        # A day that MOVED loses its forecast, in the same request that moves it.
+        #
+        # `trip_days` carries weather_summary/source/payload (20260702134839) and nothing else
+        # refreshes them: this endpoint wrote only day_date, and /replan runs
+        # _refresh_trip_routes + persist_narration — routes and prose, never weather. So moving a
+        # Tokyo trip from September to October left September's forecast sitting on those rows
+        # labelled October. That is not a stale cache; it is a weather claim about a date the
+        # forecast never covered, which is guardrail #1 with the roles reversed.
+        #
+        # CLEARED, not refetched, and the horizon is why: Open-Meteo gives ~16 days and anything
+        # beyond comes back null (genagents/weather.py), so a date a month out would cost a call
+        # to learn nothing. Refetching when the new date IS inside the horizon is the follow-up;
+        # it pulls the weather agent into an edit endpoint, which is not a deadline-week change.
+        #
+        # All three columns together — a summary cleared while the payload survives is the same
+        # bug one layer down — and the payload back to `{}` rather than NULL, because the column
+        # is NOT NULL with a `jsonb_typeof(...) = 'object'` check.
+        if _as_day_date(row.get("day_date")) != day_date:
+            patch |= {"weather_summary": None, "weather_source": None, "weather_payload": {}}
         await (
             client.table("trip_days")
-            .update({"day_date": day_date.isoformat()})
+            .update(patch)
             .eq("id", row["id"])
             .eq("trip_id", trip_key)
             .execute()

@@ -499,28 +499,62 @@ describe('set_trip_dates rewrites too, and still will not launder the forecast',
     expect(d.replan).toHaveBeenCalledTimes(1)
   })
 
-  it('warns that the weather notes are the forecast for the OLD dates', async () => {
-    // persist_weather runs only inside the generation pipeline (pipeline/runner.py), and
-    // /trips/{id}/replan calls _refresh_trip_routes + persist_narration only. So nothing
-    // refreshes a forecast after the trip moves.
-    const out = envelope(await setTripDatesTool(deps()).execute({ start_date: '2026-09-14' }))
-    expect(String(out.note)).toContain('weather')
+  /* Reported live: a Tokyo trip moved from September to October kept September's forecast on
+     rows now labelled October. `edit_trip_dates` wrote only day_date, and /replan runs
+     _refresh_trip_routes + persist_narration — routes and prose, never weather. The backend now
+     clears a moved day's forecast in the same request, which also closes the laundering hazard
+     this suite used to pin: there is no stale forecast left for the rewrite to read. */
+  /* Derived, not hardcoded: the fixture's day 3 is an intentional weather gap (beyond the
+     forecast window), so a literal day count would assert a number the trip never had. */
+  const FORECAST_DAYS = TOKYO_TRIP.days.filter((d) => d.weather_summary).length
+
+  it('reports how many days lost their forecast', async () => {
+    const d = deps({ refresh: vi.fn().mockResolvedValue(NO_WEATHER) })
+    const out = envelope(await setTripDatesTool(d).execute({ start_date: '2026-09-14' }))
+    expect(String(out.note)).toContain(`cleared on ${FORECAST_DAYS} days`)
     expect(out.next_tool).toBeUndefined()
   })
 
-  it('says the rewritten summaries were written from that stale forecast', async () => {
-    /* The cost of rewriting here, stated rather than hidden. persist_narration hands
-       `weather_summary` straight to the narrator, so the rewrite reads a forecast for the old
-       dates and can put it into freshly-written prose — where it no longer looks old. Nothing
-       reachable from this tool can refresh it, so the note is the only honest move left. */
-    const out = envelope(await setTripDatesTool(deps()).execute({ start_date: '2026-09-14' }))
-    expect(String(out.note)).toContain('the rewritten summaries are written from it')
+  it('counts what actually happened rather than predicting it', async () => {
+    /* The rule for which days move lives in the backend. A second copy here would be free to
+       drift into a reply stating a number the database disagrees with, so the count is the
+       difference between what the trip HAD and what the re-read says it has. */
+    const oneLeft = { ...TOKYO_TRIP, days: TOKYO_TRIP.days.map((day, i) => (i === 0 ? day : { ...day, weather_summary: null })) }
+    const d = deps({ refresh: vi.fn().mockResolvedValue(oneLeft) })
+    const out = envelope(await setTripDatesTool(d).execute({ start_date: '2026-09-14' }))
+    expect(String(out.note)).toContain(`cleared on ${FORECAST_DAYS - 1} day`)
+    expect(String(out.note)).not.toContain(`cleared on ${FORECAST_DAYS} day`)
   })
 
-  it('says nothing about weather when the trip has none', async () => {
-    const d = deps({ refresh: vi.fn().mockResolvedValue(NO_WEATHER) })
+  it('says nothing about weather when nothing was cleared', async () => {
+    // Every day kept its forecast, so there is nothing to disclose and a warning would cry wolf.
+    const d = deps({ refresh: vi.fn().mockResolvedValue(TOKYO_TRIP) })
     const out = envelope(await setTripDatesTool(d).execute({ start_date: '2026-09-14' }))
-    expect(String(out.note)).not.toContain('weather')
+    expect(String(out.note ?? '')).not.toContain('weather')
+  })
+
+  it('says nothing about weather when the trip never had any', async () => {
+    const d = deps({
+      trips: { ...reader, current: () => NO_WEATHER },
+      refresh: vi.fn().mockResolvedValue(NO_WEATHER),
+    })
+    const out = envelope(await setTripDatesTool(d).execute({ start_date: '2026-09-14' }))
+    expect(String(out.note ?? '')).not.toContain('weather')
+  })
+
+  it('warns on the card, BEFORE the dates move', async () => {
+    // Afterwards there is nothing left to read — the forecast is already gone. A user who finds
+    // out by noticing an empty panel was not asked.
+    const d = deps()
+    await setTripDatesTool(d).execute({ start_date: '2026-09-14' })
+    const summary = String((d.confirm as ReturnType<typeof vi.fn>).mock.calls[0][0])
+    expect(summary).toContain('weather note on each day that moves will be cleared')
+  })
+
+  it('does not threaten to clear a forecast the trip does not have', async () => {
+    const d = deps({ trips: { ...reader, current: () => NO_WEATHER } })
+    await setTripDatesTool(d).execute({ start_date: '2026-09-14' })
+    expect(String((d.confirm as ReturnType<typeof vi.fn>).mock.calls[0][0])).not.toContain('weather')
   })
 })
 
@@ -869,17 +903,19 @@ describe('a failed refresh does not unmake the edit', () => {
     expect(String(out.result)).not.toContain('The map has redrawn')
   })
 
-  it.each(refreshes)('keeps the stale-weather warning when the refresh %s', async (_how, refresh) => {
+  it.each(refreshes)('still discloses the cleared forecast when the refresh %s', async (_how, refresh) => {
     const out = envelope(await setTripDatesTool(deps({ refresh: refresh() })).execute({ start_date: '2026-09-14' }))
     expect(String(out.note)).toContain('weather')
   })
 
-  it('keeps the stale-weather warning even though the re-read failed', async () => {
-    // It asks the FRESH bundle whether the trip carries a forecast. With no fresh bundle it falls
-    // back to the pre-edit one — changing dates writes no weather row, so the old bundle answers
-    // just as well, and losing the warning because a GET failed would lose it silently.
+  it('says the forecast was cleared without a count when the re-read failed', async () => {
+    /* The COUNT comes from comparing the trip before and after, so a failed re-read cannot supply
+       one. That the backend clears a moved day's forecast is not in doubt, though, so the fact
+       survives without the number — losing the disclosure because a GET failed would lose it
+       silently, which is the same rule the STALE_VIEW downgrade follows. */
     const out = envelope(await setTripDatesTool(deps({ refresh: broken() })).execute({ start_date: '2026-09-14' }))
-    expect(String(out.note)).toContain('weather')
+    expect(String(out.note)).toContain('cleared on every day whose date moved')
+    expect(String(out.note)).not.toMatch(/cleared on \d+ day/)
   })
 
   it('says nothing about the page when the re-read worked', async () => {

@@ -568,7 +568,16 @@ export function setTripDatesTool(deps: EditDeps): ToolSpec {
 
       const from = `${r.bundle.trip.start_date ?? '?'} to ${r.bundle.trip.end_date ?? '?'}`
       const to = `${start ?? r.bundle.trip.start_date ?? '?'} to ${end ?? r.bundle.trip.end_date ?? '?'}`
-      const approved = await deps.confirm(`Move this trip from ${from} to ${to}.\nEvery day keeps its stops; only the dates change.`)
+      /* Read BEFORE the write, because after it there is nothing left to read: the backend clears
+         the forecast on every day that moves, in the same request. The card has to say so —
+         a user who discovers it by noticing an empty panel was not asked. */
+      const hadWeather = r.bundle.days.filter((d) => d.weather_summary).length
+      const approved = await deps.confirm(
+        `Move this trip from ${from} to ${to}.\nEvery day keeps its stops; only the dates change.` +
+          (hadWeather > 0
+            ? `\nThe weather note on each day that moves will be cleared — a forecast for the old dates cannot describe the new ones.`
+            : ''),
+      )
       if (approved === 'unavailable') return noChange('failed', NO_CARD)
       if (!approved) return noChange('declined', 'The user declined. The dates are unchanged.', 'user')
 
@@ -579,33 +588,42 @@ export function setTripDatesTool(deps: EditDeps): ToolSpec {
       }
 
       // Moving the dates does not touch a stop — `edit_trip_dates` writes only
-      // `trip_days.day_date` and `trips.start_date`/`end_date` — which is why this tool used to
-      // report the summaries as intact. But the stops are not the only thing the prose is written
-      // FROM: `persist_narration` hands the narrator each day's DATE alongside its stops
-      // (`build_narrator_input`: "Day 2 (2026-08-28)"), so a summary written for a late-August
-      // Saturday is prose about a day this trip no longer has. Every change gets its rewrite;
-      // this one was named explicitly.
+      // `trip_days.day_date` and `trips.start_date`/`end_date` (plus the weather clear below) —
+      // which is why this tool used to report the summaries as intact. But the stops are not the
+      // only thing the prose is written FROM: `persist_narration` hands the narrator each day's
+      // DATE alongside its stops (`build_narrator_input`: "Day 2 (2026-08-28)"), so a summary
+      // written for a late-August Saturday is prose about a day this trip no longer has.
       //
-      // The weather line is the exception, and the rewrite makes it worse rather than better.
-      // `persist_weather` runs only inside the generation pipeline; `/trips/{id}/replan` calls
-      // `_refresh_trip_routes` + `persist_narration` only, and `persist_narration` feeds
-      // `weather_summary` straight to the narrator. So the rewrite reads a forecast for the OLD
-      // dates and can launder it into freshly-written prose. Nothing reachable from here fixes
-      // that — refreshing the forecast means calling the weather agent inside the replan endpoint
-      // — so the note is what keeps it visible, and it now says the summaries were written from it.
-      // Falls back to the PRE-edit bundle when the re-read failed: changing the dates does not
-      // write a weather row, so the old bundle answers "does this trip carry a forecast" just as
-      // well — and dropping the warning because a GET failed would lose it silently.
+      // This also closes the laundering hazard this comment used to describe. `persist_narration`
+      // feeds `weather_summary` straight to the narrator, so a rewrite after a date change used to
+      // read the OLD dates' forecast and could put it into freshly-written prose, where it no
+      // longer looked old. The backend now clears the forecast on every day that moves, in the
+      // same request that moves it, so by the time the rewrite reads those rows there is nothing
+      // stale left to launder. Ordering is what makes that true: `setDates` is awaited above.
       startSummaryRewrite(deps, r.bundle.trip.id)
       const { fresh, stale } = await refreshView(deps, r.bundle.trip.id)
-      const hasWeather = (fresh ?? r.bundle).days.some((d) => d.weather_summary)
+      /* COUNTED from the re-read, not predicted from the request. The rule for which days move
+         lives in the backend, and a second copy of it here would be free to drift into a reply
+         that states a number the database disagrees with. Comparing what the trip had against
+         what it has reports what actually happened; a failed re-read reports nothing rather than
+         a guess. */
+      const clearedDays = fresh === null ? null : hadWeather - fresh.days.filter((d) => d.weather_summary).length
+      const cleared =
+        hadWeather === 0
+          ? []
+          : clearedDays === null
+            // The re-read failed, so the COUNT is unknown — but that the backend clears a moved
+            // day's forecast is not, and dropping the disclosure because a GET failed would lose
+            // it silently. Say the fact without the number rather than nothing at all.
+            ? ['The weather note was cleared on every day whose date moved — a forecast for the old dates cannot describe the new ones, and nothing refetches it.']
+            : clearedDays > 0
+              ? [`The weather note was cleared on ${clearedDays} day${clearedDays === 1 ? '' : 's'} whose date moved — a forecast for the old dates cannot describe the new ones, and nothing refetches it.`]
+              : []
       return editResult({
         result: `The user approved. The trip now runs ${to}. Every day kept its stops and its number.${stale ? ` ${STALE_VIEW}` : ''}`,
         summariesStale: true,
         summariesRewriting: true,
-        notes: hasWeather
-          ? ['The weather note on each day is still the forecast for the old dates, nothing refreshes it, and the rewritten summaries are written from it.']
-          : [],
+        notes: cleared,
       })
     },
   }

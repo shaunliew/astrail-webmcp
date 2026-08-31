@@ -40,9 +40,9 @@ const trip: Trip = {
   id: TRIP_ID, user_id: USER_ID, status: 'saved_with_gaps',
   destination_hint: 'Tokyo, Japan', inferred_destination: 'Tokyo, Japan',
   // A near-future window, deliberately. These were 2026-08-14..16 — already in the past, so the
-  // flagship demo read as a trip that had been and gone. Fri-Sun, and the day weather below is
+  // flagship demo read as a trip that had been and gone. Fri-Sat, and the day weather below is
   // written for a Tokyo mid-September (still warm, still showery), so the two stay consistent.
-  start_date: '2026-09-18', end_date: '2026-09-20',
+  start_date: '2026-09-18', end_date: '2026-09-19',
   origin_city: 'Kuala Lumpur', budget_level: 'mid_range',
   adult_count: 2, child_count: 0, room_count: 1,
   preference_sources: ['explicit', 'memory'],
@@ -53,7 +53,7 @@ const trip: Trip = {
       {
         kind: 'long_leg', scope: 'day', severity: 'warn',
         detail: 'The Ichiran Shibuya to Tokyo Disneyland leg could not be routed; public transit is likely more practical for this long transfer.',
-        day_number: 3, refs: ['leg_3'], leg_m: 19000,
+        day_number: 2, refs: ['leg_3'], leg_m: 19000,
       },
     ],
     /* Empty, as on every trip generated since hotel search was switched off. The runner builds
@@ -99,34 +99,44 @@ const places: TripPlace[] = [
     quote: 'Spots like Sando Lab Tokyo are known for their modern, picture-perfect creations',
     quotes: ['Spots like Sando Lab Tokyo are known for their modern, picture-perfect creations'],
     rationale: null, evidence_kind: 'reel_quote',
-  }, 2, 0),
+  }, 1, 2),
   tp('tp_ichiran', P.ichiran, 'agent_suggested', {
     confidence: 0.8, source_url: 'https://ichiran.com/', quote: null, quotes: [],
     rationale: 'Ramen to close the sando day, matching your ramen preference.',
     evidence_kind: 'suggested_by_astrail',
-  }, 2, 1),
+  }, 1, 3),
   tp('tp_disney', P.disney, 'user_requested', {
     confidence: 1, source_url: null, quote: 'Also want to go Tokyo Disneyland',
     quotes: ['Also want to go Tokyo Disneyland'],
     rationale: null, evidence_kind: 'requested_by_you',
-  }, 3, 0),
+  }, 2, 0),
 ]
 
+/* TWO days, and it used to be three. Two Reels yield five stops, and spreading five stops over
+   three days made the sample trail read as a thin trip — a judge scanning it concludes the
+   pipeline did not find much, which is the exact opposite of what this page exists to show. The
+   same content over two days reads as a trip. Nothing was removed to get here: every stop, leg,
+   quote and cover is the one that was there before, redistributed.
+
+   WHERE THE BOUNDARY IS, AND WHY IT IS THERE. Day 1 absorbed the old day 2 (the sando counter and
+   the ramen); the Disneyland anchor became day 2. That is the one split that keeps the trip's
+   only CROSS-DAY leg intact AND still carrying its routing warning: `leg_3` runs from Ichiran
+   (day 1's last stop) to Disneyland (day 2's first), which is the arrival shape
+   `ItineraryCards::buildRouteLinks` folds for and the one a consecutive-pairs fold silently drops.
+   Putting the boundary anywhere else leaves the cross-day leg as the routed `leg_2`, and the test
+   pinning that fold would go on passing while watching a warning that no longer spans two days.
+   `lib/trip/__tests__/tokyo-trip.test.ts` asserts the property directly so the boundary cannot
+   drift back without something going red. */
 const days: TripDay[] = [
   {
     id: 'day_1', trip_id: TRIP_ID, day_number: 1, day_date: '2026-09-18',
-    title: 'Akasaka & the wizarding platform', summary: 'The Harry Potter station, then the cafe above it.',
+    title: 'Akasaka, then the sando crawl',
+    summary: 'The Harry Potter station and the cafe above it, then the viral sando counter and ramen to close.',
     weather_summary: 'Warm, 31°C, afternoon showers likely.', weather_source: 'open_meteo',
     weather_payload: { temperatureC: 31, precipitationChance: 55 },
   },
   {
     id: 'day_2', trip_id: TRIP_ID, day_number: 2, day_date: '2026-09-19',
-    title: 'Sando crawl, then ramen', summary: 'The viral sando counter in Akihabara, ramen in Shibuya after.',
-    weather_summary: 'Clear, 33°C.', weather_source: 'open_meteo',
-    weather_payload: { temperatureC: 33, precipitationChance: 10 },
-  },
-  {
-    id: 'day_3', trip_id: TRIP_ID, day_number: 3, day_date: '2026-09-20',
     title: 'Tokyo Disneyland', summary: 'Full-day anchor at your requested park.',
     weather_summary: null, weather_source: 'none', weather_payload: {}, // intentional weather gap — beyond forecast window
   },
@@ -167,9 +177,12 @@ const transport_legs: TransportLeg[] = [
   // Distances are the real ones between the coordinates above: the cafe is in the tower over the
   // station (80 m as the crow flies), Akihabara to Shibuya is a genuine cross-city hop.
   leg('leg_1', 'day_1', P.akasaka, P.hpcafe, 0, 'ok', 'walk', 'walking', 150, 130, null),
-  leg('leg_2', 'day_2', P.sandolab, P.ichiran, 0, 'ok', 'drive', 'driving', 1620, 9500, null),
-  // Baked partial failure (PRD §17): no route to Disneyland.
-  leg('leg_3', 'day_3', P.ichiran, P.disney, 0, 'no_route', 'transit_hint', null, null, null,
+  leg('leg_2', 'day_1', P.sandolab, P.ichiran, 1, 'ok', 'drive', 'driving', 1620, 9500, null),
+  /* Baked partial failure (PRD §17): no route to Disneyland — AND the trip's cross-day leg. It is
+     filed on day 2 while setting off from day 1's last stop, so it is the arrival into day 2's
+     first (and only) stop. That combination — a leg that spans days and carries a warning — is
+     what `buildRouteLinks` folds for; see the note on `days` above. */
+  leg('leg_3', 'day_2', P.ichiran, P.disney, 0, 'no_route', 'transit_hint', null, null, null,
     'Long transfer. Public transit may be preferable; detailed train routing is not available in v1.'),
 ]
 
@@ -184,14 +197,14 @@ const suggestionOnlyRestaurant = place(
 
 const restaurants: RestaurantSuggestion[] = [
   {
-    id: 'rest_2', trip_id: TRIP_ID, trip_day_id: 'day_2',
+    id: 'rest_2', trip_id: TRIP_ID, trip_day_id: 'day_1',
     restaurant_place_id: 'pl_popo', near_place_id: 'pl_sandolab', cuisine: 'sandwiches',
     summary: 'Fruit sandos a short ride north of the sando counter, if one shop is not enough.',
     source_url: null, evidence_json: { evidence_kind: 'suggested_by_astrail' },
     preference_match_json: { matched: ['walkable'] },
   },
   {
-    id: 'rest_1', trip_id: TRIP_ID, trip_day_id: 'day_2',
+    id: 'rest_1', trip_id: TRIP_ID, trip_day_id: 'day_1',
     restaurant_place_id: 'pl_ichiran', near_place_id: 'pl_sandolab', cuisine: 'Ramen',
     summary: 'Classic tonkotsu to close the sando day — matches your ramen preference.',
     source_url: 'https://ichiran.com/', evidence_json: { evidence_kind: 'suggested_by_astrail' },

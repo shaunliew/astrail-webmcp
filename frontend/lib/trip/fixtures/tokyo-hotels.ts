@@ -76,7 +76,7 @@ export const DEMO_HOTELS: HotelSuggestion[] = [
   },
   // Baked partial failure (PRD §17): a skipped hotel search → honest-failure: unresolved, no coords, no pin.
   {
-    id: 'hotel_2', trip_id: TRIP_ID, trip_day_id: 'day_3', base_place_id: null,
+    id: 'hotel_2', trip_id: TRIP_ID, trip_day_id: 'day_2', base_place_id: null,
     name: 'Near Tokyo Disneyland', area: 'Urayasu', star_rating: null,
     price_snapshot: {}, travala_hotel_id: null, preference_match_json: {},
     source: 'travala', status: 'skipped', searched_at: null,

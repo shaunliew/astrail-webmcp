@@ -38,10 +38,15 @@ type RouteLink = {
 
 /* One rule — "the leg that BRINGS you to this stop" — and it covers both shapes the data takes:
    the hop between two stops on this day, and the arrival into the day's first stop from
-   yesterday's last one. The second case is not hypothetical: in the demo trip, day 3's only leg
-   starts on day 2, so a fold that matched consecutive pairs alone would silently drop that day's
-   routing warning. Anything still unclaimed (a leg leaving the last stop, an unresolved endpoint)
-   trails the list rather than vanishing — this fold is the only place the legs are shown. */
+   yesterday's last one. The second case is not hypothetical: in the demo trip, the last day's
+   only leg sets off from the day before, so a fold that matched consecutive pairs alone would
+   silently drop that day's routing warning. Anything still unclaimed (a leg leaving the last
+   stop, an unresolved endpoint) trails the list rather than vanishing — this fold is the only
+   place the legs are shown.
+
+   The demo trip supplying that shape is itself asserted, in `lib/trip/__tests__/tokyo-trip.test.ts`:
+   the day boundary was moved once (three days consolidated to two), and a boundary that leaves no
+   leg spanning two days would let the test below go on passing while watching nothing. */
 function buildRouteLinks(
   places: TripPlace[], legs: TransportLeg[], placeIndex?: Map<string, Place>,
 ): { above: (RouteLink | null)[]; trailing: RouteLink[] } {

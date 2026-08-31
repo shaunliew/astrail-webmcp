@@ -66,7 +66,11 @@ Expect the camera to fly and the day chip to change.
 
 > **Switch to the hotel hub view**
 
-Expect the hotel layer.
+Expect a **decline**, in a sentence saying hotel suggestions are switched off in this build and
+the map is unchanged. ❌ **Fail if the layer switches.** The sample trail used to be the one trip
+in the product where this worked, because its fixture carried an invented Travala hotel with an
+invented price; a judge who tried it here and then on their own trip got two different answers.
+It now behaves like every trip generated since 30 Aug.
 
 ⚠ **Do not ask for 3D.** `set_map_mode` takes `route` or `hub` only. Asking for 3D returns
 `mode must be "route" or "hub".` — that is correct behaviour, not a bug. No tool can extrude

@@ -128,6 +128,28 @@ describe('save_reels puts the library on screen', () => {
     expect(String(out)).toContain('Saved 1 of 1')
   })
 
+  it('says so in the console when the page could not be moved', async () => {
+    /* The swallow above is right for the USER and wrong for everyone else: the save succeeded,
+       the reveal silently did not, and nothing anywhere said so — which is how "the agent saved
+       my reels but the page never moved" reached live testing instead of a test run. The report
+       stays exactly what happened; the console is where the developer finds out.
+
+       The error's TYPE, not the error: this line runs on a path that has just touched the
+       network, and a log is not a place to find out what an upstream message decided to
+       interpolate. */
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const reveal = vi.fn().mockRejectedValue(new Error('router exploded'))
+      const out = await withReveal(reveal).spec.execute({ urls: ['https://www.instagram.com/reel/Ca1/'] })
+
+      expect(warn).toHaveBeenCalledWith('[webmcp] save_reels: reveal failed', 'Error')
+      expect(String(out)).toContain('Saved 1 of 1')
+      expect(String(out)).not.toMatch(/reveal|router/i)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
   it('works with no reveal wired at all', async () => {
     const out = await tool().spec.execute({ urls: ['https://www.instagram.com/reel/Ca1/'] })
     expect(String(out)).toContain('Saved 1 of 1')

@@ -130,8 +130,16 @@ export function saveReelsTool(deps: SaveReelsDeps): ToolSpec {
       if (saved > 0 && deps.reveal) {
         try {
           await deps.reveal()
-        } catch {
-          // Nothing to add to the report: the save below is still exactly what happened.
+        } catch (e) {
+          /* Nothing to add to the REPORT: the save below is still exactly what happened. But
+             swallowed and unrecorded are different things, and this catch being both is how a
+             reveal that stopped working reached live testing — the save succeeded, the page did
+             not move, and no surface anywhere said so. The console is the one place a developer
+             can be told without telling the user their reels did not save.
+
+             The error's TYPE only. This is the tail of a network path, and a log line is not
+             where anyone should discover what an upstream message interpolated. */
+          console.warn('[webmcp] save_reels: reveal failed', e instanceof Error ? e.name : 'unknown')
         }
       }
       return `Saved ${saved} of ${raw.length}.\n${results.join('\n')}${analysis}`

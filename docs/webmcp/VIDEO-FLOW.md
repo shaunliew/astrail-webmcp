@@ -28,7 +28,7 @@ Account state: **zero reels, zero trips.** The orientation beat is only honest o
 | 0:47–1:05 | `Save these reels: <3 urls>` — the page fills as it speaks | 18s |
 | 1:05–1:35 | `Use the reels I just saved and plan me 2 days in Tokyo, 15 to 16 November` — narrate over the compressed wait | 30s |
 | 1:35–2:05 | `Add Tokyo Disneyland to day 1` — card, approve, map redraws, summaries rewrite | 30s |
-| 2:05–2:20 | Click the new pin → **Zoom in for 3D** | 15s |
+| 2:05–2:20 | Zoom the map in on the new pin — buildings extrude | 15s |
 | 2:20–3:00 | **How it's built** — the WebMCP architecture | 40s |
 
 ### 0:00 — The hook
@@ -89,12 +89,13 @@ Astrail geocodes the place itself rather than asking for coordinates.
 
 ### 2:05 — Into 3D
 
-Click the new Disneyland pin, then **"Zoom in for 3D"** in the evidence popup. Buildings extrude at
-z15; the popup flies to z17.
+Just zoom the map in on the new Disneyland pin. Buildings extrude at z15, so scrolling in is
+enough. (The evidence popup also has a "Zoom in for 3D" button that jumps straight to z17 if you
+prefer one click — same result.)
 
-**Say what this is:** the agent flew the camera, you tilted into the street. The same map, worked
-by both hands. **No tool sets 3D** — `set_map_mode` is `route`/`hub` only — so do not ask the agent
-to do it and do not imply it did.
+**One thing to get right in the narration:** no tool sets 3D — `set_map_mode` is `route`/`hub`
+only — so do not ask the agent for it on camera and do not imply it did this. The honest framing
+is the better one anyway: the agent put the stop on the map, you looked around it.
 
 ### 2:20 — How it's built
 

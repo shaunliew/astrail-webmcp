@@ -3,7 +3,7 @@ import { ERROR_CODE_RATE_LIMITED, ERROR_CODE_TRIAL_EXHAUSTED } from '@/lib/trip/
 import { ApiError } from '@/lib/trip/api'
 import { STAGE_LABEL } from '@/components/create/GenerationProgress'
 import type { ToolSpec } from '../types'
-import type { Decider } from './edit'
+import type { Decider, EditVerdict } from './edit'
 import type { GenerationStore } from '../generation'
 import { normalizeReelUrl } from '@/lib/trip/parse-inspiration'
 import { summarizeMemoryFacts } from '@/lib/trip/memory-summary'
@@ -285,7 +285,7 @@ const SEAT_PATH =
  * `asked` is not a fourth kind of bail-out, it is the one that is not a fault: the tool has a
  * question and cannot proceed without the answer. Everything else here is something going wrong.
  */
-function notStarted(result: string, verdict: 'declined' | 'failed' | 'asked', decidedBy: Decider = 'nobody'): string {
+function notStarted(result: string, verdict: Exclude<EditVerdict, 'done'>, decidedBy: Decider = 'nobody'): string {
   return JSON.stringify({ result, outcome: verdict, decided_by: decidedBy })
 }
 

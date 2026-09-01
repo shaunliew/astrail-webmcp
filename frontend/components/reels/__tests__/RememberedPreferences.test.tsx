@@ -92,4 +92,21 @@ describe('RememberedPreferences', () => {
     render(<RememberedPreferences />)
     expect(await screen.findByText(/Loves ramen/)).toBeInTheDocument()
   })
+
+  /* THE CLASS, because jsdom cannot see the paint.
+     `.memory-panel` carries the border, brass tint and glow, and it is a dedicated class rather
+     than Tailwind utilities for a reason this branch has already paid for once: the scoped
+     `.app-shell`/`.paper-scope` surface rules are unlayered, so they out-rank every single-class
+     utility, and a border written only in markup silently never renders. jsdom has no cascade at
+     all, so that failure is invisible to every other test in this file — the most this suite can
+     honestly do is refuse to let the class be dropped. */
+  it('keeps the panel class the styling actually hangs off', async () => {
+    getMemoryPreferences.mockResolvedValue({ status: 'ok', facts: [fact('Prefers walkable days')] })
+    const { container } = render(<RememberedPreferences />)
+    await screen.findByText(/Prefers walkable days/)
+    expect(
+      container.querySelector('.memory-panel'),
+      'restyled with utilities the scoped surface rules will swallow',
+    ).not.toBeNull()
+  })
 })

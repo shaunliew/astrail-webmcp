@@ -78,21 +78,27 @@ export default function RememberedPreferences() {
   return (
     <section
       aria-label="What Astrail remembers about you"
-      className="mb-6 rounded-xl border border-[color:var(--brass)]/45 bg-[color:var(--surface-2)] px-4 py-3.5"
+      /* `memory-panel` carries the border, tint and glow — see globals.css. Written as a class
+         rather than utilities because the scoped surface rules out-rank single-class utilities
+         and would swallow them, which is how this app has lost a visible border before. */
+      className="memory-panel mb-6 px-4 py-3.5"
     >
-      <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
-        {/* The same provenance word Settings and the evidence chips use, so a reader can tell this
-            is remembered rather than something they typed for this session. */}
+      <div className="mb-2 flex flex-wrap items-center gap-x-2.5 gap-y-1">
+        {/* The same breathing dot the activity rail uses for a live agent action. Memory is the
+            one thing on this screen acting on the user's behalf before they have asked for
+            anything, so it gets the app's "something is live here" signal. Reduced-motion
+            switches the animation off in globals.css; the dot itself stays. */}
+        <span aria-hidden className="pulse-dot pulse-dot--live" />
         <span className="type-evidence inline-flex items-center rounded-[var(--radius-chip)] bg-[var(--chip-bg)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--brass-bright)]">
           Memory
         </span>
-        <span className="type-label text-[11px] uppercase tracking-wide text-[color:var(--text-muted)]">
+        <span className="type-label text-[11px] uppercase tracking-wide text-[color:var(--brass-bright)]">
           Astrail remembers how you travel
         </span>
       </div>
-      {/* Clipped, not scrolled: this is a disclosure, and an account with a lot remembered must not
-          be able to push the library off the screen it sits above. */}
-      <p className="line-clamp-3 text-[15px] leading-relaxed text-[color:var(--text)]">{remembered}</p>
+      {/* Clipped, not scrolled: an account with a lot remembered must not be able to push the
+          library off the screen this sits above. */}
+      <p className="line-clamp-3 text-[15px] leading-relaxed text-[color:var(--starlight)]">{remembered}</p>
     </section>
   )
 }

@@ -611,6 +611,44 @@ button:focus-visible {
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3), 0 14px 34px rgba(0, 0, 0, 0.24);
 }
 
+/* The remembered-preferences panel on /app.
+
+   A DEDICATED CLASS, not Tailwind utilities, and it must stay below the scoped surface rules
+   above for the same reason `.surface--selected` does: those rules are unlayered, so they
+   out-rank every single-class utility, and a border written only in markup silently never
+   paints. That trap has cost this branch a visible affordance once already.
+
+   It borrows `.surface--selected`'s emphasis wholesale — brass tint poured over whatever the
+   scope painted, a doubled ring, and a glow — because the app already means "this one, look
+   here" with exactly that, and inventing a second dialect for it would be worse than loud. */
+.memory-panel {
+  border: 1px solid var(--brass);
+  border-radius: 14px;
+  box-shadow:
+    inset 0 0 0 999px var(--brass-soft),
+    0 0 0 1px var(--brass),
+    0 0 18px var(--brass-glow);
+}
+
+/* Arrives rather than appears. The read is async, so this panel lands a beat after the page —
+   without the entrance it pops in as a layout jump on the screen the demo opens on. */
+@media (prefers-reduced-motion: no-preference) {
+  .memory-panel {
+    animation: memory-panel-in 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+}
+
+@keyframes memory-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 .constellation-pin {
   align-items: center;
   background: transparent;

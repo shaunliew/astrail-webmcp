@@ -68,6 +68,7 @@ one list rather than a fix-one-per-restart loop. Blank and whitespace-only count
 | `ALLOWED_ORIGINS` | the Vercel origin | Unset falls back to the prod astrail.xyz origins. Fails as a **browser CORS block**, not a boot error — so it looks like every tool call is broken |
 | `WEBMCP_EDITS_ENABLED` | `true` | Defaults **false** (`main.py:117`), which makes the edit endpoints 404. Tools still register either way, so the symptom is tools that exist and refuse |
 | `DAILY_TRIP_QUOTA` | raise from `5` | `rate_limit.py:38`, read at import — **needs a restart, not just a var change** |
+| `MEM0_API_KEY` | the mem0 key | **The whole memory arc is dead without it.** Absent means DISABLED, never a boot error (`mem0_client.py:63-65`), so nothing complains: `/settings/preferences` returns `disabled`, the home panel stays silent, the agent never asks how you travel, and trip 2 recalls nothing. Production's `render.yaml` has always had it; the hackathon blueprint gained it on 2026-09-01 |
 
 ### 🚨 Leave `RUN_DELETION_SWEEP` UNSET
 
@@ -138,13 +139,22 @@ trial burns their one lifetime trip and gets a 403 on the second.
 
 ## 4 · Verify, in this order
 
-1. `GET /health` → `{"status":"ok"}` · `GET /readiness` → `ready:true`
+1. `GET /health` → `{"status":"ok"}` · `GET /readiness` → `ready:true` **and `"mem0":"configured"`**
+   — `disabled` means the key is missing, `init_failed` means it is set but the client would not
+   build (`main.py:394`). Either one silently costs you the entire memory story, so check the word,
+   not just `ready`
 2. Sign in at `/sign-in` with the demo credentials → land on the trip list, **not** the onboarding
    wizard
 3. Open a trip and confirm a tool call reaches the backend — a CSP block appears here, and only
    here
 4. `/app/trip/demo` **signed out** in a fresh browser → six tools, no bounce to `/sign-in`
 5. One real generation, attended — it spends real credit, so do it once and watch it
+6. **The memory arc, which nothing above covers.** On a fresh account: plan with no preferences
+   and confirm the agent ASKS how you travel (it only asks when mem0 is definitely empty). Answer
+   it, let the trip finish, wait ~10s for mem0's own ingestion, then check `/app/settings` lists
+   the fact and the `/app` home panel shows it. Then plan again, in a NEW conversation, stating
+   nothing — the approval card must name what it remembers back to you.
+   Full prep and gates: `docs/webmcp/MEMORY-BEAT.md`
 
 ## Not done, and deliberately
 

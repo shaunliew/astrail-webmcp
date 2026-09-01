@@ -116,8 +116,17 @@ not after.
 
 ## 2 · Vercel — frontend
 
-New project on Shaun's own account (production Vercel lives under Zhi Hao's). Set **all** of these
-before the first build:
+New project on Shaun's own account (production Vercel lives under Zhi Hao's).
+
+🚨 **Root Directory = `frontend`.** This is a monorepo — `backend/`, `frontend/`, `supabase/`,
+`legacy/` all sit at the root, and there is no `package.json` there. Import the repo and leave
+the Root Directory at the default and the build fails to find a Next.js app at all. Set it in
+the import screen, before the first build; changing it afterwards forces a rebuild.
+
+Framework preset should auto-detect as **Next.js** once the root is right. Leave the build and
+output commands at their defaults — `frontend/package.json` uses the standard `next build`.
+
+Set **all** of these before the first build:
 
 | Var | Note |
 |---|---|

@@ -29,6 +29,8 @@ const h = vi.hoisted(() => ({
   listTrips: vi.fn<() => Promise<Trip[]>>(),
   listSavedReelCards: vi.fn<() => Promise<{ places: { name: string }[] }[]>>(),
   readEntitlement: vi.fn<() => Promise<Entitlement>>(),
+  /** Controllable per test: the ask-gate only fires on a DEFINITE empty memory. */
+  memoryFacts: [{ id: 'm1', memory: 'Prefers walkable days', created_at: '2026-08-01T00:00:00Z', source: 'mem0' }] as unknown[],
 }))
 
 // GlobalTools navigates from inside a tool call (the page follows the agent), so the router
@@ -38,9 +40,7 @@ vi.mock('next/navigation', () => ({ usePathname: () => h.pathname, useRouter: ()
 vi.mock('@/lib/trip/supabase-api', () => ({
   listTrips: () => h.listTrips(),
   getTrip: vi.fn(),
-  getMemoryPreferences: async () => ({ status: 'ok', facts: [
-    { id: 'm1', memory: 'Prefers walkable days', created_at: '2026-08-01T00:00:00Z', source: 'mem0' },
-  ] }),
+  getMemoryPreferences: async () => ({ status: 'ok', facts: h.memoryFacts }),
 }))
 
 vi.mock('@/lib/reels/api', () => ({
@@ -120,6 +120,7 @@ async function appState(opts: {
 beforeEach(() => {
   h.specs = []
   h.session = 'yes'
+  h.memoryFacts = [{ id: 'm1', memory: 'Prefers walkable days', created_at: '2026-08-01T00:00:00Z', source: 'mem0' }]
   h.listTrips.mockReset()
   h.listSavedReelCards.mockReset()
   h.readEntitlement.mockReset()
@@ -236,6 +237,41 @@ async function planTripTool(): Promise<ToolSpec> {
   })
   return spec!
 }
+
+/* THE WIRING, not the logic.
+
+   The ask-gate and the memory tool are unit-tested against injected readers. What NOTHING pinned
+   was that GlobalTools actually hands them `getMemoryPreferences` — `readMemory:` on the
+   generation deps, and `preferences: { load }` on the context. Drop either line in a refactor or
+   a merge resolution and every other test stays green: the gate silently stops firing, the card
+   loses its memory line, and the seeding step MEMORY-BEAT.md points a camera at dies dark.
+
+   That is the fixture-premise failure this repo has been bitten by before — the fixture stops
+   posing the question and the suite keeps answering yes. So these assert through the real
+   component with the mock flipped, rather than through an injected dep. */
+describe('the memory readers are actually wired into the shell', () => {
+  const plan = async () => String(await (await toolOn('/app', 'plan_trip_from_reels')).execute({
+    reel_urls: ['https://www.instagram.com/reel/Cabc123/'],
+    start_date: '2026-03-03', end_date: '2026-03-07',
+  }))
+
+  it('asks how the user travels when the real reader reports an empty memory', async () => {
+    h.memoryFacts = []
+    expect(await plan(), 'readMemory is not wired to getMemoryPreferences').toMatch(/ask them/i)
+  })
+
+  it('plans without asking when the real reader reports saved preferences', async () => {
+    // The other half: a returning user must not be interrogated. Both directions, or a reader
+    // hard-wired to one answer would satisfy the test above.
+    expect(await plan()).not.toMatch(/ask them/i)
+  })
+
+  it('registers a memory tool that reads through the real client', async () => {
+    h.memoryFacts = [{ id: 'm9', memory: 'Likes ramen', created_at: '2026-08-01T00:00:00Z', source: 'mem0' }]
+    const out = String(await (await toolOn('/app', 'get_remembered_preferences')).execute({}))
+    expect(out, 'the preferences reader is not wired to getMemoryPreferences').toContain('Likes ramen')
+  })
+})
 
 describe('plan_trip_from_reels, gated on the account the browser can actually read', () => {
   it('refuses BEFORE the approval card when the free trial is already spent', async () => {
@@ -624,7 +660,7 @@ describe('get_app_state, answering a visitor with no account', () => {
  * demonstrating that this product does not invent things, the orientation tool telling a judge
  * they planned a trip they did not plan is the wrong sentence to ship.
  *
- * The signed-out wording cannot just be reused. This reader HAS an account, all thirteen tools
+ * The signed-out wording cannot just be reused. This reader HAS an account, all fourteen tools
  * work for them, and their own library is sitting right there — so "say nothing about this
  * person's own reels" would be false in the other direction.
  */
@@ -637,7 +673,7 @@ describe('the demo page tells a signed-in visitor what it actually is', () => {
 
   it('says their own library is untouched, because it is', async () => {
     // The correction must not overshoot into implying the demo page limits their account. It
-    // does not: all thirteen tools are registered here and every one of them still works.
+    // does not: all fourteen tools are registered here and every one of them still works.
     const out = await appStateOn(SAMPLE_PATH, 'yes')
     expect(out).toContain('Your own Reels and trips are untouched')
   })

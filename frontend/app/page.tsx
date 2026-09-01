@@ -46,7 +46,7 @@ export default function LandingPage() {
                 <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
                 <span className="min-w-0">
                   <b className="text-[color:var(--ink-900)]">17 tools</b> registered with{' '}
-                <code className="break-all text-[color:var(--ink-900)]">document.modelContext.registerTool()</code> — 13 anywhere in the app, 3 more that appear only once a map exists to drive.
+                <code className="break-all text-[color:var(--ink-900)]">document.modelContext.registerTool()</code> — 14 anywhere in the app, 3 more that appear only once a map exists to drive.
                 </span>
               </li>
               <li className="flex gap-3">
@@ -123,7 +123,7 @@ export default function LandingPage() {
               </p>
               <p className="mt-2">
                 Nothing needs an account to look at &mdash; the sample trail above opens signed out,
-                with six of the sixteen tools.
+                with six of the seventeen tools.
               </p>
             </div>
           </section>

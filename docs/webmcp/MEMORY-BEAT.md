@@ -75,6 +75,24 @@ said it again". A fresh conversation removes the incentive entirely and costs no
 
 If step 5 comes back empty, **do not narrate memory.** Found in seconds instead of mid-take.
 
+### Why step 5 can come back empty even though you did everything right
+
+The write-back is on the **success path only** (`backend/pipeline/runner.py:804-811`). Between a
+stated preference and a stored memory sit these, and each one ends in nothing written:
+
+| | |
+|---|---|
+| **Trip 1 failed** | `_fail(...)` never reaches the write-back. A failed generation teaches nothing, however good the preference was. |
+| **Trip 1 was superseded** | `runner.py:797-800` returns early — "not even the memory write-back" — when a replacement run owns the trip. |
+| Account deletion is pending | `_account_deletion_frozen` refuses the write (`preferences.py:358-363`). |
+| Memory was cleared mid-run | `_cleared_since_generation_start` refuses it (`:377-382`). |
+| mem0 took longer than 5s | The `add` is timeout-bounded (`:384-391`). |
+
+None of these is a bug — every one is a deliberate guard, and all of them are silent by design,
+because memory must never flip an already-succeeded trip (guardrail #3). The practical
+consequence for a recording session is simply this: **if trip 1 did not finish cleanly, re-run it
+before assuming the feature is broken.**
+
 ## On camera — the two-trip shape
 
 **Trip 1** — the existing prompt, unchanged:

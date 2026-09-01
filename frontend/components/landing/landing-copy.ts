@@ -33,7 +33,7 @@ export const faqs = [
   {
     question: "What can the agent actually do?",
     answer:
-      "Sixteen tools. It can tell you what is possible from where you are, read your saved Reels and any day of an itinerary, quote the caption a stop came from, save new Reels, start a generation and narrate each stage as it runs, fly and tilt the map, and move, remove, add or re-plan stops on a finished route.",
+      "Seventeen tools. It can tell you what is possible from where you are, read your saved Reels and any day of an itinerary, quote the caption a stop came from, say what Astrail remembers about how you travel, save new Reels, start a generation and narrate each stage as it runs, fly and tilt the map, and move, remove, add or re-plan stops on a finished route.",
   },
   {
     question: "Can it do things without asking me?",

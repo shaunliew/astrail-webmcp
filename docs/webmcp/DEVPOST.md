@@ -91,13 +91,15 @@ deliberate rather than ambient: it runs only when you leave preferences blank, s
 now always beats whatever it remembers. Every remembered fact is listed, sourced, and deletable
 under Settings, and the generation says on screen when it used them.
 
-The memory engine pre-dates this hackathon. What is new is that an agent can reach it. Before,
-asking an agent to plan left the preferences field blank — which is the condition that triggers
-recall, and also the condition that saves nothing, so an account planned entirely by agent stayed
-permanently empty. Now the planning tool asks you how you travel when it has nothing to go on, and
-stops before spending anything to do it; a second tool lets the agent read back what it holds. The
-approval card names which source is about to steer the trip, so the choice is visible at the
-moment you decide to spend.
+The memory engine pre-dates this hackathon; what is new is the agent's access to it. The planning
+tool always accepted a preferences argument, but nothing told an agent the field outlived the
+trip, so it went unset — and unset is both the condition that triggers recall and the condition
+that saves nothing, which left agent-planned accounts empty. Now, when nothing is stated and
+nothing is remembered, the tool stops before spending anything and asks how you travel; a second
+tool lets the agent read back what Astrail holds. The approval card says when saved preferences
+will be attempted, so the choice is visible at the moment you decide to spend. Attempted, not
+guaranteed: recall is a semantic search that can miss, and the card does not promise what it
+cannot.
 
 ## How we implemented WebMCP
 

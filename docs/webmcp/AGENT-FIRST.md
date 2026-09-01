@@ -247,8 +247,14 @@ Action Receipts ([Hatchworks](https://hatchworks.com/blog/ai-agents/agent-ux-pat
 
 ~~Also incomplete: `add_place`, `set_trip_dates` and `replan_trip` are missing from `LABELS`
 (`WebMcpRegistry.tsx:10`) and fall back to a generic "WORKING".~~ ✅ **Fixed on `wt/receipts`** —
-its table covers all 16 tools where `main` has 5. Verified 2026-08-30 by diffing the two versions.
-It lands with that merge; nothing to do on `feat/webmcp`.
+its table covered all 16 tools of the day where `main` has 5. Verified 2026-08-30 by diffing the
+two versions. It lands with that merge; nothing to do on `feat/webmcp`.
+
+> **Recurred 2026-09-01.** `get_remembered_preferences` shipped missing from the same table and
+> was announced as an irreversible write on every call — the fail-safe `UNKNOWN_TOOL` default is
+> `changes: true`. The old fix enumerated three tool NAMES, so it could not catch a fourth. The
+> table is now derived from the registry by `spec-contract.test.ts`, which asserts every
+> registered tool has a row and that no `readOnlyHint` tool is recorded as a change.
 
 ## 4. Tool-contract gaps + a truthful SUBMISSION.md
 

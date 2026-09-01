@@ -139,7 +139,7 @@ function useHasSession(pathname: string): boolean | null {
  *
  * Deliberately NOT the signed-out wording. That one tells the agent to say nothing about this
  * person's own reels and trips, which is right when there is no account and wrong here: all
- * thirteen tools are registered for this reader and every one of them works on their own library.
+ * fourteen tools are registered for this reader and every one of them works on their own library.
  * The correction has to land on the trip without overshooting onto the account.
  *
  * The last clause is here rather than in `blocked` on purpose. The five edit tools refuse the
@@ -1111,9 +1111,9 @@ export default function GlobalTools() {
      sample trail holds a JWT, and all thirteen work for them there.
 
      Unknown fails SMALL (`!== true`, not `=== false`), so the list only ever GROWS: a signed-in
-     visitor to this route sees three, then thirteen. The other direction would show a judge sixteen
-     tools and then take eleven away, advertising failures during exactly the window a freshly
-     loaded agent reads the list. An under-advertised tool costs a question; an over-advertised one
+     visitor to this route sees three, then fourteen. The other direction would show a judge the
+     full list and then take most of it away, advertising failures during exactly the window a
+     freshly loaded agent reads the list. An under-advertised tool costs a question; an over-advertised one
      costs a failed call the agent was invited to make. */
   const offered = isPublicSample(pathname, hasSession)
     ? specs.filter((s) => PUBLIC_SAMPLE_TOOLS.has(s.name))

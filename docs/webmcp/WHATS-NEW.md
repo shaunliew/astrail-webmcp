@@ -30,7 +30,7 @@ These are the foundation the challenge work exposes as a shared human-agent work
 
 ### The tool layer — 17 tools in two scopes
 
-All of `frontend/lib/webmcp/` is new. Tools are registered through `document.modelContext.registerTool()`; 13 are available anywhere in the app, and 3 more appear only where a live map exists to drive.
+All of `frontend/lib/webmcp/` is new. Tools are registered through `document.modelContext.registerTool()`; 14 are available anywhere in the app, and 3 more appear only where a live map exists to drive.
 
 | Tool | Scope | What it does |
 |---|---|---|
@@ -47,6 +47,7 @@ All of `frontend/lib/webmcp/` is new. Tools are registered through `document.mod
 | `add_place` | Global | Adds a stop the user asks for, behind a confirmation. Astrail geocodes the name itself before ever asking the agent for coordinates. |
 | `set_trip_dates` | Global | Changes the trip's dates, behind a confirmation. |
 | `replan_trip` | Global | Re-routes and re-narrates so the prose matches the stops after edits. Every edit starts this by itself, so the agent is told not to call it after one. |
+| `get_remembered_preferences` | Global | What Astrail has remembered about how this user travels. Reports a disabled feature, an unreachable store and a genuinely empty memory as three different answers, and never claims the stored set is what the next trip will use — recall is a semantic search that can miss. |
 | `show_on_map` | Trip page | Flies the live map to a trip, day, stop or hotel hub. |
 | `set_map_mode` | Trip page | Switches between the route view and the hotel hub view. |
 | `get_map_view` | Trip page | Reads the current camera plus the trip's day and stop totals. It states plainly that it cannot see which day or stop is selected — the page does not expose it — rather than guessing at "this one". |
@@ -62,12 +63,16 @@ Supporting modules, all new:
 
 ### Memory, reachable by an agent for the first time
 
-The mem0 engine is pre-existing (above). What did not exist before 26 Aug is any way for an agent
-to reach it — and the agent path could not even feed it, which made it a dead end in both
-directions: `plan_trip_from_reels` left `preferences` blank, and blank is simultaneously the
-condition that triggers recall and the condition that writes nothing
-(`backend/pipeline/preferences.py:100-101`, `:114`). An account planned entirely by agent stayed
-permanently empty.
+The mem0 engine is pre-existing (above), and so is the wiring that lets a stated preference reach
+it: `plan_trip_from_reels` already accepted a `preferences` argument and already forwarded it, so
+an agent that populated the field could always teach memory. **What it lacked was any reason to.**
+The parameter's whole description was "Free-text preferences, max 280 chars." — no mention of
+memory, persistence, or later trips — so in practice the field went unset, and unset is
+simultaneously the condition that triggers recall and the condition that writes nothing
+(`backend/pipeline/preferences.py:100-101`, `:114`). Accounts planned through the agent stayed
+empty not because the path was closed, but because nothing ever walked it.
+
+Three things are new, and they are narrower than "agents can now teach Astrail":
 
 - **`get_remembered_preferences`** — the agent can say what Astrail remembers. It reports a
   disabled feature, an unreachable store and a genuinely empty memory as three different answers,
@@ -83,8 +88,11 @@ permanently empty.
   reads the backend's `preference_source` and shows the chip only when memory genuinely supplied
   the facts.
 
-The claim to make is *"agents can now reach and teach Astrail's memory"* — never *"we built
-memory for this hackathon"*.
+Two claims to avoid, both disprovable from the diff alone: that memory was built for this
+hackathon (it was built 2026-07-07 → 2026-08-02), and that agents *could not write* to it before
+(they could — the argument existed and was forwarded). The accurate claim is that the agent can
+now **inspect** memory, that a known-empty account is **asked** instead of silently given a
+generic draft, and that the approval card **discloses** which source is being attempted.
 
 ### Registration and visibility
 

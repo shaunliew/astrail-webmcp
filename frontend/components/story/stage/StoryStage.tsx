@@ -25,7 +25,7 @@ import { useLenis } from './useLenis'
    Repointed to the challenge build (2026-08-31). The beta/seat framing this comment used to
    describe is gone from the rendered page and should not be restored from here. The primary
    action is still "Sign in to try it" — the tools act as the signed-in user — but signing in is
-   no longer the ONLY way in: `/app/trip/demo` offers six of the sixteen tools with no account,
+   no longer the ONLY way in: `/app/trip/demo` offers six of the seventeen tools with no account,
    and the sticky ChallengeBanner links it above everything else.
 
    NOTE for anyone writing copy in this file: `/` registers NO WebMCP tools. `GlobalTools` mounts
@@ -70,7 +70,7 @@ export default function StoryStage() {
             <b className="font-bold text-[color:var(--ink-900)]">
               &ldquo;what can I do here?&rdquo;
             </b>{' '}
-            &mdash; thirteen tools answer once you are signed in, sixteen once a
+            &mdash; fourteen tools answer once you are signed in, seventeen once a
             trip is open, and six on the sample trail up top, which needs no
             account.
           </p>

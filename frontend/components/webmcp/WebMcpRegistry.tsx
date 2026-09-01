@@ -70,6 +70,7 @@ const TOOLS: Record<string, ToolFacts> = {
   get_place_evidence:   { label: 'CHECKING',    attempt: 'CHECKING',   actor: 'Astrail', changes: false },
   get_map_view:         { label: 'LOOKING',     attempt: 'LOOKING',    actor: 'Astrail', changes: false },
   get_trip_progress:    { label: 'WATCHING',    attempt: 'WATCHING',   actor: 'Astrail', changes: false },
+  get_remembered_preferences: { label: 'RECALLING', attempt: 'RECALLING', actor: 'Astrail', changes: false },
   show_on_map:          { label: 'SHOWING',     attempt: 'SHOWING',    actor: 'Astrail', changes: false },
   set_map_mode:         { label: 'SWITCHING',   attempt: 'SWITCHING',  actor: 'Astrail', changes: false },
   save_reels:           { label: 'SAVING',      attempt: 'SAVING',     actor: 'Astrail', changes: true },
@@ -84,6 +85,14 @@ const TOOLS: Record<string, ToolFacts> = {
   set_trip_dates:       { label: 'RESCHEDULED', attempt: 'RESCHEDULE', actor: 'You',     changes: true },
   replan_trip:          { label: 'REWROTE',     attempt: 'REWRITE',    actor: 'You',     changes: true },
 }
+
+/**
+ * The rail's table, exported for the spec contract ONLY — which asserts that every registered
+ * tool has an entry, and that no read-only tool is recorded as a change. `get_remembered_
+ * preferences` shipped missing from it and was therefore announced as an irreversible write on
+ * every call; the contract exists so the next tool cannot.
+ */
+export const __TOOL_FACTS_FOR_TEST = TOOLS
 
 /**
  * A tool the table has not met. `changes: true` is the fail-safe direction: it costs an extra

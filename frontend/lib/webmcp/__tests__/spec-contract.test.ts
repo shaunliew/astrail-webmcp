@@ -272,7 +272,7 @@ describe('a gated tool tells the agent the page does the asking', () => {
 
 describe('tool spec contract', () => {
   it('registers at least the tools built so far', () => {
-    expect(specs.length).toBeGreaterThanOrEqual(16)
+    expect(specs.length).toBeGreaterThanOrEqual(17)
   })
 
   it('has globally unique names — a duplicate is REJECTED at registration, silently', () => {
@@ -377,6 +377,37 @@ describe('tool spec contract', () => {
       const text = typeof out === 'string' ? out : JSON.stringify(out)
       expect(envelopeLength(text), `${spec.name} exceeded the output budget`).toBeLessThanOrEqual(OUTPUT_LIMIT)
     }
+  })
+})
+
+/* THE RAIL MUST KNOW EVERY TOOL.
+
+   `WebMcpRegistry`'s TOOLS table drives the activity rail's label, actor and — the part that
+   matters — `changes`, which is what prints "Astrail can't undo this". A tool missing from that
+   table falls through to UNKNOWN_TOOL, which is `changes: true`.
+
+   That fail-safe default is right for an unknown WRITE and actively wrong for a read: it labels
+   a harmless inspection an irreversible mutation, on the one surface whose whole job is telling
+   the user truthfully what the agent did. `get_remembered_preferences` shipped that way and a
+   cross-model review caught it, not this suite — so the suite now covers it.
+
+   Asserted as a RULE over the registry rather than a list, so the next tool cannot ship the same
+   way: a read annotated `readOnlyHint` must never be recorded as a change. */
+describe('the activity rail knows every registered tool', () => {
+  const railFacts = async () => (await import('@/components/webmcp/WebMcpRegistry')).__TOOL_FACTS_FOR_TEST
+
+  it('has an entry for every tool, so none falls through to the unknown default', async () => {
+    const facts = await railFacts()
+    const missing = [...specs, ...tripTools(mapDeps)].map((s) => s.name).filter((n) => !(n in facts))
+    expect(missing, 'these would be recorded as irreversible changes they may not be').toEqual([])
+  })
+
+  it('never records a read-only tool as something that changed the trip', async () => {
+    const facts = await railFacts()
+    const lying = [...specs, ...tripTools(mapDeps)]
+      .filter((s) => s.annotations?.readOnlyHint === true && facts[s.name]?.changes === true)
+      .map((s) => s.name)
+    expect(lying, 'a read was recorded as a change — the rail would offer "can\'t undo this"').toEqual([])
   })
 })
 

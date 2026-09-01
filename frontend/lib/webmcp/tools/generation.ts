@@ -353,11 +353,18 @@ async function readMemoryState(
 ): Promise<{ hasFacts: boolean } | null> {
   if (!read) return null
   try {
+    let timer: ReturnType<typeof setTimeout> | undefined
     const res = await Promise.race([
       read(),
-      new Promise<null>((r) => setTimeout(() => r(null), MEMORY_READ_TIMEOUT_MS)),
-    ])
+      new Promise<null>((r) => { timer = setTimeout(() => r(null), MEMORY_READ_TIMEOUT_MS) }),
+    ]).finally(() => clearTimeout(timer))
+    // The losing side is deliberately NOT aborted. This read is a side-effect-free authenticated
+    // GET whose late resolution can touch nothing — `res` is already decided — and giving it an
+    // AbortSignal would mean widening the dep's signature for no behavioural gain.
     if (!res || res.status !== 'ok') return null
+    // Array.isArray, not truthiness: a malformed payload is UNKNOWN, not empty. `undefined > 0`
+    // is false, which would have asked a returning user to restate preferences they have.
+    if (!Array.isArray(res.facts)) return null
     return { hasFacts: res.facts.length > 0 }
   } catch {
     return null   // never let a memory read decide a trip cannot start
@@ -399,7 +406,12 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
       if (!ISO_DATE.test(start) || !ISO_DATE.test(end)) return notStarted('start_date and end_date are required, as YYYY-MM-DD.', 'failed')
       if (end < start) return notStarted('end_date is before start_date.', 'failed')
 
-      const preferences = typeof args.preferences === 'string' ? args.preferences.slice(0, MAX_PREFERENCES) : null
+      // Trimmed to match the backend, which decides blank with `(explicit_text or "").strip()`
+      // (pipeline/preferences.py:114). Untrimmed, `"  "` skipped the ask-gate and the card's
+      // memory line here while the backend treated the same run as stating nothing — recall ran
+      // unannounced and nothing was taught.
+      const rawPrefs = typeof args.preferences === 'string' ? args.preferences.trim() : ''
+      const preferences = rawPrefs ? rawPrefs.slice(0, MAX_PREFERENCES) : null
 
       // Before the card, not after it. The manual flow renders TrialExhaustedCard instead of a
       // Generate button, so nothing is spent and nothing is consented to; this path used to show
@@ -420,7 +432,9 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
         return notStarted(
           'Not started, nothing spent. Astrail has not learned how this user likes to travel yet. '
           + 'Ask them — pace, food, how packed they like a day — then call this again with their '
-          + 'answer in `preferences`. Astrail remembers it for their next trip.',
+          + 'answer in `preferences`, which gives Astrail a preference it can remember for later '
+          + 'trips. If they would rather not say, call this again with `preferences` omitted '
+          + 'and Astrail will infer a first draft from their Reels.',
           'failed',
         )
 
@@ -436,8 +450,13 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
         // Says which source is about to steer the trip, at the moment the user decides to
         // spend on it. Only when memory is KNOWN to hold something — `null` is unknown, and
         // promising remembered preferences we could not read would be a claim, not a note.
+        /* "try to recall", not "will use". What was read here is the STORED set (get_all);
+           the generation runs an independent semantic search (preferences.py:105-125) that can
+           miss, time out, or error, and then falls back to inferred defaults in silence. The
+           card is where the user decides to spend, so it must not promise an outcome a later
+           search gets to veto. */
         !preferences && memory?.hasFacts
-          ? 'No preferences given — Astrail will use what it remembers about how you travel.'
+          ? 'No preferences given — Astrail will try to recall what it remembers about how you travel.'
           : null,
         alreadyRead === null ? null : describeReuse(alreadyRead, urls.length),
         deps.saveToLibrary ? describeLibrarySave(urls.length) : null,

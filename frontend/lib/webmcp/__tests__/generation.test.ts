@@ -492,9 +492,31 @@ describe('plan_trip_from_reels', () => {
   })
 
   it('plans anyway when there is no memory reader at all', async () => {
-    await plan(deps())
-    // deps() has no readMemory; the absence must not read as "this user has nothing".
-    expect(deps().create).toBeDefined()
+    /* This assertion used to be `expect(deps().create).toBeDefined()` — a check on a FRESH,
+       unrelated deps object, which would have passed even if the real call returned early and
+       never planned. A cross-model review caught it. It asserts the object actually used now. */
+    const d = deps()
+    await plan(d)
+    expect(d.create, 'a missing memory reader read as "this user has nothing"').toHaveBeenCalled()
+  })
+
+  it('never promises the card an outcome the recall can still veto', async () => {
+    /* The card reads the STORED set (get_all). The generation runs an independent semantic
+       search that can miss, time out, or error and then falls back to inferred defaults in
+       silence (backend/pipeline/preferences.py:105-125). So the card may say Astrail will TRY,
+       never that it WILL — this is the sentence a user reads while deciding to spend. */
+    const d = deps({ readMemory: savedMemory() })
+    await plan(d)
+    const card = String(d.confirm.mock.calls[0][0])
+    expect(card).toMatch(/try to recall/i)
+    expect(card, 'the card promised an outcome a later search decides').not.toMatch(/will use what it remembers/i)
+  })
+
+  it('does not promise the ask will be remembered, only that it can be', async () => {
+    // Write-back is best-effort and swallows five separate failure modes by design.
+    const out = String(await plan(deps({ readMemory: emptyMemory() })))
+    expect(out).toMatch(/can remember/i)
+    expect(out, 'promised a write-back that is explicitly best-effort').not.toMatch(/Astrail remembers it for/i)
   })
 
   it('tells the user on the card when saved preferences will be used', async () => {

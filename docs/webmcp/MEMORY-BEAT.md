@@ -116,8 +116,27 @@ rephrase; nothing is lost.
 Plan me 3 days in Osaka, 20 to 22 November, from my saved reels
 ```
 
-The first stage row should read *"Using your saved travel preferences: …"*. That is the payoff.
-You can cut the take there — the rest of the generation is not needed for this beat.
+**The approval card is now the beat, not just the stage row.** Because you stated nothing and
+Astrail holds something, the card names what it remembers and offers a field to say otherwise:
+
+```
+Astrail remembers: walkable days · good ramen · not too rushed
+[ different this trip? (optional) ______________________ ]
+
+[ Use what it remembers ]   [ Not now ]
+```
+
+That is the whole argument on screen at once — Astrail knows you, and it still asks. A remembered
+preference is a default, not a mandate, and a trip you take in a different mood is a different
+trip. Approve with the field blank and it plans from memory.
+
+**Worth filming both halves if you have the seconds:** approve blank on one take, and on another
+type something different and let the trip be built from that instead. The second proves the memory
+is a suggestion rather than a rail, which is the harder thing to demonstrate and the easier thing
+to doubt.
+
+Then the first stage row reads *"Using your saved travel preferences: …"*, and you can cut — the
+rest of the generation is not needed for this beat.
 
 ## Read the screen before you say the line
 

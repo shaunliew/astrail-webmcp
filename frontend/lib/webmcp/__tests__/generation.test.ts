@@ -484,6 +484,24 @@ describe('plan_trip_from_reels', () => {
     expect(d.create.mock.calls[0][0].preferences).toBeNull()
   })
 
+  it('remembers nothing when a decline arrives alongside a preference string', async () => {
+    /* Both fields together is schema-valid, and honouring the string while skipping the ask
+       would write a memory the parameter's own description promises it will not. Declining is a
+       statement about the user, so it wins — found by a cross-model pass, not by this suite. */
+    const d = deps({ readMemory: emptyMemory() })
+    await plan(d, { preferences: 'quiet days', no_preferences: true })
+    expect(d.create.mock.calls[0][0].preferences, 'a decline still sent a preference to be stored').toBeNull()
+  })
+
+  it('declares no_preferences in its schema, not just in its branch', () => {
+    /* The tests above call execute() directly, which bypasses `additionalProperties: false`.
+       Deleting the property from the schema would leave them green while making the field
+       unsendable — the ask would name an input the agent is not allowed to pass. */
+    const schema = planTripFromReelsTool(deps()).inputSchema
+    expect(schema?.properties).toHaveProperty('no_preferences')
+    expect((schema?.properties as Record<string, { type?: string }>).no_preferences.type).toBe('boolean')
+  })
+
   it('does NOT ask when the user stated preferences this trip', async () => {
     // The reader is held locally: `deps()` spreads overrides, so the returned type does not
     // widen to include them, and asserting through it would need a cast that hides the intent.

@@ -41,6 +41,9 @@ closed it (all after 26 Aug, all listed in `WHATS-NEW.md`):
    how they like to travel. The answer comes back as `preferences`, which makes the run explicit,
    which is what writes the memory.
 2. **`get_remembered_preferences`** lets the agent read the stored memories back.
+3. **A user who declines is not stuck.** `no_preferences: true` skips the question without
+   storing anything — an answer like "no particular preferences" would otherwise become a fact
+   Astrail recalls on every later trip.
 
 **Only a definite empty asks.** A failed or disabled memory read is *unknown*, and unknown
 proceeds — interrogating someone who already has preferences saved, because a read failed, is the

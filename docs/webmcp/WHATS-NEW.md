@@ -82,7 +82,9 @@ three new capabilities and one defect fixed:
   because collapsing them tells a user something false about their own account.
 - **`plan_trip_from_reels` asks before it spends.** When the user states no preferences and
   nothing is remembered, the tool returns without starting the run or showing a card, and asks how
-  they like to travel. The answer is what makes the run explicit, which is what teaches Astrail.
+  they like to travel. The answer is what makes the run explicit, which is what lets Astrail learn
+  from it — the write-back itself is best-effort and can still fail. A user who declines is not
+  stuck: `no_preferences: true` skips the question without storing anything.
   Only a *definite* empty asks — a failed or disabled read is unknown, and unknown plans anyway.
 - **The approval card names the source.** With nothing stated but something remembered, it says so
   before the user spends, so the choice is visible at the moment it is made.

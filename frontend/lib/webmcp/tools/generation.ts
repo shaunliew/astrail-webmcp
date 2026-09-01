@@ -412,7 +412,7 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
       // memory line here while the backend treated the same run as stating nothing — recall ran
       // unannounced and nothing was taught.
       const rawPrefs = typeof args.preferences === 'string' ? args.preferences.trim() : ''
-      const preferences = rawPrefs ? rawPrefs.slice(0, MAX_PREFERENCES) : null
+      const statedPreferences = rawPrefs ? rawPrefs.slice(0, MAX_PREFERENCES) : null
 
       // Before the card, not after it. The manual flow renders TrialExhaustedCard instead of a
       // Generate button, so nothing is spent and nothing is consented to; this path used to show
@@ -433,7 +433,12 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
          refusal. This is a separate signal meaning "asked and declined", and it deliberately
          does NOT become a preference: writing "no particular preferences" into mem0 would
          teach the account a fact it then recalls on every future trip. */
+      /* `no_preferences` WINS over any preference string sent alongside it. Both together is a
+         schema-valid input, and honouring the string while skipping the ask would have written a
+         memory the parameter's own description promises it will not — the agent is told "nothing
+         is remembered", so nothing may be. Declining is a statement about the user, not a hint. */
       const declined = args.no_preferences === true
+      const preferences = declined ? null : statedPreferences
       const memory = preferences || declined ? null : await readMemoryState(deps.readMemory)
       if (memory?.hasFacts === false)
         return notStarted(
@@ -441,7 +446,7 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
           + 'Ask them — pace, food, how packed they like a day — then call this again with their '
           + 'answer in `preferences`, which gives Astrail a preference it can remember for later '
           + 'trips. If they would rather not say, call this again with `no_preferences: true` '
-          + 'and Astrail will infer a first draft from their Reels.',
+          + 'and Astrail will build a first draft from their Reels without asking again.',
           'failed',
         )
 

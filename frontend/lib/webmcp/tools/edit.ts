@@ -94,11 +94,16 @@ function pinsLine(bundle: TripBundle | null, name: string): string {
  * text that is partly caption-derived (guardrail #11) and it rots the first time someone reworks
  * a sentence. This is a value our own code writes before any output is assembled: the model
  * cannot pick it and a caption cannot reach it.
+ *
+ * `asked` is the fourth, and it is not an edit ending at all — it belongs to a tool that stopped
+ * short of doing anything because it needed an answer from the user first. It lives here because
+ * the rail believes exactly one vocabulary and this is it: routed through `failed`, Astrail
+ * politely asking how someone likes to travel was recorded, in red, as the app breaking.
  */
-export type EditVerdict = 'done' | 'declined' | 'failed'
+export type EditVerdict = 'done' | 'declined' | 'failed' | 'asked'
 
 /** The vocabulary itself, so a reader can validate rather than trust. */
-export const EDIT_VERDICTS: readonly EditVerdict[] = ['done', 'declined', 'failed']
+export const EDIT_VERDICTS: readonly EditVerdict[] = ['done', 'declined', 'failed', 'asked']
 
 /**
  * WHO decided this call happens — the other half of the record, and it cannot be inferred.

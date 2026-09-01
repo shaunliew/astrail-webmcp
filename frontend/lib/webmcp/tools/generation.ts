@@ -280,8 +280,11 @@ const SEAT_PATH =
  *
  * `decidedBy` defaults to `nobody`, which is the truth for every bail-out that happens before the
  * card. The two endings downstream of a card pass their own.
+ *
+ * `asked` is not a fourth kind of bail-out, it is the one that is not a fault: the tool has a
+ * question and cannot proceed without the answer. Everything else here is something going wrong.
  */
-function notStarted(result: string, verdict: 'declined' | 'failed', decidedBy: Decider = 'nobody'): string {
+function notStarted(result: string, verdict: 'declined' | 'failed' | 'asked', decidedBy: Decider = 'nobody'): string {
   return JSON.stringify({ result, outcome: verdict, decided_by: decidedBy })
 }
 
@@ -447,7 +450,12 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
           + 'answer in `preferences`, which gives Astrail a preference it can remember for later '
           + 'trips. If they would rather not say, call this again with `no_preferences: true` '
           + 'and Astrail will build a first draft from their Reels without asking again.',
-          'failed',
+          /* NOT `failed`, which is what this was, and the rail rendered `PLANNING FAILED` in red
+             for it. Nothing failed: no call was made, no allowance was touched, and the run is
+             one answer away. Only this call site changes — the five bail-outs around it (a link
+             that is not a Reel, too many reels, two shapes of bad date, a spent trial) are real
+             failures and stay named as such. */
+          'asked',
         )
 
       const alreadyRead = await countAlreadyRead(deps.readLibrary, urls)

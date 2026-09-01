@@ -74,6 +74,9 @@ function headline(entry: ActivityEntry): string {
   if (entry.status === 'running') return entry.attempt
   if (entry.status === 'declined') return `${entry.attempt} DECLINED`
   if (entry.status === 'failed') return `${entry.attempt} FAILED`
+  // Not `WAITING`: the call is over and the rail is not waiting on anything. What is outstanding
+  // is the user's answer, so the card says whose move it is rather than describing a state.
+  if (entry.status === 'asked') return `${entry.attempt} NEEDS YOUR ANSWER`
   return entry.label
 }
 
@@ -92,6 +95,10 @@ function Entry({ entry, now }: { entry: ActivityEntry; now: number }) {
               // Declined is not an error — the gate did its job — so it is neither alarming red
               // nor the brass the rail uses for a change that landed.
               : entry.status === 'declined' ? 'bg-white/40'
+              // An ask is not an error either. Red here was the rail telling the user the app had
+              // fallen over at the exact moment it was asking them a question, so it takes the
+              // same brass as every other ending that is not a fault. Solid rather than pulsing:
+              // the pulse means a call is in flight, and this one has already come back.
               : 'bg-[#C9974E]/60',
           ].join(' ')}
         />

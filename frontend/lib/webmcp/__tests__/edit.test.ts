@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { TOKYO_TRIP } from '@/lib/trip/fixtures/tokyo-trip'
 import type { TripBundle } from '@/lib/trip/backend-types'
 import { envelopeLength, OUTPUT_LIMIT } from '../fit'
-import { addPlaceTool, movePlaceTool, readToolOutcome, removePlaceTool, replanTripTool, setTripDatesTool, type EditDeps } from '../tools/edit'
+import { addPlaceTool, EDIT_VERDICTS, movePlaceTool, readToolOutcome, removePlaceTool, replanTripTool, setTripDatesTool, type EditDeps } from '../tools/edit'
 
 const reader = { current: () => TOKYO_TRIP, list: async () => [TOKYO_TRIP.trip], load: async () => TOKYO_TRIP }
 
@@ -797,9 +797,19 @@ describe('a gated tool never reports a decline nobody made', () => {
 })
 
 describe('readToolOutcome — what the rail is allowed to believe', () => {
-  it('takes the declared outcome when it is one of the three words', () => {
+  it('is the whole vocabulary, and nothing outside it', () => {
+    /* Two closed sets have to agree — this one and `ActivityStatus` — and they live in different
+       files, so a word added to one and forgotten in the other type-errors rather than shipping a
+       status the rail cannot render. Pinned exactly, so a fifth ending has to be a decision. */
+    expect([...EDIT_VERDICTS].sort()).toEqual(['asked', 'declined', 'done', 'failed'])
+  })
+
+  it('takes the declared outcome when it is one of the four words', () => {
     expect(readToolOutcome(JSON.stringify({ result: 'no', outcome: 'declined' })).outcome).toBe('declined')
     expect(readToolOutcome(JSON.stringify({ result: 'no', outcome: 'failed' })).outcome).toBe('failed')
+    // `asked` is the ending for a tool that stopped to put a question to the user. It is neither
+    // a fault nor a refusal, and reading it as `done` would credit a run that never started.
+    expect(readToolOutcome(JSON.stringify({ result: 'no', outcome: 'asked' })).outcome).toBe('asked')
   })
 
   it('does not treat silence as failure', () => {

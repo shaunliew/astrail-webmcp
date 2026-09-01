@@ -272,6 +272,37 @@ describe('the rail is a record, not a toast', () => {
     expect(await screen.findByText('WORKING')).toBeInTheDocument()
   })
 
+  /* A QUESTION IS NOT A FAILURE.
+
+     `plan_trip_from_reels` stops and asks how the user likes to travel when it has nothing to go
+     on. The rail printed that as a red `PLANNING FAILED` — for a call that broke nothing, spent
+     nothing, and is one answer away from running. The record was accusing the app of an outage in
+     front of the user, on the surface built to tell them the truth about what the agent did. */
+  it('reads a question as a question, not as an outage', async () => {
+    const { container } = withRail((r) => {
+      const id = r.beginActivity('plan_trip_from_reels')
+      r.endActivity(id, 'asked', 'Astrail has not learned how this user likes to travel yet.')
+    })
+    expect(await screen.findByText('PLANNING NEEDS YOUR ANSWER')).toBeInTheDocument()
+    expect(screen.queryByText(/FAILED/)).toBeNull()
+    expect(
+      container.querySelector('.bg-red-400'),
+      'a question the user can answer was painted as an error',
+    ).toBeNull()
+  })
+
+  it('claims nothing was done that could need undoing when it only asked', async () => {
+    // `plan_trip_from_reels` is a write in the table, so the reversibility line is reachable
+    // for it — but an ask started no run, and "Astrail can't undo this" would be a claim that
+    // something happened at all.
+    withRail((r) => {
+      const id = r.beginActivity('plan_trip_from_reels')
+      r.endActivity(id, 'asked', 'Ask them how they like to travel.')
+    })
+    expect(await screen.findByText(/how they like to travel/)).toBeInTheDocument()
+    expect(screen.queryByText("Astrail can't undo this")).toBeNull()
+  })
+
   it('says a change cannot be taken back rather than offering an undo it cannot perform', async () => {
     withRail((r) => {
       const read = r.beginActivity('get_itinerary')

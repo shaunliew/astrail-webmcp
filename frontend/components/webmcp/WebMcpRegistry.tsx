@@ -121,9 +121,14 @@ export type RegisteredToolView = {
  *
  * `done` is the only one that may be written in the past tense or carry a "can't undo" line.
  * `declined` and `failed` both mean nothing changed; they are kept apart because WHO stopped it
- * is the accountability question this rail exists to answer.
+ * is the accountability question this rail exists to answer. `asked` is the third of those: the
+ * tool stopped on purpose to put a question to the user, so nothing changed and nothing is wrong.
+ *
+ * Kept in step with `EditVerdict` by hand, and deliberately so — `readToolOutcome` validates
+ * against that set and hands the survivor straight to `endActivity`, so a word in one and not the
+ * other is a type error here rather than a status the rail has no way to draw.
  */
-export type ActivityStatus = 'done' | 'declined' | 'failed'
+export type ActivityStatus = 'done' | 'declined' | 'failed' | 'asked'
 
 export type ActivityEntry = Omit<ToolFacts, 'actor'> & {
   id: number

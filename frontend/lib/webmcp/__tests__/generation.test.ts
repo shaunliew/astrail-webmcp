@@ -559,6 +559,39 @@ describe('plan_trip_from_reels', () => {
     expect(out, 'promised a write-back that is explicitly best-effort').not.toMatch(/Astrail remembers it for/i)
   })
 
+  /* A QUESTION IS NOT A FAILURE.
+
+     The ask-gate left through `notStarted(..., 'failed')`, so the activity rail — the surface
+     whose whole job is saying truthfully what the agent did — printed a red `PLANNING FAILED`
+     for Astrail politely asking how the user likes to travel. Nothing broke, nothing was spent,
+     and the run is one answer away. `asked` is the fourth ending: nothing happened, and the
+     reason is a question rather than a fault. The failures around it must stay failures, which
+     is the half of this that a single-case test would not catch. */
+  const outcomeOf = (out: unknown) => (JSON.parse(String(out)) as { outcome: string }).outcome
+
+  it('records the preferences question as a question, not as a failure', async () => {
+    const out = await plan(deps({ readMemory: emptyMemory() }))
+    expect(outcomeOf(out), 'a question the user can answer was recorded as a failure').toBe('asked')
+  })
+
+  it('credits the question to nobody — the tool is waiting, not reporting a decision', async () => {
+    // A decision nobody made must not be attributed to the user who was shown no card.
+    const out = JSON.parse(String(await plan(deps({ readMemory: emptyMemory() })))) as { decided_by: string }
+    expect(out.decided_by).toBe('nobody')
+  })
+
+  it('still calls a real failure a failure', async () => {
+    /* The five bail-outs that are genuinely wrong — a link that is not a Reel, more reels than
+       the pipeline takes, two shapes of bad date, and an allowance that is already spent. None
+       of these is a question, and softening them would hide a broken call behind the new word. */
+    const d = () => deps({ readMemory: savedMemory() })
+    expect(outcomeOf(await plan(d(), { reel_urls: ['not-a-reel'] })), 'invalid urls').toBe('failed')
+    expect(outcomeOf(await plan(d(), { reel_urls: Array.from({ length: 6 }, (_, i) => `https://www.instagram.com/reel/C${i}abc/`) })), 'too many reels').toBe('failed')
+    expect(outcomeOf(await plan(d(), { start_date: '3 March' })), 'unparseable date').toBe('failed')
+    expect(outcomeOf(await plan(d(), { start_date: '2026-03-09', end_date: '2026-03-03' })), 'reversed range').toBe('failed')
+    expect(outcomeOf(await plan(deps({ readMemory: savedMemory(), readAllowance: vi.fn().mockResolvedValue('trial_exhausted') }))), 'trial spent').toBe('failed')
+  })
+
   it('tells the user on the card when saved preferences will be used', async () => {
     const d = deps({ readMemory: savedMemory() })
     await plan(d)

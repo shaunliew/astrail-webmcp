@@ -18,6 +18,13 @@ Before the challenge, Astrail was already a working travel-planning application.
 - The Mapbox GL 3D map, trip pins, routes and day views.
 - The FastAPI generation backend, its durable job pipeline, recovery sweep, SSE streaming and persistence layer.
 - The Supabase schema, authentication, cookie sessions, ownership rules and row-level security.
+- **Remembered travel preferences (mem0).** Preference recall, the write-back on trips where you
+  state something new, and the Settings screen that lists and sources every remembered fact. Built
+  2026-07-07 → 2026-08-02 — **well before the submission window, and not claimed as hackathon
+  work.** No WebMCP tool reads or writes memory. Two corrections *were* made during the window and
+  are listed in the commit record: the provenance chip that labelled every preferences row
+  "Memory" regardless of whether memory ran, and the hackathon blueprint that never declared
+  `MEM0_API_KEY` at all.
 
 These are the foundation the challenge work exposes as a shared human-agent workspace. **The challenge did not build Astrail's scraper, planner, map, database or auth.**
 

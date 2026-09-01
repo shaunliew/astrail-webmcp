@@ -23,6 +23,11 @@ Save these reels: <url1> <url2> <url3>
 Use the reels I just saved and plan me 2 days in Tokyo, 15 to 16 November
 ```
 
+**Memory:** this prompt supplies no preferences, which is exactly what makes mem0 recall fire
+(`pipeline/preferences.py:114`). If the account has remembered facts, the first stage row reads
+"Using your saved travel preferences: …" and carries a brass `Memory` chip — that is the only
+branch worth narrating. Prep, gates and the line to say: `MEMORY-BEAT.md`.
+
 **Give the dates.** They are required by the tool, so "plan me 2 days" alone makes the agent stop
 and ask — an awkward pause mid-take.
 

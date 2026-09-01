@@ -85,6 +85,17 @@ and a link back to it. One Astrail suggested carries its reasoning. One you aske
 Three provenances, one label on every pin — nothing on the map is unattributed, and the system
 never dresses a suggestion up as a quote.
 
+And it remembers how you travel. Say your preferences once — walkable days, ramen, nothing too
+rushed — and a later trip planned **without** stating them recalls that and uses it. The recall is
+deliberate rather than ambient: it runs only when you leave preferences blank, so whatever you say
+now always beats whatever it remembers. Every remembered fact is listed, sourced, and deletable
+under Settings, and the generation says on screen when it used them.
+
+There is a neat consequence for WebMCP specifically. The agent supplies no preferences when you
+ask it to plan from your saved reels — so the agent path is precisely the path where recall fires.
+Asking in one sentence gets you the trip your own history says you want; filling the form in by
+hand does not.
+
 ## How we implemented WebMCP
 
 Sixteen tools registered with `document.modelContext.registerTool()` — thirteen across the app,
@@ -108,7 +119,9 @@ lifecycle.
 
 Hotel search is switched off in this build. There is no undo — Astrail has no inverse to offer, and
 says so rather than pretending. Which tool an agent reaches for is ChatGPT's decision, not something
-a site can control.
+a site can control. Remembered preferences are soft guidance into restaurant
+selection and the day summaries; they never restructure the route, and memory predates this
+hackathon — it is listed as pre-existing in WHATS-NEW.md.
 ```
 
 ## Try it out

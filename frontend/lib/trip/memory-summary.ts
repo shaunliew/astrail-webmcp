@@ -19,6 +19,20 @@ import type { MemoryFact } from '@/lib/trip/backend-types'
 export const MEMORY_SUMMARY_MAX_FACTS = 3
 export const MEMORY_SUMMARY_MAX_CHARS = 160
 
+/**
+ * All whitespace to single spaces — NEWLINES ESPECIALLY.
+ *
+ * `MAX_CHARS` bounds characters, which says nothing about how many LINES they render as. The
+ * approval card renders this summary with `whitespace-pre-line` and no height bound
+ * (`components/webmcp/AgentConfirm.tsx`), so a 160-character memory alternating one character
+ * and a newline is ~80 visual lines — enough to push Approve and Not now off the screen. React
+ * escapes the text, so this is not XSS; it is the approval gate itself being made unreachable,
+ * by content that can arrive through the agent's own `preferences` argument.
+ */
+function collapseWhitespace(memory: string): string {
+  return memory.replace(/\s+/g, ' ').trim()
+}
+
 /** The separator, matching how the app already lists peers ("Kyoto · 3 days · 6 stops"). */
 const JOINER = ' · '
 
@@ -33,14 +47,25 @@ const JOINER = ' · '
  */
 export function summarizeMemoryFacts(facts: readonly MemoryFact[]): string | null {
   const named = facts
-    .map((fact) => (typeof fact?.memory === 'string' ? fact.memory.trim() : ''))
+    .map((fact) => (typeof fact?.memory === 'string' ? collapseWhitespace(fact.memory) : ''))
     .filter((memory) => memory.length > 0)
-    .slice(0, MEMORY_SUMMARY_MAX_FACTS)
 
   if (named.length === 0) return null
 
-  const line = named.join(JOINER)
-  return line.length <= MEMORY_SUMMARY_MAX_CHARS
+  const shown = named.slice(0, MEMORY_SUMMARY_MAX_FACTS)
+  const omitted = named.length - shown.length
+
+  const line = shown.join(JOINER)
+  // The ellipsis is inside the budget, not appended past it — the exported constant is a maximum
+  // and a caller sizing anything against it should not be handed 161 characters.
+  const capped = line.length <= MEMORY_SUMMARY_MAX_CHARS
     ? line
-    : `${line.slice(0, MEMORY_SUMMARY_MAX_CHARS).trimEnd()}…`
+    : `${line.slice(0, MEMORY_SUMMARY_MAX_CHARS - 1).trimEnd()}…`
+
+  /* The count of what was NOT named, because this text is read while deciding to spend.
+     The approval card presents it as what Astrail will try to recall, but the pipeline runs its
+     own semantic search over the WHOLE store (a differently ordered superset — see
+     backend/pipeline/preferences.py). Showing three of five silently would let a user approve
+     against a list, and then be steered by a memory that list never mentioned. */
+  return omitted > 0 ? `${capped} (and ${omitted} more)` : capped
 }

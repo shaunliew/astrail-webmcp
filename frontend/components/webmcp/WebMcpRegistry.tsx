@@ -124,9 +124,14 @@ export type RegisteredToolView = {
  * is the accountability question this rail exists to answer. `asked` is the third of those: the
  * tool stopped on purpose to put a question to the user, so nothing changed and nothing is wrong.
  *
- * Kept in step with `EditVerdict` by hand, and deliberately so — `readToolOutcome` validates
- * against that set and hands the survivor straight to `endActivity`, so a word in one and not the
- * other is a type error here rather than a status the rail has no way to draw.
+ * Kept in step with `EditVerdict` by hand. The compiler catches ONE direction of drift:
+ * `readToolOutcome` returns an `EditVerdict` and hands it straight to `endActivity`, so a word
+ * added there and not here fails the build. The reverse does not — a word added HERE and not to
+ * `EditVerdict`, or left out of the runtime `EDIT_VERDICTS` array, still compiles and simply
+ * never arrives. That gap is covered by a test pinning the array's exact contents
+ * (`lib/webmcp/__tests__/edit.test.ts`), not by the type system. Do not read this comment as a
+ * guarantee in both directions; an earlier version of it did, and the lock it promised was not
+ * there.
  */
 export type ActivityStatus = 'done' | 'declined' | 'failed' | 'asked'
 

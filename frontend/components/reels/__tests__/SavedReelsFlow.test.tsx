@@ -180,7 +180,15 @@ async function flushMicrotasks() {
 /* The adopted-job set lives in a module, so it survives a render the way it survives a page —
    which is the whole point of it, and exactly why every test in this file has to start from
    empty. */
-beforeEach(() => { resetOrganizeJobs() })
+import { __resetRememberedPreferencesCache } from '../RememberedPreferences'
+
+beforeEach(() => {
+  resetOrganizeJobs()
+  /* The remembered-preferences read is cached at module scope for 30s, so without this a
+     case inherits whatever the previous one resolved — including a cached `null`, which
+     silently turns an assertion about the line into an assertion about nothing. */
+  __resetRememberedPreferencesCache()
+})
 
 describe('SavedReelsFlow', () => {
   afterEach(() => { cleanup(); vi.useRealTimers() })

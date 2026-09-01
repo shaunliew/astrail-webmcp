@@ -48,10 +48,10 @@ function ToolRegistration({ spec, enabled = true }: { spec: ToolSpec; enabled?: 
           // put `REMOVED · You · done — Astrail can't undo this` in a permanent record for a
           // removal the user had refused, with the stop still on the map beside it. The reply
           // says which of the three it was; `readToolOutcome` believes it only when it is one
-          // of the three words, so a tool that says nothing is still recorded as it was before.
+          // of the four words, so a tool that says nothing is still recorded as it was before.
           if (id !== undefined) {
             // `decidedBy` travels with the outcome and by the same rule: a value the tool's own
-            // code wrote, believed only when it is one of the three words. Undefined leaves the
+            // code wrote, believed only when it is one of the four words. Undefined leaves the
             // rail on the tool's static answer, which is right for every tool without a card.
             const { outcome, detail, decidedBy } = readToolOutcome(result)
             endActivity?.(id, outcome, detail, decidedBy)

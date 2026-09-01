@@ -50,4 +50,47 @@ describe('summarizeMemoryFacts', () => {
     const malformed = [{ id: 'a', memory: null }, fact('Loves ramen')] as unknown as MemoryFact[]
     expect(summarizeMemoryFacts(malformed)).toBe('Loves ramen')
   })
+
+  /* NEWLINES ARE THE ATTACK, and the character cap does not see them.
+     The approval card renders this text with `whitespace-pre-line` and no height bound, so a
+     memory that is 160 characters of "x\n" is ~80 visual lines — enough to push Approve and
+     Not now off the screen. React escapes the text, so this is not XSS; it is the consent gate
+     being made unreachable by content that arrives through the agent's own `preferences`
+     argument. Found by a cross-model review, not by this suite. */
+  it('cannot turn one memory into eighty lines', () => {
+    const out = summarizeMemoryFacts([
+      { id: 'm', memory: 'a\n'.repeat(80), created_at: '2026-01-01T00:00:00Z', source: 'mem0' },
+    ])
+    expect(out, 'a newline survived into the approval card').not.toMatch(/\n/)
+  })
+
+  it('collapses every kind of internal whitespace, not just the ends', () => {
+    const out = summarizeMemoryFacts([
+      { id: 'm', memory: '  walkable\t\tdays \r\n and   ramen  ', created_at: '2026-01-01T00:00:00Z', source: 'mem0' },
+    ])
+    expect(out).toBe('walkable days and ramen')
+  })
+
+  /* The card presents this list as what Astrail will try to recall, but the pipeline searches the
+     WHOLE store — a differently ordered superset. Naming three of five silently would let someone
+     approve against a list and then be steered by a memory that list never mentioned. */
+  it('says how many memories it did not name', () => {
+    const facts = ['one', 'two', 'three', 'four', 'five'].map((m) => (
+      { id: m, memory: m, created_at: '2026-01-01T00:00:00Z', source: 'mem0' as const }
+    ))
+    expect(summarizeMemoryFacts(facts)).toMatch(/\(and 2 more\)/)
+  })
+
+  it('says nothing about omissions when it named everything', () => {
+    const facts = ['one', 'two'].map((m) => (
+      { id: m, memory: m, created_at: '2026-01-01T00:00:00Z', source: 'mem0' as const }
+    ))
+    expect(summarizeMemoryFacts(facts)).not.toMatch(/more\)/)
+  })
+
+  it('keeps the ellipsis inside the advertised maximum', () => {
+    // The constant is a MAXIMUM; a caller sizing against it must not be handed 161 characters.
+    const long = [{ id: 'm', memory: 'x'.repeat(500), created_at: '2026-01-01T00:00:00Z', source: 'mem0' as const }]
+    expect((summarizeMemoryFacts(long) ?? '').length).toBeLessThanOrEqual(MEMORY_SUMMARY_MAX_CHARS)
+  })
 })

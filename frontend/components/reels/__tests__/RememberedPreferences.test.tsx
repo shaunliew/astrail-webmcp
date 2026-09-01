@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
-import RememberedPreferences from '../RememberedPreferences'
+import RememberedPreferences, { __resetRememberedPreferencesCache } from '../RememberedPreferences'
 
 const { getMemoryPreferences } = vi.hoisted(() => ({ getMemoryPreferences: vi.fn() }))
 vi.mock('@/lib/trip/supabase-api', () => ({ getMemoryPreferences }))
@@ -10,6 +10,8 @@ const fact = (memory: string, id = memory) => ({ id, memory, created_at: '2026-0
 afterEach(() => {
   cleanup()
   getMemoryPreferences.mockReset()
+  // Module state outlives cleanup(); without this a case inherits the previous one's read.
+  __resetRememberedPreferencesCache()
 })
 
 /**
@@ -60,5 +62,34 @@ describe('RememberedPreferences', () => {
     const { container } = render(<RememberedPreferences />)
     await waitFor(() => expect(getMemoryPreferences).toHaveBeenCalled())
     expect(container).toBeEmptyDOMElement()
+  })
+
+  /* One read per half-minute, not one per mount. `GET /settings/preferences` is rate-limited at
+     three a minute, this component remounts on every phase change of the screen it lives on, and
+     `plan_trip_from_reels` spends one of the same allowance on its own memory check. Without the
+     cache, home → trays → home → plan is four requests and the fourth 429s — which the tool
+     treats as unknown and plans through, silently dropping the disclosure from the approval card. */
+  it('does not re-read the endpoint on every remount', async () => {
+    getMemoryPreferences.mockResolvedValue({ status: 'ok', facts: [fact('Prefers walkable days')] })
+    const first = render(<RememberedPreferences />)
+    expect(await screen.findByText(/Prefers walkable days/)).toBeInTheDocument()
+    first.unmount()
+
+    render(<RememberedPreferences />)
+    expect(await screen.findByText(/Prefers walkable days/)).toBeInTheDocument()
+    expect(getMemoryPreferences, 'a phase flip spent another request').toHaveBeenCalledTimes(1)
+  })
+
+  it('does not cache a failed read, so an outage does not outlive itself', async () => {
+    // Caching silence would hold it past the outage that caused it — the line would stay missing
+    // for a user whose memory is fine, until they hard-reloaded.
+    getMemoryPreferences.mockResolvedValue({ status: 'unavailable', facts: [] })
+    const first = render(<RememberedPreferences />)
+    await waitFor(() => expect(getMemoryPreferences).toHaveBeenCalledTimes(1))
+    first.unmount()
+
+    getMemoryPreferences.mockResolvedValue({ status: 'ok', facts: [fact('Loves ramen')] })
+    render(<RememberedPreferences />)
+    expect(await screen.findByText(/Loves ramen/)).toBeInTheDocument()
   })
 })

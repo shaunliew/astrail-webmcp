@@ -7,8 +7,9 @@ import {
   ORGANIZE_FAILED_MESSAGE, organizeJobs, recordOrganizeFailure, resetOrganizeJobs, trackOrganizeJob,
 } from '@/lib/reels/organize-jobs'
 
-const { push, getAccessToken, listSavedReelCards, startOrganize, streamOrganize, getOrganizeStatus, generateTrip, streamGeneration, useEntitlement, requestSeat, mapInstance } = vi.hoisted(() => ({
+const { push, getAccessToken, listSavedReelCards, startOrganize, streamOrganize, getOrganizeStatus, generateTrip, streamGeneration, getMemoryPreferences, useEntitlement, requestSeat, mapInstance } = vi.hoisted(() => ({
   push: vi.fn(),
+  getMemoryPreferences: vi.fn(),
   getAccessToken: vi.fn(async () => 'token'),
   listSavedReelCards: vi.fn(),
   startOrganize: vi.fn(),
@@ -40,6 +41,12 @@ vi.mock('@/lib/trip/api', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/trip/api')>()),
   generateTrip,
   streamGeneration,
+}))
+// The home screen states what Astrail remembers, which is a live mem0 read. Only that one
+// function is overridden — the rest of this module is left real so nothing else silently changes.
+vi.mock('@/lib/trip/supabase-api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/trip/supabase-api')>()),
+  getMemoryPreferences,
 }))
 // Drive the entitlement gate via controlled hook states; the real classifyGenerateError stays.
 vi.mock('@/lib/entitlement', async (importOriginal) => ({
@@ -194,6 +201,7 @@ describe('SavedReelsFlow', () => {
       onEvent({ type: 'result', content: JSON.stringify({ trip_id: 'trip-1' }) })
       return { cancel: vi.fn() }
     })
+    getMemoryPreferences.mockReset(); getMemoryPreferences.mockResolvedValue({ status: 'ok', facts: [] })
     useEntitlement.mockReset(); useEntitlement.mockReturnValue(NOT_EXHAUSTED)
     NOT_EXHAUSTED.refetch.mockClear() // shared module-scope mock — clear call history between tests
     requestSeat.mockReset(); requestSeat.mockResolvedValue(undefined)
@@ -225,6 +233,18 @@ describe('SavedReelsFlow', () => {
   it('loads saved Reels into the inbox', async () => {
     render(<MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>)
     expect(await screen.findByText('Tokyo Tower at sunset')).toBeInTheDocument()
+  })
+
+  it('tells the user on the home screen what Astrail remembers about them', async () => {
+    /* The wiring, not the component — `RememberedPreferences.test.tsx` owns what it renders and
+       when it stays silent. Dropping the mount here would leave that whole file green while the
+       app showed nothing, which is how the memory gate shipped unwired once already. */
+    getMemoryPreferences.mockResolvedValue({
+      status: 'ok',
+      facts: [{ id: 'm1', memory: 'Prefers walkable days', created_at: '2026-01-01T00:00:00Z', source: 'mem0' }],
+    })
+    render(<MapProvider><GenerationProvider><SavedReelsFlow /></GenerationProvider></MapProvider>)
+    expect(await screen.findByText(/Prefers walkable days/)).toBeInTheDocument()
   })
 
   it('organizes selected Reels, shows the replacing globe status, and opens country trays', async () => {

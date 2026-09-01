@@ -18,6 +18,7 @@ import { useOptionalWebMcpRegistry } from '@/components/webmcp/WebMcpRegistry'
 import { subscribeViewIntent, takeViewIntent } from '@/lib/webmcp/view-intent'
 import { useOptionalGeneration } from '@/components/generation/GenerationProvider'
 import GenerationScene from '@/components/create/GenerationScene'
+import RememberedPreferences from './RememberedPreferences'
 import TraysScreen from './TraysScreen'
 import OrganizeGlobe from './OrganizeGlobe'
 import CountryTrays from './CountryTrays'
@@ -623,6 +624,11 @@ export default function SavedReelsFlow() {
           {inboxNotice}
         </p>
       ) : null}
+      {/* What Astrail already knows about this traveller, before it acts on it. The home screen
+          is the only place the user sees the agent's context ahead of a plan; it renders nothing
+          at all unless memory is readable and holds something, so a fresh account — and the
+          screen a demo opens on — is exactly as it was. */}
+      <RememberedPreferences />
       {/* `revealLibrary` is the count of asks this page has honoured, not a flag: the user can
           close the Library between two saves, and the second one has to be able to open it
           again. WHETHER is decided above, where the phase is; WHAT to open is TraysScreen's. */}

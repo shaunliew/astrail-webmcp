@@ -22,6 +22,7 @@ import HotelPanel from './HotelPanel'
 import PlaceIntelPanel from './PlaceIntelPanel'
 import OrchestratorSummary from './OrchestratorSummary'
 import AgentDecisionRail from './AgentDecisionRail'
+import TripPreferenceNote from './TripPreferenceNote'
 import TradeoffPanel from './TradeoffPanel'
 import TripFeedbackPanel from './TripFeedbackPanel'
 
@@ -482,6 +483,7 @@ export default function TripWorkspace({
             </div>
           )}
           <OrchestratorSummary bundle={bundle} />
+          <TripPreferenceNote trip={bundle.trip} />
           {/* Day-pacing notes only ("Heads up") — the hotel comparison lives with the hotel
               list under "Where to stay" so there is ONE hotel decision surface, not two. */}
           <TradeoffPanel tradeoffs={bundle.trip.tradeoffs} variant="notes" />

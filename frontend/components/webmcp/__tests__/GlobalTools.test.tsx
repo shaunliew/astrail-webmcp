@@ -494,7 +494,7 @@ describe('the public sample trail advertises only what answers there', () => {
 
   it('fails toward the small list while the session read is still in flight', async () => {
     /* The direction matters more than the window. Failing the other way would show a judge
-       sixteen tools and then take eleven away — advertising failures during exactly the window a
+       the full list and then take most of it away — advertising failures during exactly the window a
        freshly loaded agent reads the list. This way the list only ever grows. */
     const shell = shellOn(SAMPLE_PATH, { session: 'pending' })
     await settle()
@@ -522,7 +522,7 @@ describe('navigating does not leave a stale list', () => {
   it('re-reads the session on the way back, so signing in is not undone by returning', async () => {
     /* The judge signs in from the sample trail and comes back to it. A session read taken once at
        mount would still say "signed out" and hand them the two-tool list on a page where all
-       thirteen now work. */
+       fourteen now work. */
     const shell = shellOn(SAMPLE_PATH, { session: 'no' })
     await settle()
     expect(shell.offered()).toHaveLength(3)

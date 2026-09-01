@@ -31,9 +31,10 @@ if ctx.source != "explicit" or not ctx.explicit_text:
     return None
 ```
 
-That used to make the agent path a dead end in both directions — it left `preferences` blank, so
-it could recall but never learn, and an account planned entirely through the agent stayed empty
-forever. Two changes closed it (both after 26 Aug, both listed in `WHATS-NEW.md`):
+In practice that made the agent path a dead end in both directions. The argument existed, but
+nothing told an agent the field outlived the trip, so it went unset — and unset means recall runs
+and nothing is learned. Every account we planned through the agent stayed empty. Three changes
+closed it (all after 26 Aug, all listed in `WHATS-NEW.md`):
 
 1. **`plan_trip_from_reels` asks first.** When the user states nothing AND nothing is remembered,
    the tool returns without starting — nothing spent, no card shown — and tells the agent to ask
@@ -45,8 +46,8 @@ forever. Two changes closed it (both after 26 Aug, both listed in `WHATS-NEW.md`
 proceeds — interrogating someone who already has preferences saved, because a read failed, is the
 worse failure (guardrail #3).
 
-So the seeding trip no longer has to go through the manual form. The agent asks, you answer, and
-trip 1 both plans and teaches.
+So the seeding trip no longer has to go through the manual form: the agent asks, you answer, and
+trip 1 plans and — write-back permitting, see the gaps table below — teaches.
 
 ## The one-conversation trap
 

@@ -86,7 +86,7 @@ Three provenances, one label on every pin — nothing on the map is unattributed
 never dresses a suggestion up as a quote.
 
 And it remembers how you travel. Say your preferences once — walkable days, ramen, nothing too
-rushed — and a later trip planned **without** stating them recalls that and uses it. The recall is
+rushed — and a later trip planned **without** stating them tries to recall that and use it. The recall is
 deliberate rather than ambient: it runs only when you leave preferences blank, so whatever you say
 now always beats whatever it remembers. Every remembered fact is listed, sourced, and deletable
 under Settings, and the generation says on screen when it used them.

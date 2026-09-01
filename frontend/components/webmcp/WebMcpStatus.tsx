@@ -47,7 +47,7 @@ export default function WebMcpStatus({
               ✕
             </button>
           </div>
-          {/* Caps at 60% of the viewport and scrolls: 13 tools is already taller than a phone. */}
+          {/* Caps at 60% of the viewport and scrolls: the full list is already taller than a phone. */}
           <div className="max-h-[60dvh] overflow-y-auto overscroll-contain p-3">
             {supported ? (
               <>

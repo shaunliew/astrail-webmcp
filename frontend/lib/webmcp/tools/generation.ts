@@ -385,7 +385,8 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
         destination_hint: { type: 'string', description: 'Optional city or region if the user named one.' },
         budget_level: { type: 'string', description: 'budget, mid_range, premium or luxury.', enum: ['budget', 'mid_range', 'premium', 'luxury'] },
         origin_city: { type: 'string', description: 'Where the user travels from, if known.' },
-        preferences: { type: 'string', description: 'How the user says they like to travel, THIS trip only (max 280). Omit it and Astrail uses their saved preferences instead.' },
+        preferences: { type: 'string', description: 'How the user says they like to travel, THIS trip only (max 280). Omit it and Astrail tries to recall their saved preferences.' },
+        no_preferences: { type: 'boolean', description: 'True ONLY if you asked and the user declined to say. Skips the question; nothing is remembered.' },
       },
       required: ['reel_urls', 'start_date', 'end_date'],
       additionalProperties: false,
@@ -427,13 +428,19 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
       // allowance and producing a generic first draft. Only a definite empty asks: unknown
       // proceeds (see readMemoryState), because pestering a user who has preferences saved is
       // the worse failure.
-      const memory = preferences ? null : await readMemoryState(deps.readMemory)
+      /* `no_preferences` exists because omitting `preferences` is the SAME state that triggers
+         the ask — so an instruction to "call again without it" looped straight back into the
+         refusal. This is a separate signal meaning "asked and declined", and it deliberately
+         does NOT become a preference: writing "no particular preferences" into mem0 would
+         teach the account a fact it then recalls on every future trip. */
+      const declined = args.no_preferences === true
+      const memory = preferences || declined ? null : await readMemoryState(deps.readMemory)
       if (memory?.hasFacts === false)
         return notStarted(
           'Not started, nothing spent. Astrail has not learned how this user likes to travel yet. '
           + 'Ask them — pace, food, how packed they like a day — then call this again with their '
           + 'answer in `preferences`, which gives Astrail a preference it can remember for later '
-          + 'trips. If they would rather not say, call this again with `preferences` omitted '
+          + 'trips. If they would rather not say, call this again with `no_preferences: true` '
           + 'and Astrail will infer a first draft from their Reels.',
           'failed',
         )

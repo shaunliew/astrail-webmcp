@@ -462,6 +462,28 @@ describe('plan_trip_from_reels', () => {
     expect(d.create, 'spent the allowance before asking').not.toHaveBeenCalled()
   })
 
+  it('lets a user who declines get their trip, instead of asking forever', async () => {
+    /* THE LOOP THIS TEST EXISTS FOR. The first version of the escape hatch told the agent to
+       "call this again with `preferences` omitted" — but omitting `preferences` is the SAME
+       state that triggers the ask, so a user who declined got asked again, and again. A
+       cross-model verification pass caught it; nothing here would have.
+
+       `no_preferences` is a separate signal, and it deliberately does not become a preference:
+       storing "no particular preferences" would teach the account a fact it then recalls on
+       every future blank-preferences trip. */
+    const d = deps({ readMemory: emptyMemory() })
+    await plan(d, { no_preferences: true })
+    expect(d.create, 'declining to state preferences could not get a trip planned').toHaveBeenCalled()
+    expect(d.confirm).toHaveBeenCalled()
+  })
+
+  it('does not turn a decline into a remembered preference', async () => {
+    const d = deps({ readMemory: emptyMemory() })
+    await plan(d, { no_preferences: true })
+    // null, not a placeholder string: the backend writes any non-blank value to mem0 verbatim.
+    expect(d.create.mock.calls[0][0].preferences).toBeNull()
+  })
+
   it('does NOT ask when the user stated preferences this trip', async () => {
     // The reader is held locally: `deps()` spreads overrides, so the returned type does not
     // widen to include them, and asserting through it would need a cast that hides the intent.

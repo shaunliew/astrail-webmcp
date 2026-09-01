@@ -22,7 +22,9 @@ Before the challenge, Astrail was already a working travel-planning application.
   something new, and the Settings screen that lists and sources every remembered fact. Built
   2026-07-07 → 2026-08-02 — **well before the submission window, and not claimed as hackathon
   work.** What IS challenge work is the agent's access to it, listed below: before 26 Aug no
-  registered tool could read memory, and the agent path could never write one.
+  registered tool could read memory, and nothing on the agent path ever prompted a write — the
+  argument existed, but no agent was given a reason to fill it, and the accounts we observed
+  stayed empty.
 
 These are the foundation the challenge work exposes as a shared human-agent workspace. **The challenge did not build Astrail's scraper, planner, map, database or auth.**
 
@@ -72,7 +74,8 @@ simultaneously the condition that triggers recall and the condition that writes 
 (`backend/pipeline/preferences.py:100-101`, `:114`). Accounts planned through the agent stayed
 empty not because the path was closed, but because nothing ever walked it.
 
-Three things are new, and they are narrower than "agents can now teach Astrail":
+Four changes make up this work, and they are narrower than "agents can now teach Astrail" —
+three new capabilities and one defect fixed:
 
 - **`get_remembered_preferences`** — the agent can say what Astrail remembers. It reports a
   disabled feature, an unreachable store and a genuinely empty memory as three different answers,

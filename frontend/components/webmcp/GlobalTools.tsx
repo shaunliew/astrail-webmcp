@@ -1108,7 +1108,7 @@ export default function GlobalTools() {
      middleware makes unreachable.
 
      SESSION second, because it is the truthful reason: a signed-in user who wanders onto the
-     sample trail holds a JWT, and all thirteen work for them there.
+     sample trail holds a JWT, and all fourteen work for them there.
 
      Unknown fails SMALL (`!== true`, not `=== false`), so the list only ever GROWS: a signed-in
      visitor to this route sees three, then fourteen. The other direction would show a judge the

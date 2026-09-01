@@ -23,7 +23,7 @@ deletion sweep off.
 
 Click the **Site tools arrow** in the address bar.
 
-**Expect: 13 tools.** The on-page WebMCP chip must show the same number.
+**Expect: 14 tools.** The on-page WebMCP chip must show the same number.
 
 ❌ Zero tools → wrong model, or site tools off. ❌ 6 tools → you are not signed in.
 

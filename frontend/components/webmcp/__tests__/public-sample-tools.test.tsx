@@ -33,6 +33,9 @@ vi.mock('next/navigation', () => ({ usePathname: () => h.pathname, useRouter: ()
 vi.mock('@/lib/trip/supabase-api', () => ({
   listTrips: () => h.listTrips(),
   getTrip: vi.fn(),
+  getMemoryPreferences: async () => ({ status: 'ok', facts: [
+    { id: 'm1', memory: 'Prefers walkable days', created_at: '2026-08-01T00:00:00Z', source: 'mem0' },
+  ] }),
 }))
 
 vi.mock('@/lib/reels/api', () => ({
@@ -144,7 +147,7 @@ const ANSWERS_SIGNED_OUT = [
 
 describe('the public sample trail, as a judge with no account sees it', () => {
   it('offers the browser only the six tools that answer there', async () => {
-    /* The captured defect: sixteen tools were registered from the /app layout with no session
+    /* The captured defect: every tool was registered from the /app layout with no session
        gate of any kind, and eleven of them fail without a JWT. The agent was reading a menu of
        failures it had been invited to order from. */
     mountSampleTrail()
@@ -154,7 +157,7 @@ describe('the public sample trail, as a judge with no account sees it', () => {
 
   it('never offers a tool that needs a session, at any point during the load', async () => {
     /* Not just at the end. The gate fails toward the SMALL list while the session read is in
-       flight precisely so this holds for the whole load — a list that started at sixteen and
+       flight precisely so this holds for the whole load — a list that started at the full set and
        shrank would advertise failures during the window a freshly loaded agent reads it. */
     mountSampleTrail()
     await waitFor(() => { expect(names()).toHaveLength(6) })
@@ -196,14 +199,14 @@ describe('the public sample trail, as a judge with no account sees it', () => {
     for (const tool of recommended) expect(names()).toContain(tool)
   })
 
-  it('gives a signed-in visitor to the same page all sixteen', async () => {
+  it('gives a signed-in visitor to the same page all seventeen', async () => {
     // The gate is about the missing credential, not about the route. A JWT makes the other
     // eleven work here exactly as they do anywhere else in /app.
     h.signedIn = true
     h.listTrips.mockResolvedValue([])
     h.listSavedReelCards.mockResolvedValue([])
     mountSampleTrail()
-    await waitFor(() => { expect(names()).toHaveLength(16) })
-    expect(await screen.findByLabelText('WebMCP active, 16 tools')).toBeInTheDocument()
+    await waitFor(() => { expect(names()).toHaveLength(17) })
+    expect(await screen.findByLabelText('WebMCP active, 17 tools')).toBeInTheDocument()
   })
 })

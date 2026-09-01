@@ -64,7 +64,7 @@ export default function FinalCTA() {
         </p>
 
         <p className="mt-8 text-[13px] uppercase tracking-[0.16em] text-[color:var(--ink-400)]">
-          16 tools &middot; read &middot; act &middot; every stop says where it came from
+          17 tools &middot; read &middot; act &middot; every stop says where it came from
         </p>
       </div>
     </section>

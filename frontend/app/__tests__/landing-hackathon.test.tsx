@@ -50,7 +50,7 @@ describe('WebMCP Challenge landing', () => {
     const section = screen.getByRole('region', { name: "What's new for this hackathon" })
     expect(within(section).getAllByRole('listitem')).toHaveLength(7)
     // The claims a judge can check against the repo in one grep.
-    expect(section).toHaveTextContent('16 tools')
+    expect(section).toHaveTextContent('17 tools')
     expect(section).toHaveTextContent('document.modelContext.registerTool()')
     expect(section).toHaveTextContent('get_app_state')
     expect(within(section).getByRole('link', { name: /full new-vs-pre-existing record/i }))

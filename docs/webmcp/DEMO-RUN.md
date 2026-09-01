@@ -137,7 +137,7 @@ up reflected in the summaries, not just the first.
 ### 8 · Closing — scoped tools
 
 Open `/app/trip/demo` in a **signed-out** window. The dock reads **six tools**; your signed-in trip
-reads sixteen.
+reads seventeen.
 
 > The app's capabilities grow as its state changes.
 

@@ -38,6 +38,9 @@ vi.mock('next/navigation', () => ({ usePathname: () => h.pathname, useRouter: ()
 vi.mock('@/lib/trip/supabase-api', () => ({
   listTrips: () => h.listTrips(),
   getTrip: vi.fn(),
+  getMemoryPreferences: async () => ({ status: 'ok', facts: [
+    { id: 'm1', memory: 'Prefers walkable days', created_at: '2026-08-01T00:00:00Z', source: 'mem0' },
+  ] }),
 }))
 
 vi.mock('@/lib/reels/api', () => ({
@@ -391,6 +394,9 @@ const PUBLIC_ANSWERS = ['get_app_state', 'get_itinerary', 'get_place_evidence']
 const NEEDS_A_SESSION = [
   'list_trips', 'list_saved_reels', 'save_reels', 'plan_trip_from_reels',
   'get_trip_progress', 'add_place', 'move_place', 'remove_place', 'replan_trip', 'set_trip_dates',
+  // Reads the caller's own mem0 memories through the backend, which derives the user from the
+  // token — so it is useless without a session, and withheld with the rest.
+  'get_remembered_preferences',
 ]
 
 /* A FRESH element every time, never a shared constant. React bails out of reconciliation when
@@ -460,9 +466,9 @@ describe('the public sample trail advertises only what answers there', () => {
   })
 
   it('grows to the full set for a signed-in user who opens the sample trail', async () => {
-    // Session is the truthful signal: a JWT makes all thirteen work here, demo route or not.
+    // Session is the truthful signal: a JWT makes all fourteen work here, demo route or not.
     const shell = shellOn(SAMPLE_PATH, { session: 'yes' })
-    await waitFor(() => { expect(shell.offered()).toHaveLength(13) })
+    await waitFor(() => { expect(shell.offered()).toHaveLength(14) })
     expect(shell.offered()).toEqual([...PUBLIC_ANSWERS, ...NEEDS_A_SESSION].sort())
   })
 
@@ -472,7 +478,7 @@ describe('the public sample trail advertises only what answers there', () => {
        here and cost every signed-in user a churned tool list on every page load. */
     const shell = shellOn('/app', { session: 'no' })
     await settle()
-    expect(shell.offered()).toHaveLength(13)
+    expect(shell.offered()).toHaveLength(14)
   })
 })
 
@@ -487,9 +493,9 @@ describe('navigating does not leave a stale list', () => {
 
     h.session = 'yes'
     await shell.goTo('/app')
-    await waitFor(() => { expect(shell.offered()).toHaveLength(13) })
+    await waitFor(() => { expect(shell.offered()).toHaveLength(14) })
     await shell.goTo(SAMPLE_PATH)
-    await waitFor(() => { expect(shell.offered()).toHaveLength(13) })
+    await waitFor(() => { expect(shell.offered()).toHaveLength(14) })
   })
 
   it('offers the same names on the sample trail before and after a round trip', async () => {
@@ -500,7 +506,7 @@ describe('navigating does not leave a stale list', () => {
     const first = shell.offered()
     await shell.goTo('/app')
     await settle()
-    expect(shell.offered()).toHaveLength(13)
+    expect(shell.offered()).toHaveLength(14)
     await shell.goTo(SAMPLE_PATH)
     await settle()
     expect(shell.offered()).toEqual(first)

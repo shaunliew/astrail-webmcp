@@ -5,6 +5,7 @@ import { listSavedReelsTool, saveReelsTool, type SavedReelLike, type SavedReelSu
 import { getTripProgressTool, planTripFromReelsTool, type GenerationDeps } from './generation'
 import { addPlaceTool, movePlaceTool, removePlaceTool, replanTripTool, setTripDatesTool, type EditDeps } from './edit'
 import { getMapViewTool, setMapModeTool, showOnMapTool, type MapDeps } from './map'
+import { getRememberedPreferencesTool, type PreferenceReader } from './preferences'
 
 /**
  * Every tool, assembled from plain readers.
@@ -33,6 +34,10 @@ export type ToolContext = {
   generation: GenerationDeps
   /** Itinerary mutations. Gated server-side by WEBMCP_EDITS_ENABLED. */
   edit: Omit<EditDeps, 'trips'>
+  /** Reads the user's own stored mem0 memories. Not optional: the tool is always registered
+   *  so it is always covered by the spec contract's untrusted audit, and it reports a
+   *  disabled or unreachable store honestly rather than being absent. */
+  preferences: PreferenceReader
 }
 
 /**
@@ -57,6 +62,7 @@ export function globalTools(ctx: ToolContext): ToolSpec[] {
     addPlaceTool({ ...ctx.edit, trips: ctx.trips }),
     setTripDatesTool({ ...ctx.edit, trips: ctx.trips }),
     replanTripTool({ ...ctx.edit, trips: ctx.trips }),
+    getRememberedPreferencesTool(ctx.preferences),
   ]
 }
 

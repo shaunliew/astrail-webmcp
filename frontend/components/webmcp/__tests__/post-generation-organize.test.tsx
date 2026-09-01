@@ -39,7 +39,9 @@ const h = vi.hoisted(() => ({
 
 vi.mock('next/navigation', () => ({ usePathname: () => '/app', useRouter: () => ({ push: vi.fn() }) }))
 
-vi.mock('@/lib/trip/supabase-api', () => ({ listTrips: () => Promise.resolve([]), getTrip: vi.fn() }))
+vi.mock('@/lib/trip/supabase-api', () => ({ listTrips: () => Promise.resolve([]), getTrip: vi.fn(), getMemoryPreferences: async () => ({ status: 'ok', facts: [
+    { id: 'm1', memory: 'Prefers walkable days', created_at: '2026-08-01T00:00:00Z', source: 'mem0' },
+  ] }) }))
 
 /* The three network calls are stubbed; everything else comes from the REAL module. The conflict
    error GlobalTools branches on is a class exported from there, and a factory that omitted it made

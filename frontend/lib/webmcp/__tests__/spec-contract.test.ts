@@ -34,6 +34,12 @@ const ctx: ToolContext = {
     list: async () => [TOKYO_TRIP.trip],
     load: async () => TOKYO_TRIP,
   },
+  preferences: {
+    load: async () => ({
+      status: 'ok' as const,
+      facts: [{ id: 'm1', memory: 'Prefers walkable days and ramen', created_at: '2026-08-01T00:00:00Z', source: 'mem0' as const }],
+    }),
+  },
   saveReel: async () => ({ id: 'sr_1', analysis_status: 'not_analyzed' }),
   analyzeReels: async () => ({ job_id: 'job_1' }),
   loadSavedReels: async () => [],
@@ -94,6 +100,7 @@ const UNTRUSTED_AUDIT: Record<string, { untrusted: boolean; echoes: string }> = 
   replan_trip: { untrusted: false, echoes: 'day counts and a fixed narration-failure message' },
   show_on_map: { untrusted: true, echoes: 'the names of the stops it just put on screen' },
   set_map_mode: { untrusted: false, echoes: 'two fixed sentences' },
+  get_remembered_preferences: { untrusted: true, echoes: "the user's own remembered preference prose — stated by them, but reachable by an agent that passed caption-derived text as `preferences`" },
   get_map_view: { untrusted: true, echoes: 'nothing — camera and counts; kept flagged, not narrowed' },
 }
 

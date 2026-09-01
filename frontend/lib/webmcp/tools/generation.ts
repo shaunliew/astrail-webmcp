@@ -1,4 +1,4 @@
-import type { GenerateTripRequest, GenerationStage } from '@/lib/trip/backend-types'
+import type { GenerateTripRequest, GenerationStage, SettingsPreferencesResponse } from '@/lib/trip/backend-types'
 import { ERROR_CODE_RATE_LIMITED, ERROR_CODE_TRIAL_EXHAUSTED } from '@/lib/trip/backend-types'
 import { ApiError } from '@/lib/trip/api'
 import { STAGE_LABEL } from '@/components/create/GenerationProgress'
@@ -51,6 +51,16 @@ export type GenerationDeps = {
    */
   /** See `EditDeps.confirm`: `'unavailable'` means no card was shown, not that anyone refused. */
   confirm: (summary: string) => Promise<boolean | 'unavailable'>
+  /**
+   * The user's stored mem0 memories, used ONLY to decide what to say when they state no
+   * preferences for this trip: ask them once if nothing is remembered, or tell them on the card
+   * that saved preferences will be used.
+   *
+   * Optional, and every failure mode proceeds. Memory must never be able to block a trip
+   * (guardrail #3) — an unreadable store is not a reason to interrogate someone who may well
+   * have preferences saved.
+   */
+  readMemory?: () => Promise<SettingsPreferencesResponse>
   /**
    * Reads the saved-reel library so the approval card can say how much of this plan Astrail has
    * already done. Only the two fields it needs — a wider type would invite the card to start
@@ -326,6 +336,34 @@ function refusalReply(err: unknown): string | null {
   return null
 }
 
+/** How long to wait on the memory read before planning anyway. */
+const MEMORY_READ_TIMEOUT_MS = 2_500
+
+/**
+ * The stored-memory state, or `null` when we could not establish it.
+ *
+ * `null` is a THIRD answer, not a synonym for empty, and the caller must treat it that way: it
+ * means "unknown", and the only safe move on unknown is to proceed. Reporting "you have nothing
+ * saved" from a read that failed is the precise misdiagnosis the backend keeps `status` separate
+ * from `facts` to prevent, and here it would additionally interrogate a returning user about
+ * preferences they already gave us.
+ */
+async function readMemoryState(
+  read: GenerationDeps['readMemory'],
+): Promise<{ hasFacts: boolean } | null> {
+  if (!read) return null
+  try {
+    const res = await Promise.race([
+      read(),
+      new Promise<null>((r) => setTimeout(() => r(null), MEMORY_READ_TIMEOUT_MS)),
+    ])
+    if (!res || res.status !== 'ok') return null
+    return { hasFacts: res.facts.length > 0 }
+  } catch {
+    return null   // never let a memory read decide a trip cannot start
+  }
+}
+
 export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
   return {
     name: 'plan_trip_from_reels',
@@ -340,7 +378,7 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
         destination_hint: { type: 'string', description: 'Optional city or region if the user named one.' },
         budget_level: { type: 'string', description: 'budget, mid_range, premium or luxury.', enum: ['budget', 'mid_range', 'premium', 'luxury'] },
         origin_city: { type: 'string', description: 'Where the user travels from, if known.' },
-        preferences: { type: 'string', description: 'Free-text preferences, max 280 chars.' },
+        preferences: { type: 'string', description: 'How the user says they like to travel, THIS trip only (max 280). Omit it and Astrail uses their saved preferences instead.' },
       },
       required: ['reel_urls', 'start_date', 'end_date'],
       additionalProperties: false,
@@ -372,6 +410,20 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
       // What approving actually involves, worked out before the card is shown. Awaited rather
       // than filled in afterwards: a card that appears saying one thing and then revises itself
       // is worse than one that appears a beat later saying the right thing once.
+      // Nothing stated this trip, and nothing remembered from any earlier one, means the run
+      // would fall back to inferred defaults — so ask BEFORE the card rather than spending the
+      // allowance and producing a generic first draft. Only a definite empty asks: unknown
+      // proceeds (see readMemoryState), because pestering a user who has preferences saved is
+      // the worse failure.
+      const memory = preferences ? null : await readMemoryState(deps.readMemory)
+      if (memory?.hasFacts === false)
+        return notStarted(
+          'Not started, nothing spent. Astrail has not learned how this user likes to travel yet. '
+          + 'Ask them — pace, food, how packed they like a day — then call this again with their '
+          + 'answer in `preferences`. Astrail remembers it for their next trip.',
+          'failed',
+        )
+
       const alreadyRead = await countAlreadyRead(deps.readLibrary, urls)
 
       // The summary is shown to the user VERBATIM before anything is spent. Reel captions are
@@ -381,6 +433,12 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
         `Dates: ${start} to ${end}`,
         args.destination_hint ? `Destination: ${args.destination_hint}` : null,
         preferences ? `Preferences: "${preferences}"` : null,
+        // Says which source is about to steer the trip, at the moment the user decides to
+        // spend on it. Only when memory is KNOWN to hold something — `null` is unknown, and
+        // promising remembered preferences we could not read would be a claim, not a note.
+        !preferences && memory?.hasFacts
+          ? 'No preferences given — Astrail will use what it remembers about how you travel.'
+          : null,
         alreadyRead === null ? null : describeReuse(alreadyRead, urls.length),
         deps.saveToLibrary ? describeLibrarySave(urls.length) : null,
         'This uses your trip allowance.',

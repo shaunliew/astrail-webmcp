@@ -50,7 +50,7 @@ The planning asks; the saving does not.
 
 ## 2:20 — How it's built · ~40s
 
-> Astrail registers sixteen tools with `document.modelContext.registerTool` — thirteen across the
+> Astrail registers seventeen tools with `document.modelContext.registerTool` — fourteen across the
 > app, three more the moment a trip is open. Six of them work with no account at all.
 >
 > The part that matters is *where they run*. `execute` runs inside the page, not on a server. So a
@@ -63,7 +63,7 @@ The planning asks; the saving does not.
 
 ### The 25-second cut, if you run long
 
-> Astrail registers sixteen tools with `document.modelContext.registerTool` — thirteen across the
+> Astrail registers seventeen tools with `document.modelContext.registerTool` — fourteen across the
 > app, three more once a trip is open. The part that matters is where they run: `execute` runs
 > inside the page, not on a server, so a tool already holds the trip you're looking at and the same
 > state setters a click uses. Reads never leave the browser. Anything that changes your trip stops
@@ -75,7 +75,7 @@ The planning asks; the saving does not.
 
 | | |
 |---|---|
-| Tools | **16** = 13 global + 3 map (`lib/webmcp/tools/index.ts`) |
+| Tools | **17** = 14 global + 3 map (`lib/webmcp/tools/index.ts`) |
 | Signed out on `/app/trip/demo` | **6** |
 | Generation | **~123.5s** measured, restaurants ~94% of it |
 

@@ -91,18 +91,21 @@ deliberate rather than ambient: it runs only when you leave preferences blank, s
 now always beats whatever it remembers. Every remembered fact is listed, sourced, and deletable
 under Settings, and the generation says on screen when it used them.
 
-There is a neat consequence for WebMCP specifically. The agent supplies no preferences when you
-ask it to plan from your saved reels — so the agent path is precisely the path where recall fires.
-Asking in one sentence gets you the trip your own history says you want; filling the form in by
-hand does not.
+The memory engine pre-dates this hackathon. What is new is that an agent can reach it. Before,
+asking an agent to plan left the preferences field blank — which is the condition that triggers
+recall, and also the condition that saves nothing, so an account planned entirely by agent stayed
+permanently empty. Now the planning tool asks you how you travel when it has nothing to go on, and
+stops before spending anything to do it; a second tool lets the agent read back what it holds. The
+approval card names which source is about to steer the trip, so the choice is visible at the
+moment you decide to spend.
 
 ## How we implemented WebMCP
 
-Sixteen tools registered with `document.modelContext.registerTool()` — thirteen across the app,
+Seventeen tools registered with `document.modelContext.registerTool()` — fourteen across the app,
 three more the moment a trip is open, six of which work with no account at all.
 
 Page-scoped tools unregister on navigation, so the catalogue reflects the app's state: open a trip
-and it grows from thirteen to sixteen. Reads resolve in-page from the loaded trip with no network
+and it grows from fourteen to seventeen. Reads resolve in-page from the loaded trip with no network
 call at all. Writes go to owner-checked FastAPI endpoints, and every tool that changes a trip
 renders an approval card **on the page** and waits for a click before it mutates anything.
 

@@ -434,6 +434,83 @@ describe('plan_trip_from_reels', () => {
     expect(d.create).toHaveBeenCalled()
   })
 
+  /* THE ASK GATE.
+
+     A trip planned with no stated preferences AND nothing remembered falls back to inferred
+     defaults — a generic first draft that also teaches Astrail nothing, because the write only
+     fires on an explicit preference (pipeline/preferences.py:100-101). So the tool asks first
+     rather than spending the user's allowance on it.
+
+     What these pin is the ASYMMETRY: only a DEFINITE empty asks. Unknown proceeds, because
+     interrogating a user who has preferences saved — on a memory read that merely failed — is
+     the worse of the two failures, and it is the one guardrail #3 exists to prevent. */
+  const emptyMemory = () => vi.fn().mockResolvedValue({ status: 'ok', facts: [] })
+  const savedMemory = () => vi.fn().mockResolvedValue({
+    status: 'ok',
+    facts: [{ id: 'm1', memory: 'Prefers walkable days', created_at: '2026-08-01T00:00:00Z', source: 'mem0' }],
+  })
+  const plan = (d: ReturnType<typeof deps>, over = {}) => planTripFromReelsTool(d).execute({
+    reel_urls: ['https://www.instagram.com/reel/Cabc123/'],
+    start_date: '2026-03-03', end_date: '2026-03-07', ...over,
+  })
+
+  it('asks how the user travels when nothing is stated and nothing is remembered', async () => {
+    const d = deps({ readMemory: emptyMemory() })
+    const out = String(await plan(d))
+    expect(out).toMatch(/ask them/i)
+    expect(d.confirm, 'showed a card for a run it was not going to start').not.toHaveBeenCalled()
+    expect(d.create, 'spent the allowance before asking').not.toHaveBeenCalled()
+  })
+
+  it('does NOT ask when the user stated preferences this trip', async () => {
+    // The reader is held locally: `deps()` spreads overrides, so the returned type does not
+    // widen to include them, and asserting through it would need a cast that hides the intent.
+    const readMemory = emptyMemory()
+    const d = deps({ readMemory })
+    await plan(d, { preferences: 'walkable days, ramen' })
+    expect(d.create).toHaveBeenCalled()
+    expect(readMemory, 'read memory it had no reason to read').not.toHaveBeenCalled()
+  })
+
+  it('does NOT ask a user who already has saved preferences', async () => {
+    const d = deps({ readMemory: savedMemory() })
+    await plan(d)
+    expect(d.create).toHaveBeenCalled()
+  })
+
+  it('plans anyway when the memory read fails — unknown is not empty', async () => {
+    const d = deps({ readMemory: vi.fn().mockRejectedValue(new Error('mem0 down')) })
+    await plan(d)
+    expect(d.create, 'a failed memory read blocked a trip').toHaveBeenCalled()
+  })
+
+  it('plans anyway when memory is switched off entirely', async () => {
+    // `disabled` is a configuration state, not evidence about this user.
+    const d = deps({ readMemory: vi.fn().mockResolvedValue({ status: 'disabled', facts: [] }) })
+    await plan(d)
+    expect(d.create).toHaveBeenCalled()
+  })
+
+  it('plans anyway when there is no memory reader at all', async () => {
+    await plan(deps())
+    // deps() has no readMemory; the absence must not read as "this user has nothing".
+    expect(deps().create).toBeDefined()
+  })
+
+  it('tells the user on the card when saved preferences will be used', async () => {
+    const d = deps({ readMemory: savedMemory() })
+    await plan(d)
+    expect(String(d.confirm.mock.calls[0][0])).toMatch(/what it remembers about how you travel/i)
+  })
+
+  it('promises nothing about memory on the card when the read failed', async () => {
+    // The card is where the user decides to spend. A line claiming remembered preferences we
+    // could not read would be a claim, not a note.
+    const d = deps({ readMemory: vi.fn().mockResolvedValue({ status: 'unavailable', facts: [] }) })
+    await plan(d)
+    expect(String(d.confirm.mock.calls[0][0])).not.toMatch(/what it remembers/i)
+  })
+
   it('spends NOTHING when the user declines', async () => {
     // This tool burns the user's one lifetime free trip plus real Apify/OpenAI credit.
     const d = deps({ confirm: vi.fn().mockResolvedValue(false) })

@@ -149,7 +149,7 @@ polls a progress tool and narrates the actual stages — it never invents progre
 
 Screen: `frontend/lib/webmcp/` in an editor, then the raw call.
 
-Say: "Sixteen tools in two scopes. Global tools live in the app shell; trip tools register when a
+Say: "Seventeen tools in two scopes. Global tools live in the app shell; trip tools register when a
 trip opens and unregister when you navigate away — which is the tool count you watched change.
 Every tool that can return an Instagram caption is annotated `untrustedContentHint`, because Reel
 captions are attacker-controlled text. Stops are addressed by map-pin number, never by UUID, so

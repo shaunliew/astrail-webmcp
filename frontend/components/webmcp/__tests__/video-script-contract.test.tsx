@@ -58,13 +58,13 @@ import type { Entitlement } from '@/lib/entitlement'
 const SCRIPT = readFileSync(resolve(process.cwd(), '..', 'docs/webmcp/VIDEO-SCRIPT.md'), 'utf8')
 
 /** Number words as the script writes them. A count is a claim; it has to be read, not assumed. */
-const WORDS: Record<string, number> = { five: 5, six: 6, thirteen: 13, sixteen: 16 }
+const WORDS: Record<string, number> = { five: 5, six: 6, thirteen: 13, fourteen: 14, sixteen: 16, seventeen: 17 }
 const wordToCount = (word: string | undefined): number | null =>
   word ? WORDS[word.toLowerCase()] ?? null : null
 
 /** "the six tools that work" — the 0:35 beat's count of what a signed-out visitor is offered. */
 const SCRIPT_SIGNED_OUT_TOOLS = wordToCount(SCRIPT.match(/the (\w+) tools that work/)?.[1])
-/** "Sixteen tools in two scopes" — the 2:35 beat's count of the whole surface. */
+/** "Seventeen tools in two scopes" — the 2:35 beat's count of the whole surface. */
 const SCRIPT_TOTAL_TOOLS = wordToCount(SCRIPT.match(/"(\w+) tools in two scopes/)?.[1])
 /** The pin numbers the presenter is told to TYPE, in the order the script types them. */
 const SCRIPT_STOP_PROMPTS = [...SCRIPT.matchAll(/^> \*\*[^*]*\bstop (\d+)[^*]*\*\*$/gm)]
@@ -88,6 +88,9 @@ vi.mock('next/navigation', () => ({ usePathname: () => h.pathname, useRouter: ()
 vi.mock('@/lib/trip/supabase-api', () => ({
   listTrips: () => h.listTrips(),
   getTrip: vi.fn(),
+  getMemoryPreferences: async () => ({ status: 'ok', facts: [
+    { id: 'm1', memory: 'Prefers walkable days', created_at: '2026-08-01T00:00:00Z', source: 'mem0' },
+  ] }),
 }))
 
 vi.mock('@/lib/reels/api', () => ({
@@ -411,7 +414,7 @@ describe('the submission video script, run against the code it describes', () =>
          `place_id` and leave this claim quietly false. */
       signIn()
       mountSampleTrail()
-      await waitFor(() => { expect(names()).toHaveLength(16) })
+      await waitFor(() => { expect(names()).toHaveLength(17) })
       for (const tool of registered) {
         for (const [key, prop] of Object.entries(tool.inputSchema?.properties ?? {})) {
           expect(key, `${tool.name}.${key} takes a place id`).not.toMatch(/place_?id|^id$/i)

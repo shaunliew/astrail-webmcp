@@ -12,7 +12,7 @@ A backend MCP server could return JSON about a trip. WebMCP can also move the 3D
 
 ## WebMCP tools
 
-The current code registers **16 tools**: 13 throughout the signed-in `/app` shell and 3 only while a trip map is mounted. The table is generated from the source — `grep -rn "name: '" frontend/lib/webmcp/tools/` returns exactly these.
+The current code registers **17 tools**: 14 throughout the signed-in `/app` shell and 3 only while a trip map is mounted. The table is generated from the source — `grep -rn "name: '" frontend/lib/webmcp/tools/` returns exactly these.
 
 | Tool | Scope | Reads / changes | Purpose |
 |---|---|---|---|
@@ -29,6 +29,7 @@ The current code registers **16 tools**: 13 throughout the signed-in `/app` shel
 | `add_place` | Global app | Changes itinerary | Adds a stop the user asked for, recorded as `requested_by_you` with no invented evidence behind it. |
 | `set_trip_dates` | Global app | Changes a trip | Moves the trip's dates, keeping day numbering and the itinerary intact. |
 | `replan_trip` | Global app | Changes a trip | Re-routes the legs and re-narrates the days, so the prose matches the stops after edits. |
+| `get_remembered_preferences` | Global app | Reads saved memory | What Astrail has remembered about how this user travels, saved from trips where they stated a preference. Stored preferences, not a promise: a trip uses them only when the user states none of their own. |
 | `show_on_map` | Trip page | Changes visible map state | Flies the live camera to a day or a stop and opens the matching panel. `trip` restores the route trail without moving the camera; `hotel_hub` works only on trips generated before hotel search was switched off, and says so. |
 | `set_map_mode` | Trip page | Changes visible map state | Switches the live map between the day-by-day route and the hotel-hub view. Hotel search is off in this build, so on a newly generated trip the hub switch is **declined**, not made. |
 | `get_map_view` | Trip page | Reads visible map state | Reports the current camera and trip size so the agent can ground words such as “here” or “up north.” |
@@ -112,7 +113,7 @@ Then:
    account is sent once through `/app/onboarding` before `/app` opens (`:52`). The judge account is
    pre-onboarded, so you should land on `/app` directly.
 5. Click the **Site tools** arrow in the address bar → **Available site tools**. You should see
-   **13** tools, and **16** once a trip is open. The on-page **WebMCP chip** shows the same count.
+   **14** tools, and **17** once a trip is open. The on-page **WebMCP chip** shows the same count.
 6. Then, in chat:
    - *"What can I do here?"* → `get_app_state`
    - *"Plan me 3 days in Osaka, 14-16 March, from these reels: …"* with any 1-5 public Instagram

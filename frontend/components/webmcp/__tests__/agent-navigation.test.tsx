@@ -36,7 +36,9 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: h.push }),
 }))
 
-vi.mock('@/lib/trip/supabase-api', () => ({ listTrips: () => h.listTrips(), getTrip: vi.fn() }))
+vi.mock('@/lib/trip/supabase-api', () => ({ listTrips: () => h.listTrips(), getTrip: vi.fn(), getMemoryPreferences: async () => ({ status: 'ok', facts: [
+    { id: 'm1', memory: 'Prefers walkable days', created_at: '2026-08-01T00:00:00Z', source: 'mem0' },
+  ] }) }))
 
 vi.mock('@/lib/reels/api', () => ({
   listSavedReelCards: () => h.listSavedReelCards(),

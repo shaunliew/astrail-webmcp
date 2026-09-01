@@ -8,17 +8,22 @@
 
 ## Why it is not its own beat
 
-The video is graded on *"what you built **and how you used WebMCP**."* Memory is the one major
-Astrail feature that is **not** WebMCP — no registered tool reads or writes it (16 tools, checked
-against `lib/webmcp/tools/index.ts`). It also pre-dates the submission window (mem0 commits run
-2026-07-07 → 2026-08-02, before 25 Aug), so it cannot count as new WebMCP work.
+The video is graded on *"what you built **and how you used WebMCP**."* The mem0 engine itself
+pre-dates the submission window (commits run 2026-07-07 → 2026-08-02, before 25 Aug), so **the
+memory feature cannot be claimed as new work** — only the WebMCP layer over it can.
+
+That layer now exists: `get_remembered_preferences` lets the agent say what Astrail remembers, and
+`plan_trip_from_reels` asks the user how they travel when nothing is stored yet. Both were built
+after 26 Aug and are listed as challenge work. What must NOT be claimed is that Astrail's memory
+was built for this hackathon; what CAN be claimed is that agents reached it for the first time.
 
 Spending seconds from a zero-slack video on a pre-existing non-WebMCP feature trades against the
 criterion that is hardest to win. The written Devpost description is where this story pays.
 
-## The trap that makes prep mandatory
+## How the loop actually closes
 
-**Trip count is irrelevant.** Memory is written ONLY when the user typed preferences that trip:
+Memory is written ONLY when preferences were stated for that trip, and read ONLY when they were
+left blank:
 
 ```python
 # pipeline/preferences.py:100-101
@@ -26,47 +31,71 @@ if ctx.source != "explicit" or not ctx.explicit_text:
     return None
 ```
 
-And it is read ONLY when preferences are blank (`pipeline/preferences.py:114`). So the two paths
-are exact opposites, and **neither does both**:
+That used to make the agent path a dead end in both directions — it left `preferences` blank, so
+it could recall but never learn, and an account planned entirely through the agent stayed empty
+forever. Two changes closed it (both after 26 Aug, both listed in `WHATS-NEW.md`):
 
-| Path | Writes? | Reads? | Why |
-|---|---|---|---|
-| **Agent** (`plan_trip_from_reels`) | ✗ | ✓ | leaves `preferences` blank → recall fires, nothing learned |
-| **Manual PlanSheet** | ✓ | ✗ | `PlanSheet.tsx:85` prefills from the profile → counts as explicit |
+1. **`plan_trip_from_reels` asks first.** When the user states nothing AND nothing is remembered,
+   the tool returns without starting — nothing spent, no card shown — and tells the agent to ask
+   how they like to travel. The answer comes back as `preferences`, which makes the run explicit,
+   which is what writes the memory.
+2. **`get_remembered_preferences`** lets the agent read the stored memories back.
 
-Consequence: **running more agent trips will never populate memory.** If every prior test trip went
-through the agent, mem0 is empty right now regardless of how many were run. The seeding trip must
-be the manual UI with the preferences box filled in.
+**Only a definite empty asks.** A failed or disabled memory read is *unknown*, and unknown
+proceeds — interrogating someone who already has preferences saved, because a read failed, is the
+worse failure (guardrail #3).
 
-## Prep — off camera, before recording
+So the seeding trip no longer has to go through the manual form. The agent asks, you answer, and
+trip 1 both plans and teaches.
 
-1. **`MEM0_API_KEY` set on the backend you film against.** Declared in `render.webmcp.yaml` as of
-   `86b5a1b`; the value is set in the Render dashboard. Absent = memory disabled
-   (`mem0_client.py:63-65`), never a boot failure.
-2. **Gate:** `curl <backend>/readiness` → expect `{"ready": true, "mem0": "configured"}`
-   (`main.py:394`). `disabled` means no key. `init_failed` means the key is set but the client
-   could not be built. Do not proceed on either.
-3. **Seed it:** plan one trip through the normal UI (not the agent) with something typed into the
-   preferences box — e.g. `walkable days, ramen, mid-range`. This is the write.
-4. Wait ~10s. mem0's own ingestion is documented at 4-8s (`pipeline/preferences.py:41-42`).
-5. **Gate:** open `/app/settings` → **"What Astrail remembers"** should now list the fact with a
-   brass `Memory` tag (`SettingsView.tsx:122,148`). The read path always returns 200 by design, so
-   an empty list here means the write did not land — not that the screen is broken.
-   ⚠️ Do **not** click **Clear memory** on camera or off: `POST /settings/memory/clear` is
-   deliberately gated off in the backend and will fail.
+## The one-conversation trap
 
-If step 5 shows nothing, **do not narrate memory.** Something upstream is wrong and you have found
-it in 30 seconds instead of mid-take.
+**Trip 2 must be a NEW ChatGPT conversation.** Any non-blank `preferences` deterministically
+suppresses recall (`preferences.py:114`), and a model that just heard you say "walkable days,
+ramen" for trip 1 has every reason to resend it for trip 2. Then the run is `explicit`, recall
+never fires, and the payoff silently fails on camera.
 
-## On camera — no new prompt
+The param description tells it not to carry preferences over, but that is a nudge, not
+enforcement — there is no server-side way to tell "the model repeated old context" from "the user
+said it again". A fresh conversation removes the incentive entirely and costs nothing.
 
-The existing planning prompt is already correct, because it supplies no preferences:
+## Prep — before recording
+
+1. **`MEM0_API_KEY` set** on the backend you film against. Declared in `render.webmcp.yaml`;
+   value set in the dashboard. Absent = memory disabled (`mem0_client.py:63-65`).
+2. **Gate:** `curl <backend>/readiness` → `{"ready": true, "mem0": "configured"}` (`main.py:394`).
+   `disabled` means no key; `init_failed` means the key is set but the client would not build.
+3. Decide whether trip 1 is on camera or prep. Either way it must **state a preference** — which
+   now happens naturally, because the agent asks for one on an empty account.
+4. Wait ~10s after trip 1 completes. mem0's ingestion runs 4-8s behind
+   (`pipeline/preferences.py:41-42`), and the write is awaited after the terminal result event.
+5. **Gate:** ask the agent *"what do you remember about how I travel?"* — `get_remembered_
+   preferences` should read the fact back. Or open `/app/settings`. Either proves the write landed.
+   ⚠️ Do not click **Clear memory**: `POST /settings/memory/clear` is deliberately gated off.
+
+If step 5 comes back empty, **do not narrate memory.** Found in seconds instead of mid-take.
+
+## On camera — the two-trip shape
+
+**Trip 1** — the existing prompt, unchanged:
 
 ```
 Use the reels I just saved and plan me 2 days in Tokyo, 15 to 16 November
 ```
 
-Blank preferences is exactly the condition that triggers recall. Nothing to change.
+On an empty account the agent now comes back asking how you like to travel. Answer it out loud —
+that answer is what gets remembered. The approval card then echoes `Preferences: "..."` verbatim,
+so you can **see the capture before anything is spent**. If the card does not show it, decline and
+rephrase; nothing is lost.
+
+**Trip 2** — in a **new conversation**, state no preference:
+
+```
+Plan me 3 days in Osaka, 20 to 22 November, from my saved reels
+```
+
+The first stage row should read *"Using your saved travel preferences: …"*. That is the payoff.
+You can cut the take there — the rest of the generation is not needed for this beat.
 
 ## Read the screen before you say the line
 

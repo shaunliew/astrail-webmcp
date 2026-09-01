@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePathname, useRouter } from 'next/navigation'
 import type { Trip, TripBundle, TripStatus } from '@/lib/trip/backend-types'
-import { getTrip, listTrips } from '@/lib/trip/supabase-api'
+import { getTrip, listTrips, getMemoryPreferences } from '@/lib/trip/supabase-api'
 import {
   addTripPlace, deleteTripPlace, editTripDates, editTripPlace, generateTrip, replanTrip,
   type ReplanTripResult,
@@ -820,6 +820,10 @@ export default function GlobalTools() {
         await showView('trip-generation')
       },
       confirm: requestConfirm,
+      /* Only to decide what to SAY when the user states no preferences: ask them once if
+         nothing is remembered, or note on the card that saved preferences will be used.
+         Never a gate on the trip itself — see readMemoryState. */
+      readMemory: getMemoryPreferences,
       readLibrary: loadSavedReels,
       /* The CAPTURE half only, still deliberately not `analyzeReels` — but no longer the end of
          the story. Planning from raw links used to read this library and never write to it, so the
@@ -1078,7 +1082,12 @@ export default function GlobalTools() {
      sample-blind by default, and an unmatched name degrades to the strict spec rather than the
      permissive one. `save_reels` and `plan_trip_from_reels` are writes that never touch `trips`,
      so the strict reader costs them nothing. */
-  const deps = { readAppState, saveReel, analyzeReels, loadSavedReels, revealSavedReels, generation, edit }
+  const deps = {
+    readAppState, saveReel, analyzeReels, loadSavedReels, revealSavedReels, generation, edit,
+    // Reads the caller's own mem0 memories through the backend, which derives the user from
+    // the token — one user can never read another's (guardrail #5/#6).
+    preferences: { load: getMemoryPreferences },
+  }
   const sampleAware = new Map(
     globalTools({ ...deps, trips: sampleReader })
       .filter((s) => s.annotations?.readOnlyHint === true)

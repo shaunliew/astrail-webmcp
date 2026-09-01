@@ -18,19 +18,17 @@ Before the challenge, Astrail was already a working travel-planning application.
 - The Mapbox GL 3D map, trip pins, routes and day views.
 - The FastAPI generation backend, its durable job pipeline, recovery sweep, SSE streaming and persistence layer.
 - The Supabase schema, authentication, cookie sessions, ownership rules and row-level security.
-- **Remembered travel preferences (mem0).** Preference recall, the write-back on trips where you
-  state something new, and the Settings screen that lists and sources every remembered fact. Built
+- **The mem0 memory engine.** Preference recall, the write-back on trips where you state
+  something new, and the Settings screen that lists and sources every remembered fact. Built
   2026-07-07 → 2026-08-02 — **well before the submission window, and not claimed as hackathon
-  work.** No WebMCP tool reads or writes memory. Two corrections *were* made during the window and
-  are listed in the commit record: the provenance chip that labelled every preferences row
-  "Memory" regardless of whether memory ran, and the hackathon blueprint that never declared
-  `MEM0_API_KEY` at all.
+  work.** What IS challenge work is the agent's access to it, listed below: before 26 Aug no
+  registered tool could read memory, and the agent path could never write one.
 
 These are the foundation the challenge work exposes as a shared human-agent workspace. **The challenge did not build Astrail's scraper, planner, map, database or auth.**
 
 ## Built for the WebMCP Challenge (from 26 Aug 2026)
 
-### The tool layer — 16 tools in two scopes
+### The tool layer — 17 tools in two scopes
 
 All of `frontend/lib/webmcp/` is new. Tools are registered through `document.modelContext.registerTool()`; 13 are available anywhere in the app, and 3 more appear only where a live map exists to drive.
 
@@ -61,6 +59,32 @@ Supporting modules, all new:
 - `format.ts` — compact itinerary output carrying pin numbers and provenance.
 - `tools/index.ts` — assembles the two scopes from live readers, so no tool can act on stale state.
 - `__tests__/spec-contract.test.ts` — makes the registration rules executable: unique names, schema validity, descriptor limits, annotations, output budget, scope separation.
+
+### Memory, reachable by an agent for the first time
+
+The mem0 engine is pre-existing (above). What did not exist before 26 Aug is any way for an agent
+to reach it — and the agent path could not even feed it, which made it a dead end in both
+directions: `plan_trip_from_reels` left `preferences` blank, and blank is simultaneously the
+condition that triggers recall and the condition that writes nothing
+(`backend/pipeline/preferences.py:100-101`, `:114`). An account planned entirely by agent stayed
+permanently empty.
+
+- **`get_remembered_preferences`** — the agent can say what Astrail remembers. It reports a
+  disabled feature, an unreachable store and a genuinely empty memory as three different answers,
+  because collapsing them tells a user something false about their own account.
+- **`plan_trip_from_reels` asks before it spends.** When the user states no preferences and
+  nothing is remembered, the tool returns without starting the run or showing a card, and asks how
+  they like to travel. The answer is what makes the run explicit, which is what teaches Astrail.
+  Only a *definite* empty asks — a failed or disabled read is unknown, and unknown plans anyway.
+- **The approval card names the source.** With nothing stated but something remembered, it says so
+  before the user spends, so the choice is visible at the moment it is made.
+- **A provenance defect fixed.** The generation screen labelled every preferences row "Memory"
+  regardless of whether memory ran — including the row that says "No preferences provided". It now
+  reads the backend's `preference_source` and shows the chip only when memory genuinely supplied
+  the facts.
+
+The claim to make is *"agents can now reach and teach Astrail's memory"* — never *"we built
+memory for this hackathon"*.
 
 ### Registration and visibility
 

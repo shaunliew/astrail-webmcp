@@ -101,7 +101,7 @@ is the better one anyway: the agent put the stop on the map, you looked around i
 
 Read this over whatever visual you make. ~110 words, lands at about 40 seconds at a normal pace.
 
-> Astrail registers sixteen tools with `document.modelContext.registerTool` — thirteen across the
+> Astrail registers seventeen tools with `document.modelContext.registerTool` — fourteen across the
 > app, three more the moment a trip is open. Six of them work with no account at all.
 >
 > The part that matters is *where they run*. `execute` runs inside the page, not on a server. So a
@@ -115,13 +115,13 @@ Read this over whatever visual you make. ~110 words, lands at about 40 seconds a
 **If you are running long**, this is the 25-second cut. Drop the middle paragraph's last two
 sentences and the whole third one:
 
-> Astrail registers sixteen tools with `document.modelContext.registerTool` — thirteen across the
+> Astrail registers seventeen tools with `document.modelContext.registerTool` — fourteen across the
 > app, three more once a trip is open. The part that matters is where they run: `execute` runs
 > inside the page, not on a server, so a tool already holds the trip you're looking at and the same
 > state setters a click uses. Reads never leave the browser. Anything that changes your trip stops
 > for an approval card on the page.
 
-**Every number in it is verified:** 13 global + 3 map = 16 (`lib/webmcp/tools/index.ts`), 6
+**Every number in it is verified:** 14 global + 3 map = 17 (`lib/webmcp/tools/index.ts`), 6
 signed-out on `/app/trip/demo`. Do not round them on camera — a judge can count the tools in the
 address bar.
 
@@ -129,14 +129,14 @@ The one idea to land: **`execute()` runs inside the page.** Not on a server — 
 already holds the loaded trip, the session, and the same state setters a click uses. An agent
 action and a user action are the same event.
 
-Worth one sentence if it fits: six tools with no account, sixteen once a trip is open — the app's
+Worth one sentence if it fits: six tools with no account, seventeen once a trip is open — the app's
 capabilities grow with its state.
 
 ## Cut deliberately
 
 | | Why |
 |---|---|
-| The signed-out 6-vs-16 beat | Folded into one architecture sentence; not worth 20s of its own |
+| The signed-out 6-vs-17 beat | Folded into one architecture sentence; not worth 20s of its own |
 | A separate provenance beat | The Disneyland add carries it — a stop with no Reel, added on camera |
 | Hotels, hub view | Search is off; hub declines everywhere |
 | Asking the agent for 3D | No tool sets it; the request errors |

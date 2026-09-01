@@ -67,7 +67,8 @@ export type GenerationDeps = {
    * rather than to no card at all.
    *
    * `text` is the user's own typed words, so it is a STATED preference for this run: it replaces
-   * recall and the backend remembers it. It is trimmed and capped here as well as in the card —
+   * recall and the backend ATTEMPTS to remember it — write-back is best-effort past five
+   * swallowed failure modes (pipeline/preferences.py:337). It is trimmed and capped here as well as in the card —
    * a dep is injectable, and `''` is falsy in TypeScript and blank to the backend
    * (`(explicit_text or "").strip()`), so a blank one travelling as a stated preference would
    * skip recall AND teach the account nothing.
@@ -575,7 +576,7 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
           budget_level: (args.budget_level as GenerateTripRequest['budget_level']) ?? null,
           origin_city: typeof args.origin_city === 'string' ? args.origin_city : null,
           /* The typed override IS a stated preference: `pipeline/preferences.py` classifies it
-             explicit, skips recall for this run, and teaches the account the new fact — which is
+             explicit, skips recall for this run, and offers the account a new fact to learn — which is
              what "actually, this trip is different" has to mean to be worth asking. Null on every
              other path, so `preferences` stays exactly what it was. */
           preferences: typedOverride ?? preferences,

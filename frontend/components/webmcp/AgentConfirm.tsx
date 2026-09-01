@@ -80,8 +80,15 @@ export default function AgentConfirm() {
 function PreferenceCard({ pending }: { pending: PendingPrompt }) {
   const { summary, prompt, resolve } = pending
   const [text, setText] = useState('')
-  // The value the answer actually carries, so the button can name what pressing it does. A
-  // button reading "Use what it remembers" above a filled field describes the opposite.
+  /* The value the answer actually carries, so the button can name what pressing it does. A
+     button reading "try what it remembers" above a FILLED field describes the opposite.
+
+     "Try", not "Use", on the blank branch — and that word is load-bearing rather than timid.
+     The card names memories read with `get_all`; the pipeline then runs its own semantic search
+     which can miss, time out, or fail and fall back to inferred defaults in silence
+     (backend/pipeline/preferences.py:105-125). A button promising "use" is a promise the run
+     gets to break after the user has already spent on it. The typed branch CAN say "use",
+     because an explicit preference wins outright and nothing downstream vetoes it. */
   const override = text.trim().slice(0, MAX_OVERRIDE) || null
 
   return (
@@ -114,7 +121,7 @@ function PreferenceCard({ pending }: { pending: PendingPrompt }) {
           onClick={() => resolve({ approved: true, text: override })}
           className="flex-1 rounded-lg bg-[#C9974E] px-3 py-2 font-medium text-black transition hover:bg-[#E8D5B0]"
         >
-          {override ? 'Use this instead' : 'Use what it remembers'}
+          {override ? 'Use this instead' : 'Try what it remembers'}
         </button>
         <button
           type="button"

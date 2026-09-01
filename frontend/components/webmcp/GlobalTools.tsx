@@ -838,7 +838,9 @@ export default function GlobalTools() {
          never be reachable from anything a Reel wrote. */
       confirmWithPreferences: (summary: string) => requestPrompt(summary, PREFERENCE_OVERRIDE),
       /* Only to decide what to SAY when the user states no preferences: ask them once if
-         nothing is remembered, or note on the card that saved preferences will be used.
+         nothing is remembered, or name on the card the saved preferences it will TRY to recall.
+         Never "will be used": the pipeline's own semantic search can miss and fall back to
+         inferred defaults, so the card must not promise an outcome the run can still veto.
          Never a gate on the trip itself — see readMemoryState. */
       readMemory: getMemoryPreferences,
       readLibrary: loadSavedReels,

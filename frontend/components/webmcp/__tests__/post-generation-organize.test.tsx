@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { useEffect } from 'react'
-import { act, render, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import type { StreamEvent } from '@/lib/trip/backend-types'
 import type { Entitlement } from '@/lib/entitlement'
 import type { ToolSpec } from '@/lib/webmcp/types'
@@ -88,6 +89,7 @@ const { createGenerationStore } = await import('@/lib/webmcp/generation')
 const { ActiveOrganizeConflictError } = await import('@/lib/reels/api')
 const { ORGANIZE_CONFLICT_MESSAGE, ORGANIZE_FAILED_MESSAGE, organizeJobs, recordOrganizeFailure, resetOrganizeJobs } = await import('@/lib/reels/organize-jobs')
 const { WebMcpRegistryProvider, useWebMcpRegistry } = await import('../WebMcpRegistry')
+const { default: AgentConfirm } = await import('../AgentConfirm')
 const { default: GlobalTools, ORGANIZE_RETRY_DELAYS_MS } = await import('../GlobalTools')
 
 /** Total time the retry ladder can take, plus room for the calls themselves. */
@@ -775,10 +777,10 @@ describe('the preference card is actually wired into the shell', () => {
   })
 
   it('sends what the user typed straight through to the backend request', async () => {
-    /* End to end, which is the only assertion that means anything here: typed into the real card,
-       through the real shell, into the real `generateTrip` payload — the field
-       `pipeline/preferences.py` classifies explicit, so this trip uses it AND the account learns
-       it. A card that merely resolved would prove none of that. */
+    /* Through the real SHELL — GlobalTools, the registry, the tool, the request payload — with
+       the card answered directly rather than operated. That is the wiring, not the widget: the
+       test below this one drives the real input and button. Said precisely because this comment
+       used to claim "the real card" and a review checked. */
     typedOnCard = 'beach days, no temples'
     await planTrip()
     expect(h.generateTrip).toHaveBeenCalledTimes(1)
@@ -789,5 +791,39 @@ describe('the preference card is actually wired into the shell', () => {
     // Blank means "use what you remember" — recall runs, exactly as it did before the field.
     await planTrip()
     expect(sentPreferences()).toBeNull()
+  })
+
+  /* THE SEAM THE OTHERS DO NOT CROSS.
+     Every test above answers the card by calling `pending.resolve` directly, so together they
+     prove GlobalTools → requestPrompt → an answer → the request payload. What none of them
+     touches is the half a user actually operates: a real input, a real button, and whatever
+     `AgentConfirm` does with the text between them. A regression where the real button always
+     sent `null` would leave all of them green. Caught by a cross-model review, which read the
+     comment claiming "the real card" and checked whether the component was ever rendered.
+
+     So this one renders `AgentConfirm`, types into the field the user types into, and clicks the
+     button the user clicks — then asserts the string arrived in the backend request. */
+  it('carries what a user really typed, through the real card, into the request', async () => {
+    const user = userEvent.setup()
+    render(<WebMcpRegistryProvider><GlobalTools /><AgentConfirm /></WebMcpRegistryProvider>)
+
+    let plan: ToolSpec | undefined
+    await waitFor(() => {
+      plan = h.specs.find((s) => s.name === 'plan_trip_from_reels')
+      expect(plan).toBeTruthy()
+    })
+
+    // NOT awaited: execute blocks on the card, which is the thing being driven.
+    const running = plan!.execute({
+      reel_urls: ['https://www.instagram.com/reel/Cabc123/'],
+      start_date: '2026-03-03', end_date: '2026-03-07',
+    })
+
+    await user.type(await screen.findByRole('textbox'), 'onsen towns, slow mornings')
+    await user.click(screen.getByRole('button', { name: /use this instead/i }))
+    await act(async () => { await running })
+
+    expect(h.generateTrip).toHaveBeenCalledTimes(1)
+    expect(sentPreferences(), 'the real card dropped what the user typed').toBe('onsen towns, slow mornings')
   })
 })

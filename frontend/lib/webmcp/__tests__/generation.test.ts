@@ -1284,9 +1284,10 @@ describe('plan_trip_from_reels — a different answer for this trip', () => {
     expect(sentPreferences(d), 'a blank field became a stated preference').toBeNull()
   })
 
-  it('sends what the user typed as THIS trip\'s preferences, so the backend remembers it', async () => {
+  it('sends what the user typed as THIS trip\'s preferences, which is what a write-back needs', async () => {
     /* The whole point. `preferences` is what `pipeline/preferences.py` classifies explicit —
-       it skips recall for this run and teaches the account the new fact. Resolving the card is
+       it skips recall for this run and gives the write-back something to store — which is best-effort
+       and can still fail, so this proves the SEND, never the persistence. Resolving the card is
        not the assertion; what reaches `create` is. */
     const d = deps({ confirmWithPreferences: vi.fn().mockResolvedValue({ approved: true, text: 'beach days, no temples' }) })
     await plan(d)

@@ -33,7 +33,7 @@ const ask = (summary: string, onAnswer = vi.fn()) => {
 }
 
 const field = () => screen.getByLabelText(/different this trip/i)
-const approve = () => screen.getByRole('button', { name: /use/i })
+const approve = () => screen.getByRole('button', { name: /use this instead|try what it remembers/i })
 
 describe('AgentConfirm — the preference card', () => {
   it('shows the request verbatim, with an optional field beside it', async () => {
@@ -84,11 +84,17 @@ describe('AgentConfirm — the preference card', () => {
   })
 
   it('names what the approve button will actually do', async () => {
-    /* One button doing two things must not describe only one of them. "Use what it remembers"
+    /* One button doing two things must not describe only one of them. "Try what it remembers"
        while a typed override is on screen is the card telling the user the opposite of what
        clicking it does. */
     ask('Spend the allowance')
-    expect(await approve()).toHaveAccessibleName(/use what it remembers/i)
+    expect(await approve()).toHaveAccessibleName(/try what it remembers/i)
+    /* "Try", not "Use". The card names memories read with `get_all`; the pipeline then runs its
+       own semantic search that can miss and fall back to inferred defaults in silence. A button
+       promising "use" is a promise the run gets to break after the user has spent on it — caught
+       by a cross-model review, which is why the word is pinned here. */
+    expect(await approve(), 'the blank branch promised an outcome recall can veto')
+      .not.toHaveAccessibleName(/use what it remembers/i)
     await userEvent.type(field(), 'beach days')
     expect(approve()).toHaveAccessibleName(/use this instead/i)
   })
@@ -105,6 +111,31 @@ describe('AgentConfirm — the preference card', () => {
     const dialog = await screen.findByRole('dialog')
     expect(dialog.querySelector('img')).toBeNull()
     expect(dialog.textContent).toContain('<img src=x')
+  })
+
+  it('refuses a prompt while a plain confirm is already waiting', async () => {
+    /* The mirror of the test below, which starts with a PROMPT and proves it blocks both shapes.
+       That one alone left the other direction unproven — a confirm holding the slot against a
+       prompt — and a review said so. Both APIs go through one functional updater today, so this
+       passes; the point is that it would stop passing the moment someone gave `requestPrompt` its
+       own setter, which is the shape of the bug the shared slot exists to prevent. */
+    const blocked = vi.fn()
+    function ConfirmFirst() {
+      const { requestConfirm, requestPrompt } = useWebMcpRegistry()
+      const fired = useRef(false)
+      useEffect(() => {
+        if (fired.current) return
+        fired.current = true
+        void requestConfirm('holding the slot')
+        void requestPrompt('should be refused', FIELD).then(blocked)
+      }, [requestConfirm, requestPrompt])
+      return null
+    }
+    render(<WebMcpRegistryProvider><ConfirmFirst /><AgentConfirm /></WebMcpRegistryProvider>)
+
+    await waitFor(() => expect(blocked).toHaveBeenCalledWith('unavailable'))
+    // And the card on screen is still the FIRST one — the refusal did not replace it.
+    expect(screen.getByRole('dialog').textContent).toContain('holding the slot')
   })
 
   it('shares ONE card slot with the plain confirm, in both directions', async () => {

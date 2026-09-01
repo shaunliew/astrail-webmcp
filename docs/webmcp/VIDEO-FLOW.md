@@ -97,9 +97,33 @@ prefer one click — same result.)
 only — so do not ask the agent for it on camera and do not imply it did this. The honest framing
 is the better one anyway: the agent put the stop on the map, you looked around it.
 
-### 2:20 — How it's built
+### 2:20 — How it's built · the script
 
-Screen-record `docs/webmcp/architecture-diagram.html`.
+Read this over whatever visual you make. ~110 words, lands at about 40 seconds at a normal pace.
+
+> Astrail registers sixteen tools with `document.modelContext.registerTool` — thirteen across the
+> app, three more the moment a trip is open. Six of them work with no account at all.
+>
+> The part that matters is *where they run*. `execute` runs inside the page, not on a server. So a
+> tool already has the trip you're looking at, your session, and the same state setters a click
+> uses. When the agent moves a stop, it isn't calling an API and hoping — it's the same event as
+> you dragging it. Same map, same code path.
+>
+> Reads never leave the browser. Writes go to FastAPI, owner-checked — and anything that changes
+> your trip stops for an approval card on the page, not a question in chat.
+
+**If you are running long**, this is the 25-second cut. Drop the middle paragraph's last two
+sentences and the whole third one:
+
+> Astrail registers sixteen tools with `document.modelContext.registerTool` — thirteen across the
+> app, three more once a trip is open. The part that matters is where they run: `execute` runs
+> inside the page, not on a server, so a tool already holds the trip you're looking at and the same
+> state setters a click uses. Reads never leave the browser. Anything that changes your trip stops
+> for an approval card on the page.
+
+**Every number in it is verified:** 13 global + 3 map = 16 (`lib/webmcp/tools/index.ts`), 6
+signed-out on `/app/trip/demo`. Do not round them on camera — a judge can count the tools in the
+address bar.
 
 The one idea to land: **`execute()` runs inside the page.** Not on a server — which is why a tool
 already holds the loaded trip, the session, and the same state setters a click uses. An agent

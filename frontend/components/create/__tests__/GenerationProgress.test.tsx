@@ -15,6 +15,73 @@ describe('GenerationProgress', () => {
     expect(screen.getByText('Mapped 4 verified places.')).toBeInTheDocument()
   })
 
+  /* The provenance chip on the `preferences` row is a CLAIM about where the trip's
+     preferences came from, made on the surface a hackathon judge watches. It used to be a flat
+     `preferences: 'Memory'` in STAGE_SOURCE, so it read "Memory" even on the branch whose own
+     message says "No preferences provided" — mem0 returned nothing and the chip said otherwise.
+     That is not a cosmetic bug: a reader of this repo saw that screen and concluded recall had
+     run, which is exactly the misreading a judge could make.
+
+     These pin the chip to the backend's `preference_source` rather than to the stage id, in
+     both directions — the false-positive branch is the one that regressed, so it is asserted
+     alongside the true one rather than left implied. */
+  it('shows the Memory chip only when mem0 actually supplied the preferences', () => {
+    const events: StreamEvent[] = [
+      {
+        type: 'stage', stage: 'preferences',
+        msg: 'Using your saved travel preferences: walkable days; ramen',
+        content: { preference_source: 'memory' },
+      },
+    ]
+    render(<GenerationProgress events={events} />)
+    expect(screen.getByText('Memory')).toBeInTheDocument()
+  })
+
+  it('shows NO source chip when the run recalled nothing', () => {
+    const events: StreamEvent[] = [
+      {
+        type: 'stage', stage: 'preferences',
+        msg: 'No preferences provided — Astrail will infer a balanced first draft from your Reels.',
+        content: { preference_source: 'inferred_default' },
+      },
+    ]
+    render(<GenerationProgress events={events} />)
+    expect(screen.getByText(/no preferences provided/i)).toBeInTheDocument()
+    expect(screen.queryByText('Memory')).not.toBeInTheDocument()
+  })
+
+  it('shows no chip for preferences the user typed — they did not come from memory', () => {
+    const events: StreamEvent[] = [
+      {
+        type: 'stage', stage: 'preferences',
+        msg: 'Using your preferences: ramen, walkable',
+        content: { preference_source: 'explicit' },
+      },
+    ]
+    render(<GenerationProgress events={events} />)
+    expect(screen.queryByText('Memory')).not.toBeInTheDocument()
+  })
+
+  it('degrades to no chip when the payload is absent entirely', () => {
+    // An older backend, or a frame that lost its payload, must not resurrect the false label.
+    const events: StreamEvent[] = [
+      { type: 'stage', stage: 'preferences', msg: 'Applying preferences…' },
+    ]
+    render(<GenerationProgress events={events} />)
+    expect(screen.queryByText('Memory')).not.toBeInTheDocument()
+  })
+
+  it('leaves the other stages\' static chips alone', () => {
+    // The fix is scoped to `preferences`; the stages whose source really is fixed keep theirs.
+    const events: StreamEvent[] = [
+      { type: 'stage', stage: 'scrape', msg: 'Scraping 3 Reels…' },
+      { type: 'stage', stage: 'transport', msg: 'Planning routes…' },
+    ]
+    render(<GenerationProgress events={events} />)
+    expect(screen.getByText('Apify')).toBeInTheDocument()
+    expect(screen.getByText('Mapbox')).toBeInTheDocument()
+  })
+
   it('shows the completion line on the terminal result event', () => {
     const events: StreamEvent[] = [
       { type: 'stage', stage: 'summarize', msg: 'Summarizing…' },

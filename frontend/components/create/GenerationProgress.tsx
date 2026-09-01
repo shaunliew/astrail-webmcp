@@ -29,11 +29,36 @@ export const STAGE_LABEL: Record<GenerationStage, string> = {
 const STAGE_SOURCE: Partial<Record<GenerationStage, string>> = {
   scrape: 'Apify',
   resolve: 'Mapbox',
-  preferences: 'Memory',
   enrich: 'Research',
   restaurants: 'Research',
   hotels: 'Travala',
   transport: 'Mapbox',
+}
+
+/**
+ * The provenance chip for one stage row. Static per stage EXCEPT `preferences`, which is the
+ * one stage whose source is decided at RUNTIME: it fires for remembered mem0 facts, for
+ * preferences the user typed this trip, and for neither (pipeline/preferences.py:60-70).
+ *
+ * It used to sit in STAGE_SOURCE as a flat `preferences: 'Memory'`, so the chip read "Memory"
+ * on all three branches — including "No preferences provided", where mem0 returned nothing and
+ * the label was simply false. That is a claim on the judged surface, and it already misled a
+ * reader of this repo into believing recall had run when it had not.
+ *
+ * So the chip now reads the backend's own `preference_source` and shows NOTHING unless memory
+ * genuinely supplied the facts. An absent payload is treated as "not memory": a chip that is
+ * missing costs a little emphasis, a chip that is wrong costs the claim.
+ */
+function sourceChip(
+  // Structural, not `StageEvent`: at the call site TypeScript still holds `StageEvent |
+  // NoticeEvent` (NoticeEvent's discriminant is itself a three-way union and does not fully
+  // narrow away). The old `STAGE_SOURCE[event.stage]` compiled on that union by accident —
+  // both carry `stage`. This asks for exactly what it reads and stays honest about it.
+  event: { stage: GenerationStage; content?: Record<string, unknown> | null },
+): string | undefined {
+  if (event.stage !== 'preferences') return STAGE_SOURCE[event.stage]
+  const source = (event.content as { preference_source?: unknown } | null | undefined)?.preference_source
+  return source === 'memory' ? 'Memory' : undefined
 }
 
 function formatElapsed(totalSeconds: number): string {
@@ -194,7 +219,7 @@ export default function GenerationProgress({ events }: { events: StreamEvent[] }
               )
             }
             const current = i === events.length - 1
-            const src = STAGE_SOURCE[event.stage]
+            const src = sourceChip(event)
             return (
               <li key={i} className="flex items-start gap-2.5 py-1.5">
                 <span

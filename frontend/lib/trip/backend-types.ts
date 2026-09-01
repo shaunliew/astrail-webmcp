@@ -255,6 +255,15 @@ export type StageEvent = {
   type: 'stage'
   stage: GenerationStage
   msg: string
+  /** The event's `payload` column, forwarded verbatim by api/streaming.py:57 for every
+   *  non-result frame. It has always been on the wire — `api.ts:299` JSON.parses the frame
+   *  and asserts this type, so omitting the field here did not strip it, it only hid it.
+   *
+   *  `preferences` carries `{preference_source: 'memory' | 'explicit' | 'inferred_default'}`
+   *  (pipeline/runner.py:282) — the ONLY thing that distinguishes a run that recalled saved
+   *  memory from one that recalled nothing. Deliberately loose: other stages set payloads
+   *  this type does not enumerate, and narrowing it would be a lie about the wire. */
+  content?: Record<string, unknown> | null
 }
 export type HeartbeatEvent = { type: 'heartbeat'; elapsed_s: number }
 export type ResultEvent = { type: 'result'; content: string }

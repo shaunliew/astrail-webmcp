@@ -59,6 +59,17 @@ services:
       # Read at import in rate_limit.py, so raising it needs a RESTART, not just a value change.
       - key: DAILY_TRIP_QUOTA
         value: "25"
+      # Memory (mem0). OPTIONAL by design — absent means memory is DISABLED, never a boot
+      # failure (mem0_client.py:63-65, and it is deliberately not in REQUIRED_SECRETS).
+      #
+      # It is declared here because production's render.yaml:91 has it and omitting it made the
+      # hackathon service quietly worse than the real product: GET /settings/preferences returns
+      # status "disabled", the Settings screen reads "memory is off by configuration", and every
+      # generation falls to inferred defaults. Recall is also the only thing the AGENT path can
+      # exercise — plan_trip_from_reels leaves `preferences` blank, and blank is exactly the
+      # condition under which mem0 is searched (pipeline/preferences.py:114).
+      - key: MEM0_API_KEY
+        sync: false
       # 🚨 RUN_DELETION_SWEEP IS DELIBERATELY ABSENT AND MUST STAY ABSENT.
       # This service shares the PRODUCTION database. Setting it makes a second backend sweep real
       # user accounts for deletion every 120 seconds. It is the single most dangerous line that

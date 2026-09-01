@@ -6,6 +6,37 @@
 > **Submission repo:** `shaunliew/astrail-webmcp` (public, standalone, MIT detected, default `main`).
 > **Deadline:** Thu 4 Sep 04:00 GMT+8.
 
+## Pre-flight — tick these, then follow the sections
+
+Every line below is explained in full further down. They are gathered here because they are
+spread across five sections and the failure mode of this document is skimming it at 1am.
+
+**Six of these fail SILENTLY** — no error, no boot failure, nothing in the console. Those are
+marked ⚠️, and each one costs a beat of the demo you would only discover on camera.
+
+**Render — backend, deploy FIRST**
+- [ ] Blueprint Path = `render.webmcp.yaml` (not `render.yaml` — that one names the production service)
+- [ ] The five required secrets: `OPENAI_API_KEY`, `APIFY_TOKEN`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `MAPBOX_SECRET_TOKEN`
+- [ ] `SUPABASE_JWT_SECRET`
+- [ ] ⚠️ **`MEM0_API_KEY`** — absent = memory disabled, and NOT a boot error. The agent never asks how you travel, the home panel stays silent, trip 2 recalls nothing
+- [ ] ⚠️ **`ALLOWED_ORIGINS`** = the Vercel origin — unset falls back to astrail.xyz and every tool call dies as a browser CORS block
+- [ ] ⚠️ **`WEBMCP_EDITS_ENABLED=true`** — defaults false, so tools still register and then refuse. The edit beat is dead
+- [ ] `DAILY_TRIP_QUOTA` raised (read at import — needs a restart, not just a value change)
+- [ ] 🚨 **`RUN_DELETION_SWEEP` UNSET** — this deploy shares the PRODUCTION database
+
+**Vercel — frontend, deploy SECOND**
+- [ ] ⚠️ Every `NEXT_PUBLIC_*` set **before the first build** — `next.config.ts` bakes the CSP `connect-src` at build time, and a late fix needs a rebuild, not just a var change
+- [ ] ⚠️ `NEXT_PUBLIC_MOCK_AUTH` false or unset — `true` short-circuits every call to a mock and never reaches the backend
+- [ ] 🚨 **`NEXT_PUBLIC_DEMO_EMAIL` / `NEXT_PUBLIC_DEMO_PASSWORD` NOT SET** — `NEXT_PUBLIC_*` is inlined into the public client bundle, so a credential there is readable out of the shipped JavaScript whether or not anything renders it. Judge credentials go in Devpost's private testing-instructions field, nowhere else
+
+**Then verify**
+- [ ] `/readiness` says `ready:true` **and `"mem0":"configured"`** — check the word, not just `ready`
+- [ ] A tool call reaches the backend (a CSP block shows up here and only here)
+- [ ] `/app/trip/demo` signed out → six tools, no bounce to `/sign-in`
+- [ ] The memory arc end to end — see step 6 in §4, and `docs/webmcp/MEMORY-BEAT.md`
+
+---
+
 ## The one ordering rule that matters
 
 **Set every `NEXT_PUBLIC_*` in Vercel BEFORE the first build.** `frontend/next.config.ts` builds

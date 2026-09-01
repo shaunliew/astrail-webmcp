@@ -29,6 +29,11 @@ breaks something rather than merely delaying it.
 
 ## 1 · Render — backend
 
+**`render.webmcp.yaml` is written and validated** — created 2026-09-01, parses, declares exactly
+one web service named `astrail-webmcp-api`, and asserts in its own comments why each choice is
+what it is. Point Render's Blueprint Path at it. Checked mechanically: no `RUN_DELETION_SWEEP`,
+name distinct from production, single service.
+
 **Do NOT reuse `render.yaml`.** It names `astrail-backend` on `MalaysiaKaki/astrail@main` — the
 production service. Render's own docs warn against managing one service from two Blueprints, and
 a copy of this file would do exactly that. Create `render.webmcp.yaml` with a **different service

@@ -53,9 +53,19 @@ export type GenerationDeps = {
   /** See `EditDeps.confirm`: `'unavailable'` means no card was shown, not that anyone refused. */
   confirm: (summary: string) => Promise<boolean | 'unavailable'>
   /**
-   * The user's stored mem0 memories, used ONLY to decide what to say when they state no
-   * preferences for this trip: ask them once if nothing is remembered, or tell them on the card
-   * that saved preferences will be used.
+   * The user's stored mem0 memories, read when they state no preferences for this trip.
+   *
+   * It decides WHETHER to speak and also supplies WHAT is said. If nothing is remembered, the
+   * tool stops and asks them once rather than spending the allowance on inferred defaults. If
+   * something is, the approval card names it — the facts themselves, capped and joined, so that
+   * approving is a choice about preferences the user can see rather than a leap.
+   *
+   * What the card promises is deliberately weaker than what this read returns. This is the STORED
+   * set (`get_all`); the generation runs an independent semantic search
+   * (backend/pipeline/preferences.py:105-125) that can miss every one of them and fall back to
+   * inferred defaults in silence. So the card says Astrail will TRY to recall, never that saved
+   * preferences will be used — naming the facts makes that promise sound firmer, which is why the
+   * qualifier matters more here than it did when the line was generic.
    *
    * Optional, and every failure mode proceeds. Memory must never be able to block a trip
    * (guardrail #3) — an unreadable store is not a reason to interrogate someone who may well

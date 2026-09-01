@@ -99,6 +99,12 @@ function Entry({ entry, now }: { entry: ActivityEntry; now: number }) {
               // fallen over at the exact moment it was asking them a question, so it takes the
               // same brass as every other ending that is not a fault. Solid rather than pulsing:
               // the pulse means a call is in flight, and this one has already come back.
+              //
+              // Its own branch, even though it lands on the same class the default does. Sharing
+              // a default with `done` is not agreement, it is silence: the next status added here
+              // would inherit whatever this arm happens to be, which is exactly how `asked` came
+              // to render as a completed change in `headline` before it was given a branch there.
+              : entry.status === 'asked' ? 'bg-[#C9974E]/60'
               : 'bg-[#C9974E]/60',
           ].join(' ')}
         />

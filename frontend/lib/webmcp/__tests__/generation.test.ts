@@ -4,6 +4,7 @@ import { ERROR_CODE_RATE_LIMITED, ERROR_CODE_TRIAL_EXHAUSTED } from '@/lib/trip/
 import { ApiError } from '@/lib/trip/api'
 import { createGenerationStore, readResultVerdict } from '../generation'
 import { getTripProgressTool, planTripFromReelsTool } from '../tools/generation'
+import { readToolOutcome } from '../tools/edit'
 import { fitsBudget } from '../fit'
 
 /** A stream we drive by hand, so no EventSource and no real time is involved. */
@@ -572,6 +573,23 @@ describe('plan_trip_from_reels', () => {
   it('records the preferences question as a question, not as a failure', async () => {
     const out = await plan(deps({ readMemory: emptyMemory() }))
     expect(outcomeOf(out), 'a question the user can answer was recorded as a failure').toBe('asked')
+  })
+
+  it('survives the round trip the rail actually makes', async () => {
+    /* THE TEST THAT CATCHES A NEAR-MISS, which parsing the JSON here does not.
+       `notStarted` stringifies whatever word it is handed; `readToolOutcome` then checks that
+       word against `EDIT_VERDICTS` and — by design, so a tool answering in prose is not read as
+       a failure — collapses ANYTHING it does not recognise to `done`. So `'asking'` at the call
+       site would report the run as SUCCEEDED on the rail, with "Astrail can't undo this" under
+       it, for a run that never started. That is the original defect, restored by a typo.
+
+       The parameter is typed off `EditVerdict` now, so a near-miss is also a compile error. This
+       is the second lock, not the first: the value crosses a JSON string, and a string is where
+       type safety ends. */
+    const out = await plan(deps({ readMemory: emptyMemory() }))
+    const { outcome } = readToolOutcome(out)
+    expect(outcome).toBe('asked')
+    expect(outcome, 'an unrecognised word silently became a success').not.toBe('done')
   })
 
   it('credits the question to nobody — the tool is waiting, not reporting a decision', async () => {

@@ -5,37 +5,95 @@
 >
 > Full flow and timing: `VIDEO-FLOW.md`. What PASS looks like per beat: `DEMO-RUN.md`.
 
+## ⚠️ Before take one — clear the memory
+
+The agent asks how you travel ONLY when mem0 is **definitely empty**. Every rehearsal writes a
+memory, so a second run of this flow silently skips the beat that earns trip 2's payoff — the
+judge would watch Astrail recall something they never saw it learn.
+
+There is no in-app reset: `POST /settings/memory/clear` is deliberately gated off. Clear it from
+mem0's own dashboard, then confirm `/app/settings` reads "Astrail hasn't remembered anything yet"
+before you hit record. **This is the one prerequisite that cannot be recovered mid-take.**
+
+---
+
+# TRIP 1 — Tokyo · it learns
+
 ## 1 · Orientation — on an empty account
 
 ```
 What can I do here?
 ```
 
-## 2 · Save the reels — paste your three links
+## 2 · Save the reels
 
 ```
-Save these reels: <url1> <url2> <url3>
+Save these reels: <url1> <url2> <url3> <url4>
 ```
 
-## 3 · Plan it — the main feature
+## 3 · Plan it — and it asks
 
 ```
-Use the reels I just saved and plan me 2 days in Tokyo, 15 to 16 November
+Use the reels I just saved and plan me 2 days in Tokyo, 15 to 16 November 2026
 ```
 
-**Memory:** this prompt supplies no preferences, which is exactly what makes mem0 recall fire
-(`pipeline/preferences.py:114`). If the account has remembered facts, the first stage row reads
-"Using your saved travel preferences: …" and carries a brass `Memory` chip — that is the only
-branch worth narrating. Prep, gates and the line to say: `MEMORY-BEAT.md`.
+**It will come back with a question**, because nothing is remembered yet. Answer out loud:
+
+```
+walkable days, good ramen, not too rushed
+```
+
+That answer is what gets remembered. The approval card then echoes `Preferences: "…"` verbatim —
+**you can see the capture before anything is spent.** If the card does not show it, decline and
+rephrase; nothing is lost.
 
 **Give the dates.** They are required by the tool, so "plan me 2 days" alone makes the agent stop
-and ask — an awkward pause mid-take.
+and ask — an awkward pause for the wrong reason.
 
 ## 4 · Edit it live
 
 ```
-Add Tokyo Disneyland to day 1
+Add Tokyo Disneyland to day 2
 ```
+
+---
+
+# TRIP 2 — Osaka · it remembers
+
+⚠️ **A NEW ChatGPT conversation.** Any non-blank `preferences` deterministically suppresses recall,
+and a model that just heard you say "walkable days, ramen" has every reason to resend it. A fresh
+conversation removes the incentive; nothing else reliably does.
+
+**Osaka, not Tokyo.** A different city makes the point land without narration — same taste, new
+trip. Two Tokyo trips look alike on camera and the viewer has to take the difference on faith.
+
+## 5 · Save the second pair
+
+```
+Save these reels: <url1> <url2>
+```
+
+## 6 · Plan it — state NO preference
+
+```
+Use the reels I just saved and plan me 2 days in Osaka, 15 to 16 December 2026
+```
+
+**This is the payoff.** The approval card names what Astrail remembers and offers a field to say
+otherwise:
+
+```
+Astrail remembers: walkable days · good ramen · not too rushed
+[ different this trip? (optional) ______________ ]
+[ Try what it remembers ]   [ Not now ]
+```
+
+Astrail knows you, and it still asks. Approve blank and the first stage row reads *"Using your
+saved travel preferences: …"* — **cut there.** The rest of the generation is wait, not story.
+
+**Worth a second take if you have the seconds:** type something different into the field and let
+the trip be built from that instead. That proves the memory is a suggestion rather than a rail,
+which is the harder half to show and the easier half for a judge to doubt.
 
 ---
 

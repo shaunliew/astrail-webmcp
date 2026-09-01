@@ -89,16 +89,16 @@ export default function RememberedPreferences() {
             anything, so it gets the app's "something is live here" signal. Reduced-motion
             switches the animation off in globals.css; the dot itself stays. */}
         <span aria-hidden className="pulse-dot pulse-dot--live" />
-        <span className="type-evidence inline-flex items-center rounded-[var(--radius-chip)] bg-[var(--chip-bg)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[var(--brass-bright)]">
+        <span className="type-evidence inline-flex items-center rounded-[var(--radius-chip)] bg-[var(--chip-bg)] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-[color:var(--brass-deep)]">
           Memory
         </span>
-        <span className="type-label text-[11px] uppercase tracking-wide text-[color:var(--brass-bright)]">
+        <span className="type-label text-[11px] uppercase tracking-wide text-[color:var(--brass-deep)]">
           Astrail remembers how you travel
         </span>
       </div>
       {/* Clipped, not scrolled: an account with a lot remembered must not be able to push the
           library off the screen this sits above. */}
-      <p className="line-clamp-3 text-[15px] leading-relaxed text-[color:var(--starlight)]">{remembered}</p>
+      <p className="line-clamp-3 text-[15px] leading-relaxed text-[color:var(--text)]">{remembered}</p>
     </section>
   )
 }

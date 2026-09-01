@@ -638,6 +638,18 @@ button:focus-visible {
   }
 }
 
+/* The dot, repainted for paper.
+
+   `.pulse-dot` sets `background: var(--brass-bright)` — the LIGHT brass — which reads because
+   the activity rail it was built for sits on black. This panel is on the paper palette, where
+   the same token is nearly invisible against a brass-tinted fill. Scoped as a descendant so it
+   out-ranks the base rule; a Tailwind `bg-` utility here would be swallowed by that unlayered
+   rule exactly as the panel's own border would have been. */
+.memory-panel .pulse-dot {
+  background: var(--brass);
+  box-shadow: 0 0 6px var(--brass-glow);
+}
+
 @keyframes memory-panel-in {
   from {
     opacity: 0;

@@ -6,6 +6,7 @@ import type { ToolSpec } from '../types'
 import type { Decider } from './edit'
 import type { GenerationStore } from '../generation'
 import { normalizeReelUrl } from '@/lib/trip/parse-inspiration'
+import { summarizeMemoryFacts } from '@/lib/trip/memory-summary'
 
 /**
  * Starting a trip, and narrating one that is already running.
@@ -350,10 +351,16 @@ const MEMORY_READ_TIMEOUT_MS = 2_500
  * saved" from a read that failed is the precise misdiagnosis the backend keeps `status` separate
  * from `facts` to prevent, and here it would additionally interrogate a returning user about
  * preferences they already gave us.
+ *
+ * `remembered` is the same read said out loud — the facts this account holds, capped and joined
+ * by `summarizeMemoryFacts`, which the home screen's line uses too so the two cannot drift. It is
+ * a SECOND field rather than a replacement for `hasFacts`: the account can hold memories that
+ * summarise to nothing (a blank one is a legal row), and the ask-gate must not start
+ * interrogating a returning user because their memories did not render.
  */
 async function readMemoryState(
   read: GenerationDeps['readMemory'],
-): Promise<{ hasFacts: boolean } | null> {
+): Promise<{ hasFacts: boolean; remembered: string | null } | null> {
   if (!read) return null
   try {
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -368,7 +375,7 @@ async function readMemoryState(
     // Array.isArray, not truthiness: a malformed payload is UNKNOWN, not empty. `undefined > 0`
     // is false, which would have asked a returning user to restate preferences they have.
     if (!Array.isArray(res.facts)) return null
-    return { hasFacts: res.facts.length > 0 }
+    return { hasFacts: res.facts.length > 0, remembered: summarizeMemoryFacts(res.facts) }
   } catch {
     return null   // never let a memory read decide a trip cannot start
   }
@@ -475,8 +482,18 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
            miss, time out, or error, and then falls back to inferred defaults in silence. The
            card is where the user decides to spend, so it must not promise an outcome a later
            search gets to veto. */
+        /* And it NAMES them. Saying only that Astrail would try to recall "what it remembers"
+           asked the user to approve preferences they could not see — the facts were already
+           fetched by this point and thrown away. They are the user's own words, so showing them
+           is the difference between consenting and guessing. Capped by `summarizeMemoryFacts`,
+           because mem0 has no ceiling on what an account accumulates and the line below this one
+           — "This uses your trip allowance" — is the decision they are actually making.
+           `remembered` can be null while `hasFacts` is true (a blank memory is a legal row), and
+           then the sentence stays exactly as it was rather than trailing off after a colon. */
         !preferences && memory?.hasFacts
-          ? 'No preferences given — Astrail will try to recall what it remembers about how you travel.'
+          ? memory.remembered
+            ? `No preferences given — Astrail will try to recall what it remembers about how you travel: ${memory.remembered}`
+            : 'No preferences given — Astrail will try to recall what it remembers about how you travel.'
           : null,
         alreadyRead === null ? null : describeReuse(alreadyRead, urls.length),
         deps.saveToLibrary ? describeLibrarySave(urls.length) : null,

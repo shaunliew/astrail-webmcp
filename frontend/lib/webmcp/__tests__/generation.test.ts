@@ -598,6 +598,53 @@ describe('plan_trip_from_reels', () => {
     expect(String(d.confirm.mock.calls[0][0])).toMatch(/what it remembers about how you travel/i)
   })
 
+  it('names the preferences it will try to recall, not just that it will try', async () => {
+    /* On trip 2+ the card said only "Astrail will try to recall what it remembers about how you
+       travel" — so approving meant consenting to preferences the user could not see. The facts
+       were already fetched at this point and thrown away; the card names them now, and approving
+       is an informed choice rather than a leap. */
+    const d = deps({ readMemory: savedMemory() })
+    await plan(d)
+    expect(String(d.confirm.mock.calls[0][0])).toContain('Prefers walkable days')
+  })
+
+  it('caps what the card names, however much an account has remembered', async () => {
+    /* mem0 puts no ceiling on what one account accumulates, and the card is the surface where
+       the user reads what approving costs them. An unbounded list pushes "This uses your trip
+       allowance" — the actual decision — off the bottom of it. */
+    const many = Array.from({ length: 20 }, (_, i) => ({
+      id: `m${i}`, memory: `Remembered preference number ${i}`, created_at: '2026-08-01T00:00:00Z', source: 'mem0' as const,
+    }))
+    const d = deps({ readMemory: vi.fn().mockResolvedValue({ status: 'ok', facts: many }) })
+    await plan(d)
+    const line = String(d.confirm.mock.calls[0][0]).split('\n').find((l) => /try to recall/.test(l))!
+    expect(line.length, 'the card grew with the account').toBeLessThan(280)
+    expect(line).not.toContain('number 19')
+  })
+
+  it('still only tries, even now that it can name what it holds', async () => {
+    /* Naming the facts makes the promise sound firmer, which is exactly when this matters. What
+       was read is the STORED set (get_all); the generation runs an independent semantic search
+       (backend/pipeline/preferences.py:105-125) that can still miss every one of them. */
+    const d = deps({ readMemory: savedMemory() })
+    await plan(d)
+    const card = String(d.confirm.mock.calls[0][0])
+    expect(card).toMatch(/try to recall/i)
+    expect(card, 'naming the facts turned a best effort into a promise').not.toMatch(/will use/i)
+  })
+
+  it('names nothing when the memories came back unreadable', async () => {
+    // `facts.length > 0` is not evidence there is anything to SAY. A blank memory would have
+    // produced a card ending in a colon and nothing after it.
+    const d = deps({ readMemory: vi.fn().mockResolvedValue({ status: 'ok', facts: [{ id: 'm1', memory: '   ', created_at: '2026-08-01T00:00:00Z', source: 'mem0' }] }) })
+    await plan(d)
+    const card = String(d.confirm.mock.calls[0][0])
+    expect(card).toMatch(/try to recall/i)
+    // The plain sentence, ending in a full stop — not the naming form with nothing after it.
+    expect(card, 'the card promised a list and then gave none').not.toMatch(/how you travel:/)
+    expect(card).toContain('how you travel.')
+  })
+
   it('promises nothing about memory on the card when the read failed', async () => {
     // The card is where the user decides to spend. A line claiming remembered preferences we
     // could not read would be a claim, not a note.

@@ -182,6 +182,18 @@ export const ORGANIZE_RETRY_DELAYS_MS = [400, 1_200]
  */
 const MAX_PLANNED_RUNS = 4
 
+/**
+ * The one optional field on the approval card that names what Astrail remembers.
+ *
+ * "(optional)" is load-bearing and not decoration: blank means "use what you remember", and a
+ * field that reads as required turns an offer into a second thing the user has to answer before
+ * their trip will start. Stable at module scope so the tool deps memo does not churn.
+ */
+const PREFERENCE_OVERRIDE = {
+  label: 'Different this trip? (optional)',
+  placeholder: 'e.g. slower days, more time by the water',
+} as const
+
 /** The reels ONE run planned from, and the identity that says which run that was. */
 type PlannedReels = {
   /**
@@ -280,7 +292,7 @@ export default function GlobalTools() {
   const pathname = usePathname() ?? '/app'
   const router = useRouter()
   const hasSession = useHasSession(pathname)
-  const { requestConfirm, openTrip, refreshOpenTrip, refreshSavedReels, beginActivity, endActivity } =
+  const { requestConfirm, requestPrompt, openTrip, refreshOpenTrip, refreshSavedReels, beginActivity, endActivity } =
     useWebMcpRegistry()
   // The run belongs to the shell, not to this component. It must outlive any single tool call
   // (the stream runs 60-180s while `plan_trip_from_reels` returns in about a second) AND outlive
@@ -820,6 +832,11 @@ export default function GlobalTools() {
         await showView('trip-generation')
       },
       confirm: requestConfirm,
+      /* The same card, on the one branch where Astrail is about to lean on what it remembers.
+         The wording lives here rather than in the tool: the summary is assembled from
+         caption-derived content and is rendered verbatim, but this is interface chrome and must
+         never be reachable from anything a Reel wrote. */
+      confirmWithPreferences: (summary: string) => requestPrompt(summary, PREFERENCE_OVERRIDE),
       /* Only to decide what to SAY when the user states no preferences: ask them once if
          nothing is remembered, or note on the card that saved preferences will be used.
          Never a gate on the trip itself — see readMemoryState. */
@@ -839,7 +856,7 @@ export default function GlobalTools() {
       saveToLibrary: saveReelForRun,
       readAllowance,
     }),
-    [requestConfirm, loadSavedReels, saveReelForRun, readAllowance, shell, showView],
+    [requestConfirm, requestPrompt, loadSavedReels, saveReelForRun, readAllowance, shell, showView],
   )
 
   /**

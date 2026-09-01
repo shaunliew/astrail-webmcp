@@ -53,6 +53,27 @@ export type GenerationDeps = {
   /** See `EditDeps.confirm`: `'unavailable'` means no card was shown, not that anyone refused. */
   confirm: (summary: string) => Promise<boolean | 'unavailable'>
   /**
+   * The same card and the same gate, plus one optional field: what the user wants for THIS trip
+   * instead of what Astrail remembers.
+   *
+   * Used on exactly ONE branch — the card that says Astrail will try to recall. A remembered
+   * preference is a DEFAULT, not a mandate, and preferences change per trip; naming them and
+   * offering only Approve left the user two answers to a three-answer question. Everywhere else
+   * the plain `confirm` is still the right card, and this must not touch it: five edit tools
+   * share that signature and every one of them reads its answer as `if (!approved)`.
+   *
+   * Optional, and absent means today's behaviour exactly. The tests and the spec contract build
+   * deps without it, and a wiring that never arrives must degrade to the card that already works
+   * rather than to no card at all.
+   *
+   * `text` is the user's own typed words, so it is a STATED preference for this run: it replaces
+   * recall and the backend remembers it. It is trimmed and capped here as well as in the card —
+   * a dep is injectable, and `''` is falsy in TypeScript and blank to the backend
+   * (`(explicit_text or "").strip()`), so a blank one travelling as a stated preference would
+   * skip recall AND teach the account nothing.
+   */
+  confirmWithPreferences?: (summary: string) => Promise<{ approved: boolean; text: string | null } | 'unavailable'>
+  /**
    * The user's stored mem0 memories, read when they state no preferences for this trip.
    *
    * It decides WHETHER to speak and also supplies WHAT is said. If nothing is remembered, the
@@ -477,6 +498,30 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
 
       const alreadyRead = await countAlreadyRead(deps.readLibrary, urls)
 
+      /* Says which source is about to steer the trip, at the moment the user decides to spend on
+         it. Only when memory is KNOWN to hold something — `null` is unknown, and promising
+         remembered preferences we could not read would be a claim, not a note.
+
+         "try to recall", not "will use". What was read here is the STORED set (get_all); the
+         generation runs an independent semantic search (preferences.py:105-125) that can miss,
+         time out, or error, and then falls back to inferred defaults in silence. The card is
+         where the user decides to spend, so it must not promise an outcome a later search gets
+         to veto.
+
+         And it NAMES them. Saying only that Astrail would try to recall "what it remembers"
+         asked the user to approve preferences they could not see — the facts were already
+         fetched by this point and thrown away. They are the user's own words, so showing them is
+         the difference between consenting and guessing. Capped by `summarizeMemoryFacts`,
+         because mem0 has no ceiling on what an account accumulates and the last line of the card
+         — "This uses your trip allowance" — is the decision they are actually making.
+         `remembered` can be null while `hasFacts` is true (a blank memory is a legal row), and
+         then the sentence stays exactly as it was rather than trailing off after a colon. */
+      const rememberedLine = !preferences && memory?.hasFacts
+        ? memory.remembered
+          ? `No preferences given — Astrail will try to recall what it remembers about how you travel: ${memory.remembered}`
+          : 'No preferences given — Astrail will try to recall what it remembers about how you travel.'
+        : null
+
       // The summary is shown to the user VERBATIM before anything is spent. Reel captions are
       // untrusted, so a prompt-injected preference cannot silently steer a run they never read.
       const summary = [
@@ -484,37 +529,36 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
         `Dates: ${start} to ${end}`,
         args.destination_hint ? `Destination: ${args.destination_hint}` : null,
         preferences ? `Preferences: "${preferences}"` : null,
-        // Says which source is about to steer the trip, at the moment the user decides to
-        // spend on it. Only when memory is KNOWN to hold something — `null` is unknown, and
-        // promising remembered preferences we could not read would be a claim, not a note.
-        /* "try to recall", not "will use". What was read here is the STORED set (get_all);
-           the generation runs an independent semantic search (preferences.py:105-125) that can
-           miss, time out, or error, and then falls back to inferred defaults in silence. The
-           card is where the user decides to spend, so it must not promise an outcome a later
-           search gets to veto. */
-        /* And it NAMES them. Saying only that Astrail would try to recall "what it remembers"
-           asked the user to approve preferences they could not see — the facts were already
-           fetched by this point and thrown away. They are the user's own words, so showing them
-           is the difference between consenting and guessing. Capped by `summarizeMemoryFacts`,
-           because mem0 has no ceiling on what an account accumulates and the line below this one
-           — "This uses your trip allowance" — is the decision they are actually making.
-           `remembered` can be null while `hasFacts` is true (a blank memory is a legal row), and
-           then the sentence stays exactly as it was rather than trailing off after a colon. */
-        !preferences && memory?.hasFacts
-          ? memory.remembered
-            ? `No preferences given — Astrail will try to recall what it remembers about how you travel: ${memory.remembered}`
-            : 'No preferences given — Astrail will try to recall what it remembers about how you travel.'
-          : null,
+        // See `rememberedLine` above for why this promises only an attempt, and names it.
+        rememberedLine,
         alreadyRead === null ? null : describeReuse(alreadyRead, urls.length),
         deps.saveToLibrary ? describeLibrarySave(urls.length) : null,
         'This uses your trip allowance.',
       ].filter(Boolean).join('\n')
 
-      const approved = await deps.confirm(summary)
+      /* The card that offers a different answer, on exactly the branch that names what Astrail
+         remembers — derived from that LINE rather than from a second copy of its condition, so
+         the two cannot drift into a field offered beside a card that mentions no memory at all.
+         Absent dep falls back to the plain card, which is today's behaviour unchanged. */
+      const answer = rememberedLine && deps.confirmWithPreferences
+        ? await deps.confirmWithPreferences(summary)
+        : await deps.confirm(summary)
+      const approved = typeof answer === 'object' ? answer.approved : answer
       // Never "the user declined" for a card the user was never shown — see EditDeps.confirm.
       if (approved === 'unavailable')
         return notStarted('Astrail could not ask: another approval is already waiting on screen. Nothing was started. Ask again once it has been answered.', 'failed')
       if (!approved) return notStarted('The user declined. Nothing was started and nothing was spent.', 'declined', 'user')
+
+      /* Read only past both refusals above, so text left in a field on a card the user DECLINED
+         cannot reach anything — control flow rather than a guard, because a guard on a branch
+         nothing can take is a claim no test can hold to.
+         Trimmed and capped HERE too, not only in the card. `''` is falsy in TypeScript and blank
+         to the backend (`(explicit_text or "").strip()`), so a blank override forwarded as a
+         stated preference is a run that skips recall AND remembers nothing — the worst of both
+         answers, from a dep this tool does not own and must not trust. */
+      const typedOverride = typeof answer === 'object'
+        ? (answer.text ?? '').trim().slice(0, MAX_PREFERENCES) || null
+        : null
 
       // The gate above is advisory, so a stale client state or a generation started in another
       // tab still lands here — with the user's consent already taken. What came back then was an
@@ -530,7 +574,11 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
           end_date: end,
           budget_level: (args.budget_level as GenerateTripRequest['budget_level']) ?? null,
           origin_city: typeof args.origin_city === 'string' ? args.origin_city : null,
-          preferences,
+          /* The typed override IS a stated preference: `pipeline/preferences.py` classifies it
+             explicit, skips recall for this run, and teaches the account the new fact — which is
+             what "actually, this trip is different" has to mean to be worth asking. Null on every
+             other path, so `preferences` stays exactly what it was. */
+          preferences: typedOverride ?? preferences,
         } as GenerateTripRequest)
       } catch (err) {
         // 'user': consent was taken before this ran, so the backend's refusal is the ending of a
@@ -567,7 +615,12 @@ export function planTripFromReelsTool(deps: GenerationDeps): ToolSpec {
           saved_to_library: savedCount,
           library: describeLibraryOutcome(savedCount, distinctUrls.length),
         }),
-        note: 'Tell the user it has started and roughly how long it takes, then poll.',
+        /* The card said "try to recall"; the agent narrates from what this returns. Left
+           uncorrected it tells the user their remembered preferences are being used while the
+           run is built from something else entirely. */
+        note: typedOverride
+          ? 'Tell the user it has started and roughly how long it takes, then poll. It uses what they typed on the card, not what Astrail remembers.'
+          : 'Tell the user it has started and roughly how long it takes, then poll.',
       })
     },
   }

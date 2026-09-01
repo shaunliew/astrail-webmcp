@@ -80,14 +80,25 @@ const { useEffect } = await import('react')
 /** Approves every card the tools raise, so an approval-gated tool can be driven end to end. */
 function AutoApprove() {
   const { pending } = useWebMcpRegistry()
-  useEffect(() => { pending?.resolve(true) }, [pending])
+  /* Either card. `plan_trip_from_reels` raises the one with a preference field when Astrail has
+     something remembered to lean on, and a harness that answers only the plain shape would hang
+     that path instead of testing it. `text: null` is the blank field — today's behaviour. */
+  useEffect(() => {
+    if (!pending) return
+    if (pending.kind === 'prompt') pending.resolve({ approved: true, text: null })
+    else pending.resolve(true)
+  }, [pending])
   return null
 }
 
 /** The other answer. A declined spend must leave the app exactly where it was. */
 function AutoDecline() {
   const { pending } = useWebMcpRegistry()
-  useEffect(() => { pending?.resolve(false) }, [pending])
+  useEffect(() => {
+    if (!pending) return
+    if (pending.kind === 'prompt') pending.resolve({ approved: false, text: null })
+    else pending.resolve(false)
+  }, [pending])
   return null
 }
 

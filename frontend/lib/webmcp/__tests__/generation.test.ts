@@ -1198,3 +1198,160 @@ describe('plan_trip_from_reels — putting the reels in the user\'s library', ()
     expect(parsed.trip_id).toBe('trip-123')
   })
 })
+
+/* THE PREFERENCE CARD.
+
+   Trip 2 worked and was still wrong: the user stated nothing, recall fired, and the trip was
+   built from "walkable days, good ramen, not too rushed" without anyone being asked. The card
+   NAMED them, which is where this started — but naming is not consent, and a remembered
+   preference is a default, not a mandate. Preferences change per trip.
+
+   So exactly one branch of the card grows a field: the one that says Astrail will try to recall.
+   Everything else — stated preferences, `no_preferences`, an empty store, an unreadable one —
+   keeps the plain confirm, and so does a caller that does not wire the new dep at all. */
+describe('plan_trip_from_reels — a different answer for this trip', () => {
+  const savedMemory = () => vi.fn().mockResolvedValue({
+    status: 'ok',
+    facts: [{ id: 'm1', memory: 'Prefers walkable days', created_at: '2026-08-01T00:00:00Z', source: 'mem0' }],
+  })
+  const deps = (over: Record<string, unknown> = {}) => ({
+    store: createGenerationStore(),
+    create: vi.fn().mockResolvedValue('trip-123'),
+    openStream: vi.fn(),
+    confirm: vi.fn().mockResolvedValue(true),
+    readMemory: savedMemory(),
+    confirmWithPreferences: vi.fn().mockResolvedValue({ approved: true, text: null }),
+    ...over,
+  })
+  const plan = (d: ReturnType<typeof deps>, over: Record<string, unknown> = {}) =>
+    planTripFromReelsTool(d).execute({
+      reel_urls: ['https://www.instagram.com/reel/Cabc123/'],
+      start_date: '2026-03-03', end_date: '2026-03-07', ...over,
+    })
+  const sentPreferences = (d: ReturnType<typeof deps>) =>
+    (d.create.mock.calls[0][0] as { preferences: string | null }).preferences
+
+  it('offers the field on the branch that says it will try to recall, and only there', async () => {
+    const d = deps()
+    await plan(d)
+    expect(d.confirmWithPreferences).toHaveBeenCalled()
+    expect(d.confirm, 'two cards for one decision').not.toHaveBeenCalled()
+    expect(String(d.confirmWithPreferences.mock.calls[0][0])).toMatch(/try to recall/i)
+  })
+
+  it('keeps the plain card when the user stated preferences this trip', async () => {
+    const d = deps()
+    await plan(d, { preferences: 'quiet places, no crowds' })
+    expect(d.confirm).toHaveBeenCalled()
+    expect(d.confirmWithPreferences, 'asked again for an answer already given').not.toHaveBeenCalled()
+  })
+
+  it('keeps the plain card when the user was asked and declined to say', async () => {
+    const d = deps()
+    await plan(d, { no_preferences: true })
+    expect(d.confirm).toHaveBeenCalled()
+    expect(d.confirmWithPreferences).not.toHaveBeenCalled()
+  })
+
+  it('keeps the plain card when the memory read failed', async () => {
+    // No remembered line on the card, so nothing to offer an alternative TO.
+    const d = deps({ readMemory: vi.fn().mockResolvedValue({ status: 'unavailable', facts: [] }) })
+    await plan(d)
+    expect(d.confirm).toHaveBeenCalled()
+    expect(d.confirmWithPreferences).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the plain card for a caller that never wired the field', async () => {
+    // The spec contract and every existing test build deps without it. Absent must mean today.
+    const d = deps({ confirmWithPreferences: undefined })
+    await plan(d)
+    expect(d.confirm).toHaveBeenCalled()
+    expect(sentPreferences(d)).toBeNull()
+  })
+
+  it('still only tries to recall — the field did not turn the hedge into a promise', async () => {
+    const d = deps()
+    await plan(d)
+    const card = String(d.confirmWithPreferences.mock.calls[0][0])
+    expect(card).toMatch(/try to recall/i)
+    expect(card).toContain('Prefers walkable days')
+    expect(card).not.toMatch(/will use/i)
+  })
+
+  it('behaves exactly as it does today when the field is left blank', async () => {
+    const d = deps()
+    await plan(d)
+    expect(sentPreferences(d), 'a blank field became a stated preference').toBeNull()
+  })
+
+  it('sends what the user typed as THIS trip\'s preferences, so the backend remembers it', async () => {
+    /* The whole point. `preferences` is what `pipeline/preferences.py` classifies explicit —
+       it skips recall for this run and teaches the account the new fact. Resolving the card is
+       not the assertion; what reaches `create` is. */
+    const d = deps({ confirmWithPreferences: vi.fn().mockResolvedValue({ approved: true, text: 'beach days, no temples' }) })
+    await plan(d)
+    expect(sentPreferences(d)).toBe('beach days, no temples')
+  })
+
+  it('treats a blank-looking override as blank, never as an empty string', async () => {
+    /* `''` is falsy and the backend decides blank with `(explicit_text or "").strip()`. A `''` or
+       `'  '` arriving as a stated preference is a run that skips recall AND remembers nothing.
+       The card normalizes, and so does this — the dep is injectable and must not be trusted. */
+    for (const text of ['', '   ', '\n\t ']) {
+      const d = deps({ confirmWithPreferences: vi.fn().mockResolvedValue({ approved: true, text }) })
+      await plan(d)
+      expect(sentPreferences(d), `override ${JSON.stringify(text)}`).toBeNull()
+    }
+  })
+
+  it('trims and caps the override the same way a stated preference is', async () => {
+    const d = deps({ confirmWithPreferences: vi.fn().mockResolvedValue({ approved: true, text: `  ${'x'.repeat(400)}  ` }) })
+    await plan(d)
+    expect(sentPreferences(d)).toBe('x'.repeat(280))
+  })
+
+  it('spends nothing when the preference card is declined', async () => {
+    const d = deps({ confirmWithPreferences: vi.fn().mockResolvedValue({ approved: false, text: 'beach days' }) })
+    const out = JSON.parse(String(await plan(d))) as { outcome: string; decided_by: string }
+    expect(d.create, 'started a trip the user refused').not.toHaveBeenCalled()
+    expect(out.outcome).toBe('declined')
+    expect(out.decided_by).toBe('user')
+  })
+
+  it('never reports a decline for a preference card that was never shown', async () => {
+    // Same rule as the plain card: `'unavailable'` is our own value, and nobody was asked.
+    const d = deps({ confirmWithPreferences: vi.fn().mockResolvedValue('unavailable') })
+    const out = String(await plan(d))
+    expect(d.create).not.toHaveBeenCalled()
+    expect(out).toMatch(/another approval is already waiting/i)
+    expect(out, 'answered for a user who was never shown a card').not.toMatch(/declined/i)
+  })
+
+  it('tells the agent when the typed answer replaced what Astrail remembers', async () => {
+    /* The card said "try to recall"; the agent narrates from what this returns. Without the
+       correction it tells the user their remembered preferences are being used while the run
+       is built from something else entirely. */
+    const d = deps({ confirmWithPreferences: vi.fn().mockResolvedValue({ approved: true, text: 'beach days' }) })
+    const note = (JSON.parse(String(await plan(d))) as { note: string }).note
+    expect(note).toMatch(/typed/i)
+    expect(note).toMatch(/not what Astrail remembers/i)
+  })
+
+  it('says nothing about a replacement when there was none', async () => {
+    const d = deps()
+    const note = (JSON.parse(String(await plan(d))) as { note: string }).note
+    expect(note).not.toMatch(/typed/i)
+  })
+
+  it('stays inside the tool-output budget with the correction attached', async () => {
+    // The longest success this tool can return: five reels, a library line, and the correction.
+    const d = deps({
+      confirmWithPreferences: vi.fn().mockResolvedValue({ approved: true, text: 'beach days' }),
+      saveToLibrary: vi.fn().mockResolvedValue({}),
+    })
+    const out = String(await plan(d, {
+      reel_urls: ['AAA', 'BBB', 'CCC', 'DDD', 'EEE'].map((s) => `https://www.instagram.com/reel/C${s}/`),
+    }))
+    expect(fitsBudget(out)).toBe(true)
+  })
+})

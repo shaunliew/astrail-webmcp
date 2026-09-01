@@ -140,10 +140,25 @@ function startForeignRun(tripId: string) {
   })
 }
 
+/** What the user types into the preference field, when the card offers one. Reset per test. */
+let typedOnCard: string | null = null
+
+/** Every card the shell actually raised — the SHAPE included, since that is the wiring. */
+const cardsRaised: { kind: string; summary: string }[] = []
+
 /** Answers the approval card, so the spend the tool asks about is actually consented to. */
 function AutoApprove() {
   const { pending } = useWebMcpRegistry()
-  useEffect(() => { pending?.resolve(true) }, [pending])
+  /* Either card. `plan_trip_from_reels` raises the one with a preference field when Astrail has
+     something remembered to lean on, and a harness that answers only the plain shape would hang
+     that path instead of testing it. `typedOnCard` defaults to null — a blank field, which is
+     the behaviour that shipped before the field existed. */
+  useEffect(() => {
+    if (!pending) return
+    cardsRaised.push({ kind: pending.kind, summary: pending.summary })
+    if (pending.kind === 'prompt') pending.resolve({ approved: true, text: typedOnCard })
+    else pending.resolve(true)
+  }, [pending])
   return null
 }
 
@@ -192,6 +207,8 @@ beforeEach(() => {
   // The job store is a module, so it outlives a render the way it outlives a page — which is the
   // whole point of it, and exactly why each test has to start from empty.
   resetOrganizeJobs()
+  typedOnCard = null
+  cardsRaised.length = 0
   h.specs = []
   h.shell = makeShell()
   h.emit = null
@@ -734,5 +751,43 @@ describe('a run that lands before its captures do', () => {
     await act(async () => { await Promise.resolve() })
     // No rows means no ids, and a job over an empty set organizes nothing.
     expect(h.startOrganize).not.toHaveBeenCalled()
+  })
+})
+
+/* THE WIRING, not the logic.
+
+   Whether a typed override replaces recall is unit-tested against an injected dep. What NOTHING
+   pinned is that GlobalTools hands the tool a `confirmWithPreferences` at all: drop that line in
+   a refactor or a merge resolution and every one of those tests stays green while the card
+   silently loses its field and a returning user is back to approve-or-abandon — the exact defect
+   this was built to fix. So these assert through the real component, the real card and the real
+   request payload, with only the network stubbed. */
+describe('the preference card is actually wired into the shell', () => {
+  const sentPreferences = () =>
+    (h.generateTrip.mock.calls[0][0] as { preferences: string | null }).preferences
+
+  it('raises the card WITH a field when Astrail has something remembered', async () => {
+    await planTrip()
+    expect(cardsRaised.map((c) => c.kind), 'confirmWithPreferences is not wired').toEqual(['prompt'])
+    // And it still NAMES what it remembers, so the field is an alternative to something visible.
+    expect(cardsRaised[0].summary).toContain('Prefers walkable days')
+    expect(cardsRaised[0].summary).toMatch(/try to recall/i)
+  })
+
+  it('sends what the user typed straight through to the backend request', async () => {
+    /* End to end, which is the only assertion that means anything here: typed into the real card,
+       through the real shell, into the real `generateTrip` payload — the field
+       `pipeline/preferences.py` classifies explicit, so this trip uses it AND the account learns
+       it. A card that merely resolved would prove none of that. */
+    typedOnCard = 'beach days, no temples'
+    await planTrip()
+    expect(h.generateTrip).toHaveBeenCalledTimes(1)
+    expect(sentPreferences()).toBe('beach days, no temples')
+  })
+
+  it('changes nothing when the field is left blank', async () => {
+    // Blank means "use what you remember" — recall runs, exactly as it did before the field.
+    await planTrip()
+    expect(sentPreferences()).toBeNull()
   })
 })

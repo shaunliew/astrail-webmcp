@@ -209,7 +209,8 @@ function AutoDecline() {
   useEffect(() => {
     if (!pending) return
     cardsShown.push(pending.summary)
-    pending.resolve(false)
+    if (pending.kind === 'prompt') pending.resolve({ approved: false, text: null })
+    else pending.resolve(false)
   }, [pending])
   return null
 }
@@ -871,7 +872,11 @@ function AutoApprove() {
   useEffect(() => {
     if (!pending) return
     cardsShown.push(pending.summary)
-    pending.resolve(true)
+  /* Either card. `plan_trip_from_reels` raises the one with a preference field when Astrail has
+     something remembered to lean on, and a harness that answers only the plain shape would hang
+     that path instead of testing it. `text: null` is the blank field — today's behaviour. */
+    if (pending.kind === 'prompt') pending.resolve({ approved: true, text: null })
+    else pending.resolve(true)
   }, [pending])
   return null
 }

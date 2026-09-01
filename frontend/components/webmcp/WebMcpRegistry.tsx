@@ -174,19 +174,69 @@ export type ActivityEntry = Omit<ToolFacts, 'actor'> & {
 }
 
 export type PendingConfirm = {
+  kind: 'confirm'
   summary: string
   resolve: (approved: boolean) => void
 }
 
+/** The chrome around the one optional field. Never derived from a tool's output. */
+export type PromptField = {
+  label: string
+  placeholder: string
+}
+
+/**
+ * What the user did with a card that offered them a field.
+ *
+ * `text` is trimmed and `null` when they left it blank, never `''`. The two are not
+ * interchangeable anywhere downstream: an empty string is falsy in TypeScript and blank to the
+ * backend (`(explicit_text or "").strip()`), so a `''` travelling as a stated preference is a run
+ * that skips recall and remembers nothing — the worst of both answers. The card decides which of
+ * the two it is, once, here.
+ *
+ * `approved: false` always carries `text: null`. Declining is a refusal to start, not a
+ * preference stated on the way out.
+ */
+export type PromptAnswer = {
+  approved: boolean
+  text: string | null
+}
+
+export type PendingPrompt = {
+  kind: 'prompt'
+  summary: string
+  prompt: PromptField
+  resolve: (answer: PromptAnswer) => void
+}
+
+/**
+ * The card, in whichever of its two shapes.
+ *
+ * A discriminated union rather than an optional field on one shape, and rather than widening
+ * `confirm` to return a string: every gated tool reads its answer as `if (!approved) return
+ * declined`, so a card that could answer `''` would decline six tools silently. The two answers
+ * are different types because they are different questions.
+ */
+export type Pending = PendingConfirm | PendingPrompt
+
 type RegistryValue = {
   tools: RegisteredToolView[]
   /** An approval the agent is waiting on. Rendered by <AgentConfirm/>. */
-  pending: PendingConfirm | null
+  pending: Pending | null
   /**
    * Called from inside a tool's execute; resolves when the user answers — or `'unavailable'`
    * when no card could be shown, which is NOT an answer and must never be reported as one.
    */
   requestConfirm: (summary: string) => Promise<boolean | 'unavailable'>
+  /**
+   * The same card and the same one-at-a-time gate, plus one optional field.
+   *
+   * Exists because a remembered preference is a DEFAULT, not a mandate: a card that names what
+   * Astrail remembers and offers only Approve asks the user to consent to it or abandon the
+   * trip. `'unavailable'` means exactly what it means for `requestConfirm` — no card was shown,
+   * which is not an answer.
+   */
+  requestPrompt: (summary: string, prompt: PromptField) => Promise<PromptAnswer | 'unavailable'>
   /**
    * The trip currently open on screen, if any.
    *
@@ -264,7 +314,7 @@ export function useOptionalWebMcpRegistry(): RegistryValue | null {
 export function WebMcpRegistryProvider({ children }: { children: React.ReactNode }) {
   const [tools, setTools] = useState<RegisteredToolView[]>([])
   const [supported, setSupported] = useState(false)
-  const [pending, setPending] = useState<PendingConfirm | null>(null)
+  const [pending, setPending] = useState<Pending | null>(null)
   const [activity, setActivity] = useState<ActivityEntry[]>([])
   const activitySeq = useRef(0)
   const openTrip = useRef<unknown>(null)
@@ -324,17 +374,33 @@ export function WebMcpRegistryProvider({ children }: { children: React.ReactNode
    * registry is an ordinary, recoverable state, and throwing would make every caller wrap a
    * try/catch around a question.
    */
-  const requestConfirm = useCallback((summary: string) => {
-    return new Promise<boolean | 'unavailable'>((resolve) => {
+  const requestCard = useCallback(<A,>(build: (settle: (answer: A) => void) => Pending) => {
+    return new Promise<A | 'unavailable'>((resolve) => {
       setPending((existing) => {
         if (existing) { resolve('unavailable'); return existing }   // busy: refuse, do not answer for them
-        return {
-          summary,
-          resolve: (approved: boolean) => { setPending(null); resolve(approved) },
-        }
+        return build((answer: A) => { setPending(null); resolve(answer) })
       })
     })
   }, [])
+
+  const requestConfirm = useCallback(
+    (summary: string) => requestCard<boolean>((settle) => ({ kind: 'confirm', summary, resolve: settle })),
+    [requestCard],
+  )
+
+  /**
+   * The preference card, through the SAME gate — deliberately not a second door into `pending`.
+   *
+   * A parallel implementation would be a second way to set the one card slot, and the gate above
+   * is the only thing stopping an agent stacking irreversible actions behind a dialog nobody has
+   * read. One `setPending` updater owns the decision for both shapes; these two only say which
+   * shape they want.
+   */
+  const requestPrompt = useCallback(
+    (summary: string, prompt: PromptField) =>
+      requestCard<PromptAnswer>((settle) => ({ kind: 'prompt', summary, prompt, resolve: settle })),
+    [requestCard],
+  )
 
   const report = useCallback((view: RegisteredToolView) => {
     setTools((prev) => {
@@ -350,10 +416,10 @@ export function WebMcpRegistryProvider({ children }: { children: React.ReactNode
 
   const value = useMemo<RegistryValue>(
     () => ({
-      tools, supported, pending, requestConfirm, activity, beginActivity, endActivity, openTrip, refreshOpenTrip, refreshSavedReels, adoptOrganizeJob,
+      tools, supported, pending, requestConfirm, requestPrompt, activity, beginActivity, endActivity, openTrip, refreshOpenTrip, refreshSavedReels, adoptOrganizeJob,
       report, withdraw, setSupported,
     }),
-    [tools, supported, pending, requestConfirm, activity, beginActivity, endActivity, report, withdraw],
+    [tools, supported, pending, requestConfirm, requestPrompt, activity, beginActivity, endActivity, report, withdraw],
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

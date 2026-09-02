@@ -22,78 +22,47 @@ phrasing is the wrong one in all four cases.
 
 ## The shape · 2:45
 
+The opening carries all three of the things this project is, in one motion: **Instagram Reels**,
+**travel planning**, and an **agent driving the page through WebMCP tools**. A judge who watches
+only the first twenty seconds should be able to say what Astrail does and how it is being
+operated.
+
 | | Beat | Runs | Words | Why it is here |
 |---|---|---|---|---|
-| 0:00–0:16 | **"Why is stop 3 here?"** | 16s | ≤26 | The strongest opening we have: agent, live map, evidence, in one action |
-| 0:16–0:28 | `What can I do here?` | 12s | ≤20 | It reads the page it is signed into |
-| 0:28–1:08 | **Plan it. It asks how you travel.** | 40s | ≤52 | The centrepiece: two tools cooperating, and consent |
-| 1:08–1:28 | `Add Tokyo Disneyland to day 2` | 20s | ≤30 | The itinerary is not a static output |
-| 1:28–1:50 | **It remembered** | 22s | ≤30 | The differentiator, without a second generation |
-| 1:50–2:38 | **How it is built** | 48s | ≤100 | The requirement: how we used WebMCP |
-| 2:38–2:45 | Close | 7s | 0 | URL and repo on screen |
+| 0:00–0:22 | **Reels to a routed trip, by asking** | 22s | ≤40 | The product, the premise and the tools in one action |
+| 0:22–0:38 | **"Why is stop 3 here?"** | 16s | ≤26 | Evidence: the caption quote behind a pin |
+| 0:38–0:58 | `Add Tokyo Disneyland to day 2` | 20s | ≤30 | The itinerary is not a static output |
+| 0:58–1:20 | **It remembered** | 22s | ≤30 | The differentiator, without a second generation |
+| 1:20–1:34 | `What can I do here?` | 14s | ≤20 | It reads the page it is signed into |
+| 1:34–2:22 | **How it is built** | 48s | ≤100 | The requirement: how we used WebMCP |
+| 2:22–2:30 | Close | 8s | 0 | URL and repo on screen |
 
 ---
 
-## 0:00 — Cold open · "Why is stop 3 here?"
+## 0:00 — The hook · Reels to a routed trip
 
-**No title card. No logo. Open on a finished trip, already signed in, agent panel visible.**
+**No title card. No logo. Already signed in, four Instagram Reels already saved, agent panel
+visible. Start on the library so the Reels are on screen from frame one.**
 
-Paste:
-
-```
-Why is stop 3 on this trip?
-```
-
-The map flies to the stop and its evidence opens: the **verbatim caption quote** from the Reel
-the place was found in, and a link back to that Reel.
-
-> Say: "That is an agent driving the page I am looking at. Every stop on this map says where it
-> came from, and this one is a quote from the reel it was found in."
-
-On-screen text: **17 WebMCP tools · no invented places**
-
-**Why this and not the reels beat.** Saving links into a library looks like ordinary browser
-automation. This shows the agent moving a real map and producing provenance in one action, which
-is the thing only an in-page tool can do.
-
-## 0:16 — It reads the page
+Paste, do not type:
 
 ```
-What can I do here?
+Use the reels I saved and plan me 2 days in Tokyo, 15 to 16 November 2026
 ```
 
-> Say: "It can read the page I am signed into. It knows what I have, and what I can do next."
+By 0:15 a viewer has seen the Reels, the tool calls firing, and Astrail asking a question back.
+That is the whole product and the whole mechanism, before anything is explained.
 
-Cut the moment the useful sentence lands.
+**The agent reads the library itself.** It calls `list_saved_reels`, takes the URLs out of your
+saved Reels, and hands them to `plan_trip_from_reels`. You never gave it a link.
 
-## 0:28 — The centrepiece · plan it, and it asks
+⚠️ Run this in a conversation where you have NOT pasted the URLs. If they are in the chat history
+the agent can hand them straight over without reading the library, and the claim above stops being
+true. Save the Reels in the app, or in an earlier conversation.
 
-Paste:
-
-```
-Save these reels: <url1> <url2> <url3> <url4>
-```
-
-Let the library fill, then paste:
-
-```
-Use the reels I just saved and plan me 2 days in Tokyo, 15 to 16 November 2026
-```
-
-**Two tools cooperate on one ordinary sentence** — the agent calls `list_saved_reels`, reads the
-URLs out of the library itself, and hands them to `plan_trip_from_reels`.
-
-⚠️ **Only if you run this in a FRESH conversation.** Nothing in the code forces that sequence; the
-tool description recommends it. Pasted 30 seconds earlier in the same chat, the four URLs are
-still in the agent's context and it can hand them straight to `plan_trip_from_reels` without ever
-reading the library — and a judge who pauses on your own first frame sees them sitting there.
-
-So: save the reels, then **start a new conversation** before asking it to plan. And do not say
-"you never typed a URL" over footage in which you did. Say what the take shows.
-
-**Then it stops and asks how you like to travel**, because Astrail has nothing remembered for this
-account and will not spend the trip allowance on a generic first draft. Nothing has been charged
-at this point and no approval card has appeared yet.
+**Then it asks how you like to travel**, because Astrail has nothing remembered for this account
+and will not spend the trip allowance on a generic first draft. Nothing has been charged and no
+approval card has appeared yet.
 
 Answer out loud:
 
@@ -101,45 +70,62 @@ Answer out loud:
 walkable days, good ramen, not too rushed
 ```
 
-The approval card renders that back to you word for word — the words the AGENT passed, which may
-be a paraphrase of what you said. If the card does not show your phrasing, decline and rephrase;
-nothing has been spent.
+The approval card renders that back, the words the AGENT passed, which may be a paraphrase of what
+you said. If it is not your phrasing, decline and rephrase; nothing has been spent. Approve.
 
-> Say: "It reads my library itself, so I never hand it a link. Then it asks how I travel, because
-> it has nothing saved for me yet, and it asks on the page rather than in chat."
+> Say: "Instagram reels I saved, into a real trip. An agent is doing this, reading my library
+> itself, and asking how I travel before it spends anything."
 
-**Then CUT.** On-screen text over the cut: **generation takes about two minutes · cut for time**
+On-screen text: **Instagram Reels to a routed trip · 17 WebMCP tools · nothing spent yet**
 
-Come back on the finished trip.
+**Then CUT.** On-screen over the cut: **generation takes about two minutes · cut for time**
 
-## 1:08 — Change it by saying so
+Come back on the finished trip: map, numbered pins, route.
+
+## 0:22 — Why is stop 3 here?
+
+Click or ask. Pasting keeps it on the tools:
+
+```
+Why is stop 3 on this trip?
+```
+
+The map flies to the stop and its evidence opens: the **verbatim caption quote** from the Reel the
+place was found in, and a link back to that Reel.
+
+> Say: "Every stop says where it came from. This one is a quote from the caption of the reel it
+> was found in. Astrail's own suggestions say so, and so do the ones I asked for."
+
+On-screen text: **no invented places**
+
+## 0:38 — Change it by saying so
 
 ```
 Add Tokyo Disneyland to day 2
 ```
 
-> Say: "The trip is not a static output. It asks me on the page first, then finds the place
-> itself and redraws the route. The day summaries rewrite themselves to match."
+> Say: "The trip is not a static output. It asks me on the page first, then finds the place itself
+> and redraws the route. The day summaries rewrite themselves to match."
 
 ⚠️ Order matters and the card says so: it appears BEFORE the lookup and reads "It will be looked
 up as…", future tense. Do not narrate the geocode as already done.
 
-Approve, let the map redraw, cut once the summaries update. Speed this up 1.5x if it drags.
+Approve, let the map redraw, cut once the summaries update. Speed up 1.5x if it drags.
 
-## 1:28 — It remembered
+## 0:58 — It remembered
 
-**New ChatGPT conversation**, so nothing carries over from the last one.
+**New ChatGPT conversation**, so nothing carries over.
 
-⚠️ Save two Osaka reels into the library BEFORE this take. Asking it to plan Osaka "from my saved
-reels" when the library holds only Tokyo reels is an incoherent request on camera.
+⚠️ Save two Osaka Reels into the library BEFORE this take. Asking it to plan Osaka "from my saved
+reels" when the library holds only Tokyo Reels is an incoherent request on camera.
 
-Paste, then **cut straight to the populated card** — do not play the tool calls again:
+Paste, then **cut straight to the populated card**. Do not play the tool calls again:
 
 ```
 Use my saved reels and plan me 2 days in Osaka, 20 to 21 December 2026
 ```
 
-The card names what Astrail remembers, and offers a field to say otherwise:
+The card names what Astrail remembers and offers a field to say otherwise:
 
 ```
 Plan a trip from 2 reels
@@ -155,20 +141,33 @@ Different this trip? (optional)  [ ______________________ ]
 
 ⚠️ **Do not read that middle line off this page.** The facts come back as mem0's OWN prose, not
 your words: the backend stores `Travel preferences: <what you said>` and lets mem0 infer, so it
-may come back rephrased or split (`pipeline/preferences.py:102`). On the account we tested it
-returned "User prefers travel days that are walkable, feature good ramen, and are not too
-rushed." **Screenshot the real card in rehearsal and narrate what it actually says.**
+may come back rephrased. On the account we tested it returned "User prefers travel days that are
+walkable, feature good ramen, and are not too rushed." **Screenshot the real card in rehearsal and
+narrate what it actually says.**
 
 "Astrail remembers: …" is the HOME SCREEN line, not the card. Two different surfaces.
 
-> Say: "New trip, new city, and I said nothing about how I travel. It remembered from the last
+> Say: "New trip, new city, and I said nothing about how I travel. It remembered from the first
 > one, and it still asks."
 
 **Cut here.** The card is the payoff. Do not run a second generation.
 
 On-screen text: **remembered from trip 1 · still asks**
 
-## 1:50 — How it is built · ~100 words, 48s
+## 1:20 — It reads the page it is on
+
+```
+What can I do here?
+```
+
+> Say: "And it can read the page I am signed into. It knows what I have, and what I can do next."
+
+Cut the moment the useful sentence lands. **This is the first beat to drop if the edit runs long.**
+
+## 1:34 — How it is built · 87 words, 48s
+
+Read this over whatever visual you make. Every number is verified, and the counts are on screen so
+the narration does not have to carry them.
 
 > Astrail registers seventeen tools with `document.modelContext.registerTool`, and what matters is
 > where they run. `execute` runs inside the page.
@@ -181,11 +180,14 @@ On-screen text: **remembered from trip 1 · still asks**
 >
 > And the agent can now read what Astrail remembers, and offer it while planning.
 
-On-screen text through this section, so the narration does not have to carry the numbers:
+On-screen text through this section:
 **17 tools · 14 global · 3 trip-scoped · 6 with no account**
 **execute() runs in the page · edits stop for approval**
 
-## 2:38 — Close
+⚠️ Read at 120 to 140 words per minute. If it feels rushed you are over budget, and over 3:00 is
+a hard fail.
+
+## 2:22 — Close
 
 On screen, no narration:
 
@@ -252,13 +254,13 @@ This is the one prerequisite that cannot be recovered mid-take.
 
 Pre-agreed, so it is not a panic decision at 3:05.
 
-1. The 0:16 "what can I do here" beat. It shows introspection but little visible product value.
-2. Trim the architecture narration further and push more onto on-screen text.
+1. **The 1:20 "what can I do here" beat.** It shows introspection but little visible product
+   value, and it is deliberately placed last among the demo beats so it can go cleanly.
+2. Trim the architecture narration and push more onto on-screen text.
 3. Shorten the close to two seconds.
 4. Cut the add-place beat to approval, hard cut, changed map.
 
-**Never cut:** the completed plan, the live map mutation, the evidence popup, or the memory card.
-Those four are the product.
+**Never cut:** the hook, the evidence popup, or the memory card. Those three are the submission.
 
 ## What we deliberately cut
 

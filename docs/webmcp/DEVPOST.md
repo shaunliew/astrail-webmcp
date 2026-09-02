@@ -1,10 +1,10 @@
-# Devpost submission — paste-ready
+# Devpost submission — paste-ready, field by field
 
-> Start the draft NOW even with blanks. Devpost's own advice: a saved draft costs nothing and
-> shows you which fields are still missing. A draft is **not** a submission — you must see the
-> green button at the end.
+> Rewritten 2026-09-02 to match the actual submission form. Every claim here was checked against
+> the code; the ones that were not survived an audit and were corrected. Do not paste anything
+> from an older draft.
 >
-> Long-form source: `SUBMISSION.md`. This file is the condensed version that goes in the form.
+> **Deadline: Thu 3 Sep, 1:00 PM PT.** After that nothing can be edited.
 
 ---
 
@@ -14,172 +14,293 @@
 Astrail
 ```
 
-## Elevator pitch
+Not AI-generated, and the guidance calls that out specifically. Keep it.
+
+---
+
+## Elevator pitch · 200 char limit
 
 ```
-Turn the Instagram Reels you saved into a routed, evidence-backed itinerary — then restructure it by talking, while the map redraws in front of you.
+Plan a trip by talking. An agent reads your saved Instagram Reels, builds a routed itinerary you can edit out loud, and remembers how you travel without ever deciding for you.
 ```
+
+172 characters. No em dashes.
+
+---
 
 ## Built with
 
 ```
-webmcp, typescript, nextjs, react, tailwind, mapbox, python, fastapi, openai, supabase, postgresql, pgvector, apify, vercel, render
+webmcp · document.modelcontext · typescript · react · next.js · fastapi · python · supabase ·
+postgresql · mapbox-gl · openai-agents-sdk · gpt-5.5 · mem0 · apify · vercel · render · tailwindcss
 ```
+
+---
 
 ## About the project
 
-*(paste as-is; it answers Devpost's four questions in order, but reads as a case rather than a
-feature tour — which is what their halfway update warned about)*
+> Devpost asks for inspiration, what you learned, how you built it, and the challenges. The four
+> judged questions are woven through rather than answered as a checklist, because that reads like
+> a form and judges say they can tell.
 
-```
-## The problem
+```markdown
+## Inspiration
 
-People collect travel inspiration and never use it. You save reels for months, and the trip never
-gets planned — because going from a folder of clips to an actual route means researching every
-place again across a dozen sources and assembling the days by hand.
+We kept hearing the same thing from people testing Astrail: *"I can't tell where to click, how to
+choose the reels, or how to start."*
 
-We heard the same thing from our own testers, in almost these words: "It's unclear how to navigate
-the website — where to click, how to choose the reels, how to start generating a trip."
+That is not a pipeline problem. Astrail could already turn saved Instagram Reels into a routed,
+evidence-backed itinerary. The problem was that the interface to it was a puzzle, and we had been
+trying to solve it the usual way, with better affordances and clearer copy.
 
-That feedback is why this entry exists. We had already built the pipeline. What we had not solved
-was the interface to it.
+WebMCP offered a different answer: stop making people find the button, and let them say what they
+want instead.
 
-## Why WebMCP fits this, specifically
+## What it does
 
-A backend MCP server can return JSON describing a trip. It cannot move the map the traveller is
-looking at.
+Astrail turns the travel inspiration you already saved into a trip you can actually take.
 
-That is the whole argument, and Astrail is built so it is literally true. The tools run inside the
-page, so they call the same state setters a click calls, on the same Mapbox instance already on
-screen. The agent doesn't describe a change and ask you to reproduce it — the camera flies, the pin
-grows, the day chip turns brass. Same map, same code path, same event.
+Paste a few Instagram Reel links and it scrapes them, extracts the real places, verifies each one
+exists, routes them into days, checks the weather and finds somewhere to eat. Every stop on the
+map says where it came from: the verbatim caption quote from the Reel it was found in, Astrail's
+own reasoning where it suggested one, or a plain note where you asked for it yourself.
 
-They also inherit context instead of rebuilding it: the signed-in session, the trip in memory, the
-camera you're actually looking at, whether a generation is still running. A remote server would
-keep a second, staler copy of all of it.
+With WebMCP, an agent does all of that by operating the page you are looking at. You say "use the
+reels I just saved and plan me two days in Tokyo" and it reads your library itself, starts the
+generation, narrates each stage, and hands you back a map. Then you say "add Tokyo Disneyland to
+day 2" and it does, asking you on the page first, redrawing the route, and rewriting the day
+summaries so the prose matches the trip you now have.
 
-And the agent's vocabulary is yours. Tools address stops by **map-pin number** — the numbers you can
-see. "Move stop 7 to day 3" means the same thing to both parties. No UUID ever enters the
-conversation.
+And it remembers how you travel. Say it once, and the next trip you plan without stating anything
+recalls it, names it back to you on the approval card, and still offers you a field to say
+otherwise. A remembered preference is a default, not a mandate.
 
-## What this changes for the person using it
+## Why WebMCP fits this specifically
 
-The fix for "I can't tell where to click" turned out not to be better buttons. It was removing the
-need to find them. `get_app_state` lets the agent read the live page and answer "what can I do
-here?" in the app's own terms — what you have, what's next, what's blocked.
+Astrail's value is an evidence-backed itinerary on a live 3D map. A backend MCP server could
+return JSON about a trip. Only WebMCP can move the map the human is looking at.
 
-Then you talk. Save these reels. Plan two days from them. Add a stop. Move that one to day 3. The
-page moves as you speak.
+Because `execute()` runs inside the page, a tool already holds the loaded trip, the signed-in
+session, and the same React state setters a click uses. When the agent shows you day 2, it calls
+the page's own `showDay`, so the camera flies, the pin grows and the day chip lights up exactly as
+if you had clicked. There is no separate agent rendering path to keep in sync, because there is no
+separate path.
+
+That also means the agent inherits the security model instead of needing its own. No token ever
+crosses the tool boundary. There is no arbitrary-URL fetch, no raw SQL tool, and no
+account-deletion tool at any price.
 
 ## What people and agents can now do together
 
-Turn scattered Instagram Reels into a routed, evidence-backed itinerary — and then **restructure it
-conversationally while watching the map redraw**, with every agent action attributed and every
-change to your trip stopping for approval on the page, not in chat.
+Turn a folder of saved Reels into a routed, evidence-backed itinerary, then restructure it
+conversationally while watching the map redraw, with every agent action attributed and every
+change to your trip stopping for approval on the page rather than a question in chat.
 
-Before, the itinerary was frozen: there was no edit path at any layer. You pasted five URLs by
-hand, waited, and accepted whatever came out.
+Before, the itinerary was frozen. There was no edit path at any layer: no endpoint, no frontend
+mutation, and row-level security was SELECT-only. You pasted five URLs by hand, waited, and
+accepted what came out.
 
-Every stop says where it came from. A stop lifted from a Reel carries the verbatim caption quote
-and a link back to it. One Astrail suggested carries its reasoning. One you asked for says so.
-Three provenances, one label on every pin — nothing on the map is unattributed, and the system
-never dresses a suggestion up as a quote.
+The part we did not expect: memory only became reachable by an agent because of this work. The
+planning tool always accepted a preferences argument, but nothing told an agent the field outlived
+the trip, so it went unset, and an account planned entirely through an agent stayed permanently
+empty. Now the tool asks how you travel when it has nothing to go on, stopping before it spends
+anything to do it, and a second tool lets the agent read back what Astrail holds.
 
-And it remembers how you travel. Say your preferences once — walkable days, ramen, nothing too
-rushed — and a later trip planned **without** stating them tries to recall that and use it. The recall is
-deliberate rather than ambient: it runs only when you leave preferences blank, so whatever you say
-now always beats whatever it remembers. Every remembered fact is listed, sourced, and deletable
-under Settings, and the generation says on screen when it used them.
+## How we built it
 
-The memory engine pre-dates this hackathon; what is new is the agent's access to it. The planning
-tool always accepted a preferences argument, but nothing told an agent the field outlived the
-trip, so it went unset — and unset is both the condition that triggers recall and the condition
-that saves nothing, which left agent-planned accounts empty. Now, when nothing is stated and
-nothing is remembered, the tool stops before spending anything and asks how you travel; a second
-tool lets the agent read back what Astrail holds. The approval card says when saved preferences
-will be attempted, so the choice is visible at the moment you decide to spend. Attempted, not
-guaranteed: recall is a semantic search that can miss, and the card does not promise what it
-cannot.
+Seventeen tools registered with `document.modelContext.registerTool()`, in two scopes. Fourteen
+live in the signed-in app shell. Three more register only while a trip map is mounted and
+unregister when you navigate away, so the tool list a judge sees in the address bar grows as the
+app's state does.
 
-## How we implemented WebMCP
+Three decisions shaped the rest:
 
-Seventeen tools registered with `document.modelContext.registerTool()` — fourteen across the app,
-three more the moment a trip is open, six of which work with no account at all.
+**Pin numbers, never UUIDs.** Tools address stops the way you do: "move stop 7 to day 3". The
+frontend resolves that to a real row, so no identifier a human cannot read ever crosses the
+boundary, and 18 UUIDs would have eaten 43% of the output budget anyway.
 
-Page-scoped tools unregister on navigation, so the catalogue reflects the app's state: open a trip
-and it grows from fourteen to seventeen. Reads resolve in-page from the loaded trip with no network
-call at all. Writes go to owner-checked FastAPI endpoints, and every tool that changes a trip
-renders an approval card **on the page** and waits for a click before it mutates anything.
+**A 60 to 180 second generation behind a tool call.** `plan_trip_from_reels` returns in about a
+second with a trip id and a next step. The EventSource lives in a provider beside the map, not
+inside `execute`, so the same stream drives both the agent's narration and the on-screen wait, and
+they cannot disagree. `get_trip_progress` self-throttles: called again too soon, it awaits the next
+real stage event instead of returning nothing.
 
-The generation is the hard part — 60 to 180 seconds behind a tool call. The EventSource lives in a
-provider beside the map rather than inside `execute()`, so the tool returns in about a second while
-the same stream drives both the agent's narration and the on-screen scene. They cannot disagree.
+**Reel captions are attacker-controlled text.** Every tool whose output can carry one is annotated
+`untrustedContentHint`, and the audit is machine-checked rather than asserted.
 
-Every tool whose output can contain Reel-caption text carries `untrustedContentHint` — that
-annotation is auditable here rather than decorative, because caption text is genuinely
-attacker-controlled. No tool exposes the access token, fetches an arbitrary URL, or touches account
-lifecycle.
+Stack: Next.js 15, React 19 and Mapbox GL on Vercel; FastAPI on Render with server-sent events;
+Supabase for auth, Postgres and row-level security; the OpenAI Agents SDK for the pipeline; mem0
+for preference memory; Apify for Reel scraping.
 
-## Honest limits
+## Challenges
 
-Hotel search is switched off in this build. There is no undo — Astrail has no inverse to offer, and
-says so rather than pretending. Which tool an agent reaches for is ChatGPT's decision, not something
-a site can control. Remembered preferences are soft guidance into restaurant
-selection and the day summaries; they never restructure the route, and memory predates this
-hackathon — it is listed as pre-existing in WHATS-NEW.md.
+**Making an agent's action indistinguishable from your own.** Early versions had the agent call an
+API and then hope the page caught up. The fix was to route every tool through the setters a click
+already uses, and to make a mutation not resolve until the UI reflects it. When the sentence "done,
+I moved it" reaches you, the map has already moved.
+
+**Telling the truth on every surface.** This was harder than the features. A provenance chip
+labelled every preferences row "Memory" whether memory had run or not. The activity rail announced
+a read-only memory lookup as an irreversible change. An approval button promised an outcome the
+backend's own semantic search could veto. Each of those was caught by review rather than by tests,
+because they were claims rather than behaviour, and a passing test suite says nothing about whether
+a sentence is true.
+
+**A silent failure that looked like a broken integration.** A trailing slash pasted into an
+environment variable turned every backend call into a 404 while the page loaded fine and the tools
+still registered. The same character in the CORS origin rejected every real browser request. The
+code now strips them, because a URL a human pastes will sometimes have one.
+
+## What we learned
+
+Tests prove behaviour, not honesty. Almost everything that went wrong in the last week was a
+sentence: a label, a button, a comment claiming a guarantee the code did not have. The fix was
+cross-model review, and it found something real on every single pass.
+
+Also: jsdom has no cascade and no layout, so three styling defects shipped past 1800 passing tests.
+Coverage that cannot see a failure mode is not coverage, and saying so is better than implying
+otherwise.
+
+## What's next
+
+Per-stage checkpointing, so a restart mid-generation resumes rather than re-running. Destination-
+scoped recall, so remembering that you like ramen does not follow you somewhere it makes no sense.
+And hotel search back on, once there is a provider that answers.
 ```
 
-## Try it out
+---
+
+## Try it out links
 
 ```
-Repo:  https://github.com/shaunliew/astrail-webmcp
-Live:  <fill after deploy>
+https://astrail-webmcp.vercel.app
+https://github.com/shaunliew/astrail-webmcp
 ```
 
-## Video
+---
+
+## Video demo link
 
 ```
-<public YouTube URL — public, under 3 minutes, with audio>
+<paste the YouTube URL once uploaded — must be PUBLIC, not unlisted-only if the rules say public>
 ```
 
-## Testing instructions + credentials — PRIVATE FIELD
+---
 
-*(only Devpost and judges see this; the credentials are deliberately NOT on the landing page or in
-the repo, because `NEXT_PUBLIC_*` is inlined into the client bundle)*
+## App Status
+
+**Existing.**
+
+### "If Existing, explain what you updated during the submission period"
 
 ```
-Open the live URL in the ChatGPT desktop app's BUILT-IN browser (not Safari or Chrome).
-Model: GPT-5.6 Sol or Terra — Luna has WebMCP disabled.
-Settings → Browser → Permissions → Enable site tools must be ON.
-Look for the Site tools arrow in the address bar.
+Astrail existed before 25 August as a manual trip planner: paste Reel links into a form, wait,
+receive an itinerary you could read but not change.
 
-Sign in:  <email>  /  <password>
+Everything in frontend/lib/webmcp/ is new, written on or after 26 August. That is the seventeen
+WebMCP tools, the tool registry and its contract tests, the on-page approval cards, and the agent
+activity rail. Two owner-checked FastAPI edit endpoints are new, because before this the itinerary
+was immutable at every layer: no endpoint, no frontend mutation, RLS SELECT-only.
 
-No account needed to look around: /app/trip/demo is a finished sample trip with six
-working tools, open to anyone.
+The memory engine (mem0) is NOT new; it was built 7 July to 2 August. What is new is that an agent
+can reach it: a tool to read back what Astrail remembers, an approval card that names those
+preferences and lets you override them per trip, and a planning tool that asks how you travel when
+it has nothing stored. Before this, the agent path could not populate memory in practice, so an
+account planned entirely by agent stayed empty.
 
-Try, in order:
-  What can I do here?
-  Save these reels: <any 1-5 instagram.com/reel/ links>
-  Use the reels I just saved and plan me 2 days in Tokyo, 15 to 16 November
-  Add Tokyo Tower to day 1
-  Why is stop 1 on this trip?
-
-Generation takes 60-180s and is real — it scrapes, extracts, de-duplicates, routes and
-narrates. Ask "how's it going?" and the agent will narrate the actual stages.
-
-If the agent starts clicking the page instead of using Astrail's tools, ask it to use
-Astrail's own tools and repeat — which tool it picks is ChatGPT's decision, not the site's.
+The full commit-by-commit split is in WHATS-NEW.md at the repo root of docs/webmcp/.
 ```
+
+---
+
+## Live URL
+
+```
+https://astrail-webmcp.vercel.app
+```
+
+---
+
+## Testing instructions + credentials — PRIVATE FIELD, judges only
+
+```
+Open this URL in the ChatGPT desktop app's BUILT-IN browser (not Safari or Chrome).
+Use GPT-5.6 Sol or Terra. Luna has WebMCP disabled.
+Turn on Settings > Browser > Permissions > Enable site tools.
+The Site tools arrow appears in the address bar; the WebMCP chip is bottom-right on the page.
+
+NO ACCOUNT NEEDED to see a finished trip: https://astrail-webmcp.vercel.app/app/trip/demo
+That page opens signed out with six working tools. Try "why is stop 3 on this trip?"
+
+To sign in and use all seventeen:
+  Email:    <PASTE THE TEST ACCOUNT EMAIL>
+  Password: <PASTE THE TEST ACCOUNT PASSWORD>
+
+Prompts worth trying, signed in:
+  "What can I do here?"
+  "Save these reels: <any 1-5 Instagram Reel URLs>"
+  "Use the reels I just saved and plan me 2 days in Tokyo, 15 to 16 November 2026"
+  "Add Tokyo Disneyland to day 2"
+
+A generation takes 60 to 180 seconds and spends real API credit, so the account has a daily cap.
+The sample trail above costs nothing and needs no account.
+
+If a prompt does not reach the tools, ask the agent to use Astrail's own tools and repeat it.
+Which tool an agent reaches for is ChatGPT's decision, not something a site can control.
+```
+
+⚠️ **The credentials go ONLY in this field.** They are not in the repo, not on the landing page,
+and not in any `NEXT_PUBLIC_*` variable — anything with that prefix is inlined into the public
+JavaScript bundle.
+
+---
+
+## Public code repo
+
+```
+https://github.com/shaunliew/astrail-webmcp
+```
+
+MIT, detected by GitHub, visible in the About section. Verify in an incognito window before
+submitting.
+
+---
+
+## Which agents or clients did you test your WebMCP tools with?
+
+```
+ChatGPT desktop app's built-in browser (GPT-5.6 Sol and Terra). Also Chrome 149+ with
+chrome://flags/#enable-webmcp-testing for development.
+```
+
+---
+
+## Which AI tools have you leveraged?
+
+```
+Claude Code (Anthropic) for implementation and review, and OpenAI Codex as a cross-model
+reviewer on every batch. The Codex passes caught real defects the Claude reviews missed,
+including a read-only tool being recorded as an irreversible write on the activity rail.
+```
+
+---
+
+## Fields only Shaun can answer
+
+- **Submitter type:** Team of Individuals
+- **Country of residence:** Malaysia (and Zhi Hao's, if he is added)
+- **Level of learning derived** — your call
+- **AI value for your career** — your call
+- **Teammates:** add Zhi Hao and confirm he ACCEPTS the invitation. This is irreversible after the
+  deadline.
 
 ---
 
 ## Before you hit submit
 
-- [ ] Live URL opened in a **fresh incognito window** on another machine — a cached login makes a
-      working project look broken
-- [ ] Repo public + licence visible in the About box **while logged out** ✅ verified 2026-09-01
-- [ ] Video **public** on YouTube (not unlisted), under 3:00, **with audio**
-- [ ] Teammates invited **and accepted** — cannot be added after the deadline
-- [ ] Draft actually submitted — a saved draft is not a submission
-- [ ] `WHATS-NEW.md` linked, showing dated commits for work after 25 Aug (eligibility)
+- [ ] Video uploaded, **public**, under 3:00, with audio
+- [ ] Repo checked in an **incognito window** — public, MIT visible in About
+- [ ] Live URL opens in ChatGPT's built-in browser and the Site tools arrow lists the tools
+- [ ] Credentials pasted into the private field, and nowhere else
+- [ ] Teammates added AND accepted
+- [ ] Not saved as a draft

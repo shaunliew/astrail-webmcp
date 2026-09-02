@@ -25,7 +25,7 @@ export default function Spark() {
         >
           <p className="story-eyebrow text-[color:var(--story-teal-ink)]">The spark</p>
           <h2 className="story-h text-[color:var(--ink-900)]">
-            Every place you love &mdash; saved as a star.
+            Every place you love, saved as a star.
           </h2>
           <p className="story-caption text-[color:var(--ink-600)]">
             One tap. One star.

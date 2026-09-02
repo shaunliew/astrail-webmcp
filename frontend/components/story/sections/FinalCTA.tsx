@@ -39,10 +39,10 @@ export default function FinalCTA() {
           Ask it what you can do here.
         </h2>
         <p className="story-sub max-w-[32em] text-[color:var(--ink-600)]">
-          Not this page &mdash; the app. Open Astrail in ChatGPT&rsquo;s built-in
+          Not this page. The app. Open Astrail in ChatGPT&rsquo;s built-in
           browser and the agent can read what you already have, save the Reels
           you paste, build the trip while narrating each stage, move a stop to
-          another day, and fly the map to it &mdash; that last one through the
+          another day, and fly the map to it, that last one through the
           very setters your own click runs, so its camera move and yours are the
           same event, on the same map. The sample trail opens with no account.
           Moving, adding, removing or rescheduling a stop stops for a card on
@@ -59,7 +59,7 @@ export default function FinalCTA() {
         </div>
 
         <p className="mt-5 text-[13px] text-[color:var(--ink-400)]">
-          A challenge build &mdash; not a finished product, and not something you
+          A challenge build, not a finished product, and not something you
           can sign up for. Expect rough edges.
         </p>
 

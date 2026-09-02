@@ -151,7 +151,7 @@ export default function StoryRevealMap({ className }: { className?: string }) {
       ref={containerRef}
       className={className}
       role="img"
-      aria-label="Live Astrail itinerary map — Tokyo demo trip"
+      aria-label="Live Astrail itinerary map, Tokyo demo trip"
     />
   )
 }

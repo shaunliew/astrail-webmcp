@@ -41,7 +41,7 @@ export default function DemoVideoSlot() {
           ) : (
             <div className="flex aspect-video items-center justify-center bg-[color:var(--paper-2)]">
               <p className="px-6 font-mono text-xs uppercase tracking-[0.14em] text-[color:var(--ink-400)]">
-                demo recording lands here &mdash; Zhi Hao is filming
+                demo recording lands here &middot; Zhi Hao is filming
               </p>
             </div>
           )}

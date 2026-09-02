@@ -73,13 +73,13 @@ export default function LandingPage() {
               <li className="flex gap-3">
                 <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
                 <span className="min-w-0">
-                  The map was rebuilt to be worth driving: every stop that came from a Reel carries <b className="text-[color:var(--ink-900)]">that Reel&apos;s own cover frame</b> in its pin, and links back to the Reel itself &mdash; never to a scraped directory page.
+                  The map was rebuilt to be worth driving: every stop that came from a Reel carries <b className="text-[color:var(--ink-900)]">that Reel&apos;s own cover frame</b> in its pin, and links back to the Reel itself, never to a scraped directory page.
                 </span>
               </li>
               <li className="flex gap-3">
                 <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
                 <span className="min-w-0">
-                  Planning a trip and every edit to a finished one stop for approval on the page first &mdash; including the paid coordinate lookup behind a stop you asked for &mdash; and the edit endpoints behind them are owner-checked, flag-gated and status-guarded. Saving a Reel is the one action that spends with no card in front of it: bounded by a daily limit, and skipped for a Reel whose places are already extracted.
+                  Planning a trip and every edit to a finished one stop for approval on the page first, including the paid coordinate lookup behind a stop you asked for. The edit endpoints behind them are owner-checked, flag-gated and status-guarded. Saving a Reel is the one action that spends with no card in front of it: bounded by a daily limit, and skipped for a Reel whose places are already extracted.
                 </span>
               </li>
               <li className="flex gap-3">

@@ -24,7 +24,7 @@ export default function ColdOpen() {
         </h1>
         <p className="story-sub max-w-[29em] text-[color:var(--ink-600)]">
           Astrail turns scattered travel inspiration into a real itinerary on a
-          map &mdash; then guides you from planning toward the whole trip.
+          map, then guides you from planning toward the whole trip.
         </p>
         <div className="mt-8 flex flex-wrap items-center gap-4">
           <Link href="/sign-in" className="story-btn story-btn--primary">

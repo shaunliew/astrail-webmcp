@@ -60,7 +60,7 @@ export default function CTA() {
         </div>
 
         <p className="mt-10 text-[13px] uppercase tracking-[0.16em] text-[color:var(--ink-400)]">
-          Coming in the full launch &mdash; Compare &middot; Stay &middot; Book
+          Coming in the full launch &middot; Compare &middot; Stay &middot; Book
         </p>
       </div>
     </section>

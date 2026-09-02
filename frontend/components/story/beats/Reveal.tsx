@@ -81,7 +81,7 @@ export default function Reveal() {
             A real itinerary on a real map. Not another list.
           </h2>
           <p className="story-sub text-[color:var(--starlight-70)]">
-            Every stop placed, numbered, and connected &mdash; with the evidence
+            Every stop placed, numbered, and connected, with the evidence
             it came from.
           </p>
         </motion.div>

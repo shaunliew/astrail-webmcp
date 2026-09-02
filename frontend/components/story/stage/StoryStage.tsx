@@ -64,13 +64,12 @@ export default function StoryStage() {
             </a>
           </div>
           <p className="story-sub mt-7 text-[15px] text-[color:var(--ink-600)]">
-            Not this page &mdash; this one is just the pitch. Open{' '}
+            Not this page. This one is just the pitch. Open{' '}
             <b className="font-bold text-[color:var(--ink-900)]">the app</b> in
             ChatGPT&rsquo;s built-in browser and ask{' '}
             <b className="font-bold text-[color:var(--ink-900)]">
               &ldquo;what can I do here?&rdquo;
-            </b>{' '}
-            &mdash; fourteen tools answer once you are signed in, seventeen once a
+            </b>. Fourteen tools answer once you are signed in, seventeen once a
             trip is open, and six on the sample trail up top, which needs no
             account.
           </p>

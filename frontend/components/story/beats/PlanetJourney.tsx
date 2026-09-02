@@ -109,7 +109,7 @@ export default function PlanetJourney() {
           style={{ opacity: headOpacity }}
         >
           <h2 className="story-h text-[color:var(--starlight)] [font-size:clamp(1.9rem,3.6vw,3rem)]">
-            &mdash; and connects them into a route that works.
+            and connects them into a route that works.
           </h2>
           <motion.p
             className="story-sub text-[color:var(--starlight-70)]"

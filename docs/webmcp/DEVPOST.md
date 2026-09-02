@@ -106,7 +106,25 @@ Tests prove behaviour, not honesty. Nearly everything that went wrong last week 
 
 ## What's next
 
-Destination-scoped recall, so liking ramen does not follow you somewhere it makes no sense. Per-stage checkpointing, so a restart mid-generation resumes rather than starting over. And hotel search back on: it is off in this build and the page says so, because Travala's MCP moved to OAuth mid-challenge and now 401s every call.
+**Trips with more than one person in them.** Nobody plans a holiday alone, and right now Astrail
+assumes you do. A trip should hold several people who can all see it and all change it, each with
+their own agent working on the same map. That is the version of this challenge's premise we are
+actually interested in: not one person and one agent, but a group and theirs, editing one shared
+thing without standing on each other. Everything already built points that way, because an agent
+edit and a human edit are the same event, so a second person is not a new code path.
+
+**Memory that watches instead of only listening.** Today Astrail remembers what you tell it. The
+trips you accept say more: which neighbourhoods you actually keep, how far you will really walk,
+whether you fill a day or leave it open. Learning style from the trips you kept, rather than only
+from the sentence you typed once, is the difference between an app that stores a preference and
+one that knows you.
+
+**Flights, so it is the whole trip.** An itinerary that starts when you land is half a plan. This
+is search and comparison, not booking; there are no payments anywhere in Astrail and there will
+not be until it can be done properly.
+
+And hotel search back on. It is off in this build and the page says so rather than showing an
+empty panel, because Travala's MCP moved to OAuth mid-challenge and now 401s every call.
 ```
 
 ## Try it out links

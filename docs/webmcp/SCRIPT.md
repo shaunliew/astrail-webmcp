@@ -80,8 +80,16 @@ Let the library fill, then paste:
 Use the reels I just saved and plan me 2 days in Tokyo, 15 to 16 November 2026
 ```
 
-**Two tools cooperate on one ordinary sentence.** The agent calls `list_saved_reels`, reads the
-URLs out of the library itself, and hands them to `plan_trip_from_reels`. You never typed a URL.
+**Two tools cooperate on one ordinary sentence** — the agent calls `list_saved_reels`, reads the
+URLs out of the library itself, and hands them to `plan_trip_from_reels`.
+
+⚠️ **Only if you run this in a FRESH conversation.** Nothing in the code forces that sequence; the
+tool description recommends it. Pasted 30 seconds earlier in the same chat, the four URLs are
+still in the agent's context and it can hand them straight to `plan_trip_from_reels` without ever
+reading the library — and a judge who pauses on your own first frame sees them sitting there.
+
+So: save the reels, then **start a new conversation** before asking it to plan. And do not say
+"you never typed a URL" over footage in which you did. Say what the take shows.
 
 **Then it stops and asks how you like to travel**, because Astrail has nothing remembered for this
 account and will not spend the trip allowance on a generic first draft. Nothing has been charged
@@ -93,7 +101,9 @@ Answer out loud:
 walkable days, good ramen, not too rushed
 ```
 
-The approval card renders that back to you word for word. Approve.
+The approval card renders that back to you word for word — the words the AGENT passed, which may
+be a paraphrase of what you said. If the card does not show your phrasing, decline and rephrase;
+nothing has been spent.
 
 > Say: "It reads my library itself, so I never hand it a link. Then it asks how I travel, because
 > it has nothing saved for me yet, and it asks on the page rather than in chat."
@@ -108,8 +118,11 @@ Come back on the finished trip.
 Add Tokyo Disneyland to day 2
 ```
 
-> Say: "The trip is not a static output. Astrail geocodes the place itself, asks me on the page,
-> and the route redraws. The day summaries rewrite themselves to match."
+> Say: "The trip is not a static output. It asks me on the page first, then finds the place
+> itself and redraws the route. The day summaries rewrite themselves to match."
+
+⚠️ Order matters and the card says so: it appears BEFORE the lookup and reads "It will be looked
+up as…", future tense. Do not narrate the geocode as already done.
 
 Approve, let the map redraw, cut once the summaries update. Speed this up 1.5x if it drags.
 
@@ -129,10 +142,24 @@ Use my saved reels and plan me 2 days in Osaka, 20 to 21 December 2026
 The card names what Astrail remembers, and offers a field to say otherwise:
 
 ```
-Astrail remembers: walkable days · good ramen · not too rushed
-[ different this trip? (optional) ______________ ]
+Plan a trip from 2 reels
+Dates: 2026-12-20 to 2026-12-21
+No preferences given — Astrail will try to recall what it remembers
+about how you travel: <what mem0 actually stored>
+This uses your trip allowance.
+
+Different this trip? (optional)  [ ______________________ ]
+
 [ Try what it remembers ]   [ Not now ]
 ```
+
+⚠️ **Do not read that middle line off this page.** The facts come back as mem0's OWN prose, not
+your words: the backend stores `Travel preferences: <what you said>` and lets mem0 infer, so it
+may come back rephrased or split (`pipeline/preferences.py:102`). On the account we tested it
+returned "User prefers travel days that are walkable, feature good ramen, and are not too
+rushed." **Screenshot the real card in rehearsal and narrate what it actually says.**
+
+"Astrail remembers: …" is the HOME SCREEN line, not the card. Two different surfaces.
 
 > Say: "New trip, new city, and I said nothing about how I travel. It remembered from the last
 > one, and it still asks."
@@ -203,10 +230,19 @@ without spending narration:
 
 ## Before take one
 
-**Clear mem0.** Both memory beats depend on it: the agent asks at 0:28 only when memory is
-definitely empty, and the 1:28 card has nothing to name unless trip 1 wrote something first.
-There is no in-app reset — use mem0's dashboard, then confirm `/app/settings` reads "Astrail
-hasn't remembered anything yet".
+**Clear mem0, and check it is REACHABLE.** Both memory beats depend on it: the agent asks at 0:28
+only when memory is definitely empty, and the 1:28 card has nothing to name unless trip 1 wrote
+something first. There is no in-app reset — use mem0's dashboard, then confirm `/app/settings`
+reads "Astrail hasn't remembered anything yet".
+
+Empty is not enough. A mem0 timeout or outage reads as UNKNOWN, not as empty, and unknown
+deliberately proceeds — so the agent silently skips the question and plans anyway. That is
+correct behaviour (memory must never block a trip) and it is indistinguishable on camera from
+the feature not existing. `curl <backend>/readiness` must say `"mem0":"configured"` before you
+roll.
+
+**Verify trip 1 actually wrote something** before filming trip 2. Write-back is best-effort past
+five swallowed failure modes, so check `/app/settings` lists the fact rather than assuming.
 
 **Save two Osaka reels** after trip 1 and before the 1:28 take.
 

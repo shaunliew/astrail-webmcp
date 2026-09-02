@@ -52,7 +52,7 @@ postgresql · mapbox-gl · openai-agents-sdk · gpt-5.5 · mem0 · apify · verc
 
 Instagram makes it effortless to save a Reel about somewhere you want to go, and then gives you nothing to do with it. The collection fills up with a hundred places across nine countries, and when the dates are booked the fastest path to an itinerary is still twenty browser tabs. That costs the saver rather than the researcher: someone who takes one or two trips a year and will never hand-map thirty Reels to coordinates and opening hours, so the folder stays shut and the trip gets planned off the first page of search results.
 
-Astrail already did that conversion. Paste your Reel links and four OpenAI Agents SDK agents go to work, pinned to `gpt-5.5-2026-04-23` with a `gpt-4o` fallback: place extraction, restaurant grounding, itinerary narration, and hotel name localisation. Anything without a verifiable location is dropped, the rest are grouped into days by geography, and the result lands on a 3D map in 60 to 180 seconds; the run we instrumented took 123.5.
+Astrail already did that conversion. Paste your Reel links and a multi-agent pipeline built on the OpenAI Agents SDK goes to work, pinned to `gpt-5.5-2026-04-23` with a `gpt-4o` fallback: separate agents for place extraction, restaurant grounding, itinerary narration and hotel name localisation, with a read-only summariser over the top that reports what the others decided and never overrides them. The late stages fan out concurrently and each one is allowed to fail on its own, so a weather API having a bad afternoon costs you a forecast rather than the trip. Anything without a verifiable location is dropped, the rest are grouped into days by geography, and the result lands on a 3D map in 60 to 180 seconds; the run we instrumented took 123.5.
 
 Then we put it in front of people and got this back:
 
@@ -104,7 +104,9 @@ The stack: Next.js 15, React 19 and Mapbox GL on Vercel; FastAPI on Render with 
 
 Tests prove behaviour, not honesty. Nearly everything that went wrong last week was a sentence, not a function: a chip labelling every preferences row "Memory" whether memory had run or not, an activity rail calling a read-only lookup an irreversible change. A green suite says nothing about whether a label is true.
 
-Next: destination-scoped recall, so liking ramen does not follow you somewhere it makes no sense. Hotel search is off in this build and the page says so, because Travala's MCP moved to OAuth mid-challenge and now 401s every call.
+## What's next
+
+Destination-scoped recall, so liking ramen does not follow you somewhere it makes no sense. Per-stage checkpointing, so a restart mid-generation resumes rather than starting over. And hotel search back on: it is off in this build and the page says so, because Travala's MCP moved to OAuth mid-challenge and now 401s every call.
 ```
 
 ## Try it out links

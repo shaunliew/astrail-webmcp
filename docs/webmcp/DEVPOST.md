@@ -60,21 +60,15 @@ Then we put it in front of people and got this back:
 
 That is not a copy problem, and we had already spent a sprint treating it as one. The tool was not hard to understand, it was hard to *operate*. We could keep redesigning the buttons, or remove the requirement to find them.
 
+WebMCP is how you remove it. Everything below is what we built on top of that decision: seventeen tools that let an agent drive the page you are signed into, so the answer to "where do I click" is that you do not have to.
+
 ## What it does
 
 Tell the agent to save some Reels and it saves them, starting extraction as it goes. Say "use the reels I just saved and plan me two days in Tokyo" and it reads your library, opens an approval card with the cost stated, starts the generation, narrates each stage, and hands you a routed map. Say "add Tokyo Disneyland to day 2" and it asks on the page, adds the stop, redraws the route, and rewrites the day summaries.
 
 Every stop can be interrogated. Ask why stop 3 is on your trip and you get one of three answers: the verbatim caption quote from the Reel it came from, with a link to that Reel; Astrail's reasoning where it suggested the stop; or a plain note that you asked for it. Nothing sits on the map unattributed.
 
-## The part that compounds
-
-Astrail remembers how you travel, so the longer you use it the less you have to say. The memory engine predates this work by a month and is not claimed as challenge work. What we built is the path on which it actually gets used.
-
-The backend searches memory only when the preferences field arrives empty, because what you typed for this trip should beat what you said three trips ago. The form takes a different route to the same idea: onboarding stores a travel style on your profile, the planning form pre-fills the preferences box with it, and a filled box counts as stating preferences this trip, so the search never runs. Ask an agent and the field stays empty, the condition that reaches instead for what Astrail learned from the trips you actually planned.
-
-Consent keeps this a feature rather than a trick. With nothing stored, `plan_trip_from_reels` stops before it spends anything and asks how you like to travel, so the first trip is the one that teaches it. After that the approval card names what it remembered, before you approve the spend, and still offers a field to say otherwise. A remembered preference is a default, not a mandate. Astrail tries to remember what you state.
-
-## Why it had to run in the page
+## Why WebMCP, and not a server somewhere else
 
 Astrail's value is a live map, not a JSON blob. A backend MCP server could describe a trip. Only WebMCP can move the map the person is looking at.
 
@@ -82,7 +76,7 @@ Because `execute()` runs inside the page, a tool already holds the loaded trip, 
 
 The agent inherits our security model rather than bringing its own: reads run in the page under the same row-level security, no access token crosses the tool boundary, and every edit to your trip stops for approval on the page rather than in chat.
 
-## How we built it
+## How we implemented WebMCP
 
 Seventeen tools registered through `document.modelContext.registerTool()`, in two scopes: fourteen in the signed-in app shell, and three that register only while a trip map is mounted. Six work with no account, on a public sample trail. The write surface behind them is new too: the itinerary used to be immutable at every layer, with no endpoint, no frontend mutation and row-level security SELECT-only.
 
@@ -93,6 +87,14 @@ Seventeen tools registered through `document.modelContext.registerTool()`, in tw
 **Reel captions are attacker-controlled text, defended at both ends.** In the browser, every tool whose output can carry a caption is annotated `untrustedContentHint`, machine-checked by a contract test. In the pipeline, the place extractor and the hotel localiser wrap their Agents SDK runs in `input_guardrail` tripwires that reject a caption trying to steer the run. One end stops the caption being read as instruction, the other stops it reaching a tool call.
 
 The stack: Next.js 15, React 19 and Mapbox GL on Vercel; FastAPI on Render with server-sent events; Supabase for auth, Postgres and row-level security; mem0 for memory; Apify for Reel scraping.
+
+## It remembers how you travel
+
+The longer you use Astrail the less you have to say, and that is the part we expect to matter most over time. It is also the smaller half of this submission: the memory engine predates the challenge by a month and is not claimed as challenge work. What is new is the path on which it gets used, and that path is WebMCP.
+
+The backend searches memory only when the preferences field arrives empty, because what you typed for this trip should beat what you said three trips ago. The form takes a different route to the same idea: onboarding stores a travel style on your profile, the planning form pre-fills the preferences box with it, and a filled box counts as stating preferences this trip, so the search never runs. Ask an agent and the field stays empty, the condition that reaches instead for what Astrail learned from the trips you actually planned.
+
+Consent keeps this a feature rather than a trick. With nothing stored, `plan_trip_from_reels` stops before it spends anything and asks how you like to travel, so the first trip is the one that teaches it. After that the approval card names what it remembered, before you approve the spend, and still offers a field to say otherwise. A remembered preference is a default, not a mandate. Astrail tries to remember what you state.
 
 ## Challenges
 

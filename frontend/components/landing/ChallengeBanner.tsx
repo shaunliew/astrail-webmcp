@@ -75,7 +75,7 @@ export default function ChallengeBanner() {
       <div className="mx-auto flex max-w-5xl flex-col items-center justify-center gap-x-5 gap-y-2 sm:flex-row sm:flex-wrap">
         <p className="min-w-0">
           This is a <b className="font-semibold text-[color:var(--brass-bright)]">WebMCP Challenge</b>{' '}
-          build — an experiment in planning trips with an agent, not a product you can sign up for.
+          build of Astrail, an experiment in planning trips with an agent.
         </p>
         {/* prefetch off: this notice is in the viewport from first paint, and the sample trail
             pulls the map workspace. Warming that behind the story deck's scroll animation costs
@@ -85,7 +85,7 @@ export default function ChallengeBanner() {
           prefetch={false}
           className="inline-flex shrink-0 items-center gap-2 rounded-full border border-[color:var(--brass-bright)] px-4 py-1.5 font-semibold text-[color:var(--brass-bright)] transition-colors hover:bg-[color:var(--brass-bright)] hover:text-[color:var(--night-900)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--brass-bright)]"
         >
-          See a finished trip — no account needed
+          See a finished trip, no account needed
           <span aria-hidden>&rarr;</span>
         </Link>
       </div>

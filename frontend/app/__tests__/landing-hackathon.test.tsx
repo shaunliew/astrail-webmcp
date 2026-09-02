@@ -36,8 +36,12 @@ describe('WebMCP Challenge landing', () => {
   it('says plainly that this is a challenge build, and sends nobody to a product', () => {
     render(<LandingPage />)
 
+    /* The wording lost its "not a product you can sign up for" clause on 2026-09-02: the notice
+       reads better naming what this IS than what it is not, and a visitor who reads "challenge
+       build" has already been told. What the test still pins is the part that was load-bearing —
+       the claim is present, and nothing routes a judge away mid-evaluation. */
     expect(screen.getByRole('status')).toHaveTextContent(
-      'This is a WebMCP Challenge build — an experiment in planning trips with an agent, not a product you can sign up for.',
+      'This is a WebMCP Challenge build of Astrail, an experiment in planning trips with an agent.',
     )
     // The notice used to point at astrail.xyz. This deployment stands alone: routing a judge to a
     // different product mid-evaluation is a distraction, and it invited reading the two as one.
@@ -132,7 +136,7 @@ describe('WebMCP Challenge landing', () => {
  */
 describe('the no-account sample trail', () => {
   const demoLink = () =>
-    screen.getByRole('link', { name: /see a finished trip .* no account needed/i })
+    screen.getByRole('link', { name: /see a finished trip,? .*no account needed/i })
 
   it('offers the sample trail from the sticky challenge notice, above everything else', () => {
     render(<LandingPage />)

@@ -4,9 +4,9 @@ import ChallengeBanner from "@/components/landing/ChallengeBanner";
 import StoryStage from "@/components/story/stage/StoryStage";
 
 export const metadata: Metadata = {
-  title: "Astrail — a WebMCP Challenge build",
+  title: "Astrail, a WebMCP Challenge build",
   description:
-    "A trip planner an agent can operate. 16 WebMCP tools let an agent read the signed-in page, save Instagram Reels, run a generation, drive the live map, and restructure a finished route — every stop still saying where it came from: the Reel caption, Astrail's own reasoning, or you.",
+    "A trip planner an agent can operate. 17 WebMCP tools let an agent read the signed-in page, save Instagram Reels, run a generation, drive the live map, and restructure a finished route, with every stop still saying where it came from: the Reel caption, Astrail's own reasoning, or you.",
 };
 
 // One-Stage proof slice (beats 0→2) under review — the full 8-beat stage
@@ -25,6 +25,9 @@ export default function LandingPage() {
   return (
     <>
       <ChallengeBanner />
+
+
+      <StoryStage />
 
       <div className="bg-[color:var(--paper-1)] px-5 py-12 font-[family-name:var(--font-figtree)] text-[color:var(--ink-900)] sm:px-8 lg:py-16">
         <div className="mx-auto grid max-w-6xl gap-6 lg:grid-cols-2">
@@ -46,19 +49,19 @@ export default function LandingPage() {
                 <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
                 <span className="min-w-0">
                   <b className="text-[color:var(--ink-900)]">17 tools</b> registered with{' '}
-                <code className="break-all text-[color:var(--ink-900)]">document.modelContext.registerTool()</code> — 14 anywhere in the app, 3 more that appear only once a map exists to drive.
+                <code className="break-all text-[color:var(--ink-900)]">document.modelContext.registerTool()</code>, 14 anywhere in the app and 3 more that appear only once a map exists to drive.
                 </span>
               </li>
               <li className="flex gap-3">
                 <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
                 <span className="min-w-0">
-                  <code className="text-[color:var(--ink-900)]">get_app_state</code> answers &ldquo;what can I do here?&rdquo; — the fix for the one thing testers kept saying, that they could not tell where to click.
+                  <code className="text-[color:var(--ink-900)]">get_app_state</code> answers &ldquo;what can I do here?&rdquo;, the fix for the one thing testers kept saying, that they could not tell where to click.
                 </span>
               </li>
               <li className="flex gap-3">
                 <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
                 <span className="min-w-0">
-                  The agent can read your saved Reels, your trips, any day&apos;s itinerary, and why a given stop is on it &mdash; the <b className="text-[color:var(--ink-900)]">verbatim caption</b> where the stop came from a Reel, Astrail&apos;s own reasoning where it suggested one, and a plain &ldquo;you asked for this&rdquo; where you did.
+                  The agent can read your saved Reels, your trips, any day&apos;s itinerary, and why a given stop is on it: the <b className="text-[color:var(--ink-900)]">verbatim caption</b> where the stop came from a Reel, Astrail&apos;s own reasoning where it suggested one, and a plain &ldquo;you asked for this&rdquo; where you did.
                 </span>
               </li>
               <li className="flex gap-3">
@@ -122,15 +125,13 @@ export default function LandingPage() {
                 site could print, it would also ship inside its public JavaScript.
               </p>
               <p className="mt-2">
-                Nothing needs an account to look at &mdash; the sample trail above opens signed out,
+                Nothing needs an account to look at. The sample trail above opens signed out,
                 with six of the seventeen tools.
               </p>
             </div>
           </section>
         </div>
       </div>
-
-      <StoryStage />
     </>
   );
 }

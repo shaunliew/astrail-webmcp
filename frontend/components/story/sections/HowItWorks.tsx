@@ -38,12 +38,12 @@ const STEPS = [
   {
     eyebrow: 'Step 3',
     title: 'Change it by saying so',
-    body: 'A day-by-day itinerary on a real map, every stop traceable \u2014 to the reel it came from, to Astrail\u2019s own reasoning where it suggested one, or to you. \u201cDay 2 is packed \u2014 move stop 7 to day 3.\u201d Astrail asks on the page rather than in chat, the route redraws while you watch, and it starts rewriting the day summaries itself \u2014 about half a minute, marked as updating while it runs; if it fails the activity rail says so, and the summaries stay behind until you ask again.',
+    body: 'A day-by-day itinerary on a real map, with every stop traceable to the reel it came from, to Astrail\u2019s own reasoning where it suggested one, or to you. Say \u201cAdd Tokyo Disneyland to day 2\u201d and it finds the place, asks you on the page rather than in chat, and puts it on the map. The route redraws while you watch, and Astrail starts rewriting the day summaries itself in about half a minute, marked as updating while it runs. If that fails the activity rail says so, and the summaries stay behind until you ask again.',
     src: SCREENS.tripWorkspace,
     alt: 'Astrail trip workspace: itinerary beside the live map',
-    slotLabel: 'real screenshot \u2014 trip workspace',
+    slotLabel: 'real screenshot, trip workspace',
     badge: 'Agent',
-    note: 'move_place \u00b7 remove_place \u00b7 add_place \u00b7 set_trip_dates \u2014 each behind an approval card on the page, each starting the rewrite itself',
+    note: 'move_place \u00b7 remove_place \u00b7 add_place \u00b7 set_trip_dates, each behind an approval card on the page, each starting the rewrite itself',
   },
 ] as const
 

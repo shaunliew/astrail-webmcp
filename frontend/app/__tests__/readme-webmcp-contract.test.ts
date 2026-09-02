@@ -67,10 +67,17 @@ describe('README WebMCP submission contract', () => {
        run" and "generation ran live", and both were half-right — it HAS run, in ChatGPT's built-in
        browser, against `localhost`, and there is no deployment for it to have run on. So the
        README now states the absolute rather than the caveat, and this pins the absolute. Delete it
-       only when a judged URL exists AND something has actually been run against it. */
+       only when a judged URL exists AND something has actually been run against it.
+
+       MOVED 2026-09-02, on exactly that condition. The deployment now exists and its
+       infrastructure was verified against it: health, readiness reporting mem0 configured, CORS
+       accepting the Vercel origin and rejecting others, auth enforced, edit endpoints live rather
+       than 404ing. What has NOT been re-driven against the deployed URL is the full agent arc, so
+       the honest sentence changed shape rather than disappearing, and this pins the new one. The
+       guard is the same: the README must keep saying which half is unproven. */
     expect(readme).toMatch(/move_place[\s\S]{0,120}set_trip_dates[\s\S]{0,120}unit-tested only/i)
     expect(readme).toMatch(
-      /local[\s\S]{0,200}nothing\s+in\s+this\s+repository\s+has\s+been\s+run\s+against\s+a\s+judged\s+URL/i,
+      /has NOT been re-driven end to end against that deployed URL is the full agent arc/i,
     )
   })
 })

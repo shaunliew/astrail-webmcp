@@ -1,6 +1,16 @@
 # Astrail · WebMCP Challenge build
 
-> This repository is the WebMCP Challenge build of Astrail — an experiment in planning trips with an agent, not a product you can sign up for.
+> This repository is the WebMCP Challenge build of Astrail, an experiment in planning trips with an agent.
+
+**Live app:** https://astrail-webmcp.vercel.app
+**No account needed:** https://astrail-webmcp.vercel.app/app/trip/demo opens signed out with six
+working tools. Try *"why is stop 3 on this trip?"*
+**Backend health:** https://astrail-webmcp-api.onrender.com/readiness
+
+Open the live app in the **ChatGPT desktop app's built-in browser** (GPT-5.6 Sol or Terra; Luna
+has WebMCP disabled), with **Settings > Browser > Permissions > Enable site tools** on. The Site
+tools arrow appears in the address bar and the WebMCP chip sits bottom-right on the page. Chrome
+149+ also works with `chrome://flags/#enable-webmcp-testing`.
 
 Astrail turns Instagram Reel URLs into an evidence-backed travel itinerary on a Mapbox 3D map. Its existing pipeline extracts and verifies real places, deduplicates them, enriches the route, and makes every stop say where it came from: a stop lifted from a Reel carries the verbatim caption quote and a link back to that Reel, a stop Astrail suggested carries its reasoning and a research link, and a stop the traveller asked for says so. Three provenances, one label on every pin — nothing is on the map unattributed. WebMCP changes the interface: an agent in ChatGPT's built-in browser can now inspect the signed-in page, start and follow a trip, retrieve its evidence, and operate the same live map and itinerary state the person is watching.
 
@@ -55,6 +65,36 @@ document.modelContext.registerTool({ name, description, inputSchema, execute })
 The React implementation uses our own `useRegisterTool` hook ([`frontend/lib/webmcp/use-register-tool.ts`](frontend/lib/webmcp/use-register-tool.ts)) to make that native registration follow component lifecycle. We began on Chrome's [`use-webmcp-tool`](https://www.npmjs.com/package/use-webmcp-tool) and moved off it: that hook never catches the promise `registerTool` returns, and because aborting the signal is *how* a tool unregisters, every page navigation raised an unhandled `AbortError`. It cannot be fixed from the outside — `registerTool` is a non-writable property of a native interface, and an `unhandledrejection` listener loses to handlers registered earlier during bootstrap. Owning ~144 lines of registration was the smaller cost, and it keeps zero runtime dependencies. [`frontend/lib/webmcp/`](frontend/lib/webmcp/) contains the schemas, tool factories, resolution and formatting logic. [`frontend/components/webmcp/`](frontend/components/webmcp/) wires those factories to authenticated Supabase and backend clients, registers global tools in the app shell, mounts map tools only when a real trip map exists, and shows registration status in the WebMCP chip. Tool callbacks read through refs so a long-lived registration sees the current route, trip, and map rather than first-render state.
 
 Every string derived from an Instagram caption is treated as untrusted content. Read tools declare `untrustedContentHint`, URL-writing tools validate Instagram origins before making a request, and destructive removal requires a visible user approval card.
+
+### The memory arc, and why it needed WebMCP
+
+The mem0 preference store is **pre-existing**: it was built 7 July to 2 August 2026, before the
+submission window, and is not claimed as challenge work. What is new is that an agent can reach
+it, and the reason that mattered is a gap nobody had noticed.
+
+The backend searches memory only when the `preferences` field arrives blank
+([`backend/pipeline/preferences.py`](backend/pipeline/preferences.py)), because what you state for
+this trip should beat what you said three trips ago. It writes a memory only when that field
+arrives non-blank. So the two conditions are mutually exclusive, and an agent that always left the
+field empty could recall forever and never teach. Meanwhile the manual planning form pre-fills that
+box from your saved profile, which counts as stating preferences this trip and suppresses recall on
+that path.
+
+Three changes close it, all after 26 August:
+
+- **`plan_trip_from_reels` asks.** When you state nothing and mem0 holds nothing, the tool returns
+  without starting the run, without showing an approval card and without spending the trip
+  allowance, and tells the agent to ask how you like to travel. Only a *definite* empty asks: a
+  failed or disabled memory read is unknown, and unknown proceeds, because memory must never block
+  a trip (guardrail #3).
+- **The approval card names what it remembers**, before you approve the spend, and carries a field
+  to say something different for this trip. A remembered preference is a default, not a mandate.
+  The card says it will *try* to recall, because the pipeline runs its own semantic search that can
+  miss.
+- **`get_remembered_preferences`** lets the agent read the store back. It reports a disabled
+  feature, an unreachable store and a genuinely empty memory as three different answers, because
+  telling someone they have no saved preferences during an outage is a false claim about their own
+  account.
 
 ## Run locally
 
@@ -341,10 +381,10 @@ Each self-loads `backend/.env`. Set `SMOKE_BASE_URL` to target a deployed servic
 
 ```bash
 # HTTP surface against the deployed service (zero-credit):
-cd backend && SMOKE_BASE_URL=https://astrail-backend.onrender.com SMOKE_PROVISION=1 \
+cd backend && SMOKE_BASE_URL=https://astrail-webmcp-api.onrender.com SMOKE_PROVISION=1 \
   uv run python -m scripts.smoke_http
 
 # One real generation against the deployed service (spends credits):
-cd backend && SMOKE_BASE_URL=https://astrail-backend.onrender.com \
+cd backend && SMOKE_BASE_URL=https://astrail-webmcp-api.onrender.com \
   REELS=https://www.instagram.com/reels/<id>/ uv run python -m scripts.smoke_generate
 ```

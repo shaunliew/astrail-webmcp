@@ -42,133 +42,70 @@ postgresql · mapbox-gl · openai-agents-sdk · gpt-5.5 · mem0 · apify · verc
 > Devpost asks for inspiration, what you learned, how you built it, and the challenges. The four
 > judged questions are woven through rather than answered as a checklist, because that reads like
 > a form and judges say they can tell.
+>
+> 1,218 words. Zero em dashes. Every factual claim checked against the code, including the two
+> that were softened: recall gating is a mechanism, not an absolute, and there are five Agents SDK
+> agent files rather than four.
 
 ```markdown
 ## Inspiration
 
-We kept hearing the same thing from people testing Astrail: *"I can't tell where to click, how to
-choose the reels, or how to start."*
+Instagram makes it effortless to save a Reel about somewhere you want to go, and then gives you nothing to do with it. The collection fills up with a hundred places across nine countries, and when the dates are booked the fastest path to an itinerary is still twenty browser tabs. That costs the saver rather than the researcher: someone who takes one or two trips a year and will never hand-map thirty Reels to coordinates and opening hours, so the folder stays shut and the trip gets planned off the first page of search results.
 
-That is not a pipeline problem. Astrail could already turn saved Instagram Reels into a routed,
-evidence-backed itinerary. The problem was that the interface to it was a puzzle, and we had been
-trying to solve it the usual way, with better affordances and clearer copy.
+Astrail already did that conversion. Paste your Reel links and four OpenAI Agents SDK agents go to work, pinned to `gpt-5.5-2026-04-23` with a `gpt-4o` fallback: place extraction, restaurant grounding, itinerary narration, and hotel name localisation. Anything without a verifiable location is dropped, the rest are grouped into days by geography, and the result lands on a 3D map in 60 to 180 seconds; the run we instrumented took 123.5.
 
-WebMCP offered a different answer: stop making people find the button, and let them say what they
-want instead.
+Then we put it in front of people and got this back:
+
+> "It's unclear how to navigate the website, where to click, how to choose the reels, how to start generating a trip."
+
+That is not a copy problem, and we had already spent a sprint treating it as one. The tool was not hard to understand, it was hard to *operate*. We could keep redesigning the buttons, or remove the requirement to find them.
 
 ## What it does
 
-Astrail turns the travel inspiration you already saved into a trip you can actually take.
+Tell the agent to save some Reels and it saves them, starting extraction as it goes. Say "use the reels I just saved and plan me two days in Tokyo" and it reads your library, opens an approval card with the cost stated, starts the generation, narrates each stage, and hands you a routed map. Say "add Tokyo Disneyland to day 2" and it asks on the page, adds the stop, redraws the route, and rewrites the day summaries.
 
-Paste a few Instagram Reel links and it scrapes them, extracts the real places, verifies each one
-exists, routes them into days, checks the weather and finds somewhere to eat. Every stop on the
-map says where it came from: the verbatim caption quote from the Reel it was found in, Astrail's
-own reasoning where it suggested one, or a plain note where you asked for it yourself.
+Every stop can be interrogated. Ask why stop 3 is on your trip and you get one of three answers: the verbatim caption quote from the Reel it came from, with a link to that Reel; Astrail's reasoning where it suggested the stop; or a plain note that you asked for it. Nothing sits on the map unattributed.
 
-With WebMCP, an agent does all of that by operating the page you are looking at. You say "use the
-reels I just saved and plan me two days in Tokyo" and it reads your library itself, starts the
-generation, narrates each stage, and hands you back a map. Then you say "add Tokyo Disneyland to
-day 2" and it does, asking you on the page first, redrawing the route, and rewriting the day
-summaries so the prose matches the trip you now have.
+## The part that compounds
 
-And it remembers how you travel. Say it once, and the next trip you plan without stating anything
-recalls it, names it back to you on the approval card, and still offers you a field to say
-otherwise. A remembered preference is a default, not a mandate.
+Astrail remembers how you travel, so the longer you use it the less you have to say. The memory engine predates this work by a month and is not claimed as challenge work. What we built is the path on which it actually gets used.
 
-## Why WebMCP fits this specifically
+The backend searches memory only when the preferences field arrives empty, because what you typed for this trip should beat what you said three trips ago. The form takes a different route to the same idea: onboarding stores a travel style on your profile, the planning form pre-fills the preferences box with it, and a filled box counts as stating preferences this trip, so the search never runs. Ask an agent and the field stays empty, the condition that reaches instead for what Astrail learned from the trips you actually planned.
 
-Astrail's value is an evidence-backed itinerary on a live 3D map. A backend MCP server could
-return JSON about a trip. Only WebMCP can move the map the human is looking at.
+Consent keeps this a feature rather than a trick. With nothing stored, `plan_trip_from_reels` stops before it spends anything and asks how you like to travel, so the first trip is the one that teaches it. After that the approval card names what it remembered, before you approve the spend, and still offers a field to say otherwise. A remembered preference is a default, not a mandate. Astrail tries to remember what you state.
 
-Because `execute()` runs inside the page, a tool already holds the loaded trip, the signed-in
-session, and the same React state setters a click uses. When the agent shows you day 2, it calls
-the page's own `showDay`, so the camera flies, the pin grows and the day chip lights up exactly as
-if you had clicked. There is no separate agent rendering path to keep in sync, because there is no
-separate path.
+## Why it had to run in the page
 
-That also means the agent inherits the security model instead of needing its own. No token ever
-crosses the tool boundary. There is no arbitrary-URL fetch, no raw SQL tool, and no
-account-deletion tool at any price.
+Astrail's value is a live map, not a JSON blob. A backend MCP server could describe a trip. Only WebMCP can move the map the person is looking at.
 
-## What people and agents can now do together
+Because `execute()` runs inside the page, a tool already holds the loaded trip, the signed-in session, and the same React state setters a click uses. The map tools receive those setters directly: ask for day 2 and the page's own `showDay` runs, so the camera flies and the day chip lights up as if you had clicked. There is no second rendering path to keep in sync, because there is no second path.
 
-Turn a folder of saved Reels into a routed, evidence-backed itinerary, then restructure it
-conversationally while watching the map redraw, with every agent action attributed and every
-change to your trip stopping for approval on the page rather than a question in chat.
-
-Before, the itinerary was frozen. There was no edit path at any layer: no endpoint, no frontend
-mutation, and row-level security was SELECT-only. You pasted five URLs by hand, waited, and
-accepted what came out.
-
-The part we did not expect: memory only became reachable by an agent because of this work. The
-planning tool always accepted a preferences argument, but nothing told an agent the field outlived
-the trip, so it went unset, and an account planned entirely through an agent stayed permanently
-empty. Now the tool asks how you travel when it has nothing to go on, stopping before it spends
-anything to do it, and a second tool lets the agent read back what Astrail holds.
+The agent inherits our security model rather than bringing its own: reads run in the page under the same row-level security, no access token crosses the tool boundary, and every edit to your trip stops for approval on the page rather than in chat.
 
 ## How we built it
 
-Seventeen tools registered with `document.modelContext.registerTool()`, in two scopes. Fourteen
-live in the signed-in app shell. Three more register only while a trip map is mounted and
-unregister when you navigate away, so the tool list a judge sees in the address bar grows as the
-app's state does.
+Seventeen tools registered through `document.modelContext.registerTool()`, in two scopes: fourteen in the signed-in app shell, and three that register only while a trip map is mounted. Six work with no account, on a public sample trail. The write surface behind them is new too: the itinerary used to be immutable at every layer, with no endpoint, no frontend mutation and row-level security SELECT-only.
 
-Three decisions shaped the rest:
+**Pin numbers, never UUIDs.** Tools address stops the way a person does: "move stop 7 to day 3". The page resolves that to a real row, so no identifier a human cannot read crosses the boundary, and map, itinerary and tools count from the same trail.
 
-**Pin numbers, never UUIDs.** Tools address stops the way you do: "move stop 7 to day 3". The
-frontend resolves that to a real row, so no identifier a human cannot read ever crosses the
-boundary, and 18 UUIDs would have eaten 43% of the output budget anyway.
+**A two-minute job behind a one-second tool call.** `plan_trip_from_reels` returns in about a second with a trip ID and a next step. The EventSource lives in a provider beside the map rather than inside `execute`, so one stream drives both the agent's narration and the on-screen wait.
 
-**A 60 to 180 second generation behind a tool call.** `plan_trip_from_reels` returns in about a
-second with a trip id and a next step. The EventSource lives in a provider beside the map, not
-inside `execute`, so the same stream drives both the agent's narration and the on-screen wait, and
-they cannot disagree. `get_trip_progress` self-throttles: called again too soon, it awaits the next
-real stage event instead of returning nothing.
+**Reel captions are attacker-controlled text, defended at both ends.** In the browser, every tool whose output can carry a caption is annotated `untrustedContentHint`, machine-checked by a contract test. In the pipeline, the place extractor and the hotel localiser wrap their Agents SDK runs in `input_guardrail` tripwires that reject a caption trying to steer the run. One end stops the caption being read as instruction, the other stops it reaching a tool call.
 
-**Reel captions are attacker-controlled text.** Every tool whose output can carry one is annotated
-`untrustedContentHint`, and the audit is machine-checked rather than asserted.
-
-Stack: Next.js 15, React 19 and Mapbox GL on Vercel; FastAPI on Render with server-sent events;
-Supabase for auth, Postgres and row-level security; the OpenAI Agents SDK for the pipeline; mem0
-for preference memory; Apify for Reel scraping.
+The stack: Next.js 15, React 19 and Mapbox GL on Vercel; FastAPI on Render with server-sent events; Supabase for auth, Postgres and row-level security; mem0 for memory; Apify for Reel scraping.
 
 ## Challenges
 
-**Making an agent's action indistinguishable from your own.** Early versions had the agent call an
-API and then hope the page caught up. The fix was to route every tool through the setters a click
-already uses, and to make a mutation not resolve until the UI reflects it. When the sentence "done,
-I moved it" reaches you, the map has already moved.
+**Making an agent's action indistinguishable from your own.** Early versions had a tool call an API and then hope the page caught up. The fix was to hand tools the page's own refresh hooks, and to make a mutation not resolve until the UI reflects it. By the time "done, I moved it" reaches you, the map has moved.
 
-**Telling the truth on every surface.** This was harder than the features. A provenance chip
-labelled every preferences row "Memory" whether memory had run or not. The activity rail announced
-a read-only memory lookup as an irreversible change. An approval button promised an outcome the
-backend's own semantic search could veto. Each of those was caught by review rather than by tests,
-because they were claims rather than behaviour, and a passing test suite says nothing about whether
-a sentence is true.
-
-**A silent failure that looked like a broken integration.** A trailing slash pasted into an
-environment variable turned every backend call into a 404 while the page loaded fine and the tools
-still registered. The same character in the CORS origin rejected every real browser request. The
-code now strips them, because a URL a human pastes will sometimes have one.
+**Owning the registration.** Chrome's `use-webmcp-tool` hook never catches the promise `registerTool` returns, and since aborting the signal is *how* a tool unregisters, every navigation threw an unhandled `AbortError` across the app. It cannot be fixed from outside, because `registerTool` is non-writable, so we wrote our own.
 
 ## What we learned
 
-Tests prove behaviour, not honesty. Almost everything that went wrong in the last week was a
-sentence: a label, a button, a comment claiming a guarantee the code did not have. The fix was
-cross-model review, and it found something real on every single pass.
+Tests prove behaviour, not honesty. Nearly everything that went wrong last week was a sentence, not a function: a chip labelling every preferences row "Memory" whether memory had run or not, an activity rail calling a read-only lookup an irreversible change. A green suite says nothing about whether a label is true.
 
-Also: jsdom has no cascade and no layout, so three styling defects shipped past 1800 passing tests.
-Coverage that cannot see a failure mode is not coverage, and saying so is better than implying
-otherwise.
-
-## What's next
-
-Per-stage checkpointing, so a restart mid-generation resumes rather than re-running. Destination-
-scoped recall, so remembering that you like ramen does not follow you somewhere it makes no sense.
-And hotel search back on, once there is a provider that answers.
+Next: destination-scoped recall, so liking ramen does not follow you somewhere it makes no sense. Hotel search is off in this build and the page says so, because Travala's MCP moved to OAuth mid-challenge and now 401s every call.
 ```
-
----
 
 ## Try it out links
 

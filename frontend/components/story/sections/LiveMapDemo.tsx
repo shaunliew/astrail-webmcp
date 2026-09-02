@@ -25,10 +25,10 @@ export default function LiveMapDemo() {
         </h2>
         <p className="story-sub max-w-[38em] text-[color:var(--starlight-70)]">
           This is the live map you&rsquo;d get: a demo Tokyo trip, every stop
-          numbered and connected. Your version adds the evidence panel &mdash;
-          the reel and the caption quote behind a stop that came from one,
-          Astrail&rsquo;s own reasoning behind a stop it suggested, and a plain
-          note on a stop you asked for yourself.
+          numbered and connected. Your version adds the evidence panel, which
+          carries the reel and the caption quote behind a stop that came from
+          one, Astrail&rsquo;s own reasoning behind a stop it suggested, and a
+          plain note on a stop you asked for yourself.
         </p>
 
         <div

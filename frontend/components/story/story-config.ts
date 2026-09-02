@@ -31,9 +31,11 @@ export const SCREENS: {
   agentsResearch?: string
   tripWorkspace?: string
 } = {
-  createTrail: '/landing/screens/create-trail.webp',
-  agentsResearch: '/landing/screens/agents-research.webp',
-  tripWorkspace: '/landing/screens/trip-workspace.webp',
+  // Re-shot 2026-09-02 against the challenge build. The keys keep their names because they are
+  // the three STEPS, not the three files; the filenames now say what each shot actually shows.
+  createTrail: '/landing/screens/save-reel.webp',
+  agentsResearch: '/landing/screens/trip-generation.webp',
+  tripWorkspace: '/landing/screens/change-itinerary.webp',
 }
 
 /* 60s beta demo screen-capture, re-encoded to 1080p/silent for web weight. */

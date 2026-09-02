@@ -38,7 +38,13 @@ export const SCREENS: {
   tripWorkspace: '/landing/screens/change-itinerary.webp',
 }
 
-/* 60s beta demo screen-capture, re-encoded to 1080p/silent for web weight. */
+/* The demo the landing page plays.
+ *
+ * ⚠️ `DemoVideoSlot`'s headline says "Three minutes, reels to route." The file below is the OLD
+ * 61-second beta capture, so the page currently overstates its own video. Replace it with the
+ * challenge submission recording before this ships anywhere a judge sees it, or put the duration
+ * back to sixty seconds. A page that misstates the length of the video sitting under the claim is
+ * the cheapest possible thing for a judge to catch. */
 export const DEMO_VIDEO_SRC: string | undefined = '/landing/astrail-beta-demo.mp4'
 
 export const STILLS = {

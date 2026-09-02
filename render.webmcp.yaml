@@ -44,9 +44,6 @@ services:
         sync: false
       - key: MAPBOX_SECRET_TOKEN
         sync: false
-      # Needed for JWT verification of the judge's session.
-      - key: SUPABASE_JWT_SECRET
-        sync: false
       # ⚠️ MUST be the Vercel origin of THIS deployment. Unset falls back to the production
       # astrail.xyz origins, which fails as a browser CORS block — every tool call dies with
       # nothing useful in the console, and it looks like the integration is broken.

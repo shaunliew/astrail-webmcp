@@ -21,6 +21,7 @@ vi.mock('next/script', () => ({ default: () => null }))
 vi.mock('@/components/story/PlayOnceVideo', () => ({ default: () => null }))
 
 import LandingPage from '../page'
+import ChallengePanels from '@/components/landing/ChallengePanels'
 import { metadata } from '../layout'
 
 describe('WebMCP Challenge landing', () => {
@@ -48,8 +49,33 @@ describe('WebMCP Challenge landing', () => {
     expect(screen.queryByRole('link', { name: /astrail\.xyz/i })).toBeNull()
   })
 
+  /* THE WIRING, which the three tests below cannot see.
+     They render `ChallengePanels` directly, because this file mocks `StoryStage` and the panels
+     now live inside it. That leaves a gap exactly the shape of the bug this move fixed: delete
+     the `<ChallengePanels />` line from the story and every content assertion stays green while
+     a judge finds no setup instructions at all.
+
+     A source read rather than a render, and it is worth saying why: mounting the real StoryStage
+     in jsdom means Mapbox, scroll observers and video, which is a different test's problem. What
+     this pins is the ordering claim — the panels are mounted, and they are mounted BEFORE the
+     footer, which is the whole point of the move. */
+  it('is mounted inside the story, before the footer', () => {
+    const stage = readFileSync(
+      join(process.cwd(), 'components/story/stage/StoryStage.tsx'), 'utf8',
+    )
+    const panels = stage.indexOf('<ChallengePanels />')
+    const footer = stage.indexOf('<StoryFooter />')
+    expect(panels, 'the story stopped rendering the challenge panels').toBeGreaterThan(-1)
+    expect(footer).toBeGreaterThan(-1)
+    expect(panels, 'the panels render after the footer, where the page reads as over')
+      .toBeLessThan(footer)
+  })
+
   it('documents the challenge additions and links to the full eligibility record', () => {
-    render(<LandingPage />)
+    // The panels moved inside StoryStage (which this file mocks) so they render before the
+    // footer rather than after it. These three describe the panels, so they render the panels;
+    // the test below pins that the story still mounts them.
+    render(<ChallengePanels />)
 
     const section = screen.getByRole('region', { name: "What's new for this hackathon" })
     expect(within(section).getAllByRole('listitem')).toHaveLength(7)
@@ -65,7 +91,7 @@ describe('WebMCP Challenge landing', () => {
   })
 
   it('shows judge setup instructions before sign-in', () => {
-    render(<LandingPage />)
+    render(<ChallengePanels />)
 
     const section = screen.getByRole('region', { name: 'For judges' })
     expect(section).toHaveTextContent("ChatGPT desktop app's built-in browser")
@@ -102,7 +128,7 @@ describe('WebMCP Challenge landing', () => {
     vi.stubEnv('NEXT_PUBLIC_DEMO_EMAIL', 'judge@example.com')
     vi.stubEnv('NEXT_PUBLIC_DEMO_PASSWORD', 'demo-password')
 
-    render(<LandingPage />)
+    render(<ChallengePanels />)
     const section = screen.getByRole('region', { name: 'For judges' })
     const shown = section.textContent ?? ''
 

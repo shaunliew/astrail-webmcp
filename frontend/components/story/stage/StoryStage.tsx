@@ -13,6 +13,7 @@ import DemoVideoSlot from '../sections/DemoVideoSlot'
 import FAQ from '../sections/FAQ'
 import FinalCTA from '../sections/FinalCTA'
 import StoryFooter from '../sections/StoryFooter'
+import ChallengePanels from '@/components/landing/ChallengePanels'
 import { useLenis } from './useLenis'
 
 /* PRODUCT-FIRST HYBRID, repointed to the open beta (2026-08-03).
@@ -92,6 +93,11 @@ export default function StoryStage() {
       <DemoVideoSlot />
       <FAQ />
       <FinalCTA />
+      {/* The challenge panels sit HERE, not after the stage: `StoryFooter` is rendered by
+          this component, so anything appended in `page.tsx` landed below the footer, past
+          the point a reader treats a page as over. A judge's setup instructions are the one
+          thing on this page that must not be findable only by scrolling past the end. */}
+      <ChallengePanels />
       <StoryFooter />
 
       <StoryNav />

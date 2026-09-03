@@ -99,6 +99,12 @@ source opening hours, the space stays empty.
 It also remembers how you travel. State a preference once and the next trip recalls it, names what
 it remembered on the approval card, and still asks before it spends anything.
 
+None of this is the agent working on its own. It plans and you approve. It offers what it
+remembered and you can override it on the card. You drag the map, it reads the same trip you are
+looking at. Before WebMCP the two halves could not meet: you could read the itinerary Astrail gave
+you but not change it, and an agent could describe your trip from the outside but never touch it.
+Now you are both working the same map, and neither of you has a view the other cannot reach.
+
 ## How we built it
 
 Astrail registers seventeen tools through `document.modelContext.registerTool()`, in two scopes.
@@ -196,7 +202,7 @@ tests check honesty as well as behaviour: they assert that the README's tool tab
 registry, that the stated tool count is real, and that documented limitations are still
 documented. When a claim stopped being true this week, a test went red.
 
-## What we learned about WebMCP
+## What we learned
 
 None of us had touched WebMCP before this competition. It was announced, we read the spec, and we
 started building. Four things surprised us.

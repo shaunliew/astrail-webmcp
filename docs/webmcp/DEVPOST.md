@@ -137,6 +137,13 @@ The stack: Next.js 15, React 19 and Mapbox GL on Vercel; FastAPI on Render with 
 events; Supabase for auth, Postgres and row-level security; the OpenAI Agents SDK for the
 multi-agent pipeline; mem0 for memory; Apify for Reel scraping.
 
+Worth being explicit about what is new, since Astrail existed before the submission period. Back
+then it was a form: you pasted Reel links, waited, and got an itinerary you could read but not
+change. Everything in `frontend/lib/webmcp/` was written on or after 26 August, along with the
+five owner-checked edit endpoints behind it, the rebuilt map, and the signed-out sample trail. The
+memory engine is older, built in July, and we do not claim it as challenge work; what is new is
+that an agent can reach it. The dated, commit-by-commit split is in `docs/webmcp/WHATS-NEW.md`.
+
 ## Challenges we ran into
 
 The hardest one was a flaw in our own product, and we only found it because an agent was driving.
@@ -258,21 +265,29 @@ https://github.com/shaunliew/astrail-webmcp
 ### "If Existing, explain what you updated during the submission period"
 
 ```
-Astrail existed before 25 August as a manual trip planner: paste Reel links into a form, wait,
-receive an itinerary you could read but not change.
+Astrail existed before 25 August, as a manual trip planner. You pasted Reel links into a form,
+waited, and got back an itinerary you could read but could not change.
 
-Everything in frontend/lib/webmcp/ is new, written on or after 26 August. That is the seventeen
-WebMCP tools, the tool registry and its contract tests, the on-page approval cards, and the agent
-activity rail. Two owner-checked FastAPI edit endpoints are new, because before this the itinerary
-was immutable at every layer: no endpoint, no frontend mutation, RLS SELECT-only.
+Everything in frontend/lib/webmcp/ was written on or after 26 August. That is the seventeen WebMCP
+tools, the registry behind them, their contract tests, the on-page approval cards, the agent
+activity rail, and the WebMCP status chip. Five owner-checked FastAPI edit endpoints are new as
+well, because until then the itinerary was immutable at every layer: no endpoint, no frontend
+mutation, and row-level security that was SELECT-only.
 
-The memory engine (mem0) is NOT new; it was built 7 July to 2 August. What is new is that an agent
-can reach it: a tool to read back what Astrail remembers, an approval card that names those
-preferences and lets you override them per trip, and a planning tool that asks how you travel when
-it has nothing stored. Before this, the agent path could not populate memory in practice, so an
-account planned entirely by agent stayed empty.
+Two more things were built during the period. The map was rebuilt so an agent would have something
+worth driving, and a stop that came from a Reel now carries that Reel's own cover frame in its pin
+and links back to the Reel itself. And /app/trip/demo is new: a finished sample trail that opens
+signed out, with six of the seventeen tools, so the app can be evaluated without an account.
 
-The full commit-by-commit split is in WHATS-NEW.md at the repo root of docs/webmcp/.
+The memory engine (mem0) is NOT new. It was built between 7 July and 2 August and we do not claim
+it as challenge work. What is new is that an agent can reach it, and finding out why it could not
+was one of the more interesting things that happened to us. A tool now reads back what Astrail
+remembers, the approval card names those preferences before you approve the spend and lets you
+override them for one trip, and the planning tool stops and asks how you travel when it has
+nothing stored. Before this, an account planned entirely by agent could recall forever and never
+teach it anything.
+
+The full commit-by-commit split, with dates, is in docs/webmcp/WHATS-NEW.md in the repo.
 ```
 
 ---

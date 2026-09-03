@@ -382,7 +382,7 @@ export default function SignInPage() {
           </div>
 
           <p className="mt-5 text-center text-[12px] leading-[1.5] text-[color:var(--text-faint)]">
-            By continuing with Google or email, you agree to our{' '}
+            By continuing with email, you agree to our{' '}
             <a href="/terms" className="underline underline-offset-2 hover:text-[color:var(--text-muted)]">Terms</a>{' '}
             and{' '}
             <a href="/privacy" className="underline underline-offset-2 hover:text-[color:var(--text-muted)]">Privacy&nbsp;Policy</a>.

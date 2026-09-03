@@ -5,6 +5,7 @@ whole thing by talking to ChatGPT. Every stop says where it came from.
 
 | | |
 |---|---|
+| **Devpost** | https://devpost.com/software/astrail |
 | **Live app** | https://astrail-webmcp.vercel.app |
 | **Demo video** | https://youtu.be/kzgCUgO_wlM |
 | **No account needed** | https://astrail-webmcp.vercel.app/app/trip/demo |

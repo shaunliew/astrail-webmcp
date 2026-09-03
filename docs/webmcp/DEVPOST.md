@@ -116,10 +116,23 @@ caught things we missed, including a bug inside a fix we thought was already cor
 Stack: Next.js 15, React 19 and Mapbox GL on Vercel; FastAPI on Render; Supabase; the OpenAI
 Agents SDK; mem0; Apify.
 
-Astrail existed before the submission period, so to be clear about the split: everything in
-`frontend/lib/webmcp/` was written on or after 26 August, along with five owner-checked edit
-endpoints, the rebuilt map, and the signed-out sample trail. The memory engine is from July and we
-do not claim it as challenge work. What is new is that an agent can reach it. Dated commit list in
+## What we added during the submission period
+
+Astrail existed before 25 August, as a form. You pasted Reel links, waited, and got back an
+itinerary you could read but could not change.
+
+Everything in `frontend/lib/webmcp/` was written on or after 26 August: the seventeen tools, the
+registry behind them, their contract tests, the on-page approval cards, the agent activity rail
+and the WebMCP status chip. So were the five owner-checked FastAPI edit endpoints they call,
+because until then the itinerary was immutable at every layer, with no endpoint, no frontend
+mutation and row-level security that was SELECT-only. Two other things were built in the window:
+the map was rebuilt so a stop that came from a Reel carries that Reel's own cover frame in its pin
+and links back to the Reel, and `/app/trip/demo` is new, a finished sample trail that opens signed
+out with six of the seventeen tools so the app can be judged without an account.
+
+The memory engine is older. It was built between 7 July and 2 August and we do not claim it as
+challenge work. What is new is that an agent can reach it, and the reason it could not is the
+first thing under Challenges below. The dated, commit-by-commit split is in
 `docs/webmcp/WHATS-NEW.md`.
 
 ## Challenges we ran into

@@ -52,9 +52,8 @@ export default function StoryStage() {
           </h1>
           <p className="story-sub max-w-[29em] text-[color:var(--ink-600)]">
             Astrail turns scattered travel inspiration into a real itinerary on
-            a map, where every stop says where it came from. This build adds{' '}
-            <b className="font-bold text-[color:var(--ink-900)]">WebMCP</b>, so an
-            agent can do all of it with you, on the page you are looking at.
+            a map, where every stop says where it came from. This build adds WebMCP,
+            so an agent can work on it with you, on the page you are looking at.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-4">
             <Link href="/sign-in" className="story-btn story-btn--primary">
@@ -65,13 +64,10 @@ export default function StoryStage() {
             </a>
           </div>
           <p className="story-sub mt-7 text-[15px] text-[color:var(--ink-600)]">
-            Not this page. This one is just the pitch. Open{' '}
-            <b className="font-bold text-[color:var(--ink-900)]">the app</b> in
-            ChatGPT&rsquo;s built-in browser and ask{' '}
-            <b className="font-bold text-[color:var(--ink-900)]">
-              &ldquo;what can I do here?&rdquo;
-            </b>. Fourteen tools answer once you are signed in, seventeen once a
-            trip is open, and six on the sample trail up top, which needs no
+            The tools live in the app, not on this page, which is just the pitch.
+            Open Astrail in ChatGPT&rsquo;s built-in browser and ask what you can do
+            here. Fourteen tools answer once you are signed in, seventeen once a trip
+            is open, and six on the sample trail linked at the top, which needs no
             account.
           </p>
         </div>

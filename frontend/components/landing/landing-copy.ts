@@ -43,7 +43,7 @@ export const faqs = [
   {
     question: "What stops it inventing things?",
     answer:
-      "Structure, not instructions. Every place comes from a real geocoded record and the agent picks from that list by index, so it has no way to emit a location that does not exist. Where a fact is simply absent, such as opening hours we cannot source or a photo nobody published, the space stays empty rather than being filled with something plausible.",
+      "It picks from a list it cannot add to. Every place comes from a real geocoded record and the agent selects by index, so it has no way to emit a location that does not exist. Where a fact is simply absent, such as opening hours we cannot source or a photo nobody published, the space stays empty rather than being filled with something plausible.",
   },
   {
     question: "Why start from Reels?",

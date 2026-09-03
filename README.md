@@ -12,7 +12,7 @@ has WebMCP disabled), with **Settings > Browser > Permissions > Enable site tool
 tools arrow appears in the address bar and the WebMCP chip sits bottom-right on the page. Chrome
 149+ also works with `chrome://flags/#enable-webmcp-testing`.
 
-Astrail turns Instagram Reel URLs into an evidence-backed travel itinerary on a Mapbox 3D map. Its existing pipeline extracts and verifies real places, deduplicates them, enriches the route, and makes every stop say where it came from: a stop lifted from a Reel carries the verbatim caption quote and a link back to that Reel, a stop Astrail suggested carries its reasoning and a research link, and a stop the traveller asked for says so. Three provenances, one label on every pin. Nothing is on the map unattributed. WebMCP changes the interface: an agent in ChatGPT's built-in browser can now inspect the signed-in page, start and follow a trip, retrieve its evidence, and operate the same live map and itinerary state the person is watching.
+Astrail turns Instagram Reel URLs into an evidence-backed travel itinerary on a Mapbox 3D map. Its existing pipeline extracts and verifies real places, deduplicates them, enriches the route, and makes every stop say where it came from: a stop lifted from a Reel carries the verbatim caption quote and a link back to that Reel, a stop Astrail suggested carries its reasoning and a research link, and a stop the traveller asked for says so. That is three kinds of provenance and a label on every pin, so nothing reaches the map unattributed. WebMCP changes the interface: an agent in ChatGPT's built-in browser can now inspect the signed-in page, start and follow a trip, retrieve its evidence, and operate the same live map and itinerary state the person is watching.
 
 ## Why this exists
 
@@ -69,8 +69,9 @@ The React implementation uses our own `useRegisterTool` hook ([`frontend/lib/web
 The challenge asks that the repository visibly contain the registration primitive. It is here
 twice: once as the native call, and once as the data every tool hands to it.
 
-**The call.** [`frontend/lib/webmcp/use-register-tool.ts:99`](frontend/lib/webmcp/use-register-tool.ts#L99)
-is the only place in the app that touches the browser API:
+The native call lives in
+[`frontend/lib/webmcp/use-register-tool.ts:99`](frontend/lib/webmcp/use-register-tool.ts#L99),
+the only place in the app that touches the browser API:
 
 ```ts
 const result = mc.registerTool(
@@ -99,10 +100,10 @@ mounted still sees the current route, trip and map rather than first-render stat
 every closure change would churn the agent's tool list on each keystroke, and once drove an infinite
 render loop.
 
-**A tool, verbatim.** All 17 are pure factories returning plain data, which is what lets the contract
-test check every name, description budget and schema without mounting React.
-[`frontend/lib/webmcp/tools/preferences.ts:45`](frontend/lib/webmcp/tools/preferences.ts#L45).
-The description is cut at the `[...]` marks and rewrapped to fit this page; nothing else is
+Every one of the 17 tools is a pure factory returning plain data, which is what lets the contract
+test check names, description budgets and schemas without mounting React. This one is
+[`frontend/lib/webmcp/tools/preferences.ts:45`](frontend/lib/webmcp/tools/preferences.ts#L45),
+with its description cut at the `[...]` marks and rewrapped to fit this page. Nothing else is
 changed:
 
 ```ts
@@ -323,9 +324,9 @@ Meaning: **star path, guided route**.
 
 The name reflects the product direction: helping travelers move from scattered inspiration to a guided path they can actually follow.
 
-## Product Direction
+## Product direction
 
-Astrail is not just a chatbot beside a map. The agent is the operating layer that helps transform intent into an explainable, mapped travel plan.
+The agent operates the planner rather than sitting in a chat window beside it. What you say turns into a mapped plan that can account for every stop on it.
 
 Core product ideas:
 
@@ -335,7 +336,7 @@ Core product ideas:
 - explain why each stop belongs in the trip
 - support human-approved booking and payment flows later
 
-## Reference Implementation
+## Reference implementation
 
 The earlier TripCanvas project is used as a reference implementation only. Astrail is the new canonical product identity and repository.
 
@@ -345,7 +346,7 @@ The core product predates the challenge. The browser-side WebMCP layer, its tool
 
 ---
 
-## Backend API Reference (for the frontend)
+## Backend API reference (for the frontend)
 
 Base URL: the Render backend service (set as `NEXT_PUBLIC_BACKEND_URL`; `http://localhost:8000` in local dev).
 

@@ -48,31 +48,31 @@ export default function ChallengePanels() {
             <li className="flex gap-3">
               <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
               <span className="min-w-0">
-                The agent can read your saved Reels, your trips, any day&apos;s itinerary, and why a given stop is on it: the <b className="text-[color:var(--ink-900)]">verbatim caption</b> where the stop came from a Reel, Astrail&apos;s own reasoning where it suggested one, and a plain &ldquo;you asked for this&rdquo; where you did.
+                The agent can read your saved Reels, your trips, any day&apos;s itinerary, and why a given stop is on it: the verbatim caption where the stop came from a Reel, Astrail&apos;s own reasoning where it suggested one, and a plain &ldquo;you asked for this&rdquo; where you did.
               </span>
             </li>
             <li className="flex gap-3">
               <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
               <span className="min-w-0">
-                It can also act: save Reels, start a 60&ndash;180 second generation and narrate each stage, fly and tilt the live map, and move, remove, add or re-plan stops on a finished route.
+                It can also act: save Reels, start a generation that takes one to three minutes and narrate each stage, fly and tilt the live map, and move, remove, add or re-plan stops on a finished route.
               </span>
             </li>
             <li className="flex gap-3">
               <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
               <span className="min-w-0">
-                The map was rebuilt to be worth driving: every stop that came from a Reel carries <b className="text-[color:var(--ink-900)]">that Reel&apos;s own cover frame</b> in its pin, and links back to the Reel itself, never to a scraped directory page.
+                We rebuilt the map so there would be something worth driving: every stop that came from a Reel carries that Reel&apos;s own cover frame in its pin, and links back to the Reel itself rather than to a scraped directory page.
               </span>
             </li>
             <li className="flex gap-3">
               <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
               <span className="min-w-0">
-                Planning a trip and every edit to a finished one stop for approval on the page first, including the paid coordinate lookup behind a stop you asked for. The edit endpoints behind them are owner-checked, flag-gated and status-guarded. Saving a Reel is the one action that spends with no card in front of it: bounded by a daily limit, and skipped for a Reel whose places are already extracted.
+                Planning a trip stops for approval on the page first, and so does every edit to a finished one, including the paid coordinate lookup behind a stop you asked for. The endpoints behind those edits are owner-checked, flag-gated and status-guarded. Saving a Reel is the one action that spends without a card in front of it. It is bounded by a daily limit, and it skips a Reel whose places are already extracted.
               </span>
             </li>
             <li className="flex gap-3">
               <span aria-hidden className="mt-2 size-2 shrink-0 rounded-full bg-[color:var(--brass-deep)]" />
               <span className="min-w-0">
-                Where a fact does not exist, nothing is shown in its place. No invented opening hours, no borrowed photographs, and no Reel cited for a stop that did not come from one.
+                Where a fact does not exist, the space stays empty. No invented opening hours, no borrowed photographs, and no Reel cited for a stop that did not come from one.
               </span>
             </li>
           </ul>
@@ -112,8 +112,8 @@ export default function ChallengePanels() {
               site could print, it would also ship inside its public JavaScript.
             </p>
             <p className="mt-2">
-              Nothing needs an account to look at. The sample trail above opens signed out,
-              with six of the seventeen tools.
+              You do not need an account to look around. The sample trail above opens
+              signed out, with six of the seventeen tools.
             </p>
           </div>
         </section>

@@ -85,12 +85,12 @@ export default function AsterStory() {
         {/* Honest hand-off: the chapters are illustrations; the proof is the
             real product right below. */}
         <p className="story-sub mt-16 max-w-[38em] text-[color:var(--starlight-70)]">
-          That&rsquo;s the story. Below is the real thing:{' '}
+          The two chapters above are illustrations. Everything past this point is{' '}
           <a
             href="#how-it-works"
             className="font-semibold text-[color:var(--story-teal-night)] underline underline-offset-4"
           >
-            actual product screens, no renders
+            the product itself, screenshotted rather than drawn
           </a>
           .
         </p>

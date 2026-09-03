@@ -105,8 +105,8 @@ export default function StoryFooter() {
         <p>&copy; 2026 Astrail &middot; Singapore &middot; WebMCP Challenge build</p>
         <p>
           Astrail is a WebMCP Challenge build, not a finished product. It uses AI to
-          generate recommendations from public content &mdash; always
-          double-check details before you travel.
+          generate recommendations from public content, so double-check details
+          before you travel.
         </p>
       </div>
     </footer>

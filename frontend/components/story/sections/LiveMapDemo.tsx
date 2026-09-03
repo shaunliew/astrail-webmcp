@@ -21,7 +21,7 @@ export default function LiveMapDemo() {
           Live demo &middot; real map
         </p>
         <h2 className="story-h max-w-[26ch] text-[color:var(--starlight)]">
-          A real itinerary on a real map. Not another list.
+          Your itinerary comes back as a map you can move around.
         </h2>
         <p className="story-sub max-w-[38em] text-[color:var(--starlight-70)]">
           This is the live map you&rsquo;d get: a demo Tokyo trip, every stop

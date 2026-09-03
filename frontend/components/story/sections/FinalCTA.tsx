@@ -39,14 +39,14 @@ export default function FinalCTA() {
           Ask it what you can do here.
         </h2>
         <p className="story-sub max-w-[32em] text-[color:var(--ink-600)]">
-          Not this page. The app. Open Astrail in ChatGPT&rsquo;s built-in
-          browser and the agent can read what you already have, save the Reels
-          you paste, build the trip while narrating each stage, move a stop to
-          another day, and fly the map to it, that last one through the
-          very setters your own click runs, so its camera move and yours are the
-          same event, on the same map. The sample trail opens with no account.
-          Moving, adding, removing or rescheduling a stop stops for a card on
-          the page first.
+          The tools are in the app, not this page. Open Astrail in
+          ChatGPT&rsquo;s built-in browser and the agent can read what you
+          already have, save the Reels you paste, build the trip while narrating
+          each stage, move a stop to another day, and fly the map to it. That
+          last one runs through the very setters your own click runs, so its
+          camera move and yours are the same event on the same map. The sample
+          trail opens with no account. Moving, adding, removing or rescheduling
+          a stop stops for a card on the page first.
         </p>
 
         <div className="mt-8 flex flex-wrap items-center gap-4">
@@ -59,8 +59,8 @@ export default function FinalCTA() {
         </div>
 
         <p className="mt-5 text-[13px] text-[color:var(--ink-400)]">
-          A challenge build, not a finished product, and not something you
-          can sign up for. Expect rough edges.
+          A challenge build rather than a finished product. There is nothing to
+          sign up for, and there are rough edges.
         </p>
 
         <p className="mt-8 text-[13px] uppercase tracking-[0.16em] text-[color:var(--ink-400)]">

@@ -18,7 +18,7 @@ const STEPS = [
   {
     eyebrow: 'Step 1',
     title: 'Hand it the reels',
-    body: 'Paste 1\u20135 Instagram Reel links with your dates, budget and vibe, or open Astrail in ChatGPT and say \u201csave these reels\u201d. The agent saves through the same endpoint the form posts to, and starts the extraction the form makes you kick off separately, so the two paths are one feature rather than two.',
+    body: 'Paste 1 to 5 Instagram Reel links with your dates, budget and vibe, or open Astrail in ChatGPT and say \u201csave these reels\u201d. The agent saves through the same endpoint the form posts to, and starts the extraction the form makes you kick off separately, so the two paths are one feature rather than two.',
     src: SCREENS.createTrail,
     alt: 'Astrail saving Instagram Reels, the library filling as the agent works',
     slotLabel: 'real screenshot, saving reels',
@@ -28,7 +28,7 @@ const STEPS = [
   {
     eyebrow: 'Step 2',
     title: 'Follow the work as it happens',
-    body: 'Astrail extracts every place, verifies it exists, and checks weather and routes. Ask the agent to start it and you get the run narrated as it goes: which stage it is on, what it kept, what it dropped. Not sixty to a hundred and eighty seconds of spinner.',
+    body: 'Astrail extracts every place, verifies it exists, and checks weather and routes. Ask the agent to start it and you get the run narrated as it goes: which stage it is on, what it kept, what it dropped, instead of one to three minutes of spinner.',
     src: SCREENS.agentsResearch,
     alt: 'Astrail generating a trip, each pipeline stage narrated as it runs',
     slotLabel: 'real screenshot, a generation running',

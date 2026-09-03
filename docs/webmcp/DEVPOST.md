@@ -39,9 +39,11 @@ postgresql · mapbox-gl · openai-agents-sdk · gpt-5.5 · mem0 · apify · verc
 
 ## About the project
 
-> Paste everything inside the fence into Devpost's About field. It uses Devpost's own headings so
-> a judge scanning for a section finds it where they expect. The four judged questions are woven
-> through rather than answered as a checklist, because a checklist reads like a form.
+> Paste everything inside the fence into Devpost's About field. Devpost's own headings, so a judge
+> scanning for a section finds it where they expect.
+>
+> Written as prose rather than bold-led bullet lists. The previous draft opened nine consecutive
+> paragraphs with a bold label and a full stop, which reads as assembled rather than told.
 >
 > Zero em dashes. Every factual claim checked against the code.
 
@@ -49,32 +51,33 @@ postgresql · mapbox-gl · openai-agents-sdk · gpt-5.5 · mem0 · apify · verc
 ## Inspiration
 
 Instagram makes it effortless to save a Reel about somewhere you want to go, and then gives you
-nothing to do with it. Our own saved folders had a hundred places across nine countries in them.
-When the dates were finally booked, the fastest route from that folder to an actual itinerary was
-still twenty browser tabs, so the folder stayed shut and the trip got planned off the first page
-of search results.
+nothing to do with it. Our own folders had a hundred places across nine countries sitting in them.
+Every time the dates finally got booked, the fastest route from that folder to a real itinerary
+was still twenty browser tabs, so the folder stayed shut and the trip got planned off the first
+page of search results.
 
-That cost falls on the saver, not the researcher. Someone who takes one or two trips a year is
-never going to hand-map thirty Reels to coordinates and opening hours.
+That cost lands on the saver, not the researcher. Nobody who takes one or two trips a year is
+going to hand-map thirty Reels to coordinates and opening hours.
 
 So we built the conversion. Paste your Reel links and a multi-agent pipeline on the OpenAI Agents
-SDK goes to work: separate agents for place extraction, restaurant grounding, itinerary narration
-and hotel name localisation, with a read-only summariser over the top that reports what the others
-decided and never overrides them. The late stages fan out concurrently and each is allowed to fail
-on its own, so a weather API having a bad afternoon costs you a forecast rather than the trip.
-Anything without a verifiable location gets dropped. The rest are grouped into days by geography
-and land on a 3D map in 60 to 180 seconds. The run we instrumented took 123.5.
+SDK goes to work: separate agents for pulling places out of captions, grounding restaurants,
+writing the day narration, and localising hotel names, with a read-only summariser over the top
+that reports what the others decided and never overrides them. The late stages run concurrently
+and each is allowed to fail on its own, so a weather API having a bad afternoon costs you a
+forecast rather than the trip. Anything without a verifiable location gets dropped. The rest are
+grouped into days by geography and land on a 3D map in 60 to 180 seconds. The run we instrumented
+took 123.5.
 
-Then we put it in front of people, and got this back:
+It worked. Then we put it in front of people, and got this back:
 
 > "It's unclear how to navigate the website, where to click, how to choose the reels, how to start
 > generating a trip."
 
-We had already spent a sprint treating that as a copy problem. It was not. The tool was not hard
-to understand, it was hard to operate. We could keep redesigning the buttons, or we could remove
-the need to find them.
+We had already spent a sprint treating that as a copy problem. It was not. The thing was not hard
+to understand, it was hard to operate. We could keep redesigning the buttons, or we could get rid
+of the need to find them.
 
-WebMCP is how you remove it.
+That is what pulled us into WebMCP.
 
 ## What it does
 
@@ -83,54 +86,52 @@ and you drive the whole thing by talking to ChatGPT.
 
 Tell the agent to save some Reels and it saves them, starting extraction as it goes. Say "use the
 reels I just saved and plan me two days in Osaka" and it opens an approval card with the cost
-stated, starts the generation, narrates each stage as it runs, and hands you a routed map. Say
+stated, starts the generation, narrates each stage while it runs, and hands you a routed map. Say
 "add Tokyo Disneyland to day 2" and it asks you on the page, finds the place, adds the stop,
 redraws the route, and rewrites the day summaries to match.
 
 Every stop can be interrogated. Ask why stop 3 is on your trip and you get one of exactly three
 answers: the verbatim caption quote from the Reel it came from, with a link to that Reel;
 Astrail's own reasoning where it suggested the stop; or a plain note saying you asked for it.
-Nothing sits on the map unattributed, and nothing is invented to fill a gap. If we cannot source
-opening hours, the space stays empty.
+Nothing sits on the map unattributed, and nothing is invented to fill a gap. Where we cannot
+source opening hours, the space stays empty.
 
 It also remembers how you travel. State a preference once and the next trip recalls it, names what
 it remembered on the approval card, and still asks before it spends anything.
 
 ## How we built it
 
-**Seventeen tools registered through `document.modelContext.registerTool()`,** in two scopes:
-fourteen in the signed-in app shell, and three more that register only while a trip map is
-mounted. Six work with no account at all, on a public sample trail.
+Astrail registers seventeen tools through `document.modelContext.registerTool()`, in two scopes.
+Fourteen live in the signed-in app shell. Three more register only while a trip map is mounted,
+and unregister when you navigate away. Six work with no account at all, on a public sample trail.
 
 What matters is where they run. A backend MCP server could describe a trip. Only WebMCP can move
 the map the person is looking at. Because `execute()` runs inside the page, a tool already holds
 the loaded trip, the signed-in session, and the same React state setters a click uses. Ask for day
-2 and the page's own `showDay` runs, so the camera flies and the day chip lights up exactly as if
-you had clicked it. There is no second rendering path to keep in sync, because there is no second
-path.
+2 and the page's own `showDay` function runs, so the camera flies and the day chip lights up
+exactly as if you had clicked it. There is no second rendering path to keep in sync, because there
+is no second path.
 
 The agent inherits our security model rather than bringing its own. Reads run in the page under
-the same row-level security, no access token ever crosses the tool boundary, and every edit to
-your trip stops for an approval card on the page rather than a question in chat.
+the same row-level security a human gets, no access token ever crosses the tool boundary, and
+every edit to your trip stops for an approval card on the page rather than a question in chat.
 
-A few decisions we would make again:
-
-**Pin numbers, never UUIDs.** Tools address stops the way a person does, so "move stop 7 to day 3"
-works and no identifier a human cannot read crosses the boundary. The map, the itinerary and the
-tools all count from the same trail.
-
-**A two-minute job behind a one-second tool call.** `plan_trip_from_reels` returns in about a
-second with a trip ID and a next step. The EventSource lives in a provider beside the map rather
-than inside `execute`, so a single stream drives both the agent's narration and the on-screen
-wait, and they can never disagree.
-
-**Reel captions are attacker-controlled text, so we defend both ends.** In the browser, every tool
-whose output can carry a caption is annotated `untrustedContentHint`, machine-checked by a
-contract test. In the pipeline, the place extractor and the hotel localiser wrap their Agents SDK
-runs in `input_guardrail` tripwires that reject a caption trying to steer the run.
+Two smaller decisions we would make again. Tools address stops the way a person does, so "move
+stop 7 to day 3" works and no identifier a human cannot read ever crosses the boundary; the map,
+the itinerary and the tools all count from the same trail. And because Reel captions are text an
+attacker can write, we defend both ends of them: in the browser every tool whose output can carry
+a caption is annotated `untrustedContentHint`, machine-checked by a contract test, and in the
+pipeline the place extractor and the hotel localiser wrap their Agents SDK runs in
+`input_guardrail` tripwires that reject a caption trying to steer the run.
 
 The write surface behind the edit tools is new too. The itinerary used to be immutable at every
 layer: no endpoint, no frontend mutation, and row-level security that was SELECT-only.
+
+We also built this with a second model in the loop. Every plan and every diff went to OpenAI's
+Codex for review before it landed, and more than once it caught something our own review had
+missed, including a bug inside a fix we had already convinced ourselves was correct. Two models
+disagreeing about the same diff turned out to be a cheaper quality gate than either one reviewing
+twice.
 
 The stack: Next.js 15, React 19 and Mapbox GL on Vercel; FastAPI on Render with server-sent
 events; Supabase for auth, Postgres and row-level security; the OpenAI Agents SDK for the
@@ -138,82 +139,95 @@ multi-agent pipeline; mem0 for memory; Apify for Reel scraping.
 
 ## Challenges we ran into
 
-**The memory feature had a dead end nobody had noticed, and WebMCP is what exposed it.** The
-backend searches memory only when the preferences field arrives empty, because what you typed for
-this trip should beat what you said three trips ago. It writes a memory only when that field
-arrives full. Those two conditions are mutually exclusive, so an agent that always left the field
-empty could recall forever and never teach. Meanwhile the manual form pre-fills that box from your
-saved profile, which counts as stating preferences and suppresses recall on that path entirely.
-Closing it took three changes: the planning tool now stops and asks when it has nothing stored,
-the approval card names what it remembered before you approve, and a new tool lets the agent read
-the store back.
+The hardest one was a flaw in our own product, and we only found it because an agent was driving.
 
-**Owning the registration.** Chrome's `use-webmcp-tool` hook never catches the promise
-`registerTool` returns, and since aborting the signal is how a tool unregisters, every page
-navigation threw an unhandled `AbortError` across the app. It cannot be fixed from outside:
-`registerTool` is a non-writable property of a native interface, and an `unhandledrejection`
-listener loses to handlers registered earlier during bootstrap. We wrote our own hook instead.
-About 144 lines, and it keeps the dependency count at zero.
+Astrail searches memory for what it knows about you only when the preferences box arrives empty,
+on the reasoning that what you typed today should beat what you said three trips ago. It saves a
+new memory only when that box arrives full. Those two conditions never overlap. So an agent that
+always left the field blank could recall forever and never teach it anything, while the manual
+form, which helpfully pre-fills that box from your profile, was quietly switching recall off on
+the other path. Nobody had noticed, because until now no path had exercised both halves. Fixing it
+took three changes: the planning tool stops and asks how you travel when it has nothing stored,
+the approval card names what it remembered before you approve the spend, and a new tool lets the
+agent read the store back to you.
 
-**Making an agent's action indistinguishable from your own.** Early versions had a tool call an
-API and then hope the page caught up. The fix was to hand tools the page's own refresh hooks, and
-to make a mutation refuse to resolve until the UI reflects it. By the time "done, I moved it"
+Then there was the registration hook. Chrome ships one, `use-webmcp-tool`, and we started there.
+It never catches the promise that `registerTool` hands back, and since aborting the signal is how
+a tool unregisters, every page navigation threw an unhandled `AbortError` across the whole app. We
+tried to patch it from the outside and could not: `registerTool` is a non-writable property of a
+native interface, so wrapping it throws, and an `unhandledrejection` listener loses to whatever
+was registered at bootstrap. So we wrote our own. It is about 144 lines, and it keeps our runtime
+dependency count at zero, which we did not plan but do not mind.
+
+Making an agent's action feel like your own took longer than we expected. Early versions had a
+tool call an API and then hope the page noticed. That is a second rendering path, and second
+rendering paths drift. The fix was to hand tools the page's own refresh hooks and to make a
+mutation refuse to resolve until the UI has caught up. By the time the sentence "done, I moved it"
 reaches you, the map has already moved.
 
-**A dependency died mid-challenge.** Travala's travel MCP moved to OAuth and started returning 401
-on every call we used to make, so hotel search is switched off in this build. The app hides the
-panel and both map tools say so in words rather than flying the camera at nothing.
+One thing broke that had nothing to do with us. Travala's travel MCP, which we used for hotel
+search, moved to OAuth mid-challenge and now returns 401 on every call we used to make. Hotel
+search is switched off in this build. The app hides the panel and both map tools say so in words
+rather than flying the camera at an empty view, which felt better than pretending.
 
 ## Accomplishments that we're proud of
 
-**Nothing reaches the map unattributed.** Three kinds of stop, three honest answers, and a
-contract test that fails if the copy ever promises a caption quote for a stop that has none. The
-tempting version of that claim reads better than the true one, which is exactly why we made a
-machine check it.
+The one that matters is dull to state and was the entire point: WebMCP fixed the problem our users
+actually reported.
 
-**The agent's click and yours are the same event.** Not a parallel API that mirrors the UI. The
-same functions, the same state, the same map.
+Getting Reels in used to mean copying a URL, switching tabs, pasting, repeating, then hunting for
+a separate button to start extraction. Now you say "save these reels" and paste four links in one
+message, and the extraction starts itself. A finished trip used to be frozen solid, with no way to
+change it at any layer. Now five tools edit it, each behind an approval card, each owner-checked
+and flag-gated on the way to the database. Those two things were the complaint, and they are gone.
 
-**An itinerary you can actually change.** Before this challenge it was frozen at every layer. Now
-five tools edit it, each behind an approval card, each owner-checked and flag-gated on the way to
-the database.
+Underneath that, a few we are glad we got right. Nothing reaches the map unattributed, and a
+contract test fails if our own copy ever promises a caption quote for a stop that has none, which
+matters because the false version of that sentence reads better than the true one. The agent's
+click and yours really are the same event rather than a parallel API that mirrors the UI. And our
+tests check honesty as well as behaviour: they assert that the README's tool table matches the
+registry, that the stated tool count is real, and that documented limitations are still
+documented. When a claim stopped being true this week, a test went red.
 
-**Tests that check honesty, not just behaviour.** Our contract tests assert that the README's tool
-table matches the registry, that the stated tool count is real, and that documented limitations
-are still documented. When a claim stopped being true this week, a test went red.
+## What we learned about WebMCP
 
-## What we learned
+None of us had touched WebMCP before this competition. It was announced, we read the spec, and we
+started building. Four things surprised us.
 
-**Tests prove behaviour, not honesty.** Nearly everything that went wrong in the last stretch was
-a sentence, not a function. A status chip labelled every preferences row "Memory" whether memory
-had run or not. An activity rail called a read-only lookup an irreversible change. A fully green
-suite says nothing about whether a label is telling the truth, and a label that lies costs more
-trust than a bug does.
+It is a DOM API, not a server. We spent the first evening looking for the deployment story before
+realising there is not one. Your tools ship with your JavaScript, and to the standard your origin
+is just a static file host. Obvious in hindsight, and it reframes the whole design: the question
+stops being "what should my API expose" and becomes "what does this page already have in scope".
 
-**Understating is as expensive as overstating.** We caught ourselves calling two tools "unit-tested
-only" hours after they had actually been run live. Nobody fact-checks a modest claim, which is
-what makes it dangerous.
+Where you register a tool is a design decision, not a detail. Registering in the app shell versus
+inside the trip page is the difference between a tool that always exists and one that appears when
+there is something for it to act on. Tools that unregister on navigation are not cleanup, they are
+how you stop an agent reaching for something that is not there.
 
-**Removing the need to find a button beats redesigning it.** The feedback that started this was
-about navigation. We answered it with an interface you speak to instead of a better-labelled one,
-and the first tool we wrote answers "what can I do here?" before anything else.
+The description field is the real API. It is the only place you can teach an agent when to call
+something, and it is captured at registration, so it cannot carry anything dynamic. We rewrote
+ours more times than we rewrote the code behind them.
+
+And there is no way for the page to talk back. When a person clicks a pin, the agent has no idea.
+That asymmetry shapes more of the design than we expected, and our answer is a tool whose whole
+job is to be called when the user says "this" or "here".
 
 ## What's next for Astrail
 
-**Trips with more than one person in them.** Nobody plans a holiday alone, and right now Astrail
+Trips with more than one person in them. Nobody plans a holiday alone, and right now Astrail
 assumes you do. A trip should hold several people who can all see it and all change it, each with
 their own agent working the same map. That is the version of this challenge's premise we actually
 want to build: not one person and one agent, but a group and theirs, editing one shared thing
 without standing on each other. Everything here already points that way, because an agent edit and
 a human edit are the same event, so a second person is not a new code path.
 
-**Memory that watches instead of only listening.** Today Astrail remembers what you tell it. The
-trips you accept say far more: which neighbourhoods you keep, how far you will really walk,
-whether you fill a day or leave it open. Learning your style from the trips you kept, rather than
-from one sentence you typed once, is the difference between an app that stores a preference and
-one that knows you.
+Memory that watches instead of only listening. Today Astrail remembers what you tell it. The trips
+you accept say far more: which neighbourhoods you keep, how far you will really walk, whether you
+fill a day or leave it open. Learning your style from the trips you kept, rather than from one
+sentence you typed once, is the difference between an app that stores a preference and one that
+knows you.
 
-**Flights, so it is the whole trip.** An itinerary that begins when you land is half a plan. Search
+Flights, so it is the whole trip. An itinerary that begins when you land is half a plan. Search
 and comparison, not booking. There are no payments anywhere in Astrail and there will not be until
 it can be done properly.
 

@@ -47,10 +47,11 @@ agent can answer "what can I do here?" and then do it.
 document separates them and keeps the same words for them everywhere below.
 
 - **In the judged browser** — driven by an agent in ChatGPT desktop's built-in browser, against a
-  backend running on `localhost`. This is where all of the work below has been exercised.
-- **On a judged URL** — the same thing against the deployment a judge would open. **Nothing has
-  been run on a judged URL, because that deployment does not exist yet.** Every claim on this page
-  is the first kind.
+  backend running on `localhost`. This is where the work below was first exercised.
+- **On a judged URL** — the same thing against the deployment a judge would open. That deployment
+  now exists, and on 2026-09-03 the arc was driven on it end to end, including a real generation.
+  Individual rows below still say which kind they are: most were proven locally first, and not
+  every one has been repeated on the deployment.
 
 In the judged browser, the arc runs end to end. **Upstream:** `save_reels` through the agent — the
 reel is saved, extraction starts, the card moves Queued → Analyzing while you watch, and verified
@@ -188,8 +189,9 @@ open **Available site tools** — 13 are listed on the app, 16 once a trip is op
    remains for the one case the agent must still act on — prose stale with no rewrite running.
 
 **State of each path.** Stated plainly, because a claim a judge can disprove costs more than a
-limitation we name. Every "live-run" below means *in the judged browser, against a local backend*,
-in the sense defined in §2 — no row here is a claim about a deployed URL.
+limitation we name. Every "live-run" below means *in the judged browser* in the sense defined in
+§2. Unless a row says otherwise it was exercised against a local backend; the arc as a whole,
+including a real generation, was re-driven on the deployed URL on 2026-09-03.
 
 | | Path | State |
 |---|---|---|

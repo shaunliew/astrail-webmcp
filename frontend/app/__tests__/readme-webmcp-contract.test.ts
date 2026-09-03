@@ -72,12 +72,22 @@ describe('README WebMCP submission contract', () => {
        MOVED 2026-09-02, on exactly that condition. The deployment now exists and its
        infrastructure was verified against it: health, readiness reporting mem0 configured, CORS
        accepting the Vercel origin and rejecting others, auth enforced, edit endpoints live rather
-       than 404ing. What has NOT been re-driven against the deployed URL is the full agent arc, so
-       the honest sentence changed shape rather than disappearing, and this pins the new one. The
-       guard is the same: the README must keep saying which half is unproven. */
+       than 404ing. What had NOT been re-driven against the deployed URL was the full agent arc.
+
+       MOVED AGAIN 2026-09-03, on that same condition: the arc HAS now been driven against the
+       deployed URL, including a real generation end to end, so the sentence about it was no
+       longer true and was replaced rather than kept as a stale caveat. Understating costs the
+       same marks as overstating and is far easier to miss, because nobody fact-checks a modest
+       claim.
+
+       That leaves exactly one unproven half, and the second assertion now pins its ABSOLUTE
+       rather than a caveat about deployment: `move_place` and `set_trip_dates` have never run
+       outside a unit test, on either backend. Move this only when one of them is actually run;
+       do not delete it. */
     expect(readme).toMatch(/move_place[\s\S]{0,120}set_trip_dates[\s\S]{0,120}unit-tested only/i)
-    expect(readme).toMatch(
-      /has NOT been re-driven end to end against that deployed URL is the full agent arc/i,
-    )
+    expect(readme).toMatch(/on localhost or on the deployment/i)
+    // The deployed run is a claim too, and a dated one. If it is ever softened back to "local
+    // only", the assertion above still passes while the README understates what was proven.
+    expect(readme).toMatch(/2026-09-03[\s\S]{0,200}deployed[\s\S]{0,200}real generation/i)
   })
 })

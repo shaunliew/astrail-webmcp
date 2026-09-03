@@ -238,7 +238,7 @@ export default function SignInPage() {
           <div className="space-y-5">
             {/* Social sign-in. One provider, so a full-width labelled button reads cleaner than a
                 single-cell icon grid — but the "Sign in with" caption keeps the shadcn shape. */}
-            <div className="space-y-2">
+            {/* <div className="space-y-2">
               <p className="text-[12px] font-medium text-[color:var(--text-muted)]">Sign in with</p>
               <button
                 type="button"
@@ -249,17 +249,17 @@ export default function SignInPage() {
                 <GoogleG />
                 Continue with Google
               </button>
-            </div>
+            </div> */}
 
             {/* Divider — the shadcn "or" rule. The pill sits on the card surface (--surface-1). */}
-            <div className="relative">
+            {/* <div className="relative">
               <div className="absolute inset-0 flex items-center" aria-hidden>
                 <span className="w-full border-t border-[color:var(--line-soft)]" />
               </div>
               <div className="relative flex justify-center text-[11px] uppercase tracking-[0.08em]">
                 <span className="bg-[color:var(--surface-1)] px-2 text-[color:var(--text-faint)]">or</span>
               </div>
-            </div>
+            </div> */}
 
             {/* Email code form. Labelled input with a leading glyph — the shadcn input pattern. */}
             <form

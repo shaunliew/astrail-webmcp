@@ -14,6 +14,23 @@ whole thing by talking to ChatGPT. Every stop says where it came from.
 The sample trail opens signed out, in any browser, with six working tools and nothing to spend.
 Ask it *"why is stop 3 on this trip?"*
 
+## What it looks like
+
+![Adding Tokyo Disneyland to day 2 by asking. The add_place tool call is open in ChatGPT on the left, the itinerary in the middle shows the new stop badged YOU ASKED, and the pin is on the 3D map.](frontend/public/landing/screens/change-itinerary.webp)
+
+*Adding a stop by asking. The `add_place` call is visible in ChatGPT, the new stop is labelled as
+yours because no Reel is behind it, and the route redraws on the live 3D map.*
+
+![Four Instagram Reel links pasted into ChatGPT, with the Astrail library beside it filling with the saved Reels and the count of places found in each.](frontend/public/landing/screens/save-reel.webp)
+
+*Four Reel links pasted in one message. One WebMCP tool saves them and starts extraction, and the
+library fills in while the agent is still talking.*
+
+![Astrail generating a trip, with each pipeline stage listed as it runs: applying preferences from memory, mapping verified places, checking weather, planning routes, finding restaurants.](frontend/public/landing/screens/trip-generation.webp)
+
+*The run narrated stage by stage instead of a spinner. Preferences recalled from memory, places
+checked against real coordinates, and a missing forecast reported rather than invented.*
+
 ## Try it in ChatGPT
 
 1. Open the live app in the **ChatGPT desktop app's built-in browser**. Not Safari, not Chrome.

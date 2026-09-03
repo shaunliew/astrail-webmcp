@@ -40,12 +40,18 @@ export const SCREENS: {
 
 /* The demo the landing page plays.
  *
- * ⚠️ `DemoVideoSlot`'s headline says "Three minutes, reels to route." The file below is the OLD
- * 61-second beta capture, so the page currently overstates its own video. Replace it with the
- * challenge submission recording before this ships anywhere a judge sees it, or put the duration
- * back to sixty seconds. A page that misstates the length of the video sitting under the claim is
- * the cheapest possible thing for a judge to catch. */
-export const DEMO_VIDEO_SRC: string | undefined = '/landing/astrail-beta-demo.mp4'
+ * Resolved 2026-09-03: this used to serve `/landing/astrail-beta-demo.mp4`, a 61-second capture
+ * of the PRE-CHALLENGE product, under a headline promising three minutes. It now points at the
+ * submission recording on YouTube, which is the same video linked from the Devpost entry, so the
+ * page and the submission cannot drift apart.
+ *
+ * YouTube rather than a local file on purpose: the MP4 was a 14 MB download on a landing page,
+ * and the challenge rules require the video to stay publicly available for the whole judging
+ * period regardless of what happens to this deployment. `next.config.ts` already allows
+ * `https://www.youtube.com` in `frame-src` and `i.ytimg.com` in `img-src`, so this needs no CSP
+ * change. The player is click-to-play, so nothing from YouTube loads until someone asks for it. */
+export const DEMO_YOUTUBE_ID = 'kzgCUgO_wlM'
+export const DEMO_YOUTUBE_URL = `https://youtu.be/${DEMO_YOUTUBE_ID}`
 
 export const STILLS = {
   coldOpen: '/landing/coldopen-hero.webp',

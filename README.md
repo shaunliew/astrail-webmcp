@@ -3,6 +3,7 @@
 > This repository is the WebMCP Challenge build of Astrail, an experiment in planning trips with an agent.
 
 **Live app:** https://astrail-webmcp.vercel.app
+**Demo video:** https://youtu.be/kzgCUgO_wlM
 **No account needed:** https://astrail-webmcp.vercel.app/app/trip/demo opens signed out with six
 working tools. Try *"why is stop 3 on this trip?"*
 **Backend health:** https://astrail-webmcp-api.onrender.com/readiness

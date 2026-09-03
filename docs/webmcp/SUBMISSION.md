@@ -61,9 +61,10 @@ restaurant enrichment is roughly 94%. **Downstream:** reading the trip, its evid
 the edits — including `replan_trip` rewriting the trip title, the day titles and both day summaries,
 checked in the database rather than taken from the reply.
 
-Two tools are still unproven and marked as such in the table below: `move_place` and
-`set_trip_dates` are unit-tested only. The screen caught up alongside: an empty `/app` now leads
-with the agent and a one-click starter prompt rather than a paste-a-URL form.
+`move_place` and `set_trip_dates` were the last two tools with no live write behind them. Both
+ran on 2026-09-03, against the deployment rather than localhost, each through its own approval
+card. Every tool that writes has now been run live. The screen caught up alongside: an empty
+`/app` now leads with the agent and a one-click starter prompt rather than a paste-a-URL form.
 
 ## 3. What can people and agents do together that was difficult or impossible before?
 
@@ -200,7 +201,7 @@ including a real generation, was re-driven on the deployed URL on 2026-09-03.
 | ✅ | `plan_trip_from_reels` end to end, and the page takeover it drives | **Live-run 2026-08-30** — approval card before spend, real stage narration, map on completion |
 | ✅ | `replan_trip` | **Live-run 2026-08-30** — after an add and after a remove; rewrote the trip title, day titles and day summaries, checked in the database |
 | ✅ | `add_place`, `remove_place` | **Live-run 2026-08-30** through the agent, each with its on-page approval |
-| ⚙ | `move_place`, `set_trip_dates` | Implemented and unit-tested; not live-run |
+| ✅ | `move_place`, `set_trip_dates` | **Live-run 2026-09-03, on the deployed URL** — a stop moved day 2 to day 1 and renumbered to stop 1; the trip shifted from 17 to 18 December across to 23 to 24 December with every day keeping its stops and its number. Both through their approval card, both returning `outcome: done` |
 | ⚠ | The five edit tools | Require `WEBMCP_EDITS_ENABLED=true` on the deployment |
 | ⚠ | Which tool the agent picks | ChatGPT's decision, never the page's — a site can register tools, it cannot make an agent call them. Usually a plain prompt reaches them. If one gets browser control instead, the page moves with no tool call and no approval card: ask it to use Astrail's own tools and repeat the prompt |
 | ✅ | The signed-in landing screen | An empty account now leads with the agent and a starter prompt; the paste box is the fallback, not the front door |

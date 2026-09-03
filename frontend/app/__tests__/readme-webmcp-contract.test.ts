@@ -49,45 +49,43 @@ describe('README WebMCP submission contract', () => {
     expect(readme).toMatch(/off by default/i)
   })
 
-  it('names what is still unproven live, and does not quietly drop it', () => {
-    /* This assertion has moved once already, and that is the point of it: it pins the REMAINING
-       honesty, not a fixed sentence. `plan_trip_from_reels` was the unrun path until 2026-08-30,
-       when generation, add, remove and replan were all driven through an agent in ChatGPT's
-       built-in browser against a real account — so the old assertion became false and was replaced
-       rather than deleted.
+  it('keeps the run evidence dated, and does not reinstate a caveat that is no longer true', () => {
+    /* This assertion has moved four times, and that is the point of it: it pins the CURRENT
+       honest state, never a fixed sentence. Each move is recorded so nobody mistakes a
+       loosened claim for drift.
 
-       What is still unproven is `move_place` and `set_trip_dates`. Judges weight the README
-       heavily and may never open the app, so an overstatement here is the most expensive kind —
-       and an UNDERSTATEMENT costs the same marks while being far easier to miss, because nobody
-       fact-checks a modest claim. Move this again when those two are run; do not delete it.
+       1. Until 2026-08-30 it pinned that `plan_trip_from_reels` had never run live. That night
+          generation, add, remove and replan were all driven through an agent in ChatGPT's
+          built-in browser, so the assertion became false and was replaced rather than deleted.
+       2. On 2026-08-31 the second arm moved from "nothing here is evidence about a deployed
+          environment" to the absolute behind it, because four documents were split between
+          "generation never ran" and "generation ran live" and both were half-right.
+       3. On 2026-09-02 the deployment appeared and its infrastructure was verified against it,
+          leaving the full agent arc as the unproven half.
+       4. On 2026-09-03 the arc ran on the deployed URL, and then `move_place` and
+          `set_trip_dates`, the last two tools with no live write behind them, ran there too,
+          each through its approval card and each returning `outcome: done`.
 
-       The second assertion moved on 2026-08-31 for the same reason and in the same direction. It
-       used to pin "nothing here is evidence about a deployed environment", which was true but read
-       as a caveat on one list. Four documents were meanwhile split between "generation was never
-       run" and "generation ran live", and both were half-right — it HAS run, in ChatGPT's built-in
-       browser, against `localhost`, and there is no deployment for it to have run on. So the
-       README now states the absolute rather than the caveat, and this pins the absolute. Delete it
-       only when a judged URL exists AND something has actually been run against it.
+       So there is no unproven half left to pin, and inventing one to keep this test shaped the
+       way it was would be dishonest in the opposite direction. The guard INVERTS instead: it now
+       protects the evidence. The negative arm stops a stale caveat being reinstated by anyone
+       copying an older draft, which is the realistic failure now that four documents say the
+       same thing. Understating costs the same marks as overstating and is far easier to miss,
+       because nobody fact-checks a modest claim.
 
-       MOVED 2026-09-02, on exactly that condition. The deployment now exists and its
-       infrastructure was verified against it: health, readiness reporting mem0 configured, CORS
-       accepting the Vercel origin and rejecting others, auth enforced, edit endpoints live rather
-       than 404ing. What had NOT been re-driven against the deployed URL was the full agent arc.
+       If a future change genuinely makes something unproven again, add an arm rather than
+       loosening these. */
 
-       MOVED AGAIN 2026-09-03, on that same condition: the arc HAS now been driven against the
-       deployed URL, including a real generation end to end, so the sentence about it was no
-       longer true and was replaced rather than kept as a stale caveat. Understating costs the
-       same marks as overstating and is far easier to miss, because nobody fact-checks a modest
-       claim.
+    // The retired caveat. It was true for eleven days and is now false; reinstating it would
+    // understate the submission, and the wording is exactly what a copy-paste would bring back.
+    expect(readme, 'the README reinstated a caveat that is no longer true').not.toMatch(
+      /move_place[\s\S]{0,120}set_trip_dates[\s\S]{0,120}unit-tested only/i,
+    )
 
-       That leaves exactly one unproven half, and the second assertion now pins its ABSOLUTE
-       rather than a caveat about deployment: `move_place` and `set_trip_dates` have never run
-       outside a unit test, on either backend. Move this only when one of them is actually run;
-       do not delete it. */
-    expect(readme).toMatch(/move_place[\s\S]{0,120}set_trip_dates[\s\S]{0,120}unit-tested only/i)
-    expect(readme).toMatch(/on localhost or on the deployment/i)
-    // The deployed run is a claim too, and a dated one. If it is ever softened back to "local
-    // only", the assertion above still passes while the README understates what was proven.
-    expect(readme).toMatch(/2026-09-03[\s\S]{0,200}deployed[\s\S]{0,200}real generation/i)
+    // The evidence that replaced it. Both tools stay named, in the paragraph dated to the run.
+    expect(readme).toMatch(/2026-09-03[\s\S]{0,900}move_place[\s\S]{0,900}set_trip_dates/i)
+    // The deployed generation is a dated claim too. If the run evidence is ever softened back to
+    // "local only", the assertions above still pass while the README understates what was proven.
+    expect(readme).toMatch(/2026-09-03[\s\S]{0,300}deployed[\s\S]{0,300}real generation/i)
   })
 })
